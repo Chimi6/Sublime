@@ -79,6 +79,38 @@ fn load_padded_word(tail: &[u8]) -> u64 {
     u64::from_le_bytes(chunk)
 }
 
+/// Index of the first `&`, `<`, `>`, or `"` in `bytes`.
+pub fn find_html_special(bytes: &[u8]) -> Option<usize> {
+    let mut offset = 0usize;
+    while offset + 8 <= bytes.len() {
+        let word = load_word(bytes, offset);
+        let hits = has_byte(word, b'&')
+            | has_byte(word, b'<')
+            | has_byte(word, b'>')
+            | has_byte(word, b'"');
+        if hits != 0 {
+            let first = first_flagged_byte(hits);
+            return Some(offset + first);
+        }
+        offset += 8;
+    }
+    let tail = &bytes[offset..];
+    if tail.is_empty() {
+        return None;
+    }
+    let word = load_padded_word(tail);
+    let hits =
+        has_byte(word, b'&') | has_byte(word, b'<') | has_byte(word, b'>') | has_byte(word, b'"');
+    if hits == 0 {
+        return None;
+    }
+    let first = first_flagged_byte(hits);
+    if first >= tail.len() {
+        return None;
+    }
+    Some(offset + first)
+}
+
 fn load_word(bytes: &[u8], offset: usize) -> u64 {
     let mut chunk = [0u8; 8];
     chunk.copy_from_slice(&bytes[offset..offset + 8]);

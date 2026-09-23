@@ -15,3 +15,17 @@ pub static JSON: Format = Format {
     extensions: &["json"],
     magic: None,
 };
+
+pub static MARKDOWN: Format = Format {
+    id: "markdown",
+    display_name: "Markdown",
+    extensions: &["md", "markdown"],
+    magic: None,
+};
+
+pub static HTML: Format = Format {
+    id: "html",
+    display_name: "HTML",
+    extensions: &["html", "htm"],
+    magic: None,
+};
