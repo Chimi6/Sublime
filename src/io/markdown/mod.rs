@@ -10,12 +10,15 @@
 
 mod block;
 pub mod entities;
+pub mod events_json;
 mod inline;
 mod scan;
+pub mod writer;
 
 use std::borrow::Cow;
 
 pub use block::Options;
+pub use writer::{MarkdownWriter, push_markdown};
 
 /// Text alignment of a table column, from the delimiter row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

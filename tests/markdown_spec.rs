@@ -152,3 +152,105 @@ fn gfm_extensions_spec() {
 fn cmark_gfm_extension_examples() {
     run_corpus("cmark-gfm-extensions.json", Options::default());
 }
+
+/// Parses every example, writes it back as Markdown, parses that, and
+/// requires the same events. HTML output equality is checked too, as the
+/// reader's view of "the same document". `ROUNDTRIP_ONLY=4,5` narrows and
+/// prints every diff.
+fn run_round_trip(name: &str, options: Options) {
+    use sublime::io::markdown::push_markdown;
+    let examples = load(name);
+    let only: Vec<String> = std::env::var("ROUNDTRIP_ONLY")
+        .map(|list| list.split(',').map(str::to_string).collect())
+        .unwrap_or_default();
+    let mut failures = Vec::new();
+    for example in &examples {
+        if !only.is_empty() && !only.contains(&example.number) {
+            continue;
+        }
+        if example.html.trim() == "<IGNORE>" {
+            continue;
+        }
+        let expected = merged_text(Parser::new_with_options(&example.markdown, options));
+        let mut written = String::new();
+        push_markdown(
+            &mut written,
+            Parser::new_with_options(&example.markdown, options),
+        );
+        let actual = merged_text(Parser::new_with_options(&written, options));
+        if actual != expected || render(&written, options) != render(&example.markdown, options) {
+            failures.push((example, written));
+        }
+    }
+    let total = examples.len();
+    eprintln!(
+        "{name} round trip: {}/{total} passed",
+        total - failures.len()
+    );
+    let failing: Vec<&str> = failures
+        .iter()
+        .map(|(failure, _)| failure.number.as_str())
+        .collect();
+    eprintln!("failing: {}", failing.join(","));
+    let show = if only.is_empty() { 6 } else { failures.len() };
+    for (failure, written) in failures.iter().take(show) {
+        eprintln!(
+            "--- example {} ({})\nsource:\n{:?}\nwritten:\n{:?}\nexpected html:\n{}actual html:\n{}",
+            failure.number,
+            failure.section,
+            failure.markdown,
+            written,
+            render(&failure.markdown, options),
+            render(written, options)
+        );
+    }
+    assert!(
+        failures.is_empty(),
+        "{name}: {} of {total} examples do not round-trip",
+        failures.len()
+    );
+}
+
+/// The parser splits text at escapes and entities; the split is not part
+/// of the document, so adjacent text events are joined before comparing.
+fn merged_text<'a>(
+    events: impl Iterator<Item = sublime::io::markdown::Event<'a>>,
+) -> Vec<sublime::io::markdown::Event<'a>> {
+    use std::borrow::Cow;
+    use sublime::io::markdown::{CodeBlockKind, Event, Tag};
+    let mut merged: Vec<Event<'a>> = Vec::new();
+    for event in events {
+        // Indented code is the same document as fenced code with no info
+        // string; the writer fences indented code that follows a list.
+        let event = match event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) if info.is_empty() => {
+                Event::Start(Tag::CodeBlock(CodeBlockKind::Indented))
+            }
+            other => other,
+        };
+        if let (Some(Event::Text(previous)), Event::Text(text)) = (merged.last_mut(), &event) {
+            let mut joined = std::mem::take(previous).into_owned();
+            joined.push_str(text);
+            *previous = Cow::Owned(joined);
+            continue;
+        }
+        merged.push(event);
+    }
+    merged
+}
+
+#[test]
+fn commonmark_round_trip() {
+    let options = Options {
+        tagfilter: false,
+        autolinks: false,
+        ..Options::default()
+    };
+    run_round_trip("commonmark.json", options);
+}
+
+#[test]
+fn gfm_round_trip() {
+    run_round_trip("gfm.json", Options::default());
+    run_round_trip("cmark-gfm-extensions.json", Options::default());
+}

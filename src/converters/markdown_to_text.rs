@@ -1,6 +1,5 @@
-//! Markdown -> HTML. Parses with `io::markdown` and renders with `io::html`.
-//! Markdown allows a link to be defined after its use, so the whole input
-//! is read before parsing; memory is proportional to the document.
+//! Markdown -> plain text. Parses with `io::markdown` and renders with
+//! `io::text`. Lossy: markup, raw HTML, and image sources are dropped.
 
 use std::io::Write;
 
@@ -9,14 +8,15 @@ use crate::converters::input::read_text_document;
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
-use crate::io::html::HtmlWriter;
 use crate::io::markdown::{Options, parse_into};
+use crate::io::text::TextWriter;
 
-const NAME: &str = "markdown-to-html";
+const NAME: &str = "markdown-to-text";
+const FIDELITY_NOTE: &str = "markup, raw HTML, and image sources are dropped";
 
-pub struct MarkdownToHtml;
+pub struct MarkdownToText;
 
-impl Converter for MarkdownToHtml {
+impl Converter for MarkdownToText {
     fn name(&self) -> &'static str {
         NAME
     }
@@ -26,11 +26,11 @@ impl Converter for MarkdownToHtml {
     }
 
     fn to(&self) -> &'static Format {
-        &formats::HTML
+        &formats::TEXT
     }
 
     fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossless
+        Fidelity::Lossy(FIDELITY_NOTE)
     }
 
     fn tier(&self) -> Tier {
@@ -44,7 +44,7 @@ impl Converter for MarkdownToHtml {
         _context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
         let text = read_text_document(&mut input)?;
-        let mut writer = HtmlWriter::streaming(output);
+        let mut writer = TextWriter::streaming(output);
         parse_into(&text, Options::default(), &mut writer);
         writer.finish()?;
         output.flush()?;
@@ -65,23 +65,23 @@ mod tests {
         let mut output = Vec::new();
         let mut source: &[u8] = b"# Title\n\nSome *text* with a [link](/x).\n";
         let mut context = Context::new(&mut sink, &options);
-        MarkdownToHtml
+        MarkdownToText
             .convert(Input::Stream(&mut source), &mut output, &mut context)
             .unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "<h1>Title</h1>\n<p>Some <em>text</em> with a <a href=\"/x\">link</a>.</p>\n"
+            "Title\n\nSome text with a link (/x).\n"
         );
-        assert!(sink.report().is_lossless());
+        let _ = sink;
     }
 
     #[test]
     fn declares_contract() {
-        let converter = MarkdownToHtml;
-        assert_eq!(converter.name(), "markdown-to-html");
+        let converter = MarkdownToText;
+        assert_eq!(converter.name(), "markdown-to-text");
         assert_eq!(converter.from().id, "markdown");
-        assert_eq!(converter.to().id, "html");
-        assert_eq!(converter.fidelity(), Fidelity::Lossless);
+        assert_eq!(converter.to().id, "text");
+        assert_eq!(converter.fidelity(), Fidelity::Lossy(FIDELITY_NOTE));
         assert_eq!(converter.tier(), Tier::Native);
     }
 }

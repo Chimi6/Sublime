@@ -1,6 +1,5 @@
-//! Markdown -> HTML. Parses with `io::markdown` and renders with `io::html`.
-//! Markdown allows a link to be defined after its use, so the whole input
-//! is read before parsing; memory is proportional to the document.
+//! Markdown -> Markdown events as JSON. Lossless with respect to the event
+//! stream; `markdown-json-to-markdown` turns it back into Markdown.
 
 use std::io::Write;
 
@@ -9,14 +8,14 @@ use crate::converters::input::read_text_document;
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
-use crate::io::html::HtmlWriter;
+use crate::io::markdown::events_json::JsonEventWriter;
 use crate::io::markdown::{Options, parse_into};
 
-const NAME: &str = "markdown-to-html";
+const NAME: &str = "markdown-to-json";
 
-pub struct MarkdownToHtml;
+pub struct MarkdownToJson;
 
-impl Converter for MarkdownToHtml {
+impl Converter for MarkdownToJson {
     fn name(&self) -> &'static str {
         NAME
     }
@@ -26,7 +25,7 @@ impl Converter for MarkdownToHtml {
     }
 
     fn to(&self) -> &'static Format {
-        &formats::HTML
+        &formats::MARKDOWN_JSON
     }
 
     fn fidelity(&self) -> Fidelity {
@@ -44,7 +43,7 @@ impl Converter for MarkdownToHtml {
         _context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
         let text = read_text_document(&mut input)?;
-        let mut writer = HtmlWriter::streaming(output);
+        let mut writer = JsonEventWriter::new(&mut *output);
         parse_into(&text, Options::default(), &mut writer);
         writer.finish()?;
         output.flush()?;
@@ -63,25 +62,24 @@ mod tests {
         let options = ConvertOptions::default();
         let mut sink = CollectingSink::new();
         let mut output = Vec::new();
-        let mut source: &[u8] = b"# Title\n\nSome *text* with a [link](/x).\n";
+        let mut source: &[u8] = b"*a*\n";
         let mut context = Context::new(&mut sink, &options);
-        MarkdownToHtml
+        MarkdownToJson
             .convert(Input::Stream(&mut source), &mut output, &mut context)
             .unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "<h1>Title</h1>\n<p>Some <em>text</em> with a <a href=\"/x\">link</a>.</p>\n"
+            "[{\"start\":\"paragraph\"},{\"start\":\"emphasis\"},{\"text\":\"a\"},{\"end\":\"emphasis\"},{\"end\":\"paragraph\"}]"
         );
         assert!(sink.report().is_lossless());
     }
 
     #[test]
     fn declares_contract() {
-        let converter = MarkdownToHtml;
-        assert_eq!(converter.name(), "markdown-to-html");
+        let converter = MarkdownToJson;
+        assert_eq!(converter.name(), "markdown-to-json");
         assert_eq!(converter.from().id, "markdown");
-        assert_eq!(converter.to().id, "html");
+        assert_eq!(converter.to().id, "markdown-json");
         assert_eq!(converter.fidelity(), Fidelity::Lossless);
-        assert_eq!(converter.tier(), Tier::Native);
     }
 }

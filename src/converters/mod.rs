@@ -2,7 +2,11 @@
 //! in `src/registry.rs`.
 
 pub mod errors;
+pub mod input;
 
 pub mod csv_to_json;
 pub mod json_to_csv;
+pub mod markdown_json_to_markdown;
 pub mod markdown_to_html;
+pub mod markdown_to_json;
+pub mod markdown_to_text;

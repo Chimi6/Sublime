@@ -33,3 +33,21 @@ pub static HTML: Format = Format {
     magic: None,
     category: Category::Document,
 };
+
+pub static TEXT: Format = Format {
+    id: "text",
+    display_name: "Plain text",
+    extensions: &["txt"],
+    magic: None,
+    category: Category::Document,
+};
+
+/// The Markdown event stream as JSON (see `io::markdown::events_json`).
+/// It has no extension of its own; select it with `--to` or `--from`.
+pub static MARKDOWN_JSON: Format = Format {
+    id: "markdown-json",
+    display_name: "Markdown events as JSON",
+    extensions: &[],
+    magic: None,
+    category: Category::Document,
+};
