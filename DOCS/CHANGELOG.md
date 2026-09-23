@@ -13,3 +13,4 @@ section under a version heading.
 - Converter trait, streaming input abstraction with rewind, fidelity and tier types, typed event system with sinks and conversion report.
 - Streaming CSV reader with BOM, CRLF, quoting, and blank-line handling.
 - CSV writer with minimal quoting.
+- Streaming JSON tokenizer with full escape handling and verbatim numbers.
