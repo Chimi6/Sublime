@@ -169,7 +169,7 @@ mod tests {
     use super::*;
     use crate::converter::{ConvertOptions, Converter, Fidelity, Input, Tier};
     use crate::event::{CollectingSink, Event};
-    use crate::format::Format;
+    use crate::format::{Category, Format};
     use std::io::{Read, Write};
 
     static A: Format = Format {
@@ -177,24 +177,28 @@ mod tests {
         display_name: "A",
         extensions: &["a"],
         magic: None,
+        category: Category::Data,
     };
     static B: Format = Format {
         id: "b",
         display_name: "B",
         extensions: &["b"],
         magic: None,
+        category: Category::Data,
     };
     static C: Format = Format {
         id: "c",
         display_name: "C",
         extensions: &["c"],
         magic: None,
+        category: Category::Data,
     };
     static D: Format = Format {
         id: "d",
         display_name: "D",
         extensions: &["d"],
         magic: None,
+        category: Category::Data,
     };
 
     struct Upper;
