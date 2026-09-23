@@ -80,9 +80,13 @@ for other programs; change them only with a major version bump.
 
 ## Benchmarks
 
-`bench/` is a standalone crate. `bench/run.sh` generates inputs, runs ours
-against the reference pipelines, and prints a table. Record results with the
-commit hash in `BENCHMARKS.md`.
+`bench/` is a standalone crate, run by hand, never in CI. `bench/run.sh
+<pair>` generates inputs, runs ours against the reference pipelines, and
+prints a table. Each pair has a document in `DOCS/benchmarks/` written like a
+methods section; record every run there with the commit hash and machine, and
+add a block whenever a `perf:` commit touches a converter or before a release.
+See `DOCS/benchmarks/README.md` for the template and `bench/README.md` for the
+harness layout.
 
 ## Commits
 

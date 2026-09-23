@@ -6,9 +6,9 @@ section under a version heading.
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- (nothing yet)
+- Benchmarks: one document per pair in `DOCS/benchmarks/` with a methods-section template; harness split into `bench/src/pairs/` modules and `bench/pairs/` scripts, run as `bench/run.sh <pair>`.
 
 ## [0.1.0] - 2026-09-22
 
