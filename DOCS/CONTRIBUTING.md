@@ -102,6 +102,16 @@ add a block whenever a `perf:` commit touches a converter or before a release.
 See `DOCS/benchmarks/README.md` for the template and `bench/README.md` for the
 harness layout.
 
+## Licensing of contributions
+
+By opening a pull request you license your contribution under the Apache
+License, Version 2.0, and confirm you have the right to do so. You keep your
+copyright. Sublime as a whole is distributed under the AGPL-3.0-or-later
+(`LICENSE`, `LICENSING.md`); the permissive inbound license is what lets the
+maintainer grant exceptions or other terms for the whole codebase without
+asking every contributor again. The pull request template has the line to
+confirm.
+
 ## Commits
 
 Conventional commits: `feat:`, `fix:`, `docs:`, `ci:`, `test:`, `chore:`.
