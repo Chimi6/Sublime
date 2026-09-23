@@ -6,6 +6,31 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
+/// A loose grouping of formats for listings and docs. Not a hierarchy:
+/// code is organized by format, never by category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Category {
+    Data,
+    Document,
+    Image,
+    Audio,
+    Video,
+    Archive,
+}
+
+impl Category {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Category::Data => "data",
+            Category::Document => "document",
+            Category::Image => "image",
+            Category::Audio => "audio",
+            Category::Video => "video",
+            Category::Archive => "archive",
+        }
+    }
+}
+
 /// A file format. Declared once as a `static`, referenced by pointer.
 #[derive(Debug)]
 pub struct Format {
@@ -13,6 +38,7 @@ pub struct Format {
     pub display_name: &'static str,
     pub extensions: &'static [&'static str],
     pub magic: Option<&'static [u8]>,
+    pub category: Category,
 }
 
 impl PartialEq for Format {
@@ -128,6 +154,7 @@ mod tests {
         display_name: "Fake PNG",
         extensions: &["pngish", "pgi"],
         magic: Some(&[0x89, b'P', b'N', b'G']),
+        category: Category::Image,
     };
 
     fn known() -> Vec<&'static Format> {
@@ -195,6 +222,7 @@ mod tests {
             display_name: "other name",
             extensions: &[],
             magic: None,
+            category: Category::Document,
         };
         assert_eq!(&formats::CSV, &clone);
     }

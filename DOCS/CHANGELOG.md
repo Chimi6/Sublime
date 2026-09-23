@@ -6,7 +6,23 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-23
+
+### Added
+
+- Markdown parser (`io::markdown`): full CommonMark 0.31.2, GFM tables, strikethrough, task lists, autolink literals, tag filter, and footnotes, emitting an event stream. All specification examples run as CI tests.
+- HTML writer (`io::html`) rendering Markdown events byte for byte like cmark, with a streaming mode.
+- Markdown -> HTML converter (native, lossless). Formats `markdown` (md, markdown) and `html` (html, htm).
+- Benchmark pair `markdown-html` against `pulldown-cmark`.
+- `DOCS/formats/markdown.md`: parser design, corpus policy, known deviations.
+- Formats carry a category (data, document, image, audio, video, archive) shown by `sublime formats` and used to group the formats reference. Code layout stays flat per format.
+- Push-mode parsing: `markdown::parse_into` hands events to an `EventSink` as they are made; `HtmlWriter` is one, so the converter never buffers events. Text borrows the source wherever possible.
+
 ### Changed
+
+- Size budget raised to 809,000 bytes for the Markdown subsystem (entity table, parser, writer).
+- `Input` forwards `read_to_end` and `read_to_string`, so a file input is read into a buffer sized from its length.
+- Word-at-a-time scanners (`io::scan`) share one loop; the tail of a slice is loaded without a stack round trip, which was stalling every short text run.
 
 - Benchmarks: one document per pair in `DOCS/benchmarks/` with a methods-section template; harness split into `bench/src/pairs/` modules and `bench/pairs/` scripts, run as `bench/run.sh <pair>`.
 

@@ -4,9 +4,10 @@
 use crate::converter::Converter;
 use crate::converters::csv_to_json::CsvToJson;
 use crate::converters::json_to_csv::JsonToCsv;
+use crate::converters::markdown_to_html::MarkdownToHtml;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 2] = [&CsvToJson, &JsonToCsv];
+static CONVERTERS: [&dyn Converter; 3] = [&CsvToJson, &JsonToCsv, &MarkdownToHtml];
 
 pub fn all_converters() -> &'static [&'static dyn Converter] {
     &CONVERTERS
@@ -69,7 +70,7 @@ mod tests {
     fn formats_are_sorted_and_unique() {
         let formats = all_formats();
         let ids: Vec<&str> = formats.iter().map(|format| format.id).collect();
-        assert_eq!(ids, vec!["csv", "json"]);
+        assert_eq!(ids, vec!["csv", "html", "json", "markdown"]);
     }
 
     #[test]
