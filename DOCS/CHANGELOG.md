@@ -20,3 +20,4 @@ section under a version heading.
 - Converter registry with uniqueness tests.
 - Planner: Dijkstra over the format graph with fidelity costs, --strict pruning, and --via waypoints.
 - Multi-hop execution through in-memory pipes with per-hop timing events.
+- Hand-written CLI argument parser with help text.
