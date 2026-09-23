@@ -1,6 +1,6 @@
 //! Byte scanning eight bytes at a time without SIMD intrinsics.
 //!
-//! Both finders load a `u64` per step and use the classic bit tricks for
+//! Every finder loads a `u64` per step and uses the classic bit tricks for
 //! "does any byte in this word equal `c`" and "is any byte below `n`". The
 //! tricks can mis-flag bytes *after* the first real match because of borrow
 //! propagation, so only the lowest flagged byte is trusted. That is exactly
@@ -11,153 +11,92 @@ const HIGH_BITS: u64 = 0x8080_8080_8080_8080;
 
 /// Index of the first `,`, `"`, `\n`, or `\r` in `bytes`.
 pub fn find_csv_delimiter(bytes: &[u8]) -> Option<usize> {
-    let mut offset = 0usize;
-    while offset + 8 <= bytes.len() {
-        let word = load_word(bytes, offset);
-        let hits = has_byte(word, b',')
-            | has_byte(word, b'"')
-            | has_byte(word, b'\n')
-            | has_byte(word, b'\r');
-        if hits != 0 {
-            let first = first_flagged_byte(hits);
-            return Some(offset + first);
-        }
-        offset += 8;
-    }
-    let tail = &bytes[offset..];
-    if tail.is_empty() {
-        return None;
-    }
-    let word = load_padded_word(tail);
-    let hits =
-        has_byte(word, b',') | has_byte(word, b'"') | has_byte(word, b'\n') | has_byte(word, b'\r');
-    if hits == 0 {
-        return None;
-    }
-    let first = first_flagged_byte(hits);
-    if first >= tail.len() {
-        return None;
-    }
-    Some(offset + first)
+    scan(bytes, |word| {
+        has_byte(word, b',') | has_byte(word, b'"') | has_byte(word, b'\n') | has_byte(word, b'\r')
+    })
 }
 
 /// Index of the first `"`, `\`, or control byte below 0x20 in `bytes`.
 pub fn find_json_escape(bytes: &[u8]) -> Option<usize> {
-    let mut offset = 0usize;
-    while offset + 8 <= bytes.len() {
-        let word = load_word(bytes, offset);
-        let hits = has_byte(word, b'"') | has_byte(word, b'\\') | has_byte_below(word, 0x20);
-        if hits != 0 {
-            let first = first_flagged_byte(hits);
-            return Some(offset + first);
-        }
-        offset += 8;
-    }
-    let tail = &bytes[offset..];
-    if tail.is_empty() {
-        return None;
-    }
-    let word = load_padded_word(tail);
-    let hits = has_byte(word, b'"') | has_byte(word, b'\\') | has_byte_below(word, 0x20);
-    if hits == 0 {
-        return None;
-    }
-    let first = first_flagged_byte(hits);
-    if first >= tail.len() {
-        return None;
-    }
-    Some(offset + first)
-}
-
-/// Loads a tail shorter than eight bytes, padding with a byte that no finder
-/// flags. Padding bytes can still be reported by the bit tricks after a real
-/// hit, which is why callers check the index against the tail length.
-fn load_padded_word(tail: &[u8]) -> u64 {
-    const PADDING: u8 = b'a';
-    let mut chunk = [PADDING; 8];
-    chunk[..tail.len()].copy_from_slice(tail);
-    u64::from_le_bytes(chunk)
+    scan(bytes, |word| {
+        has_byte(word, b'"') | has_byte(word, b'\\') | has_byte_below(word, 0x20)
+    })
 }
 
 /// Index of the first `&`, `<`, `>`, or `"` in `bytes`.
 pub fn find_html_special(bytes: &[u8]) -> Option<usize> {
-    let mut offset = 0usize;
-    while offset + 8 <= bytes.len() {
-        let word = load_word(bytes, offset);
-        let hits = has_byte(word, b'&')
-            | has_byte(word, b'<')
-            | has_byte(word, b'>')
-            | has_byte(word, b'"');
-        if hits != 0 {
-            let first = first_flagged_byte(hits);
-            return Some(offset + first);
-        }
-        offset += 8;
-    }
-    let tail = &bytes[offset..];
-    if tail.is_empty() {
-        return None;
-    }
-    let word = load_padded_word(tail);
-    let hits =
-        has_byte(word, b'&') | has_byte(word, b'<') | has_byte(word, b'>') | has_byte(word, b'"');
-    if hits == 0 {
-        return None;
-    }
-    let first = first_flagged_byte(hits);
-    if first >= tail.len() {
-        return None;
-    }
-    Some(offset + first)
+    scan(bytes, |word| {
+        has_byte(word, b'&') | has_byte(word, b'<') | has_byte(word, b'>') | has_byte(word, b'"')
+    })
 }
 
 /// Index of the first `\n` or `\r` in `bytes`.
 pub fn find_line_ending(bytes: &[u8]) -> Option<usize> {
-    let mut offset = 0usize;
-    while offset + 8 <= bytes.len() {
-        let word = load_word(bytes, offset);
-        let hits = has_byte(word, b'\n') | has_byte(word, b'\r');
-        if hits != 0 {
-            let first = first_flagged_byte(hits);
-            return Some(offset + first);
-        }
-        offset += 8;
-    }
-    let tail = &bytes[offset..];
-    if tail.is_empty() {
-        return None;
-    }
-    let word = load_padded_word(tail);
-    let hits = has_byte(word, b'\n') | has_byte(word, b'\r');
-    if hits == 0 {
-        return None;
-    }
-    let first = first_flagged_byte(hits);
-    if first >= tail.len() {
-        return None;
-    }
-    Some(offset + first)
+    scan(bytes, |word| has_byte(word, b'\n') | has_byte(word, b'\r'))
+}
+
+/// Index of the first byte equal to any of the three needles.
+pub fn find_any_of3(bytes: &[u8], first: u8, second: u8, third: u8) -> Option<usize> {
+    scan(bytes, |word| {
+        has_byte(word, first) | has_byte(word, second) | has_byte(word, third)
+    })
 }
 
 /// Index of the first `needle` in `bytes`.
 pub fn find_byte(bytes: &[u8], needle: u8) -> Option<usize> {
+    scan(bytes, |word| has_byte(word, needle))
+}
+
+/// Runs `flag` over `bytes` a word at a time and returns the index of the
+/// lowest flagged byte. `flag` sets the high bit of every byte it matches.
+fn scan(bytes: &[u8], flag: impl Fn(u64) -> u64) -> Option<usize> {
     let mut offset = 0usize;
     while offset + 8 <= bytes.len() {
-        let word = load_word(bytes, offset);
-        let hits = has_byte(word, needle);
+        let hits = flag(load_word(bytes, offset));
         if hits != 0 {
-            let first = first_flagged_byte(hits);
-            return Some(offset + first);
+            return Some(offset + first_flagged_byte(hits));
         }
         offset += 8;
     }
-    let tail = &bytes[offset..];
-    for (index, byte) in tail.iter().enumerate() {
-        if *byte == needle {
-            return Some(offset + index);
-        }
+    if offset == bytes.len() {
+        return None;
     }
-    None
+    // The tail. A slice of eight bytes or more reloads its last eight: they
+    // overlap the previous word, which held no hit, so any hit found is in
+    // the tail. A shorter slice is padded with a byte no finder flags.
+    if bytes.len() >= 8 {
+        let start = bytes.len() - 8;
+        let hits = flag(load_word(bytes, start));
+        if hits == 0 {
+            return None;
+        }
+        return Some(start + first_flagged_byte(hits));
+    }
+    let hits = flag(load_padded_word(bytes));
+    if hits == 0 {
+        return None;
+    }
+    let first = first_flagged_byte(hits);
+    if first >= bytes.len() {
+        return None;
+    }
+    Some(first)
+}
+
+/// Loads a tail shorter than eight bytes, padding with `a`. The word is
+/// built with shifts rather than through a stack buffer: reloading a
+/// buffer as one word right after filling it byte by byte stalls the CPU.
+/// A padding byte can still be flagged by the bit tricks after a real hit
+/// (or when a finder looks for `a`), which is why `scan` checks the index
+/// against the slice length.
+fn load_padded_word(tail: &[u8]) -> u64 {
+    const PADDING: u8 = b'a';
+    let mut word = LOW_BITS * u64::from(PADDING);
+    for (index, byte) in tail.iter().enumerate() {
+        let shift = index * 8;
+        word ^= u64::from(PADDING ^ *byte) << shift;
+    }
+    word
 }
 
 fn load_word(bytes: &[u8], offset: usize) -> u64 {

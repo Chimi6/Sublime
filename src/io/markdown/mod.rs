@@ -132,6 +132,41 @@ pub enum Event<'a> {
     TaskListMarker(bool),
 }
 
+/// Receives events as the parser produces them. Push-mode counterpart of
+/// iterating a [`Parser`]: nothing is buffered between the parser and the
+/// sink, so a renderer can consume each event straight from the source.
+pub trait EventSink<'a> {
+    /// An event whose text borrows from the source document.
+    fn event(&mut self, event: Event<'a>);
+
+    /// An event whose text borrows from storage that only lives for this
+    /// call, such as lines joined across a list item. A sink that keeps
+    /// events must copy it; a sink that renders immediately need not.
+    fn transient(&mut self, event: Event<'_>) {
+        self.event(inline::into_static(event));
+    }
+}
+
+impl<'a> EventSink<'a> for Vec<Event<'a>> {
+    fn event(&mut self, event: Event<'a>) {
+        self.push(event);
+    }
+}
+
+/// Parses `text` and pushes every event into `sink`. Inline content is
+/// parsed one top-level block at a time, so memory stays proportional to
+/// the input rather than to the event stream.
+pub fn parse_into<'a>(text: &'a str, options: Options, sink: &mut dyn EventSink<'a>) {
+    let document = block::parse(text, options);
+    let mut scratch = inline::InlineScratch::default();
+    let mut block = document.nodes[0].first_child;
+    while block != block::NONE {
+        let index = block as usize;
+        block = document.nodes[index].next_sibling;
+        inline::render_block(&document, text, index, &mut scratch, sink);
+    }
+}
+
 /// Pull parser over one document. Iterate it to receive events. Inline
 /// content is parsed one top-level block at a time as events are pulled,
 /// so memory stays proportional to the input rather than to the event
@@ -141,9 +176,10 @@ pub struct Parser<'a> {
     document: block::Document,
     /// Next top-level block to render, or `block::NONE`.
     next_block: u32,
-    /// Events of the current block in reverse order, popped from the end.
+    /// Events of the current block; `pending_index` is the next to hand out.
     /// Keeps its capacity across blocks.
     pending: Vec<Event<'a>>,
+    pending_index: usize,
     scratch: inline::InlineScratch,
 }
 
@@ -160,6 +196,7 @@ impl<'a> Parser<'a> {
             document,
             next_block: first_block,
             pending: Vec::new(),
+            pending_index: 0,
             scratch: inline::InlineScratch::default(),
         }
     }
@@ -170,7 +207,10 @@ impl<'a> Iterator for Parser<'a> {
 
     fn next(&mut self) -> Option<Event<'a>> {
         loop {
-            if let Some(event) = self.pending.pop() {
+            if self.pending_index < self.pending.len() {
+                let event =
+                    std::mem::replace(&mut self.pending[self.pending_index], Event::SoftBreak);
+                self.pending_index += 1;
                 return Some(event);
             }
             if self.next_block == block::NONE {
@@ -179,6 +219,7 @@ impl<'a> Iterator for Parser<'a> {
             let block = self.next_block as usize;
             self.next_block = self.document.nodes[block].next_sibling;
             self.pending.clear();
+            self.pending_index = 0;
             inline::render_block(
                 &self.document,
                 self.text,
@@ -186,7 +227,22 @@ impl<'a> Iterator for Parser<'a> {
                 &mut self.scratch,
                 &mut self.pending,
             );
-            self.pending.reverse();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sizes_are_reported() {
+        eprintln!(
+            "sizes: Event {} Tag {} Node {} Line {}",
+            std::mem::size_of::<Event<'_>>(),
+            std::mem::size_of::<Tag<'_>>(),
+            std::mem::size_of::<block::Node>(),
+            std::mem::size_of::<block::Line>()
+        );
     }
 }

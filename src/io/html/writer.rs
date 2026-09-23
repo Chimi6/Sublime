@@ -2,8 +2,9 @@
 //! specifications expect, byte for byte. Footnotes follow cmark-gfm.
 
 use std::fmt::Write as _;
+use std::io;
 
-use crate::io::markdown::{Alignment, CodeBlockKind, Event, Tag, TagEnd};
+use crate::io::markdown::{Alignment, CodeBlockKind, Event, EventSink, Tag, TagEnd};
 use crate::io::scan::find_html_special;
 
 /// Appends `text` to `out` with `&`, `<`, `>`, and `"` escaped.
@@ -23,13 +24,15 @@ pub fn escape_html(out: &mut String, text: &str) {
     out.push_str(remaining);
 }
 
-/// Appends a URL to `out`, percent-encoding bytes outside the safe set the
-/// way cmark does, and entity-escaping `&` and `'`.
-pub fn escape_href(out: &mut String, url: &str) {
-    for byte in url.bytes() {
-        let is_safe = byte.is_ascii_alphanumeric()
+/// Bytes cmark leaves as they are in a URL; everything else is
+/// percent-encoded, except `&` and `'`, which become entities.
+const HREF_SAFE: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut byte = 0usize;
+    while byte < 256 {
+        let is_safe = (byte as u8).is_ascii_alphanumeric()
             || matches!(
-                byte,
+                byte as u8,
                 b'-' | b'_'
                     | b'.'
                     | b'+'
@@ -49,70 +52,67 @@ pub fn escape_href(out: &mut String, url: &str) {
                     | b'$'
                     | b'~'
             );
-        if is_safe {
-            out.push(byte as char);
-        } else if byte == b'&' {
-            out.push_str("&amp;");
-        } else if byte == b'\'' {
-            out.push_str("&#x27;");
-        } else {
-            let _ = write!(out, "%{byte:02X}");
+        table[byte] = is_safe;
+        byte += 1;
+    }
+    table
+};
+
+/// Appends a URL to `out`, percent-encoding bytes outside the safe set the
+/// way cmark does, and entity-escaping `&` and `'`. Runs of safe bytes are
+/// copied whole.
+pub fn escape_href(out: &mut String, url: &str) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let bytes = url.as_bytes();
+    let mut run_start = 0usize;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if HREF_SAFE[byte as usize] {
+            continue;
         }
+        // A non-empty run is all ASCII, so both ends are char boundaries.
+        if index > run_start {
+            out.push_str(&url[run_start..index]);
+        }
+        match byte {
+            b'&' => out.push_str("&amp;"),
+            b'\'' => out.push_str("&#x27;"),
+            _ => {
+                out.push('%');
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0x0F) as usize] as char);
+            }
+        }
+        run_start = index + 1;
+    }
+    if run_start < bytes.len() {
+        out.push_str(&url[run_start..]);
     }
 }
 
 /// Bytes buffered before `write_html` hands a chunk to its sink.
-const FLUSH_THRESHOLD: usize = 64 * 1024;
+const FLUSH_THRESHOLD: usize = 256 * 1024;
 
 /// Renders `events` into `out`.
 pub fn push_html<'a, I: Iterator<Item = Event<'a>>>(out: &mut String, events: I) {
-    let mut writer = HtmlWriter {
-        out,
-        sink: None,
-        flushed_at_line_start: true,
-        table_alignments: Vec::new(),
-        table_column: 0,
-        in_table_head: false,
-        table_body_open: false,
-        containers: Vec::new(),
-        image_depth: 0,
-        pending_image_title: String::new(),
-        footnotes: Vec::new(),
-        capture: None,
-    };
+    let mut writer = HtmlWriter::new(std::mem::take(out), None);
     for event in events {
         writer.event(event);
     }
-    writer.finish();
+    writer.render_footnotes();
+    *out = writer.out;
 }
 
 /// Renders `events` straight to `sink`, flushing every 64 KiB, so the
 /// whole document is never held as one string.
 pub fn write_html<'a, I: Iterator<Item = Event<'a>>>(
-    sink: &mut dyn std::io::Write,
+    sink: &mut dyn io::Write,
     events: I,
-) -> std::io::Result<()> {
-    let mut buffer = String::with_capacity(FLUSH_THRESHOLD);
-    let mut writer = HtmlWriter {
-        out: &mut buffer,
-        sink: Some(sink),
-        flushed_at_line_start: true,
-        table_alignments: Vec::new(),
-        table_column: 0,
-        in_table_head: false,
-        table_body_open: false,
-        containers: Vec::new(),
-        image_depth: 0,
-        pending_image_title: String::new(),
-        footnotes: Vec::new(),
-        capture: None,
-    };
+) -> io::Result<()> {
+    let mut writer = HtmlWriter::streaming(sink);
     for event in events {
         writer.event(event);
-        writer.flush_if_full()?;
     }
-    writer.finish();
-    writer.flush_all()
+    writer.finish()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -131,10 +131,14 @@ struct Footnote {
     body: Option<String>,
 }
 
-struct HtmlWriter<'o> {
-    out: &'o mut String,
+/// Renders events to HTML. As an [`EventSink`] it consumes events straight
+/// from the parser; in streaming mode it flushes to its sink every 64 KiB.
+/// I/O errors are kept and reported by [`HtmlWriter::finish`].
+pub struct HtmlWriter<'o> {
+    out: String,
     /// Present when streaming; `out` is then a chunk buffer.
-    sink: Option<&'o mut dyn std::io::Write>,
+    sink: Option<&'o mut dyn io::Write>,
+    error: Option<io::Error>,
     /// Whether the last flushed chunk ended with a newline (or nothing has
     /// been flushed yet).
     flushed_at_line_start: bool,
@@ -153,7 +157,40 @@ struct HtmlWriter<'o> {
     capture: Option<(String, String)>,
 }
 
-impl HtmlWriter<'_> {
+impl<'o> HtmlWriter<'o> {
+    /// A writer that flushes to `sink` as it goes.
+    pub fn streaming(sink: &'o mut dyn io::Write) -> HtmlWriter<'o> {
+        HtmlWriter::new(String::with_capacity(FLUSH_THRESHOLD), Some(sink))
+    }
+
+    fn new(out: String, sink: Option<&'o mut dyn io::Write>) -> HtmlWriter<'o> {
+        HtmlWriter {
+            out,
+            sink,
+            error: None,
+            flushed_at_line_start: true,
+            table_alignments: Vec::new(),
+            table_column: 0,
+            in_table_head: false,
+            table_body_open: false,
+            containers: Vec::new(),
+            image_depth: 0,
+            pending_image_title: String::new(),
+            footnotes: Vec::new(),
+            capture: None,
+        }
+    }
+
+    /// Writes the footnote section and the last chunk, and reports the
+    /// first I/O error met along the way.
+    pub fn finish(mut self) -> io::Result<()> {
+        if let Some(error) = self.error.take() {
+            return Err(error);
+        }
+        self.render_footnotes();
+        self.flush_all()
+    }
+
     /// Ensures the output ends with a newline, the way cmark separates
     /// block-level tags.
     fn cr(&mut self) {
@@ -171,14 +208,16 @@ impl HtmlWriter<'_> {
     /// Hands the buffer to the sink once it is large enough. Never flushes
     /// while a footnote body is being captured, since that text is not
     /// output yet.
-    fn flush_if_full(&mut self) -> std::io::Result<()> {
+    fn flush_if_full(&mut self) {
         if self.out.len() < FLUSH_THRESHOLD || self.capture.is_some() {
-            return Ok(());
+            return;
         }
-        self.flush_all()
+        if let Err(error) = self.flush_all() {
+            self.error = Some(error);
+        }
     }
 
-    fn flush_all(&mut self) -> std::io::Result<()> {
+    fn flush_all(&mut self) -> io::Result<()> {
         let sink = match self.sink.as_mut() {
             Some(sink) => sink,
             None => return Ok(()),
@@ -192,7 +231,7 @@ impl HtmlWriter<'_> {
         Ok(())
     }
 
-    fn event(&mut self, event: Event<'_>) {
+    fn render(&mut self, event: Event<'_>) {
         if self.image_depth > 0 {
             self.alt_text_event(&event);
             return;
@@ -200,10 +239,10 @@ impl HtmlWriter<'_> {
         match event {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
-            Event::Text(text) => escape_html(self.out, &text),
+            Event::Text(text) => escape_html(&mut self.out, &text),
             Event::Code(code) => {
                 self.out.push_str("<code>");
-                escape_html(self.out, &code);
+                escape_html(&mut self.out, &code);
                 self.out.push_str("</code>");
             }
             Event::Html(html) | Event::InlineHtml(html) => self.out.push_str(&html),
@@ -237,13 +276,13 @@ impl HtmlWriter<'_> {
                     if !self.pending_image_title.is_empty() {
                         self.out.push_str(" title=\"");
                         let title = std::mem::take(&mut self.pending_image_title);
-                        escape_html(self.out, &title);
+                        escape_html(&mut self.out, &title);
                         self.out.push('"');
                     }
                     self.out.push_str(" />");
                 }
             }
-            Event::Text(text) | Event::Code(text) => escape_html(self.out, text),
+            Event::Text(text) | Event::Code(text) => escape_html(&mut self.out, text),
             Event::SoftBreak | Event::HardBreak => self.out.push(' '),
             _ => {}
         }
@@ -274,7 +313,7 @@ impl HtmlWriter<'_> {
                     let language = info.split(|c: char| c.is_whitespace()).next().unwrap_or("");
                     if !language.is_empty() {
                         self.out.push_str(" class=\"language-");
-                        escape_html(self.out, language);
+                        escape_html(&mut self.out, language);
                         self.out.push('"');
                     }
                 }
@@ -302,7 +341,7 @@ impl HtmlWriter<'_> {
                 self.containers.push(Container::Item { tight });
             }
             Tag::FootnoteDefinition(label) => {
-                let body = std::mem::take(self.out);
+                let body = std::mem::take(&mut self.out);
                 self.capture = Some((label.into_owned(), body));
                 self.containers.push(Container::Other);
             }
@@ -342,16 +381,16 @@ impl HtmlWriter<'_> {
             Tag::Strikethrough => self.out.push_str("<del>"),
             Tag::Link { destination, title } => {
                 self.out.push_str("<a href=\"");
-                escape_href(self.out, &destination);
+                escape_href(&mut self.out, &destination);
                 if !title.is_empty() {
                     self.out.push_str("\" title=\"");
-                    escape_html(self.out, &title);
+                    escape_html(&mut self.out, &title);
                 }
                 self.out.push_str("\">");
             }
             Tag::Image { destination, title } => {
                 self.out.push_str("<img src=\"");
-                escape_href(self.out, &destination);
+                escape_href(&mut self.out, &destination);
                 self.out.push_str("\" alt=\"");
                 self.image_depth = 1;
                 self.pending_image_title = title.into_owned();
@@ -452,9 +491,9 @@ impl HtmlWriter<'_> {
         let number = self.footnote_number(index);
         self.out
             .push_str("<sup class=\"footnote-ref\"><a href=\"#fn-");
-        escape_href(self.out, label);
+        escape_href(&mut self.out, label);
         self.out.push_str("\" id=\"fnref-");
-        escape_href(self.out, label);
+        escape_href(&mut self.out, label);
         if count > 1 {
             let _ = write!(self.out, "-{count}");
         }
@@ -476,12 +515,12 @@ impl HtmlWriter<'_> {
             Some(capture) => capture,
             None => return,
         };
-        let body = std::mem::replace(self.out, main_output);
+        let body = std::mem::replace(&mut self.out, main_output);
         let index = self.footnote_index(&label);
         self.footnotes[index].body = Some(body);
     }
 
-    fn finish(&mut self) {
+    fn render_footnotes(&mut self) {
         let mut referenced: Vec<usize> = (0..self.footnotes.len())
             .filter(|index| self.footnotes[*index].reference_count > 0)
             .filter(|index| self.footnotes[*index].body.is_some())
@@ -522,7 +561,7 @@ impl HtmlWriter<'_> {
                 backrefs.push_str("</a>");
             }
             self.out.push_str("<li id=\"fn-");
-            escape_href(self.out, &label);
+            escape_href(&mut self.out, &label);
             self.out.push_str("\">\n");
             if let Some(stripped) = body.strip_suffix("</p>\n") {
                 self.out.push_str(stripped);
@@ -537,5 +576,19 @@ impl HtmlWriter<'_> {
             self.out.push_str("</li>\n");
         }
         self.out.push_str("</ol>\n</section>\n");
+    }
+}
+
+impl<'a> EventSink<'a> for HtmlWriter<'_> {
+    fn event(&mut self, event: Event<'a>) {
+        self.transient(event);
+    }
+
+    fn transient(&mut self, event: Event<'_>) {
+        if self.error.is_some() {
+            return;
+        }
+        self.render(event);
+        self.flush_if_full();
     }
 }

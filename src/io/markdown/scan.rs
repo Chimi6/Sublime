@@ -112,6 +112,17 @@ pub fn decode_entity(text: &[u8]) -> Option<(String, usize)> {
     Some((replacement.to_string(), index + 1))
 }
 
+/// Resolves backslash escapes and character references, borrowing when
+/// there is nothing to resolve.
+pub fn unescape_and_decode_cow(text: &str) -> std::borrow::Cow<'_, str> {
+    let needs_work = text.bytes().any(|byte| byte == b'\\' || byte == b'&');
+    if needs_work {
+        std::borrow::Cow::Owned(unescape_and_decode(text))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
 /// Resolves backslash escapes and character references.
 pub fn unescape_and_decode(text: &str) -> String {
     let bytes = text.as_bytes();
