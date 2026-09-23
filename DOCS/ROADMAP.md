@@ -100,10 +100,10 @@ formats.
 
 | Format | Extensions | Status | Tier | Effort | Directions and notes |
 |---|---|---|---|---|---|
-| Markdown | md, markdown | [x] | — | — | Shipped: CommonMark plus GFM, event stream. Hub for text documents. |
+| Markdown | md, markdown | [x] | — | — | Shipped: CommonMark plus GFM, event stream, and a writer back to Markdown. Hub for text documents. |
 | HTML | html, htm | [~] | S | L | Shipped as output only. An HTML parser (tag soup, WHATWG tokenizer subset) unlocks HTML -> Markdown, HTML -> text, HTML -> DOCX/PDF. On pause. |
-| Plain text | txt | [ ] | A | S | Markdown -> text renderer over the existing events; text -> Markdown as paragraphs. Next in `STATE.md`. |
-| Markdown as JSON | json | [ ] | A | S | The event stream as JSON, for tooling. Next in `STATE.md`. |
+| Plain text | txt | [~] | B | S | Shipped as output (Markdown -> text). Text -> Markdown as paragraphs is the remaining direction. |
+| Markdown as JSON | markdown-json | [x] | — | — | Shipped both ways: the event stream as JSON, lossless round trip. |
 | Apple Pages | pages | [ ] | S | XL | The flagship. ZIP of Snappy-framed protobuf (IWA); schemas are reverse-engineered and published. Pages -> DOCX and Pages -> Markdown/HTML. Nobody outside Apple does this well, and Pages files are shared constantly. Notes will live in `formats/pages.md`. |
 | Apple Keynote | key | [ ] | B | L | Same keystone as Pages; to PPTX or a Markdown outline. |
 | Word | docx | [ ] | S | L | ZIP plus XML (WordprocessingML). Both directions with Markdown/HTML; the target for Pages. Styles, lists, tables, images. |
@@ -314,7 +314,7 @@ listed.
 | Tier | Formats |
 |---|---|
 | **S** | Apple Pages (flagship) · YAML · TOML · XML (keystone) · SQLite read · XLSX · DOCX · PDF write · PNG (keystone) · JPEG · WAV · ZIP and gzip (keystones) · HTML read (on pause) |
-| **A** | Plain text and JSON renderers for Markdown · TSV and JSON Lines · INI · MessagePack and CBOR · plist · ODS and ODT · Numbers · Parquet read · NumPy · PEM/DER · vCard and iCalendar · RTF · EPUB · reStructuredText · AsciiDoc · Jupyter · Email (EML, MBOX) · Subtitles (SRT, VTT, ASS, TTML) · GIF · BMP · TIFF · Netpbm · ICO/ICNS · Exif and XMP · AIFF · FLAC · MP3 decode · MIDI · TAR · TrueType/OpenType · WOFF · STL · OBJ · glTF · GeoJSON · GPX · KML · FASTA/FASTQ · DICOM · Intel HEX and S-record · N64 ROM byte order · N64 saves · SNES headers · Genesis SMD/BIN · Minecraft NBT · Spreadsheet to Markdown table |
+| **A** | TSV and JSON Lines · INI · MessagePack and CBOR · plist · ODS and ODT · Numbers · Parquet read · NumPy · PEM/DER · vCard and iCalendar · RTF · EPUB · reStructuredText · AsciiDoc · Jupyter · Email (EML, MBOX) · Subtitles (SRT, VTT, ASS, TTML) · GIF · BMP · TIFF · Netpbm · ICO/ICNS · Exif and XMP · AIFF · FLAC · MP3 decode · MIDI · TAR · TrueType/OpenType · WOFF · STL · OBJ · glTF · GeoJSON · GPX · KML · FASTA/FASTQ · DICOM · Intel HEX and S-record · N64 ROM byte order · N64 saves · SNES headers · Genesis SMD/BIN · Minecraft NBT · Spreadsheet to Markdown table |
 | **B** | Java properties · .env · JSON5 · BSON · dBase · Arrow · Avro · MATLAB · R data · JWK/JWT · BibTeX/RIS · PGN · Keynote · MOBI/AZW3 · FictionBook · Org-mode · LaTeX · man pages · R Markdown · Outlook MSG · WebP decode · farbfeld and QOI · TGA · SVG subset rasterizer · PSD · Aseprite · DDS/KTX · Ogg Vorbis decode · Tracker modules · N64 audio · Video remuxing · Transcoding via External · bzip2 · XZ · Zstandard · ISO 9660 · WOFF2 · Glyphs to SVG · PLY · 3MF/AMF · Quake models · Minecraft schematics · Shapefile · WKT/WKB · GenBank/GFF/BED/VCF · PDB · FITS · NES headers · Game Boy saves · PlayStation images · Doom WAD · Quake PAK · PICO-8 · Base64 and hex · Feeds |
 | **C** | XLS · HDF5 · NetCDF · SPSS/Stata/SAS · Protobuf generic · Word `.doc` · Textile/MediaWiki · RTFD · PCX · XCF · ORA/Krita · Camera raw · IFF ILBM · legacy rasters · AU/VOC/CAF · Opus, AAC, ALAC · Chiptune (SID, NSF, SPC, GBS, VGM) · Animated GIF via External · 7z · cpio/ar/deb · CAB · Type 1 fonts · Bitmap fonts · OFF/X3D/VRML · COLLADA · Source SMD · TopoJSON · OSM · GeoTIFF · SAM/BAM · NIfTI · EDF · N64 textures · Retro disk images · Hex dumps · OPML · Log formats · Diagram text-to-text |
 | **D** | UBJSON · ORC · GraphQL/OpenAPI · DjVu · CHM · WordPerfect · AVIF/HEIC/JXL · PICT · WavPack/APE · Speech codecs · RAR · LHA/ARJ/ZOO · StuffIt · FBX · ELF/PE · Save states · Pokémon saves · N64 models · Diagram rendering |

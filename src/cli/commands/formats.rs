@@ -26,7 +26,7 @@ fn render_human() -> String {
     for format in registry::all_formats() {
         let extensions = format.extensions.join(", ");
         let line = format!(
-            "{:<10} {:<10} {:<32} extensions: {extensions}\n",
+            "{:<14} {:<10} {:<32} extensions: {extensions}\n",
             format.id,
             format.category.label(),
             format.display_name

@@ -78,7 +78,58 @@ arrays, and searched by binary search.
 - **NUL bytes** are replaced with U+FFFD before parsing, per the
   specification's security note.
 
-## Renderer output conventions
+## Renderers
+
+Four renderers consume the event stream today; each is an `EventSink`
+and streams its output.
+
+- **HTML** (`io::html`), the reference renderer. Its output is compared
+  byte for byte against the specification corpora.
+- **Markdown** (`io::markdown::writer`). Writes events back as Markdown in
+  one canonical form: ATX headings (setext only when a level-one or
+  level-two heading spans lines), `-` bullets alternating with `*` so
+  adjacent lists stay separate, `*` emphasis (with `_` for a run opened
+  directly inside another, so `*_a_*` does not become `**a**`), backtick
+  fences longer than any run inside, pipe tables with a delimiter row,
+  `\` hard breaks, `***` rules, and `[^label]` footnotes. Text is escaped
+  wherever it could be read as markup, including at line starts, before a
+  link, and around autolink literals. The result parses to the same events:
+  every CommonMark, GFM, and cmark-gfm example round-trips in CI (indented
+  code directly after a list is written fenced, which is the one place the
+  form changes). This writer is what makes Markdown a middle node: any
+  format that reaches the events reaches Markdown.
+- **Plain text** (`io::text`). Readable text with structure kept: list
+  markers and indentation, block quotes indented by two spaces, tables as
+  columns padded to equal width with a dashed line under the header, links
+  as `text (url)` when the text is not the URL itself, images as their alt
+  text, footnotes numbered in order of first reference and listed at the
+  end as `[n] body`. Emphasis markers, raw HTML, and image sources are
+  dropped, which is why the converter is declared lossy.
+- **Events as JSON** (`io::markdown::events_json`), format id
+  `markdown-json`. One object per event in one array; the first key names
+  the event and the other keys are its attributes. It is also a reader, so
+  Markdown -> JSON -> Markdown is a lossless round trip at the event level.
+
+  ```text
+  {"start":"paragraph"}                      {"end":"paragraph"}
+  {"start":"heading","level":2}              {"end":"heading","level":2}
+  {"start":"list","first":null,"tight":true} {"end":"list","ordered":false}
+  {"start":"code_block","fenced":true,"info":"rust"}
+  {"start":"footnote_definition","label":"1"}
+  {"start":"table","alignments":["none","left","center","right"]}
+  {"start":"link","destination":"/x","title":""}   (also image)
+  {"text":"hello"}   (also code, html, inline_html)
+  {"break":"soft"}   {"break":"hard"}   {"rule":true}
+  {"footnote_reference":"1"}   {"task_list_marker":true}
+  ```
+
+  Tags: paragraph, heading, block_quote, code_block, html_block, list,
+  item, footnote_definition, table, table_head, table_row, table_cell,
+  emphasis, strong, strikethrough, link, image. The format has no file
+  extension of its own; select it with `--to markdown-json` or `--from
+  markdown-json`.
+
+### HTML output conventions
 
 The HTML writer reproduces cmark's layout byte for byte: block-level tags are
 preceded by a newline if the output does not already end with one, `<li>` is
