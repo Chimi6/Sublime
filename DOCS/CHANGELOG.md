@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-23
+
 ### Added
 
 - Markdown writer (`io::markdown::writer`): events back to Markdown in one canonical form; every specification example round-trips to the same events in CI. Markdown is now a middle node for any format that reaches the event stream.
