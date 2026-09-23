@@ -18,3 +18,4 @@ section under a version heading.
 - CSV -> JSON converter (native, lossless).
 - JSON -> CSV converter (native, conditional): two-pass, constant memory from files.
 - Converter registry with uniqueness tests.
+- Planner: Dijkstra over the format graph with fidelity costs, --strict pruning, and --via waypoints.
