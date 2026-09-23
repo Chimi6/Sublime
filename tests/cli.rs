@@ -334,7 +334,7 @@ fn formats_and_paths_list_the_registry() {
     assert_eq!(code(&paths), 0);
     assert_eq!(
         stdout(&paths),
-        "csv -> json: lossless via csv-to-json\njson -> csv: conditional via json-to-csv\nmarkdown -> html: lossless via markdown-to-html\n"
+        "csv -> json: lossless via csv-to-json\njson -> csv: conditional via json-to-csv\nmarkdown -> html: lossless via markdown-to-html\nmarkdown -> markdown-json: lossless via markdown-to-json\nmarkdown -> text: lossy via markdown-to-text\nmarkdown-json -> html: lossless via markdown-json-to-markdown -> markdown-to-html\nmarkdown-json -> markdown: lossless via markdown-json-to-markdown\nmarkdown-json -> text: lossy via markdown-json-to-markdown -> markdown-to-text\n"
     );
 
     let markdown = run(&["paths", "--markdown"]);
@@ -386,4 +386,44 @@ fn markdown_to_html_via_extension() {
         stdout(&check),
         "markdown -> html\n  1. markdown-to-html (native, lossless)\nfidelity: lossless\n"
     );
+}
+
+#[test]
+fn markdown_to_text_via_extension() {
+    let input = fixture("markdown/sample.md");
+    let output = run(&["convert", input.to_str().unwrap(), "--to", "text"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "Sample\n\nA paragraph with emphasis and a link (https://example.com).\n\n- one\n- two\n\na  b\n-  -\n1  2\n"
+    );
+}
+
+#[test]
+fn markdown_round_trips_through_json() {
+    let input = fixture("markdown/sample.md");
+    let json_path = temp_path("sample.events.json");
+    let to_json = run(&[
+        "convert",
+        input.to_str().unwrap(),
+        json_path.to_str().unwrap(),
+        "--to",
+        "markdown-json",
+    ]);
+    assert_eq!(code(&to_json), 0, "stderr: {}", stderr(&to_json));
+    let back = run(&[
+        "convert",
+        json_path.to_str().unwrap(),
+        "--from",
+        "markdown-json",
+        "--to",
+        "markdown",
+    ]);
+    assert_eq!(code(&back), 0, "stderr: {}", stderr(&back));
+    let original = std::fs::read_to_string(&input).unwrap();
+    assert_eq!(stdout(&back), original);
+    let check = run(&["check", "markdown-json", "html"]);
+    assert_eq!(code(&check), 0);
+    assert!(stdout(&check).contains("markdown-json-to-markdown"));
+    std::fs::remove_file(json_path).ok();
 }
