@@ -1,0 +1,368 @@
+//! Runs the built binary as a subprocess and checks stdout, stderr, and exit codes.
+
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
+
+fn binary() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_sublime"))
+}
+
+fn fixture(relative: &str) -> PathBuf {
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("tests/fixtures");
+    path.push(relative);
+    path
+}
+
+fn run(args: &[&str]) -> Output {
+    Command::new(binary())
+        .args(args)
+        .env_remove("SUBLIME_LOG")
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("binary runs")
+}
+
+fn run_with_stdin(args: &[&str], stdin_bytes: &[u8]) -> Output {
+    let mut child = Command::new(binary())
+        .args(args)
+        .env_remove("SUBLIME_LOG")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("binary spawns");
+    {
+        let mut stdin = child.stdin.take().expect("stdin");
+        stdin.write_all(stdin_bytes).expect("write stdin");
+    }
+    child.wait_with_output().expect("wait")
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8(output.stdout.clone()).expect("utf8 stdout")
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8(output.stderr.clone()).expect("utf8 stderr")
+}
+
+fn code(output: &Output) -> i32 {
+    output.status.code().expect("exit code")
+}
+
+fn temp_path(name: &str) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    let unique = format!("sublime-test-{}-{name}", std::process::id());
+    path.push(unique);
+    path
+}
+
+#[test]
+fn convert_csv_to_json_via_extension() {
+    let input = fixture("csv/simple.csv");
+    let output = run(&["convert", input.to_str().unwrap(), "--to", "json"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "[{\"name\":\"Ada\",\"age\":\"36\",\"city\":\"London\"},{\"name\":\"Lin\",\"age\":\"29\",\"city\":\"Taipei\"}]"
+    );
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
+fn convert_writes_output_file_and_infers_format_from_it() {
+    let input = fixture("csv/simple.csv");
+    let target = temp_path("out.json");
+    let output = run(&["convert", input.to_str().unwrap(), target.to_str().unwrap()]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let written = std::fs::read_to_string(&target).expect("output file");
+    assert!(written.starts_with("[{\"name\":\"Ada\""));
+    let _ = std::fs::remove_file(&target);
+}
+
+#[test]
+fn convert_from_stdin_requires_from_flag() {
+    let output = run_with_stdin(&["convert", "-", "--to", "json"], b"a\n1\n");
+    assert_eq!(code(&output), 4);
+    assert!(stderr(&output).contains("--from"));
+    let ok = run_with_stdin(
+        &["convert", "-", "--from", "csv", "--to", "json"],
+        b"a\n1\n",
+    );
+    assert_eq!(code(&ok), 0);
+    assert_eq!(stdout(&ok), "[{\"a\":\"1\"}]");
+}
+
+#[test]
+fn ragged_rows_exit_with_loss_and_report_it() {
+    let input = fixture("csv/ragged.csv");
+    let output = run(&["convert", input.to_str().unwrap(), "--to", "json"]);
+    assert_eq!(code(&output), 2);
+    assert_eq!(
+        stdout(&output),
+        "[{\"a\":\"1\",\"b\":\"2\"},{\"a\":\"3\",\"b\":\"4\",\"c\":\"5\"}]"
+    );
+    let diagnostics = stderr(&output);
+    assert!(diagnostics.contains("warning:"), "{diagnostics}");
+    assert!(diagnostics.contains("loss: csv-to-json"), "{diagnostics}");
+}
+
+#[test]
+fn quiet_silences_diagnostics() {
+    let input = fixture("csv/ragged.csv");
+    let output = run(&["-q", "convert", input.to_str().unwrap(), "--to", "json"]);
+    assert_eq!(code(&output), 2);
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
+fn json_log_format_emits_events_as_lines() {
+    let input = fixture("csv/ragged.csv");
+    let output = run(&[
+        "--log-format",
+        "json",
+        "convert",
+        input.to_str().unwrap(),
+        "--to",
+        "json",
+    ]);
+    assert_eq!(code(&output), 2);
+    let diagnostics = stderr(&output);
+    let mut saw_path = false;
+    let mut saw_loss = false;
+    for line in diagnostics.lines() {
+        assert!(
+            line.starts_with('{') && line.ends_with('}'),
+            "not a JSON line: {line}"
+        );
+        if line.contains("\"event\":\"path_chosen\"") {
+            saw_path = true;
+        }
+        if line.contains("\"event\":\"loss\"") {
+            saw_loss = true;
+        }
+    }
+    assert!(saw_path && saw_loss, "{diagnostics}");
+}
+
+#[test]
+fn verbose_shows_steps_and_timing() {
+    let input = fixture("csv/simple.csv");
+    let output = run(&["-v", "convert", input.to_str().unwrap(), "--to", "json"]);
+    assert_eq!(code(&output), 0);
+    let diagnostics = stderr(&output);
+    assert!(
+        diagnostics.contains("path: csv -> json via csv-to-json (lossless)"),
+        "{diagnostics}"
+    );
+    assert!(
+        diagnostics.contains("step: csv-to-json finished in"),
+        "{diagnostics}"
+    );
+}
+
+#[test]
+fn env_var_sets_verbosity() {
+    let input = fixture("csv/simple.csv");
+    let output = Command::new(binary())
+        .args(["convert", input.to_str().unwrap(), "--to", "json"])
+        .env("SUBLIME_LOG", "verbose")
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("runs");
+    assert!(stderr(&output).contains("step:"));
+}
+
+#[test]
+fn json_to_csv_round_trip_of_flat_fixture() {
+    let input = fixture("json/flat.json");
+    let output = run(&["convert", input.to_str().unwrap(), "--to", "csv"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "name,age\nAda,36\nLin,29\n");
+}
+
+#[test]
+fn json_to_csv_reports_nested_and_scalar_losses() {
+    let nested = run(&[
+        "convert",
+        fixture("json/nested.json").to_str().unwrap(),
+        "--to",
+        "csv",
+    ]);
+    assert_eq!(code(&nested), 2);
+    assert!(stderr(&nested).contains("nested value"));
+    let scalars = run(&[
+        "convert",
+        fixture("json/scalars.json").to_str().unwrap(),
+        "--to",
+        "csv",
+    ]);
+    assert_eq!(code(&scalars), 2);
+    assert_eq!(stdout(&scalars), "n,t,z\n1.5,true,\n-2e3,false,\n");
+}
+
+#[test]
+fn json_not_array_is_an_error() {
+    let output = run(&[
+        "convert",
+        fixture("json/not_array.json").to_str().unwrap(),
+        "--to",
+        "csv",
+    ]);
+    assert_eq!(code(&output), 1);
+    assert!(stderr(&output).contains("sublime: error:"));
+}
+
+#[test]
+fn failed_conversion_removes_partial_output_file() {
+    let target = temp_path("partial.csv");
+    let output = run(&[
+        "convert",
+        fixture("json/not_array.json").to_str().unwrap(),
+        target.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&output), 1);
+    assert!(!target.exists());
+}
+
+#[test]
+fn csv_round_trips_through_json() {
+    let first = run(&[
+        "convert",
+        fixture("csv/quoted.csv").to_str().unwrap(),
+        "--to",
+        "json",
+    ]);
+    assert_eq!(code(&first), 0);
+    let back = run_with_stdin(
+        &["convert", "-", "--from", "json", "--to", "csv"],
+        &first.stdout,
+    );
+    assert_eq!(code(&back), 0, "stderr: {}", stderr(&back));
+    let original = std::fs::read_to_string(fixture("csv/quoted.csv")).unwrap();
+    assert_eq!(stdout(&back), original);
+}
+
+#[test]
+fn bom_and_crlf_are_handled() {
+    let output = run(&[
+        "convert",
+        fixture("csv/bom_crlf.csv").to_str().unwrap(),
+        "--to",
+        "json",
+    ]);
+    assert_eq!(code(&output), 0);
+    assert_eq!(
+        stdout(&output),
+        "[{\"id\":\"1\",\"value\":\"x\"},{\"id\":\"2\",\"value\":\"y\"}]"
+    );
+}
+
+#[test]
+fn unicode_passes_through() {
+    let output = run(&[
+        "convert",
+        fixture("csv/unicode.csv").to_str().unwrap(),
+        "--to",
+        "json",
+    ]);
+    assert_eq!(code(&output), 0);
+    assert_eq!(
+        stdout(&output),
+        "[{\"word\":\"héllo\",\"mark\":\"✓\"},{\"word\":\"日本\",\"mark\":\"語\"}]"
+    );
+}
+
+#[test]
+fn empty_and_header_only_csv_produce_empty_arrays() {
+    for name in ["csv/empty.csv", "csv/header_only.csv"] {
+        let output = run(&["convert", fixture(name).to_str().unwrap(), "--to", "json"]);
+        assert_eq!(code(&output), 0, "{name}");
+        assert_eq!(stdout(&output), "[]", "{name}");
+    }
+}
+
+#[test]
+fn check_reports_fidelity_and_exit_codes() {
+    let lossless = run(&["check", "csv", "json"]);
+    assert_eq!(code(&lossless), 0);
+    assert_eq!(
+        stdout(&lossless),
+        "csv -> json\n  1. csv-to-json (native, lossless)\nfidelity: lossless\n"
+    );
+
+    let conditional = run(&["check", "json", "csv"]);
+    assert_eq!(code(&conditional), 2);
+    assert!(stdout(&conditional).contains("fidelity: conditional"));
+
+    let strict = run(&["check", "json", "csv", "--strict"]);
+    assert_eq!(code(&strict), 3);
+    assert!(stderr(&strict).contains("json-to-csv"));
+
+    let unknown = run(&["check", "csv", "pdoc"]);
+    assert_eq!(code(&unknown), 4);
+
+    let same = run(&["check", "csv", "csv"]);
+    assert_eq!(code(&same), 4);
+}
+
+#[test]
+fn check_json_output() {
+    let output = run(&["--log-format", "json", "check", "csv", "json"]);
+    assert_eq!(code(&output), 0);
+    assert_eq!(
+        stdout(&output),
+        "{\"from\":\"csv\",\"to\":\"json\",\"fidelity\":\"lossless\",\"hops\":[{\"converter\":\"csv-to-json\",\"from\":\"csv\",\"to\":\"json\",\"tier\":\"native\",\"fidelity\":\"lossless\",\"description\":null}]}\n"
+    );
+}
+
+#[test]
+fn formats_and_paths_list_the_registry() {
+    let formats = run(&["formats"]);
+    assert_eq!(code(&formats), 0);
+    assert!(stdout(&formats).contains("csv"));
+    assert!(stdout(&formats).contains("json"));
+
+    let paths = run(&["paths"]);
+    assert_eq!(code(&paths), 0);
+    assert_eq!(
+        stdout(&paths),
+        "csv -> json: lossless via csv-to-json\njson -> csv: conditional via json-to-csv\n"
+    );
+
+    let markdown = run(&["paths", "--markdown"]);
+    assert!(stdout(&markdown).starts_with("# Formats and Conversion Paths"));
+}
+
+#[test]
+fn version_help_and_usage_errors() {
+    let version = run(&["version"]);
+    assert_eq!(
+        stdout(&version),
+        format!("sublime {}\n", env!("CARGO_PKG_VERSION"))
+    );
+    let help = run(&["--help"]);
+    assert_eq!(code(&help), 0);
+    assert!(stdout(&help).contains("USAGE"));
+    let nothing = run(&[]);
+    assert_eq!(code(&nothing), 4);
+    let bogus = run(&["bogus"]);
+    assert_eq!(code(&bogus), 4);
+    let missing_input = run(&["convert"]);
+    assert_eq!(code(&missing_input), 4);
+}
+
+#[test]
+fn missing_input_file_is_an_error() {
+    let output = run(&[
+        "convert",
+        "/nonexistent/definitely/missing.csv",
+        "--to",
+        "json",
+    ]);
+    assert_eq!(code(&output), 1);
+    assert!(stderr(&output).contains("opening"));
+}

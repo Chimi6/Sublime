@@ -23,3 +23,4 @@ section under a version heading.
 - Hand-written CLI argument parser with help text.
 - Human and JSON-lines event renderers.
 - CLI: convert, check, formats, paths, version; stable exit codes; JSON output mode.
+- Fixture corpus and subprocess CLI tests covering every command and exit code.
