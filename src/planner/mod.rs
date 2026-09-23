@@ -131,6 +131,10 @@ pub fn plan(
         Some(via) => via,
         None => return search(converters, from, to, options.strict),
     };
+    let via_is_endpoint = via == from || via == to;
+    if via_is_endpoint {
+        return search(converters, from, to, options.strict);
+    }
     let first_leg = search(converters, from, via, options.strict)?;
     let second_leg = search(converters, via, to, options.strict)?;
     let mut hops = first_leg.hops;
@@ -479,6 +483,23 @@ mod tests {
         };
         let plan = plan(&converters, &A, &D, &options).unwrap();
         assert_eq!(names(&plan), vec!["a-b", "b-c", "c-d"]);
+    }
+
+    #[test]
+    fn via_equal_to_an_endpoint_is_ignored() {
+        let converters: Vec<&'static dyn Converter> = vec![&A_B, &B_C];
+        let via_from = PlanOptions {
+            strict: false,
+            via: Some(&A),
+        };
+        let via_to = PlanOptions {
+            strict: false,
+            via: Some(&C),
+        };
+        let first = plan(&converters, &A, &C, &via_from).unwrap();
+        let second = plan(&converters, &A, &C, &via_to).unwrap();
+        assert_eq!(names(&first), vec!["a-b", "b-c"]);
+        assert_eq!(names(&second), vec!["a-b", "b-c"]);
     }
 
     #[test]
