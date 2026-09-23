@@ -14,16 +14,6 @@ section under a version heading.
 
 ### Added
 
-- Benchmark harness in `bench/` comparing against the `csv` and `serde_json` pipelines, with reader-only modes for both sides; results recorded in `DOCS/BENCHMARKS.md`.
-- Word-at-a-time byte scanner (`io::scan`) used by the CSV reader and JSON writer; no SIMD intrinsics, no dependencies.
-
-### Changed
-
-- JSON writer buffers 64 KiB internally and hands the sink whole chunks; `into_inner` now flushes and returns `io::Result<W>`, and callers must `flush()` before reading the sink.
-- CSV reader copies unquoted and quoted runs in bulk instead of one byte per call.
-- CSV -> JSON pre-escapes header keys once per conversion (`JsonWriter::prepare_key`).
-- Benchmark startup measurement uses the median of isolated runs and prints the process-spawn baseline.
-
 - Repository scaffold: crate, release profile, docs skeleton, size budget.
 - Format declarations with detection by id, extension, and magic bytes.
 - Converter trait, streaming input abstraction with rewind, fidelity and tier types, typed event system with sinks and conversion report.
@@ -43,3 +33,12 @@ section under a version heading.
 - Generated formats reference, contributing guide with the drop-in recipe, docs drift check script.
 - CI: fmt, clippy, doc, tests on Linux/macOS/Windows, formats doc drift, size budget, dependency ledger.
 - Release workflow: tag verification, five static targets, checksums, changelog-based notes.
+- Benchmark harness in `bench/` comparing against the `csv` and `serde_json` pipelines, with reader-only modes for both sides; results recorded in `DOCS/BENCHMARKS.md`.
+- Word-at-a-time byte scanner (`io::scan`) used by the CSV reader and JSON writer; no SIMD intrinsics, no dependencies.
+
+### Changed
+
+- JSON writer buffers 64 KiB internally and hands the sink whole chunks; `into_inner` now flushes and returns `io::Result<W>`, and callers must `flush()` before reading the sink.
+- CSV reader copies unquoted and quoted runs in bulk instead of one byte per call.
+- CSV -> JSON pre-escapes header keys once per conversion (`JsonWriter::prepare_key`).
+- Benchmark startup measurement uses the median of isolated runs and prints the process-spawn baseline.
