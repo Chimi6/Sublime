@@ -44,7 +44,7 @@ describes.
 
 - 2026-09-22: Single-pass JSON -> CSV with header inference from the first N objects, for the stdin case.
 - 2026-09-22: `opt-level = "z"` versus `3`: measure size and speed.
-- 2026-09-22: SIMD byte scanning with `std::arch`. The word-at-a-time scanner in `io::scan` closed the CSV -> JSON gap without intrinsics; the CSV reader alone is still slower than the `csv` crate reader (see BENCHMARKS.md), so this remains the stretch target.
+- 2026-09-22: SIMD byte scanning with `std::arch`. The word-at-a-time scanner in `io::scan` closed the CSV -> JSON gap without intrinsics; the CSV reader alone is still slower than the `csv` crate reader (see benchmarks/csv-json.md), so this remains the stretch target.
 - 2026-09-22: Content sniffing beyond magic bytes for extensionless input.
 
 ## Done
@@ -60,4 +60,4 @@ describes.
 - 2026-09-22: The library never prints; it emits typed events to an explicitly passed sink. No global logger.
 - 2026-09-22: The planner picks the cheapest path by fidelity and prints it. `--strict` refuses lossy paths.
 - 2026-09-22: Three tiers: Native (our code), Library (a crate compiled in), External (an installed binary). Only ffmpeg is anticipated in External.
-- 2026-09-22: Benchmarks live in a standalone `bench/` crate excluded from the workspace so `csv` and `serde_json` never touch the main build.
+- 2026-09-22: Benchmarks live in a standalone `bench/` crate excluded from the workspace so `csv` and `serde_json` never touch the main build. They run by hand on cause (a converter hot-path change, a release), never on a schedule, and every run is written up in `DOCS/benchmarks/<pair>.md` like a methods section.

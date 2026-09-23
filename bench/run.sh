@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
-# Builds sublime and the bench harness in release, generates inputs, and
-# compares ours against the crate pipelines. Prints pass/fail against the
-# targets in DOCS/BENCHMARKS.md.
-# Usage: bench/run.sh [rows]   (default 10000000 rows, roughly 1 GB CSV)
+# Manual benchmark runner. Builds sublime and the harness in release, then
+# runs one pair's script and the binary-wide measurements (size, startup).
+# Results are recorded by hand in DOCS/benchmarks/<pair>.md; see the README
+# there for when to run this and how to write up a result.
+#
+# Usage: bench/run.sh <pair> [rows]     e.g. bench/run.sh csv-json 10000000
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-rows="${1:-10000000}"
+pair="${1:-}"
+rows="${2:-10000000}"
+if [ -z "$pair" ] || [ ! -f "bench/pairs/${pair}.sh" ]; then
+  echo "usage: bench/run.sh <pair> [rows]" >&2
+  echo "pairs: $(ls bench/pairs | sed 's/\.sh$//' | tr '\n' ' ')" >&2
+  exit 4
+fi
+
 data="bench/data"
 mkdir -p "$data"
 
@@ -16,17 +25,10 @@ cargo build --release --quiet
 sublime="target/release/sublime"
 bench="bench/target/release/sublime-bench"
 
-echo "== generating ${rows} rows"
-[ -f "$data/big.csv" ] || "$bench" gen-csv "$rows" "$data/big.csv"
-[ -f "$data/big.json" ] || "$bench" gen-json "$rows" "$data/big.json"
-printf 'a,b\n1,2\n' > "$data/tiny.csv"
-csv_bytes="$(wc -c < "$data/big.csv" | tr -d ' ')"
-json_bytes="$(wc -c < "$data/big.json" | tr -d ' ')"
-
-# time_cmd <label> <command...> : prints "label seconds max_rss_kb"
+# time_cmd <label> <command...> : prints "label median_seconds max_rss_kb"
+# over three runs, wall clock per run, peak RSS from GNU time.
 time_cmd() {
   local label="$1"; shift
-  local best_seconds=""
   local rss=""
   local results=()
   for _ in 1 2 3; do
@@ -37,60 +39,43 @@ time_cmd() {
     results+=("$(echo "$end - $start" | bc -l)")
     rss="$(cat "$data/rss.txt")"
   done
-  local sorted
-  sorted="$(printf '%s\n' "${results[@]}" | sort -n)"
-  best_seconds="$(echo "$sorted" | sed -n 2p)"
-  echo "$label $best_seconds $rss"
+  local median
+  median="$(printf '%s\n' "${results[@]}" | sort -n | sed -n 2p)"
+  echo "$label $median $rss"
 }
-
-echo "== running"
-ours_c2j="$(time_cmd ours-csv-json "$sublime" -q convert "$data/big.csv" "$data/out1.json")"
-crates_c2j="$(time_cmd crates-csv-json "$bench" crates-csv-json "$data/big.csv" "$data/out2.json")"
-ours_j2c="$(time_cmd ours-json-csv "$sublime" -q convert "$data/big.json" "$data/out3.csv")"
-crates_j2c="$(time_cmd crates-json-csv "$bench" crates-json-csv "$data/big.json" "$data/out4.csv")"
-
-echo "== stdin memory"
-/usr/bin/time -f "%M" -o "$data/rss.txt" sh -c "$sublime -q convert - --from csv --to json < $data/big.csv > $data/out5.json"
-stdin_rss="$(cat "$data/rss.txt")"
-
-echo "== startup"
-# Timed inside the bench binary with Instant, from spawn to the first byte of
-# stdout. Shell-based timing forks extra processes and cannot resolve
-# sub-millisecond startups. /bin/true is printed as the process-spawn floor.
-startup_ms="$("$bench" startup "$sublime" "$data/tiny.csv")"
-baseline_ms="$("$bench" spawn-baseline /bin/true)"
-echo "process-spawn floor (/bin/true): ${baseline_ms} ms"
-
-echo "== binary size"
-size_bytes="$(wc -c < "$sublime" | tr -d ' ')"
-if command -v rustup >/dev/null && rustup target list --installed | grep -q x86_64-unknown-linux-musl; then
-  cargo build --release --quiet --target x86_64-unknown-linux-musl
-  size_bytes="$(wc -c < target/x86_64-unknown-linux-musl/release/sublime | tr -d ' ')"
-  echo "measured musl binary"
-else
-  echo "musl target not installed; measured gnu binary (install with: rustup target add x86_64-unknown-linux-musl)"
-fi
-
 mbps() { echo "scale=1; $1 / $2 / 1048576" | bc -l; }
 seconds_of() { echo "$1" | awk '{print $2}'; }
 rss_of() { echo "$1" | awk '{print $3}'; }
-
-ours_c2j_s="$(seconds_of "$ours_c2j")";   crates_c2j_s="$(seconds_of "$crates_c2j")"
-ours_j2c_s="$(seconds_of "$ours_j2c")";   crates_j2c_s="$(seconds_of "$crates_j2c")"
-
+rss_mb() { echo "scale=1; $1 / 1024" | bc -l; }
 pass() { if [ "$1" = "1" ]; then echo PASS; else echo FAIL; fi; }
+row() { echo "| $1 | $2 | $3 | $4 |"; }
 
 echo
 echo "| Target | Ours | Reference | Result |"
 echo "|---|---|---|---|"
-echo "| CSV -> JSON throughput (MB/s) | $(mbps "$csv_bytes" "$ours_c2j_s") | $(mbps "$csv_bytes" "$crates_c2j_s") | $(pass "$(echo "$ours_c2j_s <= $crates_c2j_s" | bc -l)") |"
-echo "| JSON -> CSV throughput (MB/s) | $(mbps "$json_bytes" "$ours_j2c_s") | $(mbps "$json_bytes" "$crates_j2c_s") | $(pass "$(echo "$ours_j2c_s <= $crates_j2c_s" | bc -l)") |"
-echo "| Peak RSS CSV -> JSON file (MB) | $(echo "scale=1; $(rss_of "$ours_c2j") / 1024" | bc -l) | < 16 | $(pass "$(echo "$(rss_of "$ours_c2j") < 16384" | bc -l)") |"
-echo "| Peak RSS JSON -> CSV file (MB) | $(echo "scale=1; $(rss_of "$ours_j2c") / 1024" | bc -l) | < 16 | $(pass "$(echo "$(rss_of "$ours_j2c") < 16384" | bc -l)") |"
-echo "| Peak RSS CSV -> JSON stdin (MB) | $(echo "scale=1; $stdin_rss / 1024" | bc -l) | < 16 | $(pass "$(echo "$stdin_rss < 16384" | bc -l)") |"
-echo "| Binary size (bytes) | $size_bytes | < 1048576 | $(pass "$(echo "$size_bytes < 1048576" | bc -l)") |"
-startup_above_floor="$(echo "$startup_ms - $baseline_ms" | bc -l)"
-echo "| Startup above spawn floor (ms, 1 KB file) | $(printf '%.3f' "$startup_above_floor") (spawn $(printf '%.3f' "$startup_ms"), floor $(printf '%.3f' "$baseline_ms")) | < 1 | $(pass "$(echo "$startup_above_floor < 1" | bc -l)") |"
+
+# The pair script defines run_pair, which prints its table rows.
+# shellcheck source=/dev/null
+source "bench/pairs/${pair}.sh"
+run_pair
+
+echo "== binary size" >&2
+size_bytes="$(wc -c < "$sublime" | tr -d ' ')"
+size_note="gnu"
+if command -v rustup >/dev/null && rustup target list --installed | grep -q x86_64-unknown-linux-musl; then
+  cargo build --release --quiet --target x86_64-unknown-linux-musl
+  size_bytes="$(wc -c < target/x86_64-unknown-linux-musl/release/sublime | tr -d ' ')"
+  size_note="musl static"
+fi
+row "Binary size, ${size_note} (bytes)" "$size_bytes" "< 1048576" "$(pass "$(echo "$size_bytes < 1048576" | bc -l)")"
+
+echo "== startup" >&2
+printf 'a,b\n1,2\n' > "$data/tiny.csv"
+startup_ms="$("$bench" startup "$sublime" "$data/tiny.csv")"
+floor_ms="$("$bench" spawn-baseline /bin/true)"
+above_floor="$(echo "$startup_ms - $floor_ms" | bc -l)"
+row "Startup above spawn floor (ms, 1 KB file)" "$(printf '%.3f' "$above_floor") (spawn $(printf '%.3f' "$startup_ms"), floor $(printf '%.3f' "$floor_ms"))" "< 1" "$(pass "$(echo "$above_floor < 1" | bc -l)")"
+
 echo
 echo "commit: $(git rev-parse --short HEAD)"
 echo "machine: $(uname -srm), $(nproc) cpus"
