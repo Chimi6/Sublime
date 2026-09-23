@@ -1,0 +1,27 @@
+Lists
+A bulleted list:
+First bullet
+Second bullet
+Nested bullet under the second
+Third level bullet
+Third bullet
+A numbered list with letters and roman numerals below it:
+First number
+Letter a under one
+Letter b under one
+Roman i under b
+Second number
+A paragraph between two numbered lists; the next list restarts at one:
+Restarted at one
+Two
+A list starting at ten:
+Ten
+Eleven
+Upper-case letters with parentheses:
+Letter A
+Number one under A
+Letter B
+A list item with two paragraphs:
+Item with a continuation
+Continuation paragraph inside the item, not a new bullet.
+Next item

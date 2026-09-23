@@ -1,0 +1,5 @@
+Notes, Comments, and Changes
+A sentence with a footnote and another and an endnote.
+A commented word.
+This whole sentence carries a comment.
+Tracked changes: inserted words and unchanged words.￼ The first footnote.￼ The second footnote, with a link-free sentence.￼ The only endnote.
