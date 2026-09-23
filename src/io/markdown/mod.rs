@@ -137,9 +137,14 @@ pub enum Event<'a> {
 /// so memory stays proportional to the input rather than to the event
 /// stream.
 pub struct Parser<'a> {
+    text: &'a str,
     document: block::Document,
-    next_block: usize,
-    pending: std::vec::IntoIter<Event<'a>>,
+    /// Next top-level block to render, or `block::NONE`.
+    next_block: u32,
+    /// Events of the current block in reverse order, popped from the end.
+    /// Keeps its capacity across blocks.
+    pending: Vec<Event<'a>>,
+    scratch: inline::InlineScratch,
 }
 
 impl<'a> Parser<'a> {
@@ -149,10 +154,13 @@ impl<'a> Parser<'a> {
 
     pub fn new_with_options(text: &'a str, options: Options) -> Parser<'a> {
         let document = block::parse(text, options);
+        let first_block = document.nodes[0].first_child;
         Parser {
+            text,
             document,
-            next_block: 0,
-            pending: Vec::new().into_iter(),
+            next_block: first_block,
+            pending: Vec::new(),
+            scratch: inline::InlineScratch::default(),
         }
     }
 }
@@ -162,14 +170,23 @@ impl<'a> Iterator for Parser<'a> {
 
     fn next(&mut self) -> Option<Event<'a>> {
         loop {
-            if let Some(event) = self.pending.next() {
+            if let Some(event) = self.pending.pop() {
                 return Some(event);
             }
-            let root_children = &self.document.nodes[0].children;
-            let block = *root_children.get(self.next_block)?;
-            self.next_block += 1;
-            let events = inline::render_block(&self.document, block);
-            self.pending = events.into_iter();
+            if self.next_block == block::NONE {
+                return None;
+            }
+            let block = self.next_block as usize;
+            self.next_block = self.document.nodes[block].next_sibling;
+            self.pending.clear();
+            inline::render_block(
+                &self.document,
+                self.text,
+                block,
+                &mut self.scratch,
+                &mut self.pending,
+            );
+            self.pending.reverse();
         }
     }
 }

@@ -6,6 +6,8 @@
 use std::collections::HashMap;
 
 use super::Alignment;
+use crate::io::scan::find_line_ending;
+
 use super::scan::{
     normalize_label, parse_reference_definition, scan_html_block_end, scan_html_block_start,
     unescape_and_decode,
@@ -54,6 +56,82 @@ pub struct ItemData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableData {
+    pub alignments: Vec<Alignment>,
+    /// Header row first. Cells are already split and trimmed.
+    pub rows: Vec<Vec<String>>,
+}
+
+/// One line of a leaf block's text: a byte range of the source plus spaces
+/// synthesized from a partially consumed tab. Nothing is copied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Line {
+    pub start: usize,
+    pub end: usize,
+    pub leading_spaces: u8,
+}
+
+impl Line {
+    pub fn text<'a>(&self, source: &'a str) -> std::borrow::Cow<'a, str> {
+        let text = &source[self.start..self.end];
+        if self.leading_spaces == 0 {
+            return std::borrow::Cow::Borrowed(text);
+        }
+        let mut owned = String::with_capacity(text.len() + usize::from(self.leading_spaces));
+        for _ in 0..self.leading_spaces {
+            owned.push(' ');
+        }
+        owned.push_str(text);
+        std::borrow::Cow::Owned(owned)
+    }
+
+    pub fn len(&self) -> usize {
+        self.end - self.start + usize::from(self.leading_spaces)
+    }
+
+    pub fn is_blank(&self, source: &str) -> bool {
+        source[self.start..self.end]
+            .bytes()
+            .all(|byte| byte == b' ' || byte == b'\t')
+    }
+}
+
+/// Joins lines with `\n`, borrowing whenever the lines are contiguous in
+/// the source.
+pub fn join_lines<'a>(source: &'a str, lines: &[Line]) -> std::borrow::Cow<'a, str> {
+    let first = match lines.first() {
+        Some(first) => first,
+        None => return std::borrow::Cow::Borrowed(""),
+    };
+    // Lines that sit back to back in the source, separated by a single
+    // `\n`, are already the joined text; that is every top-level paragraph.
+    let mut contiguous = first.leading_spaces == 0;
+    let mut previous_end = first.end;
+    for line in &lines[1..] {
+        let adjacent = line.leading_spaces == 0
+            && line.start == previous_end + 1
+            && source.as_bytes().get(previous_end) == Some(&b'\n');
+        if !adjacent {
+            contiguous = false;
+            break;
+        }
+        previous_end = line.end;
+    }
+    if contiguous {
+        return std::borrow::Cow::Borrowed(&source[first.start..previous_end]);
+    }
+    let total: usize = lines.iter().map(|line| line.len() + 1).sum();
+    let mut joined = String::with_capacity(total);
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            joined.push('\n');
+        }
+        joined.push_str(&line.text(source));
+    }
+    std::borrow::Cow::Owned(joined)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
     Document,
     BlockQuote,
@@ -76,25 +154,57 @@ pub enum Kind {
     HtmlBlock {
         kind: u8,
     },
-    Table {
-        alignments: Vec<Alignment>,
-        rows: Vec<Vec<String>>,
-    },
+    Table(Box<TableData>),
     FootnoteDefinition {
         label: String,
     },
 }
 
+/// The parts of a node's kind the per-line algorithm needs, copied out so
+/// no line ever clones a `Kind` (which can hold table rows).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    Document,
+    BlockQuote,
+    List,
+    Item {
+        marker_offset: usize,
+        padding: usize,
+    },
+    Paragraph,
+    Heading {
+        setext: bool,
+    },
+    ThematicBreak,
+    IndentedCode,
+    FencedCode {
+        fence_char: u8,
+        fence_length: usize,
+        fence_offset: usize,
+    },
+    HtmlBlock {
+        kind: u8,
+    },
+    Table,
+    FootnoteDefinition,
+}
+
+/// Index meaning "no node" in the sibling and parent links.
+pub const NONE: u32 = u32::MAX;
+
 #[derive(Debug)]
 pub struct Node {
     pub kind: Kind,
-    pub parent: Option<usize>,
-    pub children: Vec<usize>,
-    /// Text lines for leaf blocks, each ending in `\n`.
-    pub content: String,
+    pub parent: u32,
+    pub first_child: u32,
+    pub last_child: u32,
+    pub next_sibling: u32,
+    /// This block's text lines: a range of `Document::lines`.
+    pub lines_start: u32,
+    pub lines_len: u32,
+    pub start_line: u32,
     pub open: bool,
     pub last_line_blank: bool,
-    pub start_line: usize,
     /// Set when a paragraph turned out to hold only reference definitions.
     pub deleted: bool,
 }
@@ -107,55 +217,90 @@ pub struct Reference {
 
 pub struct Document {
     pub nodes: Vec<Node>,
+    /// Every leaf block's lines, contiguous per block. One arena instead of
+    /// a vector per node.
+    pub lines: Vec<Line>,
     pub references: HashMap<String, Reference>,
     pub footnote_labels: HashMap<String, String>,
     pub options: Options,
 }
 
+impl Document {
+    pub fn lines_of(&self, node: usize) -> &[Line] {
+        let start = self.nodes[node].lines_start as usize;
+        let end = start + self.nodes[node].lines_len as usize;
+        &self.lines[start..end]
+    }
+
+    /// Children of `node` in order.
+    pub fn children(&self, node: usize) -> Children<'_> {
+        Children {
+            document: self,
+            next: self.nodes[node].first_child,
+        }
+    }
+}
+
+pub struct Children<'d> {
+    document: &'d Document,
+    next: u32,
+}
+
+impl Iterator for Children<'_> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        if self.next == NONE {
+            return None;
+        }
+        let current = self.next as usize;
+        self.next = self.document.nodes[current].next_sibling;
+        Some(current)
+    }
+}
+
 pub fn parse(text: &str, options: Options) -> Document {
-    let mut parser = BlockParser::new(options);
+    let line_ranges = split_lines(text);
+    let mut parser = BlockParser::new(text, options, line_ranges.len());
     let mut line_number = 0usize;
-    for raw_line in split_lines(text) {
+    for (start, end) in line_ranges {
         line_number += 1;
-        parser.process_line(raw_line, line_number);
+        parser.process_line(start, &text[start..end], line_number);
     }
     parser.finish()
 }
 
-/// Splits on `\n`, `\r\n`, or `\r`, dropping the terminators. A final
-/// unterminated line counts; a terminator at the very end does not add an
-/// empty line.
-fn split_lines(text: &str) -> Vec<&str> {
-    let mut lines = Vec::new();
+/// Byte ranges of each line, without terminators (`\n`, `\r\n`, or `\r`).
+/// A final unterminated line counts; a terminator at the very end does not
+/// add an empty line.
+fn split_lines(text: &str) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
+    let mut lines = Vec::with_capacity(bytes.len() / 40 + 1);
     let mut start = 0usize;
-    let mut index = 0usize;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if byte == b'\n' {
-            lines.push(&text[start..index]);
-            index += 1;
-            start = index;
-        } else if byte == b'\r' {
-            lines.push(&text[start..index]);
-            index += 1;
-            if index < bytes.len() && bytes[index] == b'\n' {
-                index += 1;
+    while start < bytes.len() {
+        let relative = match find_line_ending(&bytes[start..]) {
+            Some(relative) => relative,
+            None => {
+                lines.push((start, bytes.len()));
+                break;
             }
-            start = index;
-        } else {
-            index += 1;
+        };
+        let end = start + relative;
+        lines.push((start, end));
+        let mut next = end + 1;
+        if bytes[end] == b'\r' && next < bytes.len() && bytes[next] == b'\n' {
+            next += 1;
         }
-    }
-    if start < bytes.len() {
-        lines.push(&text[start..]);
+        start = next;
     }
     lines
 }
 
-struct BlockParser {
+struct BlockParser<'s> {
+    source: &'s str,
     options: Options,
     nodes: Vec<Node>,
+    lines: Vec<Line>,
     /// The deepest open block.
     tip: usize,
     references: HashMap<String, Reference>,
@@ -172,21 +317,28 @@ struct BlockParser {
     try_open_table_result: usize,
 }
 
-impl BlockParser {
-    fn new(options: Options) -> Self {
+impl<'s> BlockParser<'s> {
+    fn new(source: &'s str, options: Options, line_count: usize) -> Self {
         let root = Node {
             kind: Kind::Document,
-            parent: None,
-            children: Vec::new(),
-            content: String::new(),
+            parent: NONE,
+            first_child: NONE,
+            last_child: NONE,
+            next_sibling: NONE,
+            lines_start: 0,
+            lines_len: 0,
+            start_line: 1,
             open: true,
             last_line_blank: false,
-            start_line: 1,
             deleted: false,
         };
+        let mut nodes = Vec::with_capacity(line_count / 2 + 8);
+        nodes.push(root);
         BlockParser {
+            source,
             options,
-            nodes: vec![root],
+            nodes,
+            lines: Vec::with_capacity(line_count),
             tip: 0,
             references: HashMap::new(),
             footnote_labels: HashMap::new(),
@@ -208,6 +360,7 @@ impl BlockParser {
         }
         Document {
             nodes: self.nodes,
+            lines: self.lines,
             references: self.references,
             footnote_labels: self.footnote_labels,
             options: self.options,
@@ -280,8 +433,41 @@ impl BlockParser {
         &self.nodes[node].kind
     }
 
+    fn shape(&self, node: usize) -> Shape {
+        match &self.nodes[node].kind {
+            Kind::Document => Shape::Document,
+            Kind::BlockQuote => Shape::BlockQuote,
+            Kind::List(_) => Shape::List,
+            Kind::Item(data) => Shape::Item {
+                marker_offset: data.marker_offset,
+                padding: data.padding,
+            },
+            Kind::Paragraph => Shape::Paragraph,
+            Kind::Heading { setext, .. } => Shape::Heading { setext: *setext },
+            Kind::ThematicBreak => Shape::ThematicBreak,
+            Kind::IndentedCode => Shape::IndentedCode,
+            Kind::FencedCode {
+                fence_char,
+                fence_length,
+                fence_offset,
+                ..
+            } => Shape::FencedCode {
+                fence_char: *fence_char,
+                fence_length: *fence_length,
+                fence_offset: *fence_offset,
+            },
+            Kind::HtmlBlock { kind } => Shape::HtmlBlock { kind: *kind },
+            Kind::Table(_) => Shape::Table,
+            Kind::FootnoteDefinition { .. } => Shape::FootnoteDefinition,
+        }
+    }
+
     fn last_open_child(&self, node: usize) -> Option<usize> {
-        let last = *self.nodes[node].children.last()?;
+        let last = self.nodes[node].last_child;
+        if last == NONE {
+            return None;
+        }
+        let last = last as usize;
         if self.nodes[last].open {
             Some(last)
         } else {
@@ -307,7 +493,7 @@ impl BlockParser {
                 | Kind::IndentedCode
                 | Kind::FencedCode { .. }
                 | Kind::HtmlBlock { .. }
-                | Kind::Table { .. }
+                | Kind::Table(_)
         )
     }
 
@@ -320,42 +506,75 @@ impl BlockParser {
         }
         let node = Node {
             kind,
-            parent: Some(parent),
-            children: Vec::new(),
-            content: String::new(),
+            parent: parent as u32,
+            first_child: NONE,
+            last_child: NONE,
+            next_sibling: NONE,
+            lines_start: 0,
+            lines_len: 0,
+            start_line: self.line_number as u32,
             open: true,
             last_line_blank: false,
-            start_line: self.line_number,
             deleted: false,
         };
         self.nodes.push(node);
         let index = self.nodes.len() - 1;
-        self.nodes[parent].children.push(index);
+        let last = self.nodes[parent].last_child;
+        if last == NONE {
+            self.nodes[parent].first_child = index as u32;
+        } else {
+            self.nodes[last as usize].next_sibling = index as u32;
+        }
+        self.nodes[parent].last_child = index as u32;
         index
     }
 
-    fn add_line(&mut self, node: usize, line: &[u8]) {
-        let mut offset = self.offset;
-        if self.partially_consumed_tab {
-            offset += 1;
-            let spaces = TAB_STOP - (self.column % TAB_STOP);
-            for _ in 0..spaces {
-                self.nodes[node].content.push(' ');
-            }
+    /// Appends a line to `node`, which must be the block currently
+    /// receiving lines, so its lines stay contiguous in the arena.
+    fn push_line(&mut self, node: usize, line: Line) {
+        if self.nodes[node].lines_len == 0 {
+            self.nodes[node].lines_start = self.lines.len() as u32;
         }
-        let rest = std::str::from_utf8(&line[offset.min(line.len())..]).unwrap_or("");
-        self.nodes[node].content.push_str(rest);
-        self.nodes[node].content.push('\n');
+        self.lines.push(line);
+        self.nodes[node].lines_len += 1;
+    }
+
+    fn node_lines(&self, node: usize) -> &[Line] {
+        let start = self.nodes[node].lines_start as usize;
+        let end = start + self.nodes[node].lines_len as usize;
+        &self.lines[start..end]
+    }
+
+    fn add_line(&mut self, node: usize, line_start: usize, line: &[u8]) {
+        let mut start = line_start + self.offset;
+        let mut leading_spaces = 0u8;
+        if self.partially_consumed_tab {
+            start += 1;
+            leading_spaces = (TAB_STOP - (self.column % TAB_STOP)) as u8;
+        }
+        let end = line_start + line.len();
+        let start = start.min(end);
+        self.push_line(
+            node,
+            Line {
+                start,
+                end,
+                leading_spaces,
+            },
+        );
     }
 
     /// Closes `node`, post-processing its content. Returns its parent.
     fn finalize(&mut self, node: usize) -> Option<usize> {
-        let parent = self.nodes[node].parent;
+        let parent = match self.nodes[node].parent {
+            NONE => None,
+            parent => Some(parent as usize),
+        };
         if !self.nodes[node].open {
             return parent;
         }
         self.nodes[node].open = false;
-        match self.nodes[node].kind.clone() {
+        match &self.nodes[node].kind {
             Kind::Paragraph => {
                 let has_content = self.resolve_reference_definitions(node);
                 if !has_content {
@@ -363,42 +582,25 @@ impl BlockParser {
                 }
             }
             Kind::IndentedCode => {
-                let content = &mut self.nodes[node].content;
-                // Remove trailing blank lines.
-                while content.ends_with("\n\n") || content.ends_with("\n \n") {
-                    let trimmed_length = content.trim_end_matches([' ', '\t', '\n']).len();
-                    let keep = content[..trimmed_length].len();
-                    content.truncate(keep);
-                    content.push('\n');
-                    if !content.ends_with("\n\n") {
+                while let Some(last) = self.node_lines(node).last() {
+                    if !last.is_blank(self.source) {
                         break;
                     }
-                }
-                if content == "\n" {
-                    content.clear();
+                    self.nodes[node].lines_len -= 1;
                 }
             }
-            Kind::FencedCode {
-                fence_char,
-                fence_length,
-                fence_offset,
-                closed,
-                ..
-            } => {
-                let content = std::mem::take(&mut self.nodes[node].content);
-                let (first_line, rest) = match content.find('\n') {
-                    Some(index) => (&content[..index], &content[index + 1..]),
-                    None => (content.as_str(), ""),
+            Kind::FencedCode { .. } => {
+                let info = match self.node_lines(node).first() {
+                    Some(first) => unescape_and_decode(first.text(self.source).trim()),
+                    None => String::new(),
                 };
-                let info = unescape_and_decode(first_line.trim());
-                self.nodes[node].content = rest.to_string();
-                self.nodes[node].kind = Kind::FencedCode {
-                    fence_char,
-                    fence_length,
-                    fence_offset,
-                    info,
-                    closed,
-                };
+                if self.nodes[node].lines_len > 0 {
+                    self.nodes[node].lines_start += 1;
+                    self.nodes[node].lines_len -= 1;
+                }
+                if let Kind::FencedCode { info: slot, .. } = &mut self.nodes[node].kind {
+                    *slot = info;
+                }
             }
             Kind::List(_) => self.finalize_list(node),
             _ => {}
@@ -407,25 +609,29 @@ impl BlockParser {
     }
 
     fn finalize_list(&mut self, list: usize) {
-        let items = self.nodes[list].children.clone();
         let mut tight = true;
-        for (position, item) in items.iter().enumerate() {
-            let is_last_item = position + 1 == items.len();
-            if self.nodes[*item].last_line_blank && !is_last_item {
+        let mut item = self.nodes[list].first_child;
+        while item != NONE {
+            let item_index = item as usize;
+            let is_last_item = self.nodes[item_index].next_sibling == NONE;
+            if self.nodes[item_index].last_line_blank && !is_last_item {
                 tight = false;
                 break;
             }
-            let children = self.nodes[*item].children.clone();
-            for (child_position, child) in children.iter().enumerate() {
-                let is_last_child = child_position + 1 == children.len();
-                if self.ends_with_blank_line(*child) && (!is_last_item || !is_last_child) {
+            let mut child = self.nodes[item_index].first_child;
+            while child != NONE {
+                let child_index = child as usize;
+                let is_last_child = self.nodes[child_index].next_sibling == NONE;
+                if self.ends_with_blank_line(child_index) && (!is_last_item || !is_last_child) {
                     tight = false;
                     break;
                 }
+                child = self.nodes[child_index].next_sibling;
             }
             if !tight {
                 break;
             }
+            item = self.nodes[item_index].next_sibling;
         }
         if let Kind::List(data) = &mut self.nodes[list].kind {
             data.tight = tight;
@@ -438,10 +644,13 @@ impl BlockParser {
                 return true;
             }
             match self.kind(node) {
-                Kind::List(_) | Kind::Item(_) => match self.nodes[node].children.last() {
-                    Some(last) => node = *last,
-                    None => return false,
-                },
+                Kind::List(_) | Kind::Item(_) => {
+                    let last = self.nodes[node].last_child;
+                    if last == NONE {
+                        return false;
+                    }
+                    node = last as usize;
+                }
                 _ => return false,
             }
         }
@@ -451,11 +660,17 @@ impl BlockParser {
     /// Returns whether any content remains.
     fn resolve_reference_definitions(&mut self, node: usize) -> bool {
         loop {
-            let content = &self.nodes[node].content;
-            if !content.starts_with('[') {
+            let lines = self.node_lines(node);
+            let first = match lines.first() {
+                Some(first) => *first,
+                None => break,
+            };
+            if first.leading_spaces > 0 || !self.source[first.start..first.end].starts_with('[') {
                 break;
             }
-            let parsed = match parse_reference_definition(content) {
+            let mut joined = join_lines(self.source, lines).into_owned();
+            joined.push('\n');
+            let parsed = match parse_reference_definition(&joined) {
                 Some(parsed) => parsed,
                 None => break,
             };
@@ -464,16 +679,28 @@ impl BlockParser {
             self.references
                 .entry(key)
                 .or_insert(Reference { destination, title });
-            let remaining = self.nodes[node].content[consumed..].to_string();
-            self.nodes[node].content = remaining;
+            // The definition always ends at a line end, so drop whole lines.
+            let mut covered = 0usize;
+            let mut removed = 0u32;
+            for line in self.node_lines(node) {
+                if covered >= consumed {
+                    break;
+                }
+                covered += line.len() + 1;
+                removed += 1;
+            }
+            self.nodes[node].lines_start += removed;
+            self.nodes[node].lines_len -= removed;
         }
-        let content = &self.nodes[node].content;
-        !content.trim_matches([' ', '\t', '\n']).is_empty()
+        let source = self.source;
+        self.node_lines(node)
+            .iter()
+            .any(|line| !line.is_blank(source))
     }
 
     // ----- the per-line algorithm -----
 
-    fn process_line(&mut self, raw_line: &str, line_number: usize) {
+    fn process_line(&mut self, line_start: usize, raw_line: &str, line_number: usize) {
         self.line_number = line_number;
         let line = raw_line.as_bytes();
         self.offset = 0;
@@ -486,8 +713,8 @@ impl BlockParser {
         while let Some(child) = self.last_open_child(container) {
             container = child;
             self.find_first_nonspace(line);
-            let matched = match self.kind(container).clone() {
-                Kind::BlockQuote => {
+            let matched = match self.shape(container) {
+                Shape::BlockQuote => {
                     if !self.indented() && self.peek(line, self.first_nonspace) == b'>' {
                         let to_marker = self.first_nonspace + 1 - self.offset;
                         self.advance_offset(line, to_marker, false);
@@ -499,9 +726,12 @@ impl BlockParser {
                         false
                     }
                 }
-                Kind::Item(data) => {
+                Shape::Item {
+                    marker_offset,
+                    padding,
+                } => {
                     if self.blank {
-                        let has_children = !self.nodes[container].children.is_empty();
+                        let has_children = self.nodes[container].first_child != NONE;
                         if has_children {
                             let to_end = self.first_nonspace - self.offset;
                             self.advance_offset(line, to_end, false);
@@ -509,14 +739,14 @@ impl BlockParser {
                         } else {
                             false
                         }
-                    } else if self.indent >= data.marker_offset + data.padding {
-                        self.advance_offset(line, data.marker_offset + data.padding, true);
+                    } else if self.indent >= marker_offset + padding {
+                        self.advance_offset(line, marker_offset + padding, true);
                         true
                     } else {
                         false
                     }
                 }
-                Kind::FootnoteDefinition { .. } => {
+                Shape::FootnoteDefinition => {
                     if self.blank {
                         let to_end = self.first_nonspace - self.offset;
                         self.advance_offset(line, to_end, false);
@@ -528,7 +758,7 @@ impl BlockParser {
                         false
                     }
                 }
-                Kind::IndentedCode => {
+                Shape::IndentedCode => {
                     if self.indent >= CODE_INDENT {
                         self.advance_offset(line, CODE_INDENT, true);
                         true
@@ -540,11 +770,10 @@ impl BlockParser {
                         false
                     }
                 }
-                Kind::FencedCode {
+                Shape::FencedCode {
                     fence_char,
                     fence_length,
                     fence_offset,
-                    ..
                 } => {
                     let closes = !self.indented()
                         && self.peek(line, self.first_nonspace) == fence_char
@@ -569,28 +798,31 @@ impl BlockParser {
                         true
                     }
                 }
-                Kind::HtmlBlock { kind } => !(self.blank && (kind == 6 || kind == 7)),
-                Kind::Paragraph => !self.blank,
-                Kind::Table { .. } => !self.blank,
-                Kind::Heading { .. } | Kind::ThematicBreak => false,
-                Kind::Document | Kind::List(_) => true,
+                Shape::HtmlBlock { kind } => !(self.blank && (kind == 6 || kind == 7)),
+                Shape::Paragraph => !self.blank,
+                Shape::Table => !self.blank,
+                Shape::Heading { .. } | Shape::ThematicBreak => false,
+                Shape::Document | Shape::List => true,
             };
             if line_consumed {
                 return;
             }
             if !matched {
-                container = self.nodes[container].parent.unwrap_or(0);
+                container = match self.nodes[container].parent {
+                    NONE => 0,
+                    parent => parent as usize,
+                };
                 break;
             }
         }
         let last_matched_container = container;
 
         // 2. Try new block starts.
-        let maybe_lazy = matches!(self.kind(self.tip), Kind::Paragraph);
+        let maybe_lazy = matches!(self.shape(self.tip), Shape::Paragraph);
         loop {
             let is_code_or_html = matches!(
-                self.kind(container),
-                Kind::IndentedCode | Kind::FencedCode { .. } | Kind::HtmlBlock { .. }
+                self.shape(container),
+                Shape::IndentedCode | Shape::FencedCode { .. } | Shape::HtmlBlock { .. }
             );
             if is_code_or_html {
                 break;
@@ -598,7 +830,7 @@ impl BlockParser {
             self.find_first_nonspace(line);
             let indented = self.indented();
             let first = self.peek(line, self.first_nonspace);
-            let in_paragraph = matches!(self.kind(container), Kind::Paragraph);
+            let in_paragraph = matches!(self.shape(container), Shape::Paragraph);
 
             if !indented && first == b'>' {
                 let to_marker = self.first_nonspace + 1 - self.offset;
@@ -756,34 +988,39 @@ impl BlockParser {
         // 3. Add the line to the right block.
         self.find_first_nonspace(line);
         if self.blank {
-            if let Some(last) = self.nodes[container].children.last().copied() {
-                self.nodes[last].last_line_blank = true;
+            let last = self.nodes[container].last_child;
+            if last != NONE {
+                self.nodes[last as usize].last_line_blank = true;
             }
         }
-        let kind = self.kind(container).clone();
+        let shape = self.shape(container);
         let never_blank = matches!(
-            kind,
-            Kind::BlockQuote | Kind::Heading { .. } | Kind::ThematicBreak | Kind::FencedCode { .. }
+            shape,
+            Shape::BlockQuote
+                | Shape::Heading { .. }
+                | Shape::ThematicBreak
+                | Shape::FencedCode { .. }
         );
-        let is_empty_new_item = matches!(kind, Kind::Item(_))
-            && self.nodes[container].children.is_empty()
-            && self.nodes[container].start_line == self.line_number;
+        let is_empty_new_item = matches!(shape, Shape::Item { .. })
+            && self.nodes[container].first_child == NONE
+            && self.nodes[container].start_line as usize == self.line_number;
         let last_line_blank = self.blank && !never_blank && !is_empty_new_item;
         self.nodes[container].last_line_blank = last_line_blank;
         let mut ancestor = self.nodes[container].parent;
-        while let Some(node) = ancestor {
+        while ancestor != NONE {
+            let node = ancestor as usize;
             self.nodes[node].last_line_blank = false;
             ancestor = self.nodes[node].parent;
         }
 
-        let tip_is_paragraph = matches!(self.kind(self.tip), Kind::Paragraph);
+        let tip_is_paragraph = matches!(self.shape(self.tip), Shape::Paragraph);
         let is_lazy = self.tip != last_matched_container
             && container == last_matched_container
             && !self.blank
             && tip_is_paragraph;
         if is_lazy {
             let tip = self.tip;
-            self.add_line(tip, line);
+            self.add_line(tip, line_start, line);
             return;
         }
 
@@ -794,45 +1031,60 @@ impl BlockParser {
             }
         }
 
-        match self.kind(container).clone() {
-            Kind::IndentedCode | Kind::FencedCode { .. } => self.add_line(container, line),
-            Kind::HtmlBlock { kind } => {
-                self.add_line(container, line);
+        match self.shape(container) {
+            Shape::IndentedCode | Shape::FencedCode { .. } => {
+                self.add_line(container, line_start, line)
+            }
+            Shape::HtmlBlock { kind } => {
+                self.add_line(container, line_start, line);
                 if scan_html_block_end(kind, &line[self.first_nonspace.min(line.len())..]) {
                     let parent = self.finalize(container);
                     self.tip = parent.unwrap_or(0);
                     return;
                 }
             }
-            Kind::Table { .. } => {
+            Shape::Table => {
                 if !self.blank {
-                    let rest = std::str::from_utf8(&line[self.first_nonspace.min(line.len())..])
-                        .unwrap_or("");
+                    let rest = &raw_line[self.first_nonspace.min(line.len())..];
                     let cells = split_table_row(rest);
-                    if let Kind::Table { rows, .. } = &mut self.nodes[container].kind {
-                        rows.push(cells);
+                    if let Kind::Table(data) = &mut self.nodes[container].kind {
+                        data.rows.push(cells);
                     }
                 }
             }
             _ if self.blank => {}
-            Kind::Heading { setext: false, .. } => {
+            Shape::Heading { setext: false } => {
                 let to_content = self.first_nonspace - self.offset;
                 self.advance_offset(line, to_content, false);
-                let rest = std::str::from_utf8(&line[self.offset.min(line.len())..]).unwrap_or("");
+                let rest = &raw_line[self.offset.min(line.len())..];
                 let content = strip_atx_closing(rest);
-                self.nodes[container].content.push_str(content);
-                self.nodes[container].content.push('\n');
+                if content.is_empty() {
+                    self.tip = container;
+                    return;
+                }
+                // `content` is a subslice of `rest`; recover its offsets.
+                let skipped = content.as_ptr() as usize - rest.as_ptr() as usize;
+                let start = line_start + self.offset + skipped;
+                let end = start + content.len();
+                self.push_line(
+                    container,
+                    Line {
+                        start,
+                        end,
+                        leading_spaces: 0,
+                    },
+                );
             }
-            Kind::Paragraph | Kind::Heading { .. } => {
+            Shape::Paragraph | Shape::Heading { .. } => {
                 let to_content = self.first_nonspace - self.offset;
                 self.advance_offset(line, to_content, false);
-                self.add_line(container, line);
+                self.add_line(container, line_start, line);
             }
             _ => {
                 let paragraph = self.add_child(container, Kind::Paragraph);
                 let to_content = self.first_nonspace - self.offset;
                 self.advance_offset(line, to_content, false);
-                self.add_line(paragraph, line);
+                self.add_line(paragraph, line_start, line);
                 container = paragraph;
             }
         }
@@ -848,34 +1100,26 @@ impl BlockParser {
     fn try_open_table(&mut self, paragraph: usize, line: &[u8]) -> Option<usize> {
         let rest = std::str::from_utf8(&line[self.first_nonspace.min(line.len())..]).ok()?;
         let alignments = parse_delimiter_row(rest)?;
-        let content = self.nodes[paragraph]
-            .content
-            .trim_end_matches('\n')
-            .to_string();
-        let (before, header_line) = match content.rfind('\n') {
-            Some(index) => (Some(content[..index].to_string()), &content[index + 1..]),
-            None => (None, content.as_str()),
-        };
-        let header = split_table_row(header_line);
+        let header_line = *self.node_lines(paragraph).last()?;
+        let header = split_table_row(&header_line.text(self.source));
         if header.len() != alignments.len() {
             return None;
         }
-        let parent = self.nodes[paragraph].parent.unwrap_or(0);
-        match before {
-            Some(remaining) => {
-                self.nodes[paragraph].content = remaining;
-                self.nodes[paragraph].content.push('\n');
-                self.finalize(paragraph);
-            }
-            None => {
-                self.nodes[paragraph].open = false;
-                self.nodes[paragraph].deleted = true;
-            }
+        let parent = match self.nodes[paragraph].parent {
+            NONE => 0,
+            parent => parent as usize,
+        };
+        if self.nodes[paragraph].lines_len > 1 {
+            self.nodes[paragraph].lines_len -= 1;
+            self.finalize(paragraph);
+        } else {
+            self.nodes[paragraph].open = false;
+            self.nodes[paragraph].deleted = true;
         }
-        let table = Kind::Table {
+        let table = Kind::Table(Box::new(TableData {
             alignments,
             rows: vec![header],
-        };
+        }));
         let index = self.add_child(parent, table);
         self.try_open_table_result = index;
         Some(index)
@@ -1058,6 +1302,14 @@ fn parse_list_marker(
 
 /// GFM delimiter row: cells of `-`+ with optional leading/trailing `:`.
 fn parse_delimiter_row(line: &str) -> Option<Vec<Alignment>> {
+    // Cheap rejection before splitting: only pipes, dashes, colons, and
+    // whitespace may appear, and at least one dash must.
+    let only_delimiter_bytes = line
+        .bytes()
+        .all(|byte| matches!(byte, b'|' | b'-' | b':' | b' ' | b'\t'));
+    if !only_delimiter_bytes || !line.contains('-') {
+        return None;
+    }
     let cells = split_table_row(line);
     if cells.is_empty() {
         return None;
