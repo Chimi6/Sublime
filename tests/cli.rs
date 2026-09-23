@@ -334,7 +334,7 @@ fn formats_and_paths_list_the_registry() {
     assert_eq!(code(&paths), 0);
     assert_eq!(
         stdout(&paths),
-        "csv -> json: lossless via csv-to-json\njson -> csv: conditional via json-to-csv\n"
+        "csv -> json: lossless via csv-to-json\njson -> csv: conditional via json-to-csv\nmarkdown -> html: lossless via markdown-to-html\n"
     );
 
     let markdown = run(&["paths", "--markdown"]);
@@ -369,4 +369,21 @@ fn missing_input_file_is_an_error() {
     ]);
     assert_eq!(code(&output), 1);
     assert!(stderr(&output).contains("opening"));
+}
+
+#[test]
+fn markdown_to_html_via_extension() {
+    let input = fixture("markdown/sample.md");
+    let output = run(&["convert", input.to_str().unwrap(), "--to", "html"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "<h1>Sample</h1>\n<p>A paragraph with <em>emphasis</em> and a <a href=\"https://example.com\">link</a>.</p>\n<ul>\n<li>one</li>\n<li>two</li>\n</ul>\n<table>\n<thead>\n<tr>\n<th>a</th>\n<th>b</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>1</td>\n<td>2</td>\n</tr>\n</tbody>\n</table>\n"
+    );
+    let check = run(&["check", "markdown", "html"]);
+    assert_eq!(code(&check), 0);
+    assert_eq!(
+        stdout(&check),
+        "markdown -> html\n  1. markdown-to-html (native, lossless)\nfidelity: lossless\n"
+    );
 }
