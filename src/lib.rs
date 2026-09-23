@@ -8,3 +8,4 @@ pub mod converters;
 pub mod event;
 pub mod format;
 pub mod io;
+pub mod registry;
