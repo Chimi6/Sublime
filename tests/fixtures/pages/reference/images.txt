@@ -1,0 +1,8 @@
+Images
+An inline image follows this sentence: 
+Before  after.
+A floating image on the right with text wrapping around it. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.
+Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.
+Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.
+
+Figure 1: a captioned image, scaled to twice its size

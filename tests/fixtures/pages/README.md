@@ -60,3 +60,7 @@ Two more kinds of document are wanted and cannot be generated:
 
 `public/` may hold documents from third parties with their own licenses;
 see the note next to each.
+
+## Provenance
+
+Generated with Pages 12.0 on macOS 15.5 on 2026-09-23.

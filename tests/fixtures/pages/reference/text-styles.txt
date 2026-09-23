@@ -1,0 +1,11 @@
+Text Styles
+Every character-level attribute Pages can carry
+Heading One
+Body text under heading one. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.
+Heading Two
+Body text under heading two.
+Heading Three
+Plain, bold, italic, bold italic, underlined, struck through, red, large, small, monospace, highlighted, superscript, subscript, and small caps.
+A run in the Emphasis character style and one in Strong.
+Unicode: café, naïve, 日本語, emoji 😀, and an em—dash.
+A quoted paragraph in the Quote style, indented on both sides.
