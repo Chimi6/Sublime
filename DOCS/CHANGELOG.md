@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Changed
+
+- License: AGPL-3.0-or-later from this point on (releases 0.1.0 to 0.3.0 stay Apache-2.0). Contributions are accepted under Apache-2.0. See `LICENSING.md`.
+
 ## [0.3.0] - 2026-09-23
 
 ### Added
