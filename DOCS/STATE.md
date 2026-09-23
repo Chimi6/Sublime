@@ -26,11 +26,7 @@ describes.
 
 ## Blockers
 
-- 2026-09-22: Benchmark gate failed (`bench/run.sh`, commit 4ceb6e9, 10,000,000 rows / ~1 GB CSV). Two rows FAIL against DOCS/BENCHMARKS.md pass lines:
-  - CSV -> JSON throughput: 165.7 MB/s ours vs 316.0 MB/s reference (`csv` + streaming `serde_json`). Ours is ~1.9x slower; needs to be >= reference.
-  - Startup to first byte on a 1 KB file: 1.527 ms vs < 1 ms target. Off by 0.527 ms (~53% over budget).
-  - All other rows (JSON -> CSV throughput, peak RSS in both directions and from stdin, musl binary size) PASS. See DOCS/BENCHMARKS.md, Results, 2026-09-22.
-  - Next step is a spike (see Spikes: SIMD byte scanning, opt-level tuning) decided with the user, not a silent tweak, before Task 21 proceeds.
+- (none)
 
 ## Tech Debt
 
@@ -41,11 +37,13 @@ describes.
 
 - 2026-09-22: Single-pass JSON -> CSV with header inference from the first N objects, for the stdin case.
 - 2026-09-22: `opt-level = "z"` versus `3`: measure size and speed.
-- 2026-09-22: SIMD byte scanning in the CSV and JSON tokenizers using `std::arch` with a scalar fallback. Stretch target: beat the `csv` crate's reader in isolation.
+- 2026-09-22: SIMD byte scanning with `std::arch`. The word-at-a-time scanner in `io::scan` closed the CSV -> JSON gap without intrinsics; the CSV reader alone is still slower than the `csv` crate reader (see BENCHMARKS.md), so this remains the stretch target.
 - 2026-09-22: Content sniffing beyond magic bytes for extensionless input.
 
 ## Decisions
 
+- 2026-09-22: Writers own a 64 KiB buffer and hand sinks whole chunks. Per-field writes through `dyn Write` cost more than parsing did; buffering inside the writer was the single largest win in the first performance spike.
+- 2026-09-22: Byte scanning is done eight bytes at a time with plain integer bit tricks before reaching for SIMD intrinsics. It is portable, dependency-free, and readable, and it was enough to beat the reference pipeline.
 - 2026-09-22: Zero runtime dependencies. Every proposed runtime dependency needs an entry in `DEPENDENCIES.md` with measured cost.
 - 2026-09-22: Converters register through one explicit list in `src/registry.rs`. No link-time or build-script auto-registration.
 - 2026-09-22: The library never prints; it emits typed events to an explicitly passed sink. No global logger.

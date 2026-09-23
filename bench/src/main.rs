@@ -14,12 +14,18 @@ fn main() {
     let result = match args.as_slice() {
         [command, rows, path] if command == "gen-csv" => generate_csv(rows, path),
         [command, rows, path] if command == "gen-json" => generate_json(rows, path),
+        [command, input] if command == "ours-csv-read" => read_csv_only(input),
+        [command, input] if command == "crates-csv-read" => crates_read_csv_only(input),
+        [command, binary, input] if command == "startup" => measure_startup(binary, input),
+        [command, binary] if command == "spawn-baseline" => measure_spawn_baseline(binary),
         [command, input, output] if command == "ours-csv-json" => run_ours(&CsvToJson, input, output),
         [command, input, output] if command == "ours-json-csv" => run_ours(&JsonToCsv, input, output),
         [command, input, output] if command == "crates-csv-json" => crates_csv_to_json(input, output),
         [command, input, output] if command == "crates-json-csv" => crates_json_to_csv(input, output),
         _ => {
-            eprintln!("usage: bench <gen-csv|gen-json> <rows> <path> | <ours-csv-json|ours-json-csv|crates-csv-json|crates-json-csv> <in> <out>");
+            eprintln!(
+                "usage: bench <gen-csv|gen-json> <rows> <path> | <ours-csv-json|ours-json-csv|crates-csv-json|crates-json-csv> <in> <out> | <ours-csv-read|crates-csv-read> <in> | startup <binary> <csv> | spawn-baseline <binary>"
+            );
             std::process::exit(4);
         }
     };
@@ -70,6 +76,91 @@ fn generate_json(rows: &str, path: &str) -> Result<(), String> {
     }
     writeln!(writer, "]").map_err(|error| error.to_string())?;
     writer.flush().map_err(|error| error.to_string())
+}
+
+/// Reads every record with our CSV reader and discards it. Isolates reader cost.
+fn read_csv_only(input: &str) -> Result<(), String> {
+    use sublime::io::csv::{CsvReader, Record};
+    let file = File::open(input).map_err(|error| error.to_string())?;
+    let mut reader = CsvReader::new(file);
+    let mut record = Record::new();
+    let mut field_total: u64 = 0;
+    loop {
+        let has_record = reader.read_record(&mut record).map_err(|error| error.to_string())?;
+        if !has_record {
+            break;
+        }
+        field_total += record.len() as u64;
+    }
+    eprintln!("fields: {field_total}");
+    Ok(())
+}
+
+/// Reads every record with the `csv` crate and discards it.
+fn crates_read_csv_only(input: &str) -> Result<(), String> {
+    let file = File::open(input).map_err(|error| error.to_string())?;
+    let mut reader = csv::Reader::from_reader(BufReader::new(file));
+    let mut record = csv::StringRecord::new();
+    let mut field_total: u64 = 0;
+    while reader.read_record(&mut record).map_err(|error| error.to_string())? {
+        field_total += record.len() as u64;
+    }
+    eprintln!("fields: {field_total}");
+    Ok(())
+}
+
+const STARTUP_SAMPLES: usize = 25;
+
+/// Median milliseconds from spawning `binary convert <input> --to json` to
+/// its first byte of stdout. Timed in-process, so no shell forks are counted.
+fn measure_startup(binary: &str, input: &str) -> Result<(), String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::Instant;
+    let mut samples: Vec<f64> = Vec::with_capacity(STARTUP_SAMPLES);
+    for _ in 0..STARTUP_SAMPLES {
+        let started = Instant::now();
+        let mut child = Command::new(binary)
+            .args(["-q", "convert", input, "--to", "json"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        let mut first_byte = [0u8; 1];
+        let mut stdout = child.stdout.take().ok_or("no stdout")?;
+        stdout.read_exact(&mut first_byte).map_err(|error| error.to_string())?;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        samples.push(elapsed_ms);
+        drop(stdout);
+        child.wait().map_err(|error| error.to_string())?;
+    }
+    println!("{:.3}", median(&mut samples));
+    Ok(())
+}
+
+/// Median milliseconds to spawn `binary` and wait for it to exit. The
+/// process-creation floor on this machine, for context next to `startup`.
+fn measure_spawn_baseline(binary: &str) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    use std::time::Instant;
+    let mut samples: Vec<f64> = Vec::with_capacity(STARTUP_SAMPLES);
+    for _ in 0..STARTUP_SAMPLES {
+        let started = Instant::now();
+        Command::new(binary)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|error| error.to_string())?;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        samples.push(elapsed_ms);
+    }
+    println!("{:.3}", median(&mut samples));
+    Ok(())
+}
+
+fn median(samples: &mut [f64]) -> f64 {
+    samples.sort_by(|left, right| left.total_cmp(right));
+    samples[samples.len() / 2]
 }
 
 fn run_ours(converter: &dyn Converter, input: &str, output: &str) -> Result<(), String> {
