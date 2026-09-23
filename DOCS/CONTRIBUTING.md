@@ -99,6 +99,8 @@ commit as the code.
 
 ## Releasing
 
+0. Dry-run the build matrix first: `gh workflow run release.yml --ref <branch>`,
+   and confirm all five targets succeed before tagging.
 1. Move the `## [Unreleased]` entries in `CHANGELOG.md` under a new
    `## [x.y.z] - YYYY-MM-DD` heading and leave an empty Unreleased section.
 2. Set `version` in `Cargo.toml` to `x.y.z`. Commit as `chore: release x.y.z`.
