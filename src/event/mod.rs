@@ -56,7 +56,7 @@ impl Sink for NullSink {
 }
 
 /// Records every event. Produces the conversion report.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct CollectingSink {
     events: Vec<Event>,
 }

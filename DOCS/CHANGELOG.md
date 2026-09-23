@@ -16,3 +16,4 @@ section under a version heading.
 - Streaming JSON tokenizer with full escape handling and verbatim numbers.
 - Compact JSON writer.
 - CSV -> JSON converter (native, lossless).
+- JSON -> CSV converter (native, conditional): two-pass, constant memory from files.
