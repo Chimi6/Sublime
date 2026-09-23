@@ -111,6 +111,7 @@ pub enum ArgsError {
     UnknownCommand(String),
     UnknownFlag(String),
     MissingValue(String),
+    InvalidValue { flag: String, value: String },
     MissingPositional(&'static str),
     TooManyPositionals(String),
 }
@@ -124,6 +125,12 @@ impl fmt::Display for ArgsError {
             ArgsError::UnknownCommand(name) => write!(formatter, "unknown command '{name}'"),
             ArgsError::UnknownFlag(flag) => write!(formatter, "unknown flag '{flag}'"),
             ArgsError::MissingValue(flag) => write!(formatter, "'{flag}' needs a value"),
+            ArgsError::InvalidValue { flag, value } => {
+                write!(
+                    formatter,
+                    "'{value}' is not a valid value for '{flag}'; expected human or json"
+                )
+            }
             ArgsError::MissingPositional(name) => {
                 write!(formatter, "missing required argument <{name}>")
             }
@@ -209,7 +216,12 @@ fn extract_global<I: IntoIterator<Item = String>>(args: I) -> Result<Extracted, 
                 global.log_format = match value.as_str() {
                     "human" => LogFormat::Human,
                     "json" => LogFormat::Json,
-                    _ => return Err(ArgsError::MissingValue("--log-format".to_string())),
+                    _ => {
+                        return Err(ArgsError::InvalidValue {
+                            flag: "--log-format".to_string(),
+                            value,
+                        });
+                    }
                 };
             }
             "-h" | "--help" => wants_help = true,
@@ -451,6 +463,38 @@ mod tests {
             ArgsError::UnknownCommand("bogus".to_string())
         );
         assert_eq!(parse_strs(&[]).unwrap_err(), ArgsError::MissingCommand);
+    }
+
+    #[test]
+    fn invalid_log_format_value_is_an_error() {
+        let error = parse_strs(&["--log-format", "bogus", "formats"]).unwrap_err();
+        assert_eq!(
+            error,
+            ArgsError::InvalidValue {
+                flag: "--log-format".to_string(),
+                value: "bogus".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn zero_argument_commands_reject_positionals() {
+        assert_eq!(
+            parse_strs(&["formats", "extra"]).unwrap_err(),
+            ArgsError::TooManyPositionals("extra".to_string())
+        );
+        assert_eq!(
+            parse_strs(&["version", "extra"]).unwrap_err(),
+            ArgsError::TooManyPositionals("extra".to_string())
+        );
+        assert_eq!(
+            parse_strs(&["paths", "extra"]).unwrap_err(),
+            ArgsError::TooManyPositionals("extra".to_string())
+        );
+        assert_eq!(
+            parse_strs(&["paths", "--bogus"]).unwrap_err(),
+            ArgsError::UnknownFlag("--bogus".to_string())
+        );
     }
 
     #[test]
