@@ -26,8 +26,10 @@ fn render_human() -> String {
     for format in registry::all_formats() {
         let extensions = format.extensions.join(", ");
         let line = format!(
-            "{:<8} {:<32} extensions: {extensions}\n",
-            format.id, format.display_name
+            "{:<10} {:<10} {:<32} extensions: {extensions}\n",
+            format.id,
+            format.category.label(),
+            format.display_name
         );
         text.push_str(&line);
     }
@@ -45,6 +47,8 @@ fn render_json() -> String {
             let _ = writer.string(format.id);
             let _ = writer.key("name");
             let _ = writer.string(format.display_name);
+            let _ = writer.key("category");
+            let _ = writer.string(format.category.label());
             let _ = writer.key("extensions");
             let _ = writer.begin_array();
             for extension in format.extensions {
