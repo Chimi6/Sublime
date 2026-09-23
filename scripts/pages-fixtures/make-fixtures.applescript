@@ -43,22 +43,46 @@ end run
 -- Opens a Word document, saves it as Pages, exports the references.
 on convertOne(sourcePath, fixturesDir, referenceDir, baseName)
 	tell application "Pages"
-		set theDocument to open (POSIX file sourcePath)
-		delay 1
-		my saveAndExport(theDocument, fixturesDir, referenceDir, baseName)
+		with timeout of 600 seconds
+			-- Start from a clean slate so front document is unambiguous.
+			repeat while (count of documents) > 0
+				close every document saving no
+				delay 0.3
+			end repeat
+		end timeout
+	end tell
+	-- Open through LaunchServices rather than the Pages `open` command: the
+	-- scripting command is flaky from inside a handler (it can silently fail
+	-- to open a document, notably ones with embedded images), whereas
+	-- `open -a` is reliable. Poll for the document, then act on it.
+	do shell script "open -a Pages " & quoted form of sourcePath
+	tell application "Pages"
+		with timeout of 600 seconds
+			set waited to 0
+			repeat until (count of documents) > 0
+				delay 0.3
+				set waited to waited + 0.3
+				if waited > 120 then error "document did not open within 120s"
+			end repeat
+			delay 1
+			set theDocument to front document
+			my saveAndExport(theDocument, fixturesDir, referenceDir, baseName)
+		end timeout
 	end tell
 end convertOne
 
 on saveAndExport(theDocument, fixturesDir, referenceDir, baseName)
 	tell application "Pages"
-		set pagesPath to fixturesDir & "/" & baseName & ".pages"
-		do shell script "rm -rf " & quoted form of pagesPath
-		save theDocument in (POSIX file pagesPath)
-		delay 1
-		export theDocument to (POSIX file (referenceDir & "/" & baseName & ".docx")) as Microsoft Word
-		export theDocument to (POSIX file (referenceDir & "/" & baseName & ".pdf")) as PDF
-		export theDocument to (POSIX file (referenceDir & "/" & baseName & ".txt")) as unformatted text
-		close theDocument saving no
+		with timeout of 600 seconds
+			set pagesPath to fixturesDir & "/" & baseName & ".pages"
+			do shell script "rm -rf " & quoted form of pagesPath
+			save theDocument in (POSIX file pagesPath)
+			delay 1
+			export theDocument to (POSIX file (referenceDir & "/" & baseName & ".docx")) as Microsoft Word
+			export theDocument to (POSIX file (referenceDir & "/" & baseName & ".pdf")) as PDF
+			export theDocument to (POSIX file (referenceDir & "/" & baseName & ".txt")) as unformatted text
+			close theDocument saving no
+		end timeout
 	end tell
 end saveAndExport
 
@@ -69,6 +93,7 @@ end saveAndExport
 on buildNative(sourcesDir, fixturesDir, referenceDir)
 	tell application "Pages"
 		set theDocument to make new document with properties {document template:template "Blank"}
+		delay 1
 		tell theDocument
 			set body text to "Native Scripted Document" & return & "This paragraph was written by AppleScript, with a font, a size, and a color set on ranges." & return & "A second paragraph in a different font." & return & "The last paragraph."
 			tell body text
@@ -78,8 +103,10 @@ on buildNative(sourcesDir, fixturesDir, referenceDir)
 				set properties of paragraph 4 to {font:"Courier New", size:11}
 			end tell
 		end tell
+		-- Tables, images, and text items are elements of a page (or section),
+		-- not of the document itself; making them on `theDocument` fails.
 		try
-			tell theDocument
+			tell page 1 of theDocument
 				set theTable to make new table with properties {row count:3, column count:2, header row count:1}
 				tell theTable
 					set value of cell "A1" to "Header A"
@@ -92,14 +119,13 @@ on buildNative(sourcesDir, fixturesDir, referenceDir)
 			end tell
 		end try
 		try
-			tell theDocument
+			tell page 1 of theDocument
 				make new image with properties {file:(POSIX file (sourcesDir & "/image1.png"))}
 			end tell
 		end try
 		try
-			tell theDocument
-				set theTextItem to make new text item with properties {height:120, width:240, position:{72, 500}}
-				set object text of theTextItem to "A floating text box made by script."
+			tell page 1 of theDocument
+				make new text item with properties {object text:"A floating text box made by script.", height:120, width:240, position:{72, 500}}
 			end tell
 		end try
 		my saveAndExport(theDocument, fixturesDir, referenceDir, "native-scripted")
