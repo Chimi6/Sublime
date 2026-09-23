@@ -30,7 +30,8 @@ describes.
 
 ## Tech Debt
 
-- (none yet)
+- 2026-09-22: JSON -> CSV from stdin buffers the whole input to memory (two passes need a rewind). Files stream in constant memory. See Spikes.
+- 2026-09-22: Multi-hop chains replay events after completion instead of streaming them live.
 
 ## Spikes
 
