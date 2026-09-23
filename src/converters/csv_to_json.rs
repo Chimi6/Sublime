@@ -49,6 +49,7 @@ impl Converter for CsvToJson {
         let has_header = reader.read_record(&mut record)?;
         if !has_header {
             writer.end_array()?;
+            writer.flush()?;
             return Ok(());
         }
         let keys: Vec<String> = record.fields().map(str::to_string).collect();
