@@ -8,6 +8,12 @@ section under a version heading.
 
 ### Added
 
+- (nothing yet)
+
+## [0.1.0] - 2026-09-22
+
+### Added
+
 - Benchmark harness in `bench/` comparing against the `csv` and `serde_json` pipelines, with reader-only modes for both sides; results recorded in `DOCS/BENCHMARKS.md`.
 - Word-at-a-time byte scanner (`io::scan`) used by the CSV reader and JSON writer; no SIMD intrinsics, no dependencies.
 

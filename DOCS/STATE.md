@@ -6,11 +6,10 @@ describes.
 
 ## Now
 
-- 2026-09-22: Building the foundation: framework, CSV <-> JSON, docs, CI, release pipeline.
+- 2026-09-22: Markdown -> HTML native converter (first document-shaped format).
 
 ## Next
 
-- 2026-09-22: Markdown -> HTML native converter (first document-shaped format).
 - 2026-09-22: Apple Pages -> DOCX native converter (flagship). Reverse-engineering notes will live in `DOCS/formats/pages.md`.
 
 ## Future
@@ -39,6 +38,10 @@ describes.
 - 2026-09-22: `opt-level = "z"` versus `3`: measure size and speed.
 - 2026-09-22: SIMD byte scanning with `std::arch`. The word-at-a-time scanner in `io::scan` closed the CSV -> JSON gap without intrinsics; the CSV reader alone is still slower than the `csv` crate reader (see BENCHMARKS.md), so this remains the stretch target.
 - 2026-09-22: Content sniffing beyond magic bytes for extensionless input.
+
+## Done
+
+- 2026-09-22: Foundation released as 0.1.0: framework, CSV <-> JSON, docs, CI, release pipeline, benchmark harness with all pass lines met.
 
 ## Decisions
 
