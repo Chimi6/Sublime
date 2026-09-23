@@ -26,7 +26,11 @@ describes.
 
 ## Blockers
 
-- (none)
+- 2026-09-22: Benchmark gate failed (`bench/run.sh`, commit 4ceb6e9, 10,000,000 rows / ~1 GB CSV). Two rows FAIL against DOCS/BENCHMARKS.md pass lines:
+  - CSV -> JSON throughput: 165.7 MB/s ours vs 316.0 MB/s reference (`csv` + streaming `serde_json`). Ours is ~1.9x slower; needs to be >= reference.
+  - Startup to first byte on a 1 KB file: 1.527 ms vs < 1 ms target. Off by 0.527 ms (~53% over budget).
+  - All other rows (JSON -> CSV throughput, peak RSS in both directions and from stdin, musl binary size) PASS. See DOCS/BENCHMARKS.md, Results, 2026-09-22.
+  - Next step is a spike (see Spikes: SIMD byte scanning, opt-level tuning) decided with the user, not a silent tweak, before Task 21 proceeds.
 
 ## Tech Debt
 
