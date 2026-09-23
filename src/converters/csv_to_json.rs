@@ -7,7 +7,7 @@ use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
 use crate::io::csv::{CsvReader, Record};
-use crate::io::json::JsonWriter;
+use crate::io::json::{JsonWriter, PreparedKey};
 
 const NAME: &str = "csv-to-json";
 const PROGRESS_INTERVAL: u64 = 4096;
@@ -52,7 +52,10 @@ impl Converter for CsvToJson {
             writer.flush()?;
             return Ok(());
         }
-        let keys: Vec<String> = record.fields().map(str::to_string).collect();
+        let keys: Vec<PreparedKey> = record
+            .fields()
+            .map(JsonWriter::<&mut dyn Write>::prepare_key)
+            .collect();
 
         let mut record_count: u64 = 0;
         loop {
@@ -73,7 +76,7 @@ impl Converter for CsvToJson {
 }
 
 fn write_object<W: Write>(
-    keys: &[String],
+    keys: &[PreparedKey],
     record: &Record,
     writer: &mut JsonWriter<W>,
     context: &mut Context<'_>,
@@ -85,7 +88,7 @@ fn write_object<W: Write>(
     writer.begin_object()?;
     for (index, key) in keys.iter().enumerate().take(common_count) {
         let value = record.field(index).unwrap_or("");
-        writer.key(key)?;
+        writer.prepared_key(key)?;
         writer.string(value)?;
     }
     writer.end_object()?;

@@ -4,6 +4,8 @@
 use std::fmt;
 use std::io::{self, Read};
 
+use crate::io::scan::find_csv_delimiter;
+
 const BUFFER_SIZE: usize = 64 * 1024;
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
@@ -162,6 +164,7 @@ impl<R: Read> CsvReader<R> {
                         finished = true;
                     } else {
                         data.push(byte);
+                        self.copy_run(&mut data)?;
                     }
                 }
                 State::Quoted => {
@@ -172,6 +175,7 @@ impl<R: Read> CsvReader<R> {
                             self.line += 1;
                         }
                         data.push(byte);
+                        self.copy_run(&mut data)?;
                     }
                 }
                 State::AfterQuote => {
@@ -237,6 +241,33 @@ impl<R: Read> CsvReader<R> {
             self.bytes_consumed = UTF8_BOM.len() as u64;
         }
         Ok(())
+    }
+
+    /// Copies bytes into `data` up to, but not including, the next `,`, `"`,
+    /// `\n`, or `\r`, refilling the buffer as needed. The delimiter itself is
+    /// left for `next_byte` so the state machine handles it. Ordinary bytes
+    /// are the common case, so this is where most of the input flows.
+    fn copy_run(&mut self, data: &mut Vec<u8>) -> io::Result<()> {
+        loop {
+            if self.position == self.filled {
+                let has_more = self.fill()?;
+                if !has_more {
+                    return Ok(());
+                }
+            }
+            let available = &self.buffer[self.position..self.filled];
+            let run_length = match find_csv_delimiter(available) {
+                Some(index) => index,
+                None => available.len(),
+            };
+            data.extend_from_slice(&available[..run_length]);
+            self.position += run_length;
+            self.bytes_consumed += run_length as u64;
+            let stopped_at_delimiter = run_length < available.len();
+            if stopped_at_delimiter {
+                return Ok(());
+            }
+        }
     }
 
     /// Refills the buffer. Returns `Ok(false)` when the source is exhausted.

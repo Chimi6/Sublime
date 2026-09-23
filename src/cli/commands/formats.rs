@@ -54,6 +54,7 @@ fn render_json() -> String {
             let _ = writer.end_object();
         }
         let _ = writer.end_array();
+        let _ = writer.flush();
     }
     let mut text = String::from_utf8(buffer).unwrap_or_default();
     text.push('\n');

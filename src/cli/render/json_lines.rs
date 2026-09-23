@@ -35,6 +35,7 @@ pub fn encode_event(event: &Event) -> String {
         let mut writer = JsonWriter::new(&mut buffer);
         // Writing to a Vec cannot fail; the results are ignored on purpose.
         let _ = write_event(&mut writer, event);
+        let _ = writer.flush();
     }
     String::from_utf8(buffer).unwrap_or_default()
 }

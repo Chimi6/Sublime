@@ -376,6 +376,7 @@ fn render_value<R: Read>(
         }
         token = tokenizer.next_token()?;
     }
+    writer.flush()?;
     drop(writer);
     match std::str::from_utf8(&buffer) {
         Ok(text) => {

@@ -198,6 +198,7 @@ fn report_error(error: &CliError, log_format: LogFormat) {
                 let _ = writer.key("exit_code");
                 let _ = writer.raw(&error.exit_code().as_i32().to_string());
                 let _ = writer.end_object();
+                let _ = writer.flush();
             }
             let line = String::from_utf8(buffer).unwrap_or_default();
             writeln!(stderr, "{line}")
