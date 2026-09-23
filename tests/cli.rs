@@ -36,7 +36,11 @@ fn run_with_stdin(args: &[&str], stdin_bytes: &[u8]) -> Output {
         .expect("binary spawns");
     {
         let mut stdin = child.stdin.take().expect("stdin");
-        stdin.write_all(stdin_bytes).expect("write stdin");
+        let written = stdin.write_all(stdin_bytes);
+        if let Err(error) = written {
+            let is_broken_pipe = error.kind() == std::io::ErrorKind::BrokenPipe;
+            assert!(is_broken_pipe, "write stdin: {error}");
+        }
     }
     child.wait_with_output().expect("wait")
 }
