@@ -26,3 +26,4 @@ section under a version heading.
 - Fixture corpus and subprocess CLI tests covering every command and exit code.
 - Generated formats reference, contributing guide with the drop-in recipe, docs drift check script.
 - CI: fmt, clippy, doc, tests on Linux/macOS/Windows, formats doc drift, size budget, dependency ledger.
+- Release workflow: tag verification, five static targets, checksums, changelog-based notes.

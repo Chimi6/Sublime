@@ -96,3 +96,12 @@ commit as the code.
 - `temp/` is gitignored working space for plans, specs, and notes.
 - `DOCS/FORMATS.md` is generated. CI fails if it is stale.
 - `DOCS/formats/<name>.md` holds reverse-engineering notes for a format.
+
+## Releasing
+
+1. Move the `## [Unreleased]` entries in `CHANGELOG.md` under a new
+   `## [x.y.z] - YYYY-MM-DD` heading and leave an empty Unreleased section.
+2. Set `version` in `Cargo.toml` to `x.y.z`. Commit as `chore: release x.y.z`.
+3. Tag and push: `git tag vx.y.z && git push origin vx.y.z`.
+4. The release workflow verifies the tag, builds five targets, and publishes
+   a GitHub release with archives, `SHA256SUMS`, and the changelog section.
