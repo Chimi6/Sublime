@@ -14,3 +14,4 @@ section under a version heading.
 - Streaming CSV reader with BOM, CRLF, quoting, and blank-line handling.
 - CSV writer with minimal quoting.
 - Streaming JSON tokenizer with full escape handling and verbatim numbers.
+- Compact JSON writer.
