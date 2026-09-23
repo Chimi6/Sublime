@@ -1,7 +1,7 @@
 //! Builds the format graph from the registry and finds the cheapest path.
 
-// pub mod execute;
-// pub mod pipe;
+pub mod execute;
+pub mod pipe;
 
 use std::fmt;
 
@@ -9,7 +9,7 @@ use crate::converter::{Converter, FidelityKind};
 use crate::event::Hop;
 use crate::format::Format;
 
-// pub use execute::execute;
+pub use execute::execute;
 
 pub struct Plan {
     pub hops: Vec<&'static dyn Converter>,
