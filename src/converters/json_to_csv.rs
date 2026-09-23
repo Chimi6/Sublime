@@ -117,15 +117,15 @@ fn collect_object_keys<R: Read>(
             Token::EndObject => break,
             Token::Comma => continue,
             Token::String => {
-                let key = tokenizer.text().to_string();
+                if !seen.contains(tokenizer.text()) {
+                    let key = tokenizer.text().to_string();
+                    seen.insert(key.clone());
+                    keys.push(key);
+                }
                 tokenizer.expect(Token::Colon)?;
                 let value_token = tokenizer.next_token()?;
                 tokenizer.skip_value(value_token)?;
                 count += 1;
-                if !seen.contains(&key) {
-                    seen.insert(key.clone());
-                    keys.push(key);
-                }
             }
             other => {
                 let message = format!("expected a key, found {}", other.describe());
@@ -153,7 +153,8 @@ fn write_rows(
         column_of.insert(key.as_str(), index);
     }
     let mut row: Vec<String> = vec![String::new(); keys.len()];
-    let mut column_loss_reported: Vec<bool> = vec![false; keys.len()];
+    let mut scalar_loss_reported: Vec<bool> = vec![false; keys.len()];
+    let mut null_loss_reported: Vec<bool> = vec![false; keys.len()];
 
     tokenizer.expect(Token::BeginArray)?;
     let mut row_count: u64 = 0;
@@ -173,7 +174,8 @@ fn write_rows(
                     &mut tokenizer,
                     &column_of,
                     &mut row,
-                    &mut column_loss_reported,
+                    &mut scalar_loss_reported,
+                    &mut null_loss_reported,
                     context,
                 )?;
                 writer.write_record(row.iter().map(String::as_str))?;
@@ -193,7 +195,8 @@ fn fill_row<R: Read>(
     tokenizer: &mut JsonTokenizer<R>,
     column_of: &HashMap<&str, usize>,
     row: &mut [String],
-    column_loss_reported: &mut [bool],
+    scalar_loss_reported: &mut [bool],
+    null_loss_reported: &mut [bool],
     context: &mut Context<'_>,
 ) -> Result<(), ConvertError> {
     loop {
@@ -218,7 +221,8 @@ fn fill_row<R: Read>(
                     value_token,
                     row,
                     column,
-                    column_loss_reported,
+                    scalar_loss_reported,
+                    null_loss_reported,
                     context,
                 )?;
             }
@@ -239,7 +243,8 @@ fn write_cell<R: Read>(
     token: Token,
     row: &mut [String],
     column: usize,
-    column_loss_reported: &mut [bool],
+    scalar_loss_reported: &mut [bool],
+    null_loss_reported: &mut [bool],
     context: &mut Context<'_>,
 ) -> Result<(), ConvertError> {
     match token {
@@ -251,7 +256,7 @@ fn write_cell<R: Read>(
             report_column_once(
                 tokenizer,
                 column,
-                column_loss_reported,
+                scalar_loss_reported,
                 context,
                 "non-string scalar written as its JSON text",
             );
@@ -260,7 +265,7 @@ fn write_cell<R: Read>(
             report_column_once(
                 tokenizer,
                 column,
-                column_loss_reported,
+                null_loss_reported,
                 context,
                 "null written as an empty cell",
             );
@@ -442,6 +447,16 @@ mod tests {
         let (csv, sink) = convert(b"[{\"a\":null,\"b\":\"x\"}]").unwrap();
         assert_eq!(csv, "a,b\n,x\n");
         assert_eq!(sink.report().losses.len(), 1);
+    }
+
+    #[test]
+    fn mixed_scalar_and_null_column_reports_both_losses() {
+        let (csv, sink) = convert(b"[{\"a\":1},{\"a\":null}]").unwrap();
+        // A single-field row with an empty value is written as `""` by
+        // `CsvWriter` (see `single_empty_field_is_written_as_quotes`), so
+        // it round-trips as an empty cell rather than an empty record.
+        assert_eq!(csv, "a\n1\n\"\"\n");
+        assert_eq!(sink.report().losses.len(), 2);
     }
 
     #[test]
