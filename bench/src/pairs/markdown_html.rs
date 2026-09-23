@@ -12,6 +12,7 @@ pub fn run(mode: &str, args: &[String]) -> Result<(), String> {
     match (mode, args) {
         ("gen", [units, path]) => generate(units, path, false),
         ("gen-plain", [units, path]) => generate(units, path, true),
+        ("gen-prose", [units, path]) => generate_prose(units, path),
         ("ours", [input, output]) => run_ours(&MarkdownToHtml, input, output),
         ("crates", [input, output]) => crates_markdown_to_html(input, output),
         ("phases", [input]) => phases(input),
@@ -21,6 +22,37 @@ pub fn run(mode: &str, args: &[String]) -> Result<(), String> {
                 .to_string(),
         ),
     }
+}
+
+/// Writes `units` paragraphs of prose, which is what most real documents
+/// are: long paragraphs of plain sentences with occasional emphasis, a
+/// link, or inline code; a heading every eighth paragraph and a short list
+/// after every fifth. No tables, code blocks, or footnotes. Each unit is
+/// about 0.6 KB.
+fn generate_prose(units: &str, path: &str) -> Result<(), String> {
+    let count = parse_rows(units)?;
+    let file = File::create(path).map_err(|error| error.to_string())?;
+    let mut writer = BufWriter::new(file);
+    for index in 0..count {
+        if index % 8 == 0 {
+            writeln!(writer, "## Heading {index}\n").map_err(|error| error.to_string())?;
+        }
+        let paragraph = format!(
+            "The quick brown fox jumps over the lazy dog while observer {index} takes careful notes about the weather, the light, and the sound of distant traffic.\n\
+             Sentences like this one carry *some emphasis* now and then, a [link to somewhere](https://example.com/page/{index}) every so often, and the odd `identifier` in code.\n\
+             Most lines, though, are plain words: nothing to escape, nothing to resolve, just text that has to be scanned once and copied to the output.\n\
+             A fourth line keeps the paragraph long enough that line joining matters, and a final one ends it with an ordinary full stop.\n\n"
+        );
+        writer
+            .write_all(paragraph.as_bytes())
+            .map_err(|error| error.to_string())?;
+        if index % 5 == 4 {
+            writer
+                .write_all(b"- a short list item\n- another short list item\n- and a third one\n\n")
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    writer.flush().map_err(|error| error.to_string())
 }
 
 /// Writes `units` repetitions of a fixed mix of constructs: headings,
@@ -91,28 +123,34 @@ fn generate(units: &str, path: &str, plain: bool) -> Result<(), String> {
 /// steady workload for a sampling profiler.
 fn parse_loop(input: &str, seconds: &str) -> Result<(), String> {
     use std::time::Instant;
-    use sublime::io::html::push_html;
-    use sublime::io::markdown::Parser;
     let text = std::fs::read_to_string(input).map_err(|error| error.to_string())?;
     let budget = seconds.parse::<f64>().map_err(|_| "bad seconds".to_string())?;
     let started = Instant::now();
     let mut iterations = 0u64;
-    let mut html = String::with_capacity(text.len() * 2);
+    let mut html: Vec<u8> = Vec::with_capacity(text.len() * 2);
     while started.elapsed().as_secs_f64() < budget {
         html.clear();
-        push_html(&mut html, Parser::new(&text));
+        render_streaming(&text, &mut html)?;
         iterations += 1;
     }
     println!("{iterations} iterations, {} bytes last output", html.len());
     Ok(())
 }
 
+/// The production path: parser pushing straight into a streaming writer.
+fn render_streaming(text: &str, html: &mut Vec<u8>) -> Result<(), String> {
+    use sublime::io::html::HtmlWriter;
+    use sublime::io::markdown::{Options, parse_into};
+    let mut writer = HtmlWriter::streaming(html);
+    parse_into(text, Options::default(), &mut writer);
+    writer.finish().map_err(|error| error.to_string())
+}
+
 /// Times our pipeline in pieces: block structure alone (parser
 /// construction), block plus inline (draining events), and the full
-/// render. Each is the median of three runs.
+/// render through the production path. Each is the median of three runs.
 fn phases(input: &str) -> Result<(), String> {
     use std::time::Instant;
-    use sublime::io::html::push_html;
     use sublime::io::markdown::Parser;
     let text = std::fs::read_to_string(input).map_err(|error| error.to_string())?;
     let megabytes = text.len() as f64 / 1_048_576.0;
@@ -130,8 +168,8 @@ fn phases(input: &str) -> Result<(), String> {
         }
         inline_times.push(started.elapsed().as_secs_f64());
         let started = Instant::now();
-        let mut html = String::with_capacity(text.len() * 2);
-        push_html(&mut html, Parser::new(&text));
+        let mut html: Vec<u8> = Vec::with_capacity(text.len() * 2);
+        render_streaming(&text, &mut html)?;
         render_times.push(started.elapsed().as_secs_f64());
         let _ = (count, html.len());
     }
@@ -160,23 +198,41 @@ fn phases(input: &str) -> Result<(), String> {
         megabytes / full,
         full - block - with_inline
     );
+    let mut reference_times = Vec::new();
+    for _ in 0..3 {
+        let started = Instant::now();
+        let html = reference_html(&text);
+        reference_times.push(started.elapsed().as_secs_f64());
+        let _ = html.len();
+    }
+    let reference = median(&mut reference_times);
+    println!(
+        "reference parse + render: {:.3} s  ({:.1} MB/s)",
+        reference,
+        megabytes / reference
+    );
     Ok(())
 }
 
 /// Reference pipeline: `pulldown-cmark` with tables, footnotes,
 /// strikethrough, task lists, and GFM autolinks, rendered by its HTML writer.
-fn crates_markdown_to_html(input: &str, output: &str) -> Result<(), String> {
+fn reference_html(text: &str) -> String {
     use pulldown_cmark::{Options, Parser, html};
-    let text = std::fs::read_to_string(input).map_err(|error| error.to_string())?;
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_FOOTNOTES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_GFM);
-    let parser = Parser::new_ext(&text, options);
+    let parser = Parser::new_ext(text, options);
     let mut rendered = String::with_capacity(text.len() + text.len() / 2);
     html::push_html(&mut rendered, parser);
+    rendered
+}
+
+fn crates_markdown_to_html(input: &str, output: &str) -> Result<(), String> {
+    let text = std::fs::read_to_string(input).map_err(|error| error.to_string())?;
+    let rendered = reference_html(&text);
     let file = File::create(output).map_err(|error| error.to_string())?;
     let mut writer = BufWriter::new(file);
     writer

@@ -2,4 +2,4 @@
 
 pub mod writer;
 
-pub use writer::{escape_href, escape_html, push_html, write_html};
+pub use writer::{HtmlWriter, escape_href, escape_html, push_html, write_html};

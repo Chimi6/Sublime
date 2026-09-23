@@ -5,15 +5,15 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use super::block::{Document, Kind, Line, Node, Reference, join_lines};
-use crate::io::scan::find_byte;
+use super::block::{Cell, Document, Kind, Line, Node, Reference, join_lines};
+use crate::io::scan::find_any_of3;
 
 use super::scan::{
     FILTERED_TAGS, decode_entity, is_ascii_punctuation, is_unicode_punctuation,
     is_unicode_whitespace, normalize_label, scan_autolink, scan_inline_html, scan_link_destination,
-    scan_link_label, scan_link_title, unescape_and_decode,
+    scan_link_label, scan_link_title, unescape_and_decode_cow,
 };
-use super::{Alignment, CodeBlockKind, Event, Options, Tag, TagEnd};
+use super::{Alignment, CodeBlockKind, Event, EventSink, Options, Tag, TagEnd};
 
 /// Events for one top-level block (and everything inside it).
 pub fn render_block<'a>(
@@ -21,7 +21,7 @@ pub fn render_block<'a>(
     source: &'a str,
     block: usize,
     scratch: &mut InlineScratch,
-    events: &mut Vec<Event<'a>>,
+    sink: &mut dyn EventSink<'a>,
 ) {
     if document.nodes[block].deleted {
         return;
@@ -31,7 +31,7 @@ pub fn render_block<'a>(
         source,
         options: document.options,
         scratch,
-        events,
+        sink,
     };
     renderer.block(block);
 }
@@ -44,11 +44,13 @@ pub struct InlineScratch {
     nodes: Vec<InlineNode>,
     delimiters: Vec<Delimiter>,
     brackets: Vec<Bracket>,
+    /// Tree-walk stack for the post-parse passes.
+    walk: Vec<usize>,
 }
 
 /// Rebuilds an event with every borrowed string copied, for text that was
 /// joined from several source lines and cannot outlive the join.
-fn into_static(event: Event<'_>) -> Event<'static> {
+pub(super) fn into_static(event: Event<'_>) -> Event<'static> {
     fn own(text: Cow<'_, str>) -> Cow<'static, str> {
         Cow::Owned(text.into_owned())
     }
@@ -99,7 +101,7 @@ struct Renderer<'d, 'a> {
     source: &'a str,
     options: Options,
     scratch: &'d mut InlineScratch,
-    events: &'d mut Vec<Event<'a>>,
+    sink: &'d mut dyn EventSink<'a>,
 }
 
 fn owned<'a>(text: &str) -> Cow<'a, str> {
@@ -126,34 +128,34 @@ impl<'a> Renderer<'_, 'a> {
         match &document.nodes[index].kind {
             Kind::Document => self.block_children(index),
             Kind::BlockQuote => {
-                self.events.push(Event::Start(Tag::BlockQuote));
+                self.sink.event(Event::Start(Tag::BlockQuote));
                 self.block_children(index);
-                self.events.push(Event::End(TagEnd::BlockQuote));
+                self.sink.event(Event::End(TagEnd::BlockQuote));
             }
             Kind::List(data) => {
                 let start = if data.ordered { Some(data.start) } else { None };
                 let ordered = data.ordered;
-                self.events.push(Event::Start(Tag::List {
+                self.sink.event(Event::Start(Tag::List {
                     start,
                     tight: data.tight,
                 }));
                 self.block_children(index);
-                self.events.push(Event::End(TagEnd::List(ordered)));
+                self.sink.event(Event::End(TagEnd::List(ordered)));
             }
             Kind::Item(_) => {
-                self.events.push(Event::Start(Tag::Item));
+                self.sink.event(Event::Start(Tag::Item));
                 self.item_children(index);
-                self.events.push(Event::End(TagEnd::Item));
+                self.sink.event(Event::End(TagEnd::Item));
             }
             Kind::Paragraph => {
-                self.events.push(Event::Start(Tag::Paragraph));
+                self.sink.event(Event::Start(Tag::Paragraph));
                 let content = join_lines(self.source, document.lines_of(index));
                 self.inlines(content);
-                self.events.push(Event::End(TagEnd::Paragraph));
+                self.sink.event(Event::End(TagEnd::Paragraph));
             }
             Kind::Heading { level, .. } => {
                 let level = *level;
-                self.events.push(Event::Start(Tag::Heading(level)));
+                self.sink.event(Event::Start(Tag::Heading(level)));
                 let content = join_lines(self.source, document.lines_of(index));
                 let trimmed = match content {
                     Cow::Borrowed(text) => Cow::Borrowed(text.trim_matches([' ', '\t', '\n'])),
@@ -162,42 +164,45 @@ impl<'a> Renderer<'_, 'a> {
                     }
                 };
                 self.inlines(trimmed);
-                self.events.push(Event::End(TagEnd::Heading(level)));
+                self.sink.event(Event::End(TagEnd::Heading(level)));
             }
-            Kind::ThematicBreak => self.events.push(Event::Rule),
+            Kind::ThematicBreak => self.sink.event(Event::Rule),
             Kind::IndentedCode => {
-                self.events
-                    .push(Event::Start(Tag::CodeBlock(CodeBlockKind::Indented)));
+                self.sink
+                    .event(Event::Start(Tag::CodeBlock(CodeBlockKind::Indented)));
                 self.code_lines(index);
-                self.events.push(Event::End(TagEnd::CodeBlock));
+                self.sink.event(Event::End(TagEnd::CodeBlock));
             }
             Kind::FencedCode { info, .. } => {
-                self.events
-                    .push(Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(owned(
+                self.sink
+                    .event(Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(owned(
                         info,
                     )))));
                 self.code_lines(index);
-                self.events.push(Event::End(TagEnd::CodeBlock));
+                self.sink.event(Event::End(TagEnd::CodeBlock));
             }
             Kind::HtmlBlock { .. } => {
-                self.events.push(Event::Start(Tag::HtmlBlock));
+                self.sink.event(Event::Start(Tag::HtmlBlock));
                 for line in document.lines_of(index) {
                     let text = self.line_with_newline(line);
                     let html = if self.options.tagfilter {
-                        Cow::Owned(apply_tagfilter(&text))
+                        match apply_tagfilter(&text) {
+                            Cow::Owned(filtered) => Cow::Owned(filtered),
+                            Cow::Borrowed(_) => text,
+                        }
                     } else {
                         text
                     };
-                    self.events.push(Event::Html(html));
+                    self.sink.event(Event::Html(html));
                 }
-                self.events.push(Event::End(TagEnd::HtmlBlock));
+                self.sink.event(Event::End(TagEnd::HtmlBlock));
             }
             Kind::Table(data) => self.table(&data.alignments, &data.rows),
             Kind::FootnoteDefinition { label } => {
-                self.events
-                    .push(Event::Start(Tag::FootnoteDefinition(owned(label))));
+                self.sink
+                    .event(Event::Start(Tag::FootnoteDefinition(owned(label))));
                 self.block_children(index);
-                self.events.push(Event::End(TagEnd::FootnoteDefinition));
+                self.sink.event(Event::End(TagEnd::FootnoteDefinition));
             }
         }
     }
@@ -208,7 +213,7 @@ impl<'a> Renderer<'_, 'a> {
         let document = self.document;
         for line in document.lines_of(index) {
             let text = self.line_with_newline(line);
-            self.events.push(Event::Text(text));
+            self.sink.event(Event::Text(text));
         }
     }
 
@@ -243,10 +248,10 @@ impl<'a> Renderer<'_, 'a> {
                         .map(|(checked, rest)| (checked, Cow::Owned(rest.to_string()))),
                 };
                 if let Some((checked, rest)) = marker {
-                    self.events.push(Event::Start(Tag::Paragraph));
-                    self.events.push(Event::TaskListMarker(checked));
+                    self.sink.event(Event::Start(Tag::Paragraph));
+                    self.sink.event(Event::TaskListMarker(checked));
                     self.inlines(rest);
-                    self.events.push(Event::End(TagEnd::Paragraph));
+                    self.sink.event(Event::End(TagEnd::Paragraph));
                     continue;
                 }
             }
@@ -254,53 +259,53 @@ impl<'a> Renderer<'_, 'a> {
         }
     }
 
-    fn table(&mut self, alignments: &[Alignment], rows: &[Vec<String>]) {
+    fn table(&mut self, alignments: &[Alignment], rows: &[Vec<Cell>]) {
         let column_count = alignments.len();
-        self.events
-            .push(Event::Start(Tag::Table(alignments.to_vec())));
+        self.sink
+            .event(Event::Start(Tag::Table(alignments.to_vec())));
         let mut rows = rows.iter();
         if let Some(header) = rows.next() {
-            self.events.push(Event::Start(Tag::TableHead));
+            self.sink.event(Event::Start(Tag::TableHead));
             self.table_cells(header, column_count);
-            self.events.push(Event::End(TagEnd::TableHead));
+            self.sink.event(Event::End(TagEnd::TableHead));
         }
         for row in rows {
-            self.events.push(Event::Start(Tag::TableRow));
+            self.sink.event(Event::Start(Tag::TableRow));
             self.table_cells(row, column_count);
-            self.events.push(Event::End(TagEnd::TableRow));
+            self.sink.event(Event::End(TagEnd::TableRow));
         }
-        self.events.push(Event::End(TagEnd::Table));
+        self.sink.event(Event::End(TagEnd::Table));
     }
 
-    fn table_cells(&mut self, cells: &[String], column_count: usize) {
+    fn table_cells(&mut self, cells: &[Cell], column_count: usize) {
         for column in 0..column_count {
-            self.events.push(Event::Start(Tag::TableCell));
+            self.sink.event(Event::Start(Tag::TableCell));
             if let Some(cell) = cells.get(column) {
-                self.inlines(Cow::Owned(cell.clone()));
+                let text = cell.text(self.source);
+                self.inlines(text);
             }
-            self.events.push(Event::End(TagEnd::TableCell));
+            self.sink.event(Event::End(TagEnd::TableCell));
         }
     }
 
+    /// Borrowed content yields events that borrow the source; joined
+    /// content lives only for this call, so its events go out as transient.
     fn inlines(&mut self, content: Cow<'a, str>) {
+        let sink = &mut *self.sink;
         match content {
             Cow::Borrowed(text) => {
                 let trimmed = text.trim_end_matches(['\n', ' ', '\t']);
                 let mut parser =
                     InlineParser::new(trimmed, self.document, self.options, self.scratch);
                 parser.parse();
-                parser.emit(self.events);
+                parser.emit(&mut |event| sink.event(event));
             }
             Cow::Owned(text) => {
                 let trimmed = text.trim_end_matches(['\n', ' ', '\t']);
-                let mut local: Vec<Event<'_>> = Vec::new();
                 let mut parser =
                     InlineParser::new(trimmed, self.document, self.options, self.scratch);
                 parser.parse();
-                parser.emit(&mut local);
-                for event in local {
-                    self.events.push(into_static(event));
-                }
+                parser.emit(&mut |event| sink.transient(event));
             }
         }
     }
@@ -329,9 +334,9 @@ fn split_task_marker(content: &str) -> Option<(bool, &str)> {
 }
 
 /// GFM tag filter: `<` becomes `&lt;` in front of disallowed tag names.
-pub fn apply_tagfilter(html: &str) -> String {
+pub fn apply_tagfilter(html: &str) -> Cow<'_, str> {
     let bytes = html.as_bytes();
-    let mut out = String::with_capacity(html.len());
+    let mut out = String::new();
     let mut index = 0usize;
     let mut segment_start = 0usize;
     while index < bytes.len() {
@@ -353,6 +358,9 @@ pub fn apply_tagfilter(html: &str) -> String {
                 None | Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'>') | Some(b'/')
             );
             if terminated && FILTERED_TAGS.contains(&name.as_str()) {
+                if out.is_empty() {
+                    out.reserve(html.len() + 8);
+                }
                 out.push_str(&html[segment_start..index]);
                 out.push_str("&lt;");
                 segment_start = index + 1;
@@ -360,8 +368,11 @@ pub fn apply_tagfilter(html: &str) -> String {
         }
         index += 1;
     }
+    if segment_start == 0 {
+        return Cow::Borrowed(html);
+    }
     out.push_str(&html[segment_start..]);
-    out
+    Cow::Owned(out)
 }
 
 // ----- inline tree -----
@@ -377,8 +388,8 @@ enum Span {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum InlineKind {
     Text(Span),
-    Code(String),
-    Html(String),
+    Code(Span),
+    Html(Span),
     SoftBreak,
     HardBreak,
     Emphasis,
@@ -392,8 +403,8 @@ enum InlineKind {
 /// Destination and title of a link or image, boxed to keep nodes small.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LinkData {
-    destination: String,
-    title: String,
+    destination: Span,
+    title: Span,
 }
 
 /// Index meaning "no node" in the inline tree links.
@@ -424,6 +435,19 @@ struct InlineNode {
     next: u32,
     /// Text that came from a delimiter run and may still be wrapped.
     is_delimiter_run: bool,
+}
+
+impl InlineNode {
+    /// An unlinked node; callers fill the slot in place after pushing it.
+    const TEMPLATE: InlineNode = InlineNode {
+        kind: InlineKind::SoftBreak,
+        parent: NO_NODE,
+        first_child: NO_NODE,
+        last_child: NO_NODE,
+        prev: NO_NODE,
+        next: NO_NODE,
+        is_delimiter_run: false,
+    };
 }
 
 #[derive(Debug, Clone)]
@@ -458,6 +482,7 @@ struct InlineParser<'t, 'd> {
     root: usize,
     delimiters: &'d mut Vec<Delimiter>,
     brackets: &'d mut Vec<Bracket>,
+    walk: &'d mut Vec<usize>,
     references: &'d HashMap<String, Reference>,
     footnotes: &'d HashMap<String, String>,
     options: Options,
@@ -489,15 +514,8 @@ impl<'t, 'd> InlineParser<'t, 'd> {
         scratch.nodes.clear();
         scratch.delimiters.clear();
         scratch.brackets.clear();
-        scratch.nodes.push(InlineNode {
-            kind: InlineKind::Emphasis,
-            parent: NO_NODE,
-            first_child: NO_NODE,
-            last_child: NO_NODE,
-            prev: NO_NODE,
-            next: NO_NODE,
-            is_delimiter_run: false,
-        });
+        scratch.walk.clear();
+        scratch.nodes.push(InlineNode::TEMPLATE);
         InlineParser {
             text,
             bytes: text.as_bytes(),
@@ -506,6 +524,7 @@ impl<'t, 'd> InlineParser<'t, 'd> {
             root: 0,
             delimiters: &mut scratch.delimiters,
             brackets: &mut scratch.brackets,
+            walk: &mut scratch.walk,
             references: &document.references,
             footnotes: &document.footnote_labels,
             options,
@@ -515,17 +534,17 @@ impl<'t, 'd> InlineParser<'t, 'd> {
     // ----- tree operations -----
 
     fn append(&mut self, kind: InlineKind, is_delimiter_run: bool) -> usize {
-        let node = InlineNode {
-            kind,
-            parent: self.root as u32,
-            first_child: NO_NODE,
-            last_child: NO_NODE,
-            prev: self.nodes[self.root].last_child,
-            next: NO_NODE,
-            is_delimiter_run,
-        };
-        self.nodes.push(node);
-        let index = self.nodes.len() - 1;
+        // Push a constant template and fill the slot in place: building the
+        // node on the stack and copying it stalls on store forwarding.
+        let index = self.nodes.len();
+        let prev = self.nodes[self.root].last_child;
+        self.nodes.push(InlineNode::TEMPLATE);
+        let node = &mut self.nodes[index];
+        // The template's kind owns nothing, so skipping its drop glue is safe.
+        std::mem::forget(std::mem::replace(&mut node.kind, kind));
+        node.parent = self.root as u32;
+        node.prev = prev;
+        node.is_delimiter_run = is_delimiter_run;
         match link_get(self.nodes[self.root].last_child) {
             Some(last) => self.nodes[last].next = index as u32,
             None => self.nodes[self.root].first_child = index as u32,
@@ -650,16 +669,10 @@ impl<'t, 'd> InlineParser<'t, 'd> {
     }
 
     fn new_node(&mut self, kind: InlineKind) -> usize {
-        self.nodes.push(InlineNode {
-            kind,
-            parent: NO_NODE,
-            first_child: NO_NODE,
-            last_child: NO_NODE,
-            prev: NO_NODE,
-            next: NO_NODE,
-            is_delimiter_run: false,
-        });
-        self.nodes.len() - 1
+        let index = self.nodes.len();
+        self.nodes.push(InlineNode::TEMPLATE);
+        std::mem::forget(std::mem::replace(&mut self.nodes[index].kind, kind));
+        index
     }
 
     // ----- main loop -----
@@ -713,8 +726,10 @@ impl<'t, 'd> InlineParser<'t, 'd> {
             }
         }
         self.process_emphasis(0);
-        self.merge_text();
-        if self.options.autolinks {
+        // Adjacent text nodes only need joining for the autolink pass, and
+        // that pass only matters when the text could hold an autolink.
+        if self.options.autolinks && autolink_candidate(self.bytes) {
+            self.merge_text();
             self.autolink_literals(self.root);
         }
     }
@@ -756,8 +771,11 @@ impl<'t, 'd> InlineParser<'t, 'd> {
             }
             if closing == run {
                 let raw = &self.text[start + run..index];
-                let content = normalize_code_span(raw);
-                self.append(InlineKind::Code(content), false);
+                let span = match normalize_code_span(raw) {
+                    Some(normalized) => Span::Owned(normalized),
+                    None => Span::Range(start + run, index),
+                };
+                self.append(InlineKind::Code(span), false);
                 self.position = index + closing;
                 return;
             }
@@ -872,7 +890,7 @@ impl<'t, 'd> InlineParser<'t, 'd> {
             }
         }
 
-        let mut link: Option<(String, String, usize)> = None;
+        let mut link: Option<(Span, Span, usize)> = None;
         // Inline link.
         if self.bytes.get(self.position) == Some(&b'(') {
             if let Some((destination, title, consumed)) = self.scan_inline_link(self.position) {
@@ -904,8 +922,8 @@ impl<'t, 'd> InlineParser<'t, 'd> {
                 if valid_label {
                     if let Some(reference) = self.references.get(&key) {
                         link = Some((
-                            reference.destination.clone(),
-                            reference.title.clone(),
+                            Span::Owned(reference.destination.clone()),
+                            Span::Owned(reference.title.clone()),
                             self.position + consumed,
                         ));
                     }
@@ -973,23 +991,27 @@ impl<'t, 'd> InlineParser<'t, 'd> {
 
     /// `(` destination title `)` at `at`. Returns decoded destination and
     /// title plus the bytes consumed including both parentheses.
-    fn scan_inline_link(&self, at: usize) -> Option<(String, String, usize)> {
+    fn scan_inline_link(&self, at: usize) -> Option<(Span, Span, usize)> {
         let bytes = self.bytes;
         let mut index = at + 1;
         index = skip_whitespace(bytes, index);
         if bytes.get(index) == Some(&b')') {
-            return Some((String::new(), String::new(), index + 1 - at));
+            return Some((
+                Span::Range(index, index),
+                Span::Range(index, index),
+                index + 1 - at,
+            ));
         }
         let (dest_start, dest_end, dest_consumed) = scan_link_destination(&bytes[index..])?;
-        let destination = unescape_and_decode(&self.text[index + dest_start..index + dest_end]);
+        let destination = self.decoded_span(index + dest_start, index + dest_end);
         index += dest_consumed;
         let after_destination = index;
         index = skip_whitespace(bytes, index);
-        let mut title = String::new();
+        let mut title = Span::Range(index, index);
         if index > after_destination || dest_consumed == 0 {
             if let Some((title_start, title_end, title_consumed)) = scan_link_title(&bytes[index..])
             {
-                title = unescape_and_decode(&self.text[index + title_start..index + title_end]);
+                title = self.decoded_span(index + title_start, index + title_end);
                 index += title_consumed;
                 index = skip_whitespace(bytes, index);
             }
@@ -1000,38 +1022,48 @@ impl<'t, 'd> InlineParser<'t, 'd> {
         Some((destination, title, index + 1 - at))
     }
 
+    /// A range of the block text with escapes and entities resolved:
+    /// borrowed when there are none.
+    fn decoded_span(&self, start: usize, end: usize) -> Span {
+        match unescape_and_decode_cow(&self.text[start..end]) {
+            Cow::Borrowed(_) => Span::Range(start, end),
+            Cow::Owned(decoded) => Span::Owned(decoded),
+        }
+    }
+
     fn angle(&mut self) {
         let rest = &self.bytes[self.position..];
         if let Some((length, is_email)) = scan_autolink(rest) {
-            let inner = &self.text[self.position + 1..self.position + length - 1];
+            let inner_start = self.position + 1;
+            let inner_end = self.position + length - 1;
             let destination = if is_email {
-                format!("mailto:{inner}")
+                Span::Owned(format!("mailto:{}", &self.text[inner_start..inner_end]))
             } else {
-                inner.to_string()
+                Span::Range(inner_start, inner_end)
             };
             let link = self.append(
                 InlineKind::Link(Box::new(LinkData {
                     destination,
-                    title: String::new(),
+                    title: Span::Range(inner_end, inner_end),
                 })),
                 false,
             );
-            let text = self.new_node(InlineKind::Text(Span::Range(
-                self.position + 1,
-                self.position + length - 1,
-            )));
+            let text = self.new_node(InlineKind::Text(Span::Range(inner_start, inner_end)));
             self.push_child(link, text);
             self.position += length;
             return;
         }
         if let Some(length) = scan_inline_html(rest) {
-            let html = self.text[self.position..self.position + length].to_string();
-            let filtered = if self.options.tagfilter {
-                apply_tagfilter(&html)
+            let html = &self.text[self.position..self.position + length];
+            let span = if self.options.tagfilter {
+                match apply_tagfilter(html) {
+                    Cow::Owned(filtered) => Span::Owned(filtered),
+                    Cow::Borrowed(_) => Span::Range(self.position, self.position + length),
+                }
             } else {
-                html
+                Span::Range(self.position, self.position + length)
             };
-            self.append(InlineKind::Html(filtered), false);
+            self.append(InlineKind::Html(span), false);
             self.position += length;
             return;
         }
@@ -1211,8 +1243,8 @@ impl<'t, 'd> InlineParser<'t, 'd> {
 
     /// Joins adjacent text nodes everywhere in the tree.
     fn merge_text(&mut self) {
-        let mut stack = vec![self.root];
-        while let Some(parent) = stack.pop() {
+        self.walk.push(self.root);
+        while let Some(parent) = self.walk.pop() {
             let mut cursor = link_get(self.nodes[parent].first_child);
             while let Some(node) = cursor {
                 let next = link_get(self.nodes[node].next);
@@ -1239,7 +1271,7 @@ impl<'t, 'd> InlineParser<'t, 'd> {
                     continue;
                 }
                 if link_get(self.nodes[node].first_child).is_some() {
-                    stack.push(node);
+                    self.walk.push(node);
                 }
                 cursor = next;
             }
@@ -1254,13 +1286,21 @@ impl<'t, 'd> InlineParser<'t, 'd> {
             cursor = link_get(self.nodes[node].next);
             match &self.nodes[node].kind {
                 InlineKind::Link(_) => continue,
-                InlineKind::Text(span) => {
-                    let text = self.span_text(span);
-                    if !autolink_candidate(text.as_bytes()) {
+                InlineKind::Text(Span::Range(start, end)) => {
+                    let (start, end) = (*start, *end);
+                    let text: &'t str = self.text;
+                    let slice = &text[start..end];
+                    if !autolink_candidate(slice.as_bytes()) {
                         continue;
                     }
-                    let text = text.to_string();
-                    self.split_autolinks(node, &text);
+                    self.split_autolinks(node, slice, Some(start));
+                }
+                InlineKind::Text(Span::Owned(owned)) => {
+                    if !autolink_candidate(owned.as_bytes()) {
+                        continue;
+                    }
+                    let copy = owned.clone();
+                    self.split_autolinks(node, &copy, None);
                 }
                 _ => {
                     if link_get(self.nodes[node].first_child).is_some() {
@@ -1271,47 +1311,47 @@ impl<'t, 'd> InlineParser<'t, 'd> {
         }
     }
 
-    fn split_autolinks(&mut self, node: usize, text: &str) {
-        let mut pieces: Vec<(String, Option<String>)> = Vec::new();
+    /// Splits a text node around autolink literals. With `base`, `text` is
+    /// the block text from that offset and every piece stays a range of it;
+    /// without it the pieces are copied.
+    fn split_autolinks(&mut self, node: usize, text: &str, base: Option<usize>) {
         let mut plain_start = 0usize;
         let mut index = 0usize;
-        let bytes = text.as_bytes();
-        while index < bytes.len() {
-            let candidate = find_autolink_literal(text, index);
-            match candidate {
-                Some((start, end, url)) => {
-                    if start > plain_start {
-                        pieces.push((text[plain_start..start].to_string(), None));
-                    }
-                    pieces.push((text[start..end].to_string(), Some(url)));
-                    plain_start = end;
-                    index = end;
-                }
+        let mut after = node;
+        let mut found = false;
+        while index < text.len() {
+            let (start, end, prefix) = match find_autolink_literal(text, index) {
+                Some(literal) => literal,
                 None => break,
+            };
+            found = true;
+            if start > plain_start {
+                let plain = self.new_node(InlineKind::Text(piece(text, plain_start, start, base)));
+                self.insert_after(after, plain);
+                after = plain;
             }
+            let destination = if prefix.is_empty() {
+                piece(text, start, end, base)
+            } else {
+                Span::Owned(format!("{prefix}{}", &text[start..end]))
+            };
+            let link = self.new_node(InlineKind::Link(Box::new(LinkData {
+                destination,
+                title: Span::Owned(String::new()),
+            })));
+            let inner = self.new_node(InlineKind::Text(piece(text, start, end, base)));
+            self.push_child(link, inner);
+            self.insert_after(after, link);
+            after = link;
+            plain_start = end;
+            index = end;
         }
-        if pieces.is_empty() {
+        if !found {
             return;
         }
-        if plain_start < bytes.len() {
-            pieces.push((text[plain_start..].to_string(), None));
-        }
-        let mut after = node;
-        for (piece, url) in pieces {
-            let new_node = match url {
-                Some(url) => {
-                    let link = self.new_node(InlineKind::Link(Box::new(LinkData {
-                        destination: url,
-                        title: String::new(),
-                    })));
-                    let inner = self.new_node(InlineKind::Text(Span::Owned(piece)));
-                    self.push_child(link, inner);
-                    link
-                }
-                None => self.new_node(InlineKind::Text(Span::Owned(piece))),
-            };
-            self.insert_after(after, new_node);
-            after = new_node;
+        if plain_start < text.len() {
+            let plain = self.new_node(InlineKind::Text(piece(text, plain_start, text.len(), base)));
+            self.insert_after(after, plain);
         }
         self.unlink(node);
     }
@@ -1321,11 +1361,12 @@ impl<'t, 'd> InlineParser<'t, 'd> {
     /// Moves the tree out as events. Text that is a range of the block's
     /// text is borrowed; owned strings are moved, not copied. The arena is
     /// cleared by the next block anyway.
-    fn emit(&mut self, events: &mut Vec<Event<'t>>) {
+    /// Walks the finished tree, handing each event to `events`.
+    fn emit<F: FnMut(Event<'t>)>(&mut self, events: &mut F) {
         self.emit_children(self.root, events);
     }
 
-    fn emit_children(&mut self, parent: usize, events: &mut Vec<Event<'t>>) {
+    fn emit_children<F: FnMut(Event<'t>)>(&mut self, parent: usize, events: &mut F) {
         let mut cursor = link_get(self.nodes[parent].first_child);
         while let Some(node) = cursor {
             self.emit_node(node, events);
@@ -1333,51 +1374,90 @@ impl<'t, 'd> InlineParser<'t, 'd> {
         }
     }
 
-    fn emit_node(&mut self, node: usize, events: &mut Vec<Event<'t>>) {
-        let kind = std::mem::replace(&mut self.nodes[node].kind, InlineKind::SoftBreak);
-        match kind {
+    fn emit_node<F: FnMut(Event<'t>)>(&mut self, node: usize, events: &mut F) {
+        // Kinds that own nothing are read in place; the rest are moved out.
+        let text = self.text;
+        match &self.nodes[node].kind {
             InlineKind::Text(Span::Range(start, end)) => {
                 if end > start {
-                    events.push(Event::Text(Cow::Borrowed(&self.text[start..end])));
+                    events(Event::Text(Cow::Borrowed(&text[*start..*end])));
+                }
+                return;
+            }
+            InlineKind::Code(Span::Range(start, end)) => {
+                events(Event::Code(Cow::Borrowed(&text[*start..*end])));
+                return;
+            }
+            InlineKind::Html(Span::Range(start, end)) => {
+                events(Event::InlineHtml(Cow::Borrowed(&text[*start..*end])));
+                return;
+            }
+            InlineKind::SoftBreak => {
+                events(Event::SoftBreak);
+                return;
+            }
+            InlineKind::HardBreak => {
+                events(Event::HardBreak);
+                return;
+            }
+            InlineKind::Emphasis => {
+                self.emit_container(node, Tag::Emphasis, events);
+                return;
+            }
+            InlineKind::Strong => {
+                self.emit_container(node, Tag::Strong, events);
+                return;
+            }
+            InlineKind::Strikethrough => {
+                self.emit_container(node, Tag::Strikethrough, events);
+                return;
+            }
+            _ => {}
+        }
+        let kind = std::mem::replace(&mut self.nodes[node].kind, InlineKind::SoftBreak);
+        match kind {
+            InlineKind::Text(Span::Owned(owned)) => {
+                if !owned.is_empty() {
+                    events(Event::Text(Cow::Owned(owned)));
                 }
             }
-            InlineKind::Text(Span::Owned(text)) => {
-                if !text.is_empty() {
-                    events.push(Event::Text(Cow::Owned(text)));
-                }
-            }
-            InlineKind::Code(code) => events.push(Event::Code(Cow::Owned(code))),
-            InlineKind::Html(html) => events.push(Event::InlineHtml(Cow::Owned(html))),
-            InlineKind::SoftBreak => events.push(Event::SoftBreak),
-            InlineKind::HardBreak => events.push(Event::HardBreak),
+            InlineKind::Code(code) => events(Event::Code(self.take_span(code))),
+            InlineKind::Html(html) => events(Event::InlineHtml(self.take_span(html))),
             InlineKind::FootnoteReference(label) => {
-                events.push(Event::FootnoteReference(Cow::Owned(label)))
+                events(Event::FootnoteReference(Cow::Owned(label)));
             }
-            InlineKind::Emphasis => self.emit_container(node, Tag::Emphasis, events),
-            InlineKind::Strong => self.emit_container(node, Tag::Strong, events),
-            InlineKind::Strikethrough => self.emit_container(node, Tag::Strikethrough, events),
             InlineKind::Link(data) => {
+                let data = *data;
                 let tag = Tag::Link {
-                    destination: Cow::Owned(data.destination),
-                    title: Cow::Owned(data.title),
+                    destination: self.take_span(data.destination),
+                    title: self.take_span(data.title),
                 };
                 self.emit_container(node, tag, events);
             }
             InlineKind::Image(data) => {
+                let data = *data;
                 let tag = Tag::Image {
-                    destination: Cow::Owned(data.destination),
-                    title: Cow::Owned(data.title),
+                    destination: self.take_span(data.destination),
+                    title: self.take_span(data.title),
                 };
                 self.emit_container(node, tag, events);
             }
+            _ => {}
         }
     }
 
-    fn emit_container(&mut self, node: usize, tag: Tag<'t>, events: &mut Vec<Event<'t>>) {
+    fn take_span(&self, span: Span) -> Cow<'t, str> {
+        match span {
+            Span::Range(start, end) => Cow::Borrowed(&self.text[start..end]),
+            Span::Owned(text) => Cow::Owned(text),
+        }
+    }
+
+    fn emit_container<F: FnMut(Event<'t>)>(&mut self, node: usize, tag: Tag<'t>, events: &mut F) {
         let end = tag.end();
-        events.push(Event::Start(tag));
+        events(Event::Start(tag));
         self.emit_children(node, events);
-        events.push(Event::End(end));
+        events(Event::End(end));
     }
 }
 
@@ -1398,45 +1478,53 @@ fn skip_whitespace(bytes: &[u8], mut index: usize) -> usize {
 
 /// Line endings become spaces; one leading and trailing space are stripped
 /// when both exist and the content is not all spaces.
-fn normalize_code_span(raw: &str) -> String {
+/// Line endings become spaces; one leading and trailing space are stripped
+/// when both exist and the content is not all spaces. Returns `None` when
+/// the content is already in normal form.
+fn normalize_code_span(raw: &str) -> Option<String> {
+    let has_newline = raw.contains('\n');
+    let all_spaces = raw.bytes().all(|byte| byte == b' ' || byte == b'\n');
+    let strippable =
+        !all_spaces && raw.len() >= 2 && raw.starts_with([' ', '\n']) && raw.ends_with([' ', '\n']);
+    if !has_newline && !strippable {
+        return None;
+    }
     let replaced: String = raw
         .chars()
         .map(|ch| if ch == '\n' { ' ' } else { ch })
         .collect();
-    let all_spaces = replaced.chars().all(|ch| ch == ' ');
-    if !all_spaces && replaced.starts_with(' ') && replaced.ends_with(' ') && replaced.len() >= 2 {
-        return replaced[1..replaced.len() - 1].to_string();
+    if strippable {
+        return Some(replaced[1..replaced.len() - 1].to_string());
     }
-    replaced
+    Some(replaced)
 }
 
 // ----- autolink literal scanning -----
 
 /// Cheap single pass: could this text hold an autolink literal at all?
 fn autolink_candidate(bytes: &[u8]) -> bool {
-    if find_byte(bytes, b'@').is_some() {
-        return true;
-    }
-    // Every scheme we recognize ends in ':' and the ':' is rare in prose.
     let mut from = 0usize;
-    while let Some(relative) = find_byte(&bytes[from..], b':') {
+    while let Some(relative) = find_any_of3(&bytes[from..], b'@', b':', b'.') {
         let index = from + relative;
-        let head = &bytes[..index];
-        let schemes: [&[u8]; 5] = [b"http", b"https", b"ftp", b"mailto", b"xmpp"];
-        for scheme in schemes {
-            if head.len() >= scheme.len()
-                && head[head.len() - scheme.len()..].eq_ignore_ascii_case(scheme)
-            {
-                return true;
+        match bytes[index] {
+            b'@' => return true,
+            b':' => {
+                // Every scheme we recognize ends right before this colon.
+                let head = &bytes[..index];
+                let schemes: [&[u8]; 5] = [b"http", b"https", b"ftp", b"mailto", b"xmpp"];
+                for scheme in schemes {
+                    if head.len() >= scheme.len()
+                        && head[head.len() - scheme.len()..].eq_ignore_ascii_case(scheme)
+                    {
+                        return true;
+                    }
+                }
             }
-        }
-        from = index + 1;
-    }
-    let mut from = 0usize;
-    while let Some(relative) = find_byte(&bytes[from..], b'.') {
-        let index = from + relative;
-        if index >= 3 && bytes[index - 3..index].eq_ignore_ascii_case(b"www") {
-            return true;
+            _ => {
+                if index >= 3 && bytes[index - 3..index].eq_ignore_ascii_case(b"www") {
+                    return true;
+                }
+            }
         }
         from = index + 1;
     }
@@ -1445,7 +1533,18 @@ fn autolink_candidate(bytes: &[u8]) -> bool {
 
 /// Finds the next `www.`, `http://`, `https://`, `mailto:`, `xmpp:`, or
 /// email autolink in `text` at or after `from`. Returns `(start, end, url)`.
-fn find_autolink_literal(text: &str, from: usize) -> Option<(usize, usize, String)> {
+/// A piece of a split text node: a range of the block text when the node
+/// was one, otherwise a copy.
+fn piece(text: &str, start: usize, end: usize, base: Option<usize>) -> Span {
+    match base {
+        Some(base) => Span::Range(base + start, base + end),
+        None => Span::Owned(text[start..end].to_string()),
+    }
+}
+
+/// Returns `(start, end, prefix)`: the literal's bounds and the scheme the
+/// destination needs in front of it (empty when the text already has one).
+fn find_autolink_literal(text: &str, from: usize) -> Option<(usize, usize, &'static str)> {
     let bytes = text.as_bytes();
     let mut index = from;
     while index < bytes.len() {
@@ -1464,15 +1563,15 @@ fn find_autolink_literal(text: &str, from: usize) -> Option<(usize, usize, Strin
             );
         let loose_boundary = index == 0 || !bytes[index - 1].is_ascii_alphanumeric();
         if loose_boundary {
-            if let Some((end, url, is_www)) = scan_www_or_scheme(text, index) {
+            if let Some((end, prefix, is_www)) = scan_www_or_scheme(text, index) {
                 if !is_www || strict_boundary {
-                    return Some((index, end, url));
+                    return Some((index, end, prefix));
                 }
             }
         }
         if bytes[index] == b'@' {
-            if let Some((start, end, url)) = scan_email_literal(text, index) {
-                return Some((start, end, url));
+            if let Some((start, end, prefix)) = scan_email_literal(text, index) {
+                return Some((start, end, prefix));
             }
         }
         index += 1;
@@ -1480,8 +1579,8 @@ fn find_autolink_literal(text: &str, from: usize) -> Option<(usize, usize, Strin
     None
 }
 
-/// Returns `(end, url, is_www)`.
-fn scan_www_or_scheme(text: &str, start: usize) -> Option<(usize, String, bool)> {
+/// Returns `(end, prefix, is_www)`; `www.` literals need `http://` added.
+fn scan_www_or_scheme(text: &str, start: usize) -> Option<(usize, &'static str, bool)> {
     let bytes = text.as_bytes();
     let rest = &bytes[start..];
     let (prefix_length, add_scheme) = if rest.len() >= 4 && rest[..4].eq_ignore_ascii_case(b"www.")
@@ -1507,13 +1606,8 @@ fn scan_www_or_scheme(text: &str, start: usize) -> Option<(usize, String, bool)>
     if end <= domain_start {
         return None;
     }
-    let matched = &text[start..end];
-    let url = if add_scheme {
-        format!("http://{matched}")
-    } else {
-        matched.to_string()
-    };
-    Some((end, url, add_scheme))
+    let prefix = if add_scheme { "http://" } else { "" };
+    Some((end, prefix, add_scheme))
 }
 
 /// Segments of alphanumerics, `_`, `-` separated by `.`, at least one `.`,
@@ -1601,7 +1695,8 @@ fn trim_autolink_end(bytes: &[u8], start: usize, mut end: usize) -> usize {
     }
 }
 
-fn scan_email_literal(text: &str, at_position: usize) -> Option<(usize, usize, String)> {
+/// Returns `(start, end, prefix)`; a bare address needs `mailto:` added.
+fn scan_email_literal(text: &str, at_position: usize) -> Option<(usize, usize, &'static str)> {
     let bytes = text.as_bytes();
     let mut start = at_position;
     while start > 0
@@ -1658,12 +1753,12 @@ fn scan_email_literal(text: &str, at_position: usize) -> Option<(usize, usize, S
             end = resource_end;
         }
     }
-    let (link_start, url) = if mailto {
-        (start - 7, text[start - 7..end].to_string())
+    let (link_start, prefix) = if mailto {
+        (start - 7, "")
     } else if xmpp {
-        (start - 5, text[start - 5..end].to_string())
+        (start - 5, "")
     } else {
-        (start, format!("mailto:{}", &text[start..end]))
+        (start, "mailto:")
     };
-    Some((link_start, end, url))
+    Some((link_start, end, prefix))
 }

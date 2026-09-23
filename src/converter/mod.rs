@@ -152,6 +152,22 @@ impl Read for Input<'_> {
             Input::Rewindable(reader) => reader.read(buffer),
         }
     }
+
+    /// Forwarded so a file input can size the buffer from its length
+    /// instead of growing it by doubling.
+    fn read_to_end(&mut self, buffer: &mut Vec<u8>) -> io::Result<usize> {
+        match self {
+            Input::Stream(reader) => reader.read_to_end(buffer),
+            Input::Rewindable(reader) => reader.read_to_end(buffer),
+        }
+    }
+
+    fn read_to_string(&mut self, buffer: &mut String) -> io::Result<usize> {
+        match self {
+            Input::Stream(reader) => reader.read_to_string(buffer),
+            Input::Rewindable(reader) => reader.read_to_string(buffer),
+        }
+    }
 }
 
 /// What a two-pass converter gets after asking for a rewindable input.

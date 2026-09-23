@@ -6,11 +6,11 @@
 use std::collections::HashMap;
 
 use super::Alignment;
-use crate::io::scan::find_line_ending;
+use crate::io::scan::{find_byte, find_line_ending};
 
 use super::scan::{
     normalize_label, parse_reference_definition, scan_html_block_end, scan_html_block_start,
-    unescape_and_decode,
+    unescape_and_decode_cow,
 };
 
 const TAB_STOP: usize = 4;
@@ -51,15 +51,32 @@ pub struct ListData {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemData {
-    pub marker_offset: usize,
-    pub padding: usize,
+    pub marker_offset: u32,
+    pub padding: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableData {
     pub alignments: Vec<Alignment>,
     /// Header row first. Cells are already split and trimmed.
-    pub rows: Vec<Vec<String>>,
+    pub rows: Vec<Vec<Cell>>,
+}
+
+/// A table cell: a trimmed range of the source, or an owned string when a
+/// `\|` escape had to be resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cell {
+    Range(usize, usize),
+    Owned(String),
+}
+
+impl Cell {
+    pub fn text<'a>(&self, source: &'a str) -> std::borrow::Cow<'a, str> {
+        match self {
+            Cell::Range(start, end) => std::borrow::Cow::Borrowed(&source[*start..*end]),
+            Cell::Owned(text) => std::borrow::Cow::Owned(text.clone()),
+        }
+    }
 }
 
 /// One line of a leaf block's text: a byte range of the source plus spaces
@@ -146,17 +163,17 @@ pub enum Kind {
     IndentedCode,
     FencedCode {
         fence_char: u8,
-        fence_length: usize,
-        fence_offset: usize,
-        info: String,
+        fence_length: u16,
+        fence_offset: u8,
         closed: bool,
+        info: Box<str>,
     },
     HtmlBlock {
         kind: u8,
     },
     Table(Box<TableData>),
     FootnoteDefinition {
-        label: String,
+        label: Box<str>,
     },
 }
 
@@ -209,6 +226,23 @@ pub struct Node {
     pub deleted: bool,
 }
 
+impl Node {
+    /// An open, childless node; `add_child` fills in the rest in place.
+    const TEMPLATE: Node = Node {
+        kind: Kind::Document,
+        parent: NONE,
+        first_child: NONE,
+        last_child: NONE,
+        next_sibling: NONE,
+        lines_start: 0,
+        lines_len: 0,
+        start_line: 0,
+        open: true,
+        last_line_blank: false,
+        deleted: false,
+    };
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reference {
     pub destination: String,
@@ -259,41 +293,32 @@ impl Iterator for Children<'_> {
     }
 }
 
+/// Feeds the document to the block parser one line at a time. Lines end
+/// at `\n`, `\r\n`, or `\r`; a final unterminated line counts, and a
+/// terminator at the very end does not add an empty line.
 pub fn parse(text: &str, options: Options) -> Document {
-    let line_ranges = split_lines(text);
-    let mut parser = BlockParser::new(text, options, line_ranges.len());
-    let mut line_number = 0usize;
-    for (start, end) in line_ranges {
-        line_number += 1;
-        parser.process_line(start, &text[start..end], line_number);
-    }
-    parser.finish()
-}
-
-/// Byte ranges of each line, without terminators (`\n`, `\r\n`, or `\r`).
-/// A final unterminated line counts; a terminator at the very end does not
-/// add an empty line.
-fn split_lines(text: &str) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
-    let mut lines = Vec::with_capacity(bytes.len() / 40 + 1);
+    let estimated_lines = bytes.len() / 40 + 1;
+    let mut parser = BlockParser::new(text, options, estimated_lines);
+    let mut line_number = 0usize;
     let mut start = 0usize;
     while start < bytes.len() {
-        let relative = match find_line_ending(&bytes[start..]) {
-            Some(relative) => relative,
-            None => {
-                lines.push((start, bytes.len()));
-                break;
+        let (end, next) = match find_line_ending(&bytes[start..]) {
+            Some(relative) => {
+                let end = start + relative;
+                let mut next = end + 1;
+                if bytes[end] == b'\r' && next < bytes.len() && bytes[next] == b'\n' {
+                    next += 1;
+                }
+                (end, next)
             }
+            None => (bytes.len(), bytes.len()),
         };
-        let end = start + relative;
-        lines.push((start, end));
-        let mut next = end + 1;
-        if bytes[end] == b'\r' && next < bytes.len() && bytes[next] == b'\n' {
-            next += 1;
-        }
+        line_number += 1;
+        parser.process_line(start, &text[start..end], line_number);
         start = next;
     }
-    lines
+    parser.finish()
 }
 
 struct BlockParser<'s> {
@@ -439,8 +464,8 @@ impl<'s> BlockParser<'s> {
             Kind::BlockQuote => Shape::BlockQuote,
             Kind::List(_) => Shape::List,
             Kind::Item(data) => Shape::Item {
-                marker_offset: data.marker_offset,
-                padding: data.padding,
+                marker_offset: data.marker_offset as usize,
+                padding: data.padding as usize,
             },
             Kind::Paragraph => Shape::Paragraph,
             Kind::Heading { setext, .. } => Shape::Heading { setext: *setext },
@@ -453,8 +478,8 @@ impl<'s> BlockParser<'s> {
                 ..
             } => Shape::FencedCode {
                 fence_char: *fence_char,
-                fence_length: *fence_length,
-                fence_offset: *fence_offset,
+                fence_length: *fence_length as usize,
+                fence_offset: *fence_offset as usize,
             },
             Kind::HtmlBlock { kind } => Shape::HtmlBlock { kind: *kind },
             Kind::Table(_) => Shape::Table,
@@ -504,21 +529,15 @@ impl<'s> BlockParser<'s> {
                 None => break,
             };
         }
-        let node = Node {
-            kind,
-            parent: parent as u32,
-            first_child: NONE,
-            last_child: NONE,
-            next_sibling: NONE,
-            lines_start: 0,
-            lines_len: 0,
-            start_line: self.line_number as u32,
-            open: true,
-            last_line_blank: false,
-            deleted: false,
-        };
-        self.nodes.push(node);
-        let index = self.nodes.len() - 1;
+        // Push a constant template and fill the slot in place: building the
+        // node on the stack and copying it stalls on store forwarding.
+        let index = self.nodes.len();
+        self.nodes.push(Node::TEMPLATE);
+        let node = &mut self.nodes[index];
+        // The template's kind owns nothing, so skipping its drop glue is safe.
+        std::mem::forget(std::mem::replace(&mut node.kind, kind));
+        node.parent = parent as u32;
+        node.start_line = self.line_number as u32;
         let last = self.nodes[parent].last_child;
         if last == NONE {
             self.nodes[parent].first_child = index as u32;
@@ -590,9 +609,11 @@ impl<'s> BlockParser<'s> {
                 }
             }
             Kind::FencedCode { .. } => {
-                let info = match self.node_lines(node).first() {
-                    Some(first) => unescape_and_decode(first.text(self.source).trim()),
-                    None => String::new(),
+                let info: Box<str> = match self.node_lines(node).first() {
+                    Some(first) => {
+                        Box::from(&*unescape_and_decode_cow(first.text(self.source).trim()))
+                    }
+                    None => Box::from(""),
                 };
                 if self.nodes[node].lines_len > 0 {
                     self.nodes[node].lines_start += 1;
@@ -668,6 +689,9 @@ impl<'s> BlockParser<'s> {
             if first.leading_spaces > 0 || !self.source[first.start..first.end].starts_with('[') {
                 break;
             }
+            if !self.has_label_close(node) {
+                break;
+            }
             let mut joined = join_lines(self.source, lines).into_owned();
             joined.push('\n');
             let parsed = match parse_reference_definition(&joined) {
@@ -696,6 +720,24 @@ impl<'s> BlockParser<'s> {
         self.node_lines(node)
             .iter()
             .any(|line| !line.is_blank(source))
+    }
+
+    /// A definition's label always ends in `]:` within one line; a
+    /// paragraph without that pair cannot hold one, so it is not joined.
+    fn has_label_close(&self, node: usize) -> bool {
+        let source = self.source.as_bytes();
+        self.node_lines(node).iter().any(|line| {
+            let bytes = &source[line.start..line.end];
+            let mut from = 0usize;
+            while let Some(relative) = find_byte(&bytes[from..], b']') {
+                let index = from + relative;
+                if bytes.get(index + 1) == Some(&b':') {
+                    return true;
+                }
+                from = index + 1;
+            }
+            false
+        })
     }
 
     // ----- the per-line algorithm -----
@@ -862,10 +904,10 @@ impl<'s> BlockParser<'s> {
                 let fence_offset = self.first_nonspace - self.offset;
                 let kind = Kind::FencedCode {
                     fence_char,
-                    fence_length,
-                    fence_offset,
-                    info: String::new(),
+                    fence_length: fence_length.min(u16::MAX as usize) as u16,
+                    fence_offset: fence_offset as u8,
                     closed: false,
+                    info: Box::from(""),
                 };
                 container = self.add_child(container, kind);
                 self.advance_offset(
@@ -922,7 +964,12 @@ impl<'s> BlockParser<'s> {
                 }
                 let key = normalize_label(&label);
                 self.footnote_labels.entry(key).or_insert(label.clone());
-                container = self.add_child(container, Kind::FootnoteDefinition { label });
+                container = self.add_child(
+                    container,
+                    Kind::FootnoteDefinition {
+                        label: label.into_boxed_str(),
+                    },
+                );
             } else if self.indent < CODE_INDENT
                 && parse_list_marker(line, self.first_nonspace, in_paragraph).is_some()
             {
@@ -970,8 +1017,8 @@ impl<'s> BlockParser<'s> {
                 container = self.add_child(
                     container,
                     Kind::Item(ItemData {
-                        marker_offset,
-                        padding,
+                        marker_offset: marker_offset as u32,
+                        padding: padding as u32,
                     }),
                 );
             } else if indented && !maybe_lazy && !self.blank {
@@ -1045,8 +1092,9 @@ impl<'s> BlockParser<'s> {
             }
             Shape::Table => {
                 if !self.blank {
-                    let rest = &raw_line[self.first_nonspace.min(line.len())..];
-                    let cells = split_table_row(rest);
+                    let cell_start = self.first_nonspace.min(line.len());
+                    let rest = &raw_line[cell_start..];
+                    let cells = split_table_row(rest, Some(line_start + cell_start));
                     if let Kind::Table(data) = &mut self.nodes[container].kind {
                         data.rows.push(cells);
                     }
@@ -1101,7 +1149,12 @@ impl<'s> BlockParser<'s> {
         let rest = std::str::from_utf8(&line[self.first_nonspace.min(line.len())..]).ok()?;
         let alignments = parse_delimiter_row(rest)?;
         let header_line = *self.node_lines(paragraph).last()?;
-        let header = split_table_row(&header_line.text(self.source));
+        let header_base = if header_line.leading_spaces == 0 {
+            Some(header_line.start)
+        } else {
+            None
+        };
+        let header = split_table_row(&header_line.text(self.source), header_base);
         if header.len() != alignments.len() {
             return None;
         }
@@ -1310,7 +1363,7 @@ fn parse_delimiter_row(line: &str) -> Option<Vec<Alignment>> {
     if !only_delimiter_bytes || !line.contains('-') {
         return None;
     }
-    let cells = split_table_row(line);
+    let cells = split_table_row(line, Some(0));
     if cells.is_empty() {
         return None;
     }
@@ -1320,7 +1373,8 @@ fn parse_delimiter_row(line: &str) -> Option<Vec<Alignment>> {
     }
     let mut alignments = Vec::with_capacity(cells.len());
     for cell in &cells {
-        let cell = cell.trim();
+        let cell_text = cell.text(line);
+        let cell = cell_text.trim();
         let left = cell.starts_with(':');
         let right = cell.ends_with(':') && cell.len() > 1;
         let dashes = cell.trim_start_matches(':').trim_end_matches(':');
@@ -1344,48 +1398,77 @@ fn parse_delimiter_row(line: &str) -> Option<Vec<Alignment>> {
 
 /// Splits a table row into trimmed cells. Leading and trailing pipes are
 /// optional; `\|` yields a literal pipe. Pipes inside code spans still split
-/// (GFM requires escaping them).
-pub fn split_table_row(line: &str) -> Vec<String> {
-    let trimmed = line.trim_matches([' ', '\t']);
-    let mut cells: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut chars = trimmed.chars().peekable();
-    let mut started_with_pipe = false;
-    if chars.peek() == Some(&'|') {
-        chars.next();
-        started_with_pipe = true;
+/// (GFM requires escaping them). With `base`, plain cells are ranges of the
+/// source starting there; without it, every cell is owned.
+pub fn split_table_row(line: &str, base: Option<usize>) -> Vec<Cell> {
+    let bytes = line.as_bytes();
+    let mut cells: Vec<Cell> = Vec::new();
+    let mut index = 0usize;
+    // Skip leading whitespace and one leading pipe.
+    while index < bytes.len() && (bytes[index] == b' ' || bytes[index] == b'\t') {
+        index += 1;
     }
+    if index < bytes.len() && bytes[index] == b'|' {
+        index += 1;
+    }
+    let mut end = bytes.len();
+    while end > index && (bytes[end - 1] == b' ' || bytes[end - 1] == b'\t') {
+        end -= 1;
+    }
+    let mut cell_start = index;
     let mut escaped = false;
+    let mut needs_unescape = false;
     let mut ended_with_pipe = false;
-    for ch in chars {
+    let mut cursor = index;
+    let push_cell = |cells: &mut Vec<Cell>, start: usize, stop: usize, needs_unescape: bool| {
+        let mut trimmed_start = start;
+        let mut trimmed_end = stop;
+        while trimmed_start < trimmed_end
+            && (bytes[trimmed_start] == b' ' || bytes[trimmed_start] == b'\t')
+        {
+            trimmed_start += 1;
+        }
+        while trimmed_end > trimmed_start
+            && (bytes[trimmed_end - 1] == b' ' || bytes[trimmed_end - 1] == b'\t')
+        {
+            trimmed_end -= 1;
+        }
+        let cell = match (needs_unescape, base) {
+            (false, Some(base)) => Cell::Range(base + trimmed_start, base + trimmed_end),
+            (false, None) => Cell::Owned(line[trimmed_start..trimmed_end].to_string()),
+            (true, _) => Cell::Owned(line[trimmed_start..trimmed_end].replace("\\|", "|")),
+        };
+        cells.push(cell);
+    };
+    while cursor < end {
+        let byte = bytes[cursor];
         ended_with_pipe = false;
         if escaped {
-            if ch != '|' {
-                current.push('\\');
+            if byte == b'|' {
+                needs_unescape = true;
             }
-            current.push(ch);
             escaped = false;
+            cursor += 1;
             continue;
         }
-        if ch == '\\' {
+        if byte == b'\\' {
             escaped = true;
+            cursor += 1;
             continue;
         }
-        if ch == '|' {
-            cells.push(current.trim().to_string());
-            current.clear();
+        if byte == b'|' {
+            push_cell(&mut cells, cell_start, cursor, needs_unescape);
+            needs_unescape = false;
+            cursor += 1;
+            cell_start = cursor;
             ended_with_pipe = true;
             continue;
         }
-        current.push(ch);
+        cursor += 1;
     }
-    if escaped {
-        current.push('\\');
+    let trailing_is_blank = line[cell_start..end].trim_matches([' ', '\t']).is_empty();
+    if !(ended_with_pipe && trailing_is_blank) {
+        push_cell(&mut cells, cell_start, end, needs_unescape);
     }
-    let trailing = current.trim();
-    if !(ended_with_pipe && trailing.is_empty()) {
-        cells.push(trailing.to_string());
-    }
-    let _ = started_with_pipe;
     cells
 }

@@ -8,8 +8,8 @@ use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier}
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
-use crate::io::html::write_html;
-use crate::io::markdown::Parser;
+use crate::io::html::HtmlWriter;
+use crate::io::markdown::{Options, parse_into};
 
 const NAME: &str = "markdown-to-html";
 
@@ -67,8 +67,9 @@ impl Converter for MarkdownToHtml {
         } else {
             text
         };
-        let parser = Parser::new(&text);
-        write_html(output, parser)?;
+        let mut writer = HtmlWriter::streaming(output);
+        parse_into(&text, Options::default(), &mut writer);
+        writer.finish()?;
         output.flush()?;
         Ok(())
     }
