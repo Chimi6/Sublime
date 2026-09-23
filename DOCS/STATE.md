@@ -31,6 +31,12 @@ describes.
 
 ## Tech Debt
 
+- 2026-09-23: Markdown leftovers, deliberately deferred in favor of the next flagship:
+  - Text -> Markdown (paragraphs only, conditional). Do it when a second text-shaped input can share it.
+  - Unicode general-category tables for exact delimiter-run classification; today an approximation that no corpus example reaches (`DOCS/formats/markdown.md`, known deviations). Costs binary size; do it when a real document hits it.
+  - Label case folding covers a subset of Unicode; same trigger.
+  - Vendor extensions (math, wiki links, description lists, front matter, heading attributes, superscript, emoji): each needs its own corpus; add one when a path needs it.
+  - Dense-input parse speed is level with `pulldown-cmark`, not ahead; the arena-shrinking spike under Spikes is the known lever.
 - 2026-09-22: Review minors deferred from the foundation build, none blocking:
   - CLI: a failed `convert` removes a pre-existing output file (it was already truncated by create); write-to-temp-then-rename would be non-destructive. Argument-parse errors are always human-formatted even with `--log-format json`. A stdout flush error is reported ahead of the command's own error. Markdown tables from `paths --markdown` do not escape `|`.
   - Planner: strict mode runs both Dijkstra passes even when the lossless one succeeds; a `--via` plus `--strict` failure names the waypoint as the destination in the error.
