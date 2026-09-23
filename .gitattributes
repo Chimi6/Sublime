@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Fixture files carry exact bytes (BOM, CRLF, escapes) that tests depend on.
+# Never normalize line endings in them.
+tests/fixtures/** -text
