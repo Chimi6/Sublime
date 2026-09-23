@@ -5,7 +5,9 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use super::block::{Document, Kind, Node, Reference};
+use super::block::{Document, Kind, Line, Node, Reference, join_lines};
+use crate::io::scan::find_byte;
+
 use super::scan::{
     FILTERED_TAGS, decode_entity, is_ascii_punctuation, is_unicode_punctuation,
     is_unicode_whitespace, normalize_label, scan_autolink, scan_inline_html, scan_link_destination,
@@ -14,23 +16,90 @@ use super::scan::{
 use super::{Alignment, CodeBlockKind, Event, Options, Tag, TagEnd};
 
 /// Events for one top-level block (and everything inside it).
-pub fn render_block<'a>(document: &Document, block: usize) -> Vec<Event<'a>> {
+pub fn render_block<'a>(
+    document: &Document,
+    source: &'a str,
+    block: usize,
+    scratch: &mut InlineScratch,
+    events: &mut Vec<Event<'a>>,
+) {
     if document.nodes[block].deleted {
-        return Vec::new();
+        return;
     }
     let mut renderer = Renderer {
         document,
+        source,
         options: document.options,
-        events: Vec::new(),
+        scratch,
+        events,
     };
     renderer.block(block);
-    renderer.events
+}
+
+/// Arenas the inline parser reuses from block to block, so a document's
+/// worth of paragraphs costs a handful of allocations instead of dozens
+/// each.
+#[derive(Default)]
+pub struct InlineScratch {
+    nodes: Vec<InlineNode>,
+    delimiters: Vec<Delimiter>,
+    brackets: Vec<Bracket>,
+}
+
+/// Rebuilds an event with every borrowed string copied, for text that was
+/// joined from several source lines and cannot outlive the join.
+fn into_static(event: Event<'_>) -> Event<'static> {
+    fn own(text: Cow<'_, str>) -> Cow<'static, str> {
+        Cow::Owned(text.into_owned())
+    }
+    match event {
+        Event::Start(tag) => Event::Start(match tag {
+            Tag::Paragraph => Tag::Paragraph,
+            Tag::Heading(level) => Tag::Heading(level),
+            Tag::BlockQuote => Tag::BlockQuote,
+            Tag::CodeBlock(CodeBlockKind::Indented) => Tag::CodeBlock(CodeBlockKind::Indented),
+            Tag::CodeBlock(CodeBlockKind::Fenced(info)) => {
+                Tag::CodeBlock(CodeBlockKind::Fenced(own(info)))
+            }
+            Tag::HtmlBlock => Tag::HtmlBlock,
+            Tag::List { start, tight } => Tag::List { start, tight },
+            Tag::Item => Tag::Item,
+            Tag::FootnoteDefinition(label) => Tag::FootnoteDefinition(own(label)),
+            Tag::Table(alignments) => Tag::Table(alignments),
+            Tag::TableHead => Tag::TableHead,
+            Tag::TableRow => Tag::TableRow,
+            Tag::TableCell => Tag::TableCell,
+            Tag::Emphasis => Tag::Emphasis,
+            Tag::Strong => Tag::Strong,
+            Tag::Strikethrough => Tag::Strikethrough,
+            Tag::Link { destination, title } => Tag::Link {
+                destination: own(destination),
+                title: own(title),
+            },
+            Tag::Image { destination, title } => Tag::Image {
+                destination: own(destination),
+                title: own(title),
+            },
+        }),
+        Event::End(end) => Event::End(end),
+        Event::Text(text) => Event::Text(own(text)),
+        Event::Code(text) => Event::Code(own(text)),
+        Event::Html(text) => Event::Html(own(text)),
+        Event::InlineHtml(text) => Event::InlineHtml(own(text)),
+        Event::SoftBreak => Event::SoftBreak,
+        Event::HardBreak => Event::HardBreak,
+        Event::Rule => Event::Rule,
+        Event::FootnoteReference(label) => Event::FootnoteReference(own(label)),
+        Event::TaskListMarker(checked) => Event::TaskListMarker(checked),
+    }
 }
 
 struct Renderer<'d, 'a> {
     document: &'d Document,
+    source: &'a str,
     options: Options,
-    events: Vec<Event<'a>>,
+    scratch: &'d mut InlineScratch,
+    events: &'d mut Vec<Event<'a>>,
 }
 
 fn owned<'a>(text: &str) -> Cow<'a, str> {
@@ -43,9 +112,9 @@ impl<'a> Renderer<'_, 'a> {
     }
 
     fn block_children(&mut self, parent: usize) {
-        let children = self.node(parent).children.clone();
-        for child in children {
-            if self.node(child).deleted {
+        let document = self.document;
+        for child in document.children(parent) {
+            if document.nodes[child].deleted {
                 continue;
             }
             self.block(child);
@@ -53,8 +122,8 @@ impl<'a> Renderer<'_, 'a> {
     }
 
     fn block(&mut self, index: usize) {
-        let kind = self.node(index).kind.clone();
-        match kind {
+        let document = self.document;
+        match &document.nodes[index].kind {
             Kind::Document => self.block_children(index),
             Kind::BlockQuote => {
                 self.events.push(Event::Start(Tag::BlockQuote));
@@ -63,12 +132,13 @@ impl<'a> Renderer<'_, 'a> {
             }
             Kind::List(data) => {
                 let start = if data.ordered { Some(data.start) } else { None };
+                let ordered = data.ordered;
                 self.events.push(Event::Start(Tag::List {
                     start,
                     tight: data.tight,
                 }));
                 self.block_children(index);
-                self.events.push(Event::End(TagEnd::List(data.ordered)));
+                self.events.push(Event::End(TagEnd::List(ordered)));
             }
             Kind::Item(_) => {
                 self.events.push(Event::Start(Tag::Item));
@@ -77,73 +147,102 @@ impl<'a> Renderer<'_, 'a> {
             }
             Kind::Paragraph => {
                 self.events.push(Event::Start(Tag::Paragraph));
-                let content = self.node(index).content.clone();
-                self.inlines(&content);
+                let content = join_lines(self.source, document.lines_of(index));
+                self.inlines(content);
                 self.events.push(Event::End(TagEnd::Paragraph));
             }
             Kind::Heading { level, .. } => {
+                let level = *level;
                 self.events.push(Event::Start(Tag::Heading(level)));
-                let content = self.node(index).content.clone();
-                self.inlines(content.trim_matches([' ', '\t', '\n']));
+                let content = join_lines(self.source, document.lines_of(index));
+                let trimmed = match content {
+                    Cow::Borrowed(text) => Cow::Borrowed(text.trim_matches([' ', '\t', '\n'])),
+                    Cow::Owned(text) => {
+                        Cow::Owned(text.trim_matches([' ', '\t', '\n']).to_string())
+                    }
+                };
+                self.inlines(trimmed);
                 self.events.push(Event::End(TagEnd::Heading(level)));
             }
             Kind::ThematicBreak => self.events.push(Event::Rule),
             Kind::IndentedCode => {
                 self.events
                     .push(Event::Start(Tag::CodeBlock(CodeBlockKind::Indented)));
-                let content = self.node(index).content.clone();
-                if !content.is_empty() {
-                    self.events.push(Event::Text(owned(&content)));
-                }
+                self.code_lines(index);
                 self.events.push(Event::End(TagEnd::CodeBlock));
             }
             Kind::FencedCode { info, .. } => {
                 self.events
                     .push(Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(owned(
-                        &info,
+                        info,
                     )))));
-                let content = self.node(index).content.clone();
-                if !content.is_empty() {
-                    self.events.push(Event::Text(owned(&content)));
-                }
+                self.code_lines(index);
                 self.events.push(Event::End(TagEnd::CodeBlock));
             }
             Kind::HtmlBlock { .. } => {
                 self.events.push(Event::Start(Tag::HtmlBlock));
-                let content = self.node(index).content.clone();
-                let filtered = if self.options.tagfilter {
-                    apply_tagfilter(&content)
-                } else {
-                    content
-                };
-                self.events.push(Event::Html(owned(&filtered)));
+                for line in document.lines_of(index) {
+                    let text = self.line_with_newline(line);
+                    let html = if self.options.tagfilter {
+                        Cow::Owned(apply_tagfilter(&text))
+                    } else {
+                        text
+                    };
+                    self.events.push(Event::Html(html));
+                }
                 self.events.push(Event::End(TagEnd::HtmlBlock));
             }
-            Kind::Table { alignments, rows } => self.table(alignments, rows),
+            Kind::Table(data) => self.table(&data.alignments, &data.rows),
             Kind::FootnoteDefinition { label } => {
                 self.events
-                    .push(Event::Start(Tag::FootnoteDefinition(owned(&label))));
+                    .push(Event::Start(Tag::FootnoteDefinition(owned(label))));
                 self.block_children(index);
                 self.events.push(Event::End(TagEnd::FootnoteDefinition));
             }
         }
     }
 
+    /// One `Text` event per line, borrowed from the source whenever the line
+    /// is followed by a plain `\n` there.
+    fn code_lines(&mut self, index: usize) {
+        let document = self.document;
+        for line in document.lines_of(index) {
+            let text = self.line_with_newline(line);
+            self.events.push(Event::Text(text));
+        }
+    }
+
+    fn line_with_newline(&self, line: &Line) -> Cow<'a, str> {
+        let followed_by_newline = self.source.as_bytes().get(line.end) == Some(&b'\n');
+        if line.leading_spaces == 0 && followed_by_newline {
+            return Cow::Borrowed(&self.source[line.start..line.end + 1]);
+        }
+        let mut owned = line.text(self.source).into_owned();
+        owned.push('\n');
+        Cow::Owned(owned)
+    }
+
     /// A list item whose first paragraph starts with `[ ]` or `[x]` gets a
     /// task marker and the marker stripped from the paragraph.
     fn item_children(&mut self, item: usize) {
-        let children = self.node(item).children.clone();
+        let document = self.document;
         let mut first_handled = false;
-        for child in children {
-            if self.node(child).deleted {
+        for child in document.children(item) {
+            if document.nodes[child].deleted {
                 continue;
             }
             let is_first = !first_handled;
             first_handled = true;
             let is_paragraph = matches!(self.node(child).kind, Kind::Paragraph);
             if is_first && is_paragraph && self.options.task_lists {
-                let content = self.node(child).content.clone();
-                if let Some((checked, rest)) = split_task_marker(&content) {
+                let content = join_lines(self.source, document.lines_of(child));
+                let marker = match &content {
+                    Cow::Borrowed(text) => split_task_marker(text)
+                        .map(|(checked, rest)| (checked, Cow::Borrowed(rest))),
+                    Cow::Owned(text) => split_task_marker(text)
+                        .map(|(checked, rest)| (checked, Cow::Owned(rest.to_string()))),
+                };
+                if let Some((checked, rest)) = marker {
                     self.events.push(Event::Start(Tag::Paragraph));
                     self.events.push(Event::TaskListMarker(checked));
                     self.inlines(rest);
@@ -155,18 +254,19 @@ impl<'a> Renderer<'_, 'a> {
         }
     }
 
-    fn table(&mut self, alignments: Vec<Alignment>, rows: Vec<Vec<String>>) {
+    fn table(&mut self, alignments: &[Alignment], rows: &[Vec<String>]) {
         let column_count = alignments.len();
-        self.events.push(Event::Start(Tag::Table(alignments)));
-        let mut rows = rows.into_iter();
+        self.events
+            .push(Event::Start(Tag::Table(alignments.to_vec())));
+        let mut rows = rows.iter();
         if let Some(header) = rows.next() {
             self.events.push(Event::Start(Tag::TableHead));
-            self.table_cells(&header, column_count);
+            self.table_cells(header, column_count);
             self.events.push(Event::End(TagEnd::TableHead));
         }
         for row in rows {
             self.events.push(Event::Start(Tag::TableRow));
-            self.table_cells(&row, column_count);
+            self.table_cells(row, column_count);
             self.events.push(Event::End(TagEnd::TableRow));
         }
         self.events.push(Event::End(TagEnd::Table));
@@ -176,17 +276,33 @@ impl<'a> Renderer<'_, 'a> {
         for column in 0..column_count {
             self.events.push(Event::Start(Tag::TableCell));
             if let Some(cell) = cells.get(column) {
-                self.inlines(cell);
+                self.inlines(Cow::Owned(cell.clone()));
             }
             self.events.push(Event::End(TagEnd::TableCell));
         }
     }
 
-    fn inlines(&mut self, text: &str) {
-        let trimmed = text.trim_end_matches(['\n', ' ', '\t']);
-        let mut parser = InlineParser::new(trimmed, self.document, self.options);
-        parser.parse();
-        parser.emit(&mut self.events);
+    fn inlines(&mut self, content: Cow<'a, str>) {
+        match content {
+            Cow::Borrowed(text) => {
+                let trimmed = text.trim_end_matches(['\n', ' ', '\t']);
+                let mut parser =
+                    InlineParser::new(trimmed, self.document, self.options, self.scratch);
+                parser.parse();
+                parser.emit(self.events);
+            }
+            Cow::Owned(text) => {
+                let trimmed = text.trim_end_matches(['\n', ' ', '\t']);
+                let mut local: Vec<Event<'_>> = Vec::new();
+                let mut parser =
+                    InlineParser::new(trimmed, self.document, self.options, self.scratch);
+                parser.parse();
+                parser.emit(&mut local);
+                for event in local {
+                    self.events.push(into_static(event));
+                }
+            }
+        }
     }
 }
 
@@ -250,9 +366,17 @@ pub fn apply_tagfilter(html: &str) -> String {
 
 // ----- inline tree -----
 
+/// Text of an inline node: a range of the block's text, or an owned string
+/// when escapes or entities changed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Span {
+    Range(usize, usize),
+    Owned(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum InlineKind {
-    Text(String),
+    Text(Span),
     Code(String),
     Html(String),
     SoftBreak,
@@ -260,19 +384,44 @@ enum InlineKind {
     Emphasis,
     Strong,
     Strikethrough,
-    Link { destination: String, title: String },
-    Image { destination: String, title: String },
+    Link(Box<LinkData>),
+    Image(Box<LinkData>),
     FootnoteReference(String),
+}
+
+/// Destination and title of a link or image, boxed to keep nodes small.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LinkData {
+    destination: String,
+    title: String,
+}
+
+/// Index meaning "no node" in the inline tree links.
+const NO_NODE: u32 = u32::MAX;
+
+fn link_get(link: u32) -> Option<usize> {
+    if link == NO_NODE {
+        None
+    } else {
+        Some(link as usize)
+    }
+}
+
+fn link_from(index: Option<usize>) -> u32 {
+    match index {
+        Some(index) => index as u32,
+        None => NO_NODE,
+    }
 }
 
 #[derive(Debug)]
 struct InlineNode {
     kind: InlineKind,
-    parent: Option<usize>,
-    first_child: Option<usize>,
-    last_child: Option<usize>,
-    prev: Option<usize>,
-    next: Option<usize>,
+    parent: u32,
+    first_child: u32,
+    last_child: u32,
+    prev: u32,
+    next: u32,
     /// Text that came from a delimiter run and may still be wrapped.
     is_delimiter_run: bool,
 }
@@ -305,10 +454,10 @@ struct InlineParser<'t, 'd> {
     text: &'t str,
     bytes: &'t [u8],
     position: usize,
-    nodes: Vec<InlineNode>,
+    nodes: &'d mut Vec<InlineNode>,
     root: usize,
-    delimiters: Vec<Delimiter>,
-    brackets: Vec<Bracket>,
+    delimiters: &'d mut Vec<Delimiter>,
+    brackets: &'d mut Vec<Bracket>,
     references: &'d HashMap<String, Reference>,
     footnotes: &'d HashMap<String, String>,
     options: Options,
@@ -331,24 +480,32 @@ const SPECIAL: [bool; 256] = {
 };
 
 impl<'t, 'd> InlineParser<'t, 'd> {
-    fn new(text: &'t str, document: &'d Document, options: Options) -> Self {
-        let root = InlineNode {
+    fn new(
+        text: &'t str,
+        document: &'d Document,
+        options: Options,
+        scratch: &'d mut InlineScratch,
+    ) -> Self {
+        scratch.nodes.clear();
+        scratch.delimiters.clear();
+        scratch.brackets.clear();
+        scratch.nodes.push(InlineNode {
             kind: InlineKind::Emphasis,
-            parent: None,
-            first_child: None,
-            last_child: None,
-            prev: None,
-            next: None,
+            parent: NO_NODE,
+            first_child: NO_NODE,
+            last_child: NO_NODE,
+            prev: NO_NODE,
+            next: NO_NODE,
             is_delimiter_run: false,
-        };
+        });
         InlineParser {
             text,
             bytes: text.as_bytes(),
             position: 0,
-            nodes: vec![root],
+            nodes: &mut scratch.nodes,
             root: 0,
-            delimiters: Vec::new(),
-            brackets: Vec::new(),
+            delimiters: &mut scratch.delimiters,
+            brackets: &mut scratch.brackets,
             references: &document.references,
             footnotes: &document.footnote_labels,
             options,
@@ -360,68 +517,97 @@ impl<'t, 'd> InlineParser<'t, 'd> {
     fn append(&mut self, kind: InlineKind, is_delimiter_run: bool) -> usize {
         let node = InlineNode {
             kind,
-            parent: Some(self.root),
-            first_child: None,
-            last_child: None,
+            parent: self.root as u32,
+            first_child: NO_NODE,
+            last_child: NO_NODE,
             prev: self.nodes[self.root].last_child,
-            next: None,
+            next: NO_NODE,
             is_delimiter_run,
         };
         self.nodes.push(node);
         let index = self.nodes.len() - 1;
-        match self.nodes[self.root].last_child {
-            Some(last) => self.nodes[last].next = Some(index),
-            None => self.nodes[self.root].first_child = Some(index),
+        match link_get(self.nodes[self.root].last_child) {
+            Some(last) => self.nodes[last].next = index as u32,
+            None => self.nodes[self.root].first_child = index as u32,
         }
-        self.nodes[self.root].last_child = Some(index);
+        self.nodes[self.root].last_child = index as u32;
         index
     }
 
-    fn append_text(&mut self, text: &str) {
-        if let Some(last) = self.nodes[self.root].last_child {
+    fn span_text<'s>(&'s self, span: &'s Span) -> &'s str {
+        match span {
+            Span::Range(start, end) => &self.text[*start..*end],
+            Span::Owned(text) => text,
+        }
+    }
+
+    /// Appends text that is a slice of the block's text, extending the
+    /// previous range when it is adjacent.
+    fn append_range(&mut self, start: usize, end: usize) {
+        if let Some(last) = link_get(self.nodes[self.root].last_child) {
             let mergeable = !self.nodes[last].is_delimiter_run;
-            if let (true, InlineKind::Text(existing)) = (mergeable, &mut self.nodes[last].kind) {
-                existing.push_str(text);
-                return;
+            if let (true, InlineKind::Text(Span::Range(_, last_end))) =
+                (mergeable, &mut self.nodes[last].kind)
+            {
+                if *last_end == start {
+                    *last_end = end;
+                    return;
+                }
             }
         }
-        self.append(InlineKind::Text(text.to_string()), false);
+        self.append(InlineKind::Text(Span::Range(start, end)), false);
+    }
+
+    /// Appends text that is not a slice of the block's text.
+    fn append_text(&mut self, text: &str) {
+        if let Some(last) = link_get(self.nodes[self.root].last_child) {
+            let mergeable = !self.nodes[last].is_delimiter_run;
+            if mergeable {
+                if let InlineKind::Text(span) = &self.nodes[last].kind {
+                    let mut merged = self.span_text(span).to_string();
+                    merged.push_str(text);
+                    self.nodes[last].kind = InlineKind::Text(Span::Owned(merged));
+                    return;
+                }
+            }
+        }
+        self.append(InlineKind::Text(Span::Owned(text.to_string())), false);
     }
 
     fn unlink(&mut self, node: usize) {
-        let prev = self.nodes[node].prev;
-        let next = self.nodes[node].next;
-        let parent = self.nodes[node].parent;
+        let prev = link_get(self.nodes[node].prev);
+        let next = link_get(self.nodes[node].next);
+        let parent = link_get(self.nodes[node].parent);
         match prev {
-            Some(prev) => self.nodes[prev].next = next,
+            Some(prev) => self.nodes[prev].next = link_from(next),
             None => {
                 if let Some(parent) = parent {
-                    self.nodes[parent].first_child = next;
+                    self.nodes[parent].first_child = link_from(next);
                 }
             }
         }
         match next {
-            Some(next) => self.nodes[next].prev = prev,
+            Some(next) => self.nodes[next].prev = link_from(prev),
             None => {
                 if let Some(parent) = parent {
-                    self.nodes[parent].last_child = prev;
+                    self.nodes[parent].last_child = link_from(prev);
                 }
             }
         }
-        self.nodes[node].prev = None;
-        self.nodes[node].next = None;
-        self.nodes[node].parent = None;
+        self.nodes[node].prev = NO_NODE;
+        self.nodes[node].next = NO_NODE;
+        self.nodes[node].parent = NO_NODE;
     }
 
     /// Moves every sibling strictly between `after` and `before` (exclusive)
     /// into `container`, then inserts `container` right after `after`.
     fn wrap_between(&mut self, after: usize, before: Option<usize>, container: usize) {
-        let mut cursor = self.nodes[after].next;
+        let mut cursor = link_get(self.nodes[after].next);
         while let Some(node) = cursor {
             if Some(node) == before {
                 break;
             }
-            let next = self.nodes[node].next;
+            let next = link_get(self.nodes[node].next);
             self.unlink(node);
             self.push_child(container, node);
             cursor = next;
@@ -436,28 +622,28 @@ impl<'t, 'd> InlineParser<'t, 'd> {
     }
 
     fn push_child(&mut self, parent: usize, child: usize) {
-        self.nodes[child].parent = Some(parent);
+        self.nodes[child].parent = parent as u32;
         self.nodes[child].prev = self.nodes[parent].last_child;
-        self.nodes[child].next = None;
-        match self.nodes[parent].last_child {
-            Some(last) => self.nodes[last].next = Some(child),
-            None => self.nodes[parent].first_child = Some(child),
+        self.nodes[child].next = NO_NODE;
+        match link_get(self.nodes[parent].last_child) {
+            Some(last) => self.nodes[last].next = child as u32,
+            None => self.nodes[parent].first_child = child as u32,
         }
-        self.nodes[parent].last_child = Some(child);
+        self.nodes[parent].last_child = child as u32;
     }
 
     fn insert_after(&mut self, after: usize, node: usize) {
-        let parent = self.nodes[after].parent;
-        let next = self.nodes[after].next;
-        self.nodes[node].parent = parent;
-        self.nodes[node].prev = Some(after);
-        self.nodes[node].next = next;
-        self.nodes[after].next = Some(node);
+        let parent = link_get(self.nodes[after].parent);
+        let next = link_get(self.nodes[after].next);
+        self.nodes[node].parent = link_from(parent);
+        self.nodes[node].prev = after as u32;
+        self.nodes[node].next = link_from(next);
+        self.nodes[after].next = node as u32;
         match next {
-            Some(next) => self.nodes[next].prev = Some(node),
+            Some(next) => self.nodes[next].prev = node as u32,
             None => {
                 if let Some(parent) = parent {
-                    self.nodes[parent].last_child = Some(node);
+                    self.nodes[parent].last_child = node as u32;
                 }
             }
         }
@@ -466,11 +652,11 @@ impl<'t, 'd> InlineParser<'t, 'd> {
     fn new_node(&mut self, kind: InlineKind) -> usize {
         self.nodes.push(InlineNode {
             kind,
-            parent: None,
-            first_child: None,
-            last_child: None,
-            prev: None,
-            next: None,
+            parent: NO_NODE,
+            first_child: NO_NODE,
+            last_child: NO_NODE,
+            prev: NO_NODE,
+            next: NO_NODE,
             is_delimiter_run: false,
         });
         self.nodes.len() - 1
@@ -487,7 +673,7 @@ impl<'t, 'd> InlineParser<'t, 'd> {
                 while end < self.bytes.len() && !SPECIAL[self.bytes[end] as usize] {
                     end += 1;
                 }
-                self.append_text(&self.text[start..end]);
+                self.append_range(start, end);
                 self.position = end;
                 continue;
             }
@@ -496,17 +682,23 @@ impl<'t, 'd> InlineParser<'t, 'd> {
                 b'`' => self.code_span(),
                 b'*' | b'_' | b'~' => self.delimiter_run(byte),
                 b'[' => {
-                    let node = self.append(InlineKind::Text("[".to_string()), true);
+                    let node = self.append(
+                        InlineKind::Text(Span::Range(self.position, self.position + 1)),
+                        true,
+                    );
                     self.position += 1;
                     self.push_bracket(node, false);
                 }
                 b'!' => {
                     if self.bytes.get(self.position + 1) == Some(&b'[') {
-                        let node = self.append(InlineKind::Text("![".to_string()), true);
+                        let node = self.append(
+                            InlineKind::Text(Span::Range(self.position, self.position + 2)),
+                            true,
+                        );
                         self.position += 2;
                         self.push_bracket(node, true);
                     } else {
-                        self.append_text("!");
+                        self.append_range(self.position, self.position + 1);
                         self.position += 1;
                     }
                 }
@@ -515,7 +707,7 @@ impl<'t, 'd> InlineParser<'t, 'd> {
                 b'&' => self.entity(),
                 b'\n' => self.newline(),
                 _ => {
-                    self.append_text(&self.text[self.position..self.position + 1]);
+                    self.append_range(self.position, self.position + 1);
                     self.position += 1;
                 }
             }
@@ -531,7 +723,7 @@ impl<'t, 'd> InlineParser<'t, 'd> {
         let next = self.bytes.get(self.position + 1).copied();
         match next {
             Some(byte) if is_ascii_punctuation(byte) => {
-                self.append_text(&self.text[self.position + 1..self.position + 2]);
+                self.append_range(self.position + 1, self.position + 2);
                 self.position += 2;
             }
             Some(b'\n') => {
@@ -540,7 +732,7 @@ impl<'t, 'd> InlineParser<'t, 'd> {
                 self.skip_line_start_spaces();
             }
             _ => {
-                self.append_text("\\");
+                self.append_range(self.position, self.position + 1);
                 self.position += 1;
             }
         }
@@ -571,7 +763,7 @@ impl<'t, 'd> InlineParser<'t, 'd> {
             }
             index += closing;
         }
-        self.append_text(&self.text[start..start + run]);
+        self.append_range(start, start + run);
         self.position = start + run;
     }
 
@@ -617,9 +809,8 @@ impl<'t, 'd> InlineParser<'t, 'd> {
             }
             _ => (left_flanking, right_flanking),
         };
-        let text = self.text[start..end].to_string();
         let is_run = can_open || can_close;
-        let node = self.append(InlineKind::Text(text), is_run);
+        let node = self.append(InlineKind::Text(Span::Range(start, end)), is_run);
         self.position = end;
         if is_run {
             self.delimiters.push(Delimiter {
@@ -651,12 +842,12 @@ impl<'t, 'd> InlineParser<'t, 'd> {
         let opener = match self.brackets.pop() {
             Some(opener) => opener,
             None => {
-                self.append_text("]");
+                self.append_range(close_position, close_position + 1);
                 return;
             }
         };
         if !opener.active {
-            self.append_text("]");
+            self.append_range(close_position, close_position + 1);
             return;
         }
         let raw_content = &self.text[opener.content_start..close_position];
@@ -725,14 +916,15 @@ impl<'t, 'd> InlineParser<'t, 'd> {
         let (destination, title, end) = match link {
             Some(link) => link,
             None => {
-                self.append_text("]");
+                self.append_range(close_position, close_position + 1);
                 return;
             }
         };
+        let data = Box::new(LinkData { destination, title });
         let kind = if opener.is_image {
-            InlineKind::Image { destination, title }
+            InlineKind::Image(data)
         } else {
-            InlineKind::Link { destination, title }
+            InlineKind::Link(data)
         };
         let node = self.new_node(kind);
         self.wrap_rest(opener.node, node);
@@ -755,14 +947,18 @@ impl<'t, 'd> InlineParser<'t, 'd> {
     /// Replaces the opener node and everything after it with `node`. An
     /// image opener keeps its `!` as text.
     fn replace_bracket_content(&mut self, opener: &Bracket, node: usize) {
-        let mut cursor = self.nodes[opener.node].next;
+        let mut cursor = link_get(self.nodes[opener.node].next);
         while let Some(current) = cursor {
-            cursor = self.nodes[current].next;
+            cursor = link_get(self.nodes[current].next);
             self.unlink(current);
         }
         self.insert_after(opener.node, node);
         if opener.is_image {
-            self.nodes[opener.node].kind = InlineKind::Text("!".to_string());
+            let bang = match &self.nodes[opener.node].kind {
+                InlineKind::Text(Span::Range(start, _)) => Span::Range(*start, *start + 1),
+                _ => Span::Owned("!".to_string()),
+            };
+            self.nodes[opener.node].kind = InlineKind::Text(bang);
             self.nodes[opener.node].is_delimiter_run = false;
         } else {
             self.unlink(opener.node);
@@ -814,13 +1010,16 @@ impl<'t, 'd> InlineParser<'t, 'd> {
                 inner.to_string()
             };
             let link = self.append(
-                InlineKind::Link {
+                InlineKind::Link(Box::new(LinkData {
                     destination,
                     title: String::new(),
-                },
+                })),
                 false,
             );
-            let text = self.new_node(InlineKind::Text(inner.to_string()));
+            let text = self.new_node(InlineKind::Text(Span::Range(
+                self.position + 1,
+                self.position + length - 1,
+            )));
             self.push_child(link, text);
             self.position += length;
             return;
@@ -836,7 +1035,7 @@ impl<'t, 'd> InlineParser<'t, 'd> {
             self.position += length;
             return;
         }
-        self.append_text("<");
+        self.append_range(self.position, self.position + 1);
         self.position += 1;
     }
 
@@ -847,7 +1046,7 @@ impl<'t, 'd> InlineParser<'t, 'd> {
                 self.position += consumed;
             }
             None => {
-                self.append_text("&");
+                self.append_range(self.position, self.position + 1);
                 self.position += 1;
             }
         }
@@ -856,15 +1055,27 @@ impl<'t, 'd> InlineParser<'t, 'd> {
     fn newline(&mut self) {
         self.position += 1;
         let mut hard = false;
-        if let Some(last) = self.nodes[self.root].last_child {
-            if let InlineKind::Text(text) = &mut self.nodes[last].kind {
-                let trimmed_length = text.trim_end_matches(' ').len();
-                let trailing_spaces = text.len() - trimmed_length;
-                hard = trailing_spaces >= 2;
-                text.truncate(trimmed_length);
-                if text.is_empty() && !self.nodes[last].is_delimiter_run {
-                    self.unlink(last);
+        if let Some(last) = link_get(self.nodes[self.root].last_child) {
+            let is_delimiter_run = self.nodes[last].is_delimiter_run;
+            let mut became_empty = false;
+            match &mut self.nodes[last].kind {
+                InlineKind::Text(Span::Range(start, end)) => {
+                    let text = &self.text[*start..*end];
+                    let trimmed_length = text.trim_end_matches(' ').len();
+                    hard = text.len() - trimmed_length >= 2;
+                    *end = *start + trimmed_length;
+                    became_empty = *end == *start;
                 }
+                InlineKind::Text(Span::Owned(text)) => {
+                    let trimmed_length = text.trim_end_matches(' ').len();
+                    hard = text.len() - trimmed_length >= 2;
+                    text.truncate(trimmed_length);
+                    became_empty = text.is_empty();
+                }
+                _ => {}
+            }
+            if became_empty && !is_delimiter_run {
+                self.unlink(last);
             }
         }
         let kind = if hard {
@@ -973,16 +1184,28 @@ impl<'t, 'd> InlineParser<'t, 'd> {
     }
 
     fn truncate_text_end(&mut self, node: usize, count: usize) {
-        if let InlineKind::Text(text) = &mut self.nodes[node].kind {
-            let keep = text.len().saturating_sub(count);
-            text.truncate(keep);
+        match &mut self.nodes[node].kind {
+            InlineKind::Text(Span::Range(start, end)) => {
+                *end = (*end).saturating_sub(count).max(*start);
+            }
+            InlineKind::Text(Span::Owned(text)) => {
+                let keep = text.len().saturating_sub(count);
+                text.truncate(keep);
+            }
+            _ => {}
         }
     }
 
     fn truncate_text_start(&mut self, node: usize, count: usize) {
-        if let InlineKind::Text(text) = &mut self.nodes[node].kind {
-            let drained: String = text.chars().skip(count).collect();
-            *text = drained;
+        match &mut self.nodes[node].kind {
+            InlineKind::Text(Span::Range(start, end)) => {
+                *start = (*start + count).min(*end);
+            }
+            InlineKind::Text(Span::Owned(text)) => {
+                let drained: String = text.chars().skip(count).collect();
+                *text = drained;
+            }
+            _ => {}
         }
     }
 
@@ -990,26 +1213,32 @@ impl<'t, 'd> InlineParser<'t, 'd> {
     fn merge_text(&mut self) {
         let mut stack = vec![self.root];
         while let Some(parent) = stack.pop() {
-            let mut cursor = self.nodes[parent].first_child;
+            let mut cursor = link_get(self.nodes[parent].first_child);
             while let Some(node) = cursor {
-                let next = self.nodes[node].next;
+                let next = link_get(self.nodes[node].next);
                 self.nodes[node].is_delimiter_run = false;
                 let both_text = matches!(self.nodes[node].kind, InlineKind::Text(_))
                     && next
                         .is_some_and(|next| matches!(self.nodes[next].kind, InlineKind::Text(_)));
                 if both_text {
                     let next_index = next.unwrap_or(node);
-                    let appended = match &self.nodes[next_index].kind {
-                        InlineKind::Text(text) => text.clone(),
-                        _ => String::new(),
+                    let merged = match (&self.nodes[node].kind, &self.nodes[next_index].kind) {
+                        (
+                            InlineKind::Text(Span::Range(a, b)),
+                            InlineKind::Text(Span::Range(c, d)),
+                        ) if b == c => Span::Range(*a, *d),
+                        (InlineKind::Text(left), InlineKind::Text(right)) => {
+                            let mut joined = self.span_text(left).to_string();
+                            joined.push_str(self.span_text(right));
+                            Span::Owned(joined)
+                        }
+                        _ => continue,
                     };
-                    if let InlineKind::Text(text) = &mut self.nodes[node].kind {
-                        text.push_str(&appended);
-                    }
+                    self.nodes[node].kind = InlineKind::Text(merged);
                     self.unlink(next_index);
                     continue;
                 }
-                if self.nodes[node].first_child.is_some() {
+                if link_get(self.nodes[node].first_child).is_some() {
                     stack.push(node);
                 }
                 cursor = next;
@@ -1020,17 +1249,21 @@ impl<'t, 'd> InlineParser<'t, 'd> {
     // ----- GFM autolink literals -----
 
     fn autolink_literals(&mut self, parent: usize) {
-        let mut cursor = self.nodes[parent].first_child;
+        let mut cursor = link_get(self.nodes[parent].first_child);
         while let Some(node) = cursor {
-            cursor = self.nodes[node].next;
+            cursor = link_get(self.nodes[node].next);
             match &self.nodes[node].kind {
-                InlineKind::Link { .. } => continue,
-                InlineKind::Text(text) => {
-                    let text = text.clone();
+                InlineKind::Link(_) => continue,
+                InlineKind::Text(span) => {
+                    let text = self.span_text(span);
+                    if !autolink_candidate(text.as_bytes()) {
+                        continue;
+                    }
+                    let text = text.to_string();
                     self.split_autolinks(node, &text);
                 }
                 _ => {
-                    if self.nodes[node].first_child.is_some() {
+                    if link_get(self.nodes[node].first_child).is_some() {
                         self.autolink_literals(node);
                     }
                 }
@@ -1067,15 +1300,15 @@ impl<'t, 'd> InlineParser<'t, 'd> {
         for (piece, url) in pieces {
             let new_node = match url {
                 Some(url) => {
-                    let link = self.new_node(InlineKind::Link {
+                    let link = self.new_node(InlineKind::Link(Box::new(LinkData {
                         destination: url,
                         title: String::new(),
-                    });
-                    let inner = self.new_node(InlineKind::Text(piece));
+                    })));
+                    let inner = self.new_node(InlineKind::Text(Span::Owned(piece)));
                     self.push_child(link, inner);
                     link
                 }
-                None => self.new_node(InlineKind::Text(piece)),
+                None => self.new_node(InlineKind::Text(Span::Owned(piece))),
             };
             self.insert_after(after, new_node);
             after = new_node;
@@ -1085,53 +1318,62 @@ impl<'t, 'd> InlineParser<'t, 'd> {
 
     // ----- emit -----
 
-    fn emit<'e>(&self, events: &mut Vec<Event<'e>>) {
+    /// Moves the tree out as events. Text that is a range of the block's
+    /// text is borrowed; owned strings are moved, not copied. The arena is
+    /// cleared by the next block anyway.
+    fn emit(&mut self, events: &mut Vec<Event<'t>>) {
         self.emit_children(self.root, events);
     }
 
-    fn emit_children<'e>(&self, parent: usize, events: &mut Vec<Event<'e>>) {
-        let mut cursor = self.nodes[parent].first_child;
+    fn emit_children(&mut self, parent: usize, events: &mut Vec<Event<'t>>) {
+        let mut cursor = link_get(self.nodes[parent].first_child);
         while let Some(node) = cursor {
             self.emit_node(node, events);
-            cursor = self.nodes[node].next;
+            cursor = link_get(self.nodes[node].next);
         }
     }
 
-    fn emit_node<'e>(&self, node: usize, events: &mut Vec<Event<'e>>) {
-        match &self.nodes[node].kind {
-            InlineKind::Text(text) => {
-                if !text.is_empty() {
-                    events.push(Event::Text(owned(text)));
+    fn emit_node(&mut self, node: usize, events: &mut Vec<Event<'t>>) {
+        let kind = std::mem::replace(&mut self.nodes[node].kind, InlineKind::SoftBreak);
+        match kind {
+            InlineKind::Text(Span::Range(start, end)) => {
+                if end > start {
+                    events.push(Event::Text(Cow::Borrowed(&self.text[start..end])));
                 }
             }
-            InlineKind::Code(code) => events.push(Event::Code(owned(code))),
-            InlineKind::Html(html) => events.push(Event::InlineHtml(owned(html))),
+            InlineKind::Text(Span::Owned(text)) => {
+                if !text.is_empty() {
+                    events.push(Event::Text(Cow::Owned(text)));
+                }
+            }
+            InlineKind::Code(code) => events.push(Event::Code(Cow::Owned(code))),
+            InlineKind::Html(html) => events.push(Event::InlineHtml(Cow::Owned(html))),
             InlineKind::SoftBreak => events.push(Event::SoftBreak),
             InlineKind::HardBreak => events.push(Event::HardBreak),
             InlineKind::FootnoteReference(label) => {
-                events.push(Event::FootnoteReference(owned(label)))
+                events.push(Event::FootnoteReference(Cow::Owned(label)))
             }
             InlineKind::Emphasis => self.emit_container(node, Tag::Emphasis, events),
             InlineKind::Strong => self.emit_container(node, Tag::Strong, events),
             InlineKind::Strikethrough => self.emit_container(node, Tag::Strikethrough, events),
-            InlineKind::Link { destination, title } => {
+            InlineKind::Link(data) => {
                 let tag = Tag::Link {
-                    destination: owned(destination),
-                    title: owned(title),
+                    destination: Cow::Owned(data.destination),
+                    title: Cow::Owned(data.title),
                 };
                 self.emit_container(node, tag, events);
             }
-            InlineKind::Image { destination, title } => {
+            InlineKind::Image(data) => {
                 let tag = Tag::Image {
-                    destination: owned(destination),
-                    title: owned(title),
+                    destination: Cow::Owned(data.destination),
+                    title: Cow::Owned(data.title),
                 };
                 self.emit_container(node, tag, events);
             }
         }
     }
 
-    fn emit_container<'e>(&self, node: usize, tag: Tag<'e>, events: &mut Vec<Event<'e>>) {
+    fn emit_container(&mut self, node: usize, tag: Tag<'t>, events: &mut Vec<Event<'t>>) {
         let end = tag.end();
         events.push(Event::Start(tag));
         self.emit_children(node, events);
@@ -1170,12 +1412,49 @@ fn normalize_code_span(raw: &str) -> String {
 
 // ----- autolink literal scanning -----
 
+/// Cheap single pass: could this text hold an autolink literal at all?
+fn autolink_candidate(bytes: &[u8]) -> bool {
+    if find_byte(bytes, b'@').is_some() {
+        return true;
+    }
+    // Every scheme we recognize ends in ':' and the ':' is rare in prose.
+    let mut from = 0usize;
+    while let Some(relative) = find_byte(&bytes[from..], b':') {
+        let index = from + relative;
+        let head = &bytes[..index];
+        let schemes: [&[u8]; 5] = [b"http", b"https", b"ftp", b"mailto", b"xmpp"];
+        for scheme in schemes {
+            if head.len() >= scheme.len()
+                && head[head.len() - scheme.len()..].eq_ignore_ascii_case(scheme)
+            {
+                return true;
+            }
+        }
+        from = index + 1;
+    }
+    let mut from = 0usize;
+    while let Some(relative) = find_byte(&bytes[from..], b'.') {
+        let index = from + relative;
+        if index >= 3 && bytes[index - 3..index].eq_ignore_ascii_case(b"www") {
+            return true;
+        }
+        from = index + 1;
+    }
+    false
+}
+
 /// Finds the next `www.`, `http://`, `https://`, `mailto:`, `xmpp:`, or
 /// email autolink in `text` at or after `from`. Returns `(start, end, url)`.
 fn find_autolink_literal(text: &str, from: usize) -> Option<(usize, usize, String)> {
     let bytes = text.as_bytes();
     let mut index = from;
     while index < bytes.len() {
+        let byte = bytes[index];
+        let could_start_scheme = matches!(byte, b'w' | b'W' | b'h' | b'H' | b'f' | b'F');
+        if !could_start_scheme && byte != b'@' {
+            index += 1;
+            continue;
+        }
         // `www.` needs whitespace or one of `*_~(` before it; a scheme only
         // needs a non-alphanumeric character (quotes and brackets count).
         let strict_boundary = index == 0
