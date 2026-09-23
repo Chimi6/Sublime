@@ -4,6 +4,7 @@
 //! caller provides. See `DOCS/CONTRIBUTING.md` for the drop-in recipe.
 
 pub mod converter;
+pub mod converters;
 pub mod event;
 pub mod format;
 pub mod io;

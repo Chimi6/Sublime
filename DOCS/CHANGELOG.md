@@ -15,3 +15,4 @@ section under a version heading.
 - CSV writer with minimal quoting.
 - Streaming JSON tokenizer with full escape handling and verbatim numbers.
 - Compact JSON writer.
+- CSV -> JSON converter (native, lossless).
