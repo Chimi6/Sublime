@@ -77,6 +77,19 @@ record and discard it, to separate parser cost from writer cost.
 
 ## Results
 
+### 2026-09-23, 0.3.0, after the JSON tokenizer change
+
+10,000,000 rows. The tokenizer copies plain string runs a word at a time
+(a change made for the Markdown events JSON path).
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| CSV -> JSON throughput (MB/s) | 332.6 | 297.3 | PASS |
+| JSON -> CSV throughput (MB/s) | 190.7 | 101.0 | PASS |
+| Peak RSS CSV -> JSON file (MB) | 2.4 | < 16 | PASS |
+| Peak RSS JSON -> CSV file (MB) | 2.4 | < 16 | PASS |
+| Peak RSS CSV -> JSON stdin (MB) | 3.6 | < 16 | PASS |
+
 ### 2026-09-22, after the first performance spike
 
 10,000,000 rows, 1,183,138,107 bytes CSV.

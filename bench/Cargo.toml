@@ -9,7 +9,8 @@ sublime = { path = ".." }
 csv = "1"
 serde = "1"
 serde_json = "1"
-pulldown-cmark = "0.13"
+pulldown-cmark = { version = "0.13", features = ["serde"] }
+pulldown-cmark-to-cmark = "22"
 
 [profile.release]
 lto = "fat"

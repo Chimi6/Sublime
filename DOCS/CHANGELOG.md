@@ -6,6 +6,22 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-23
+
+### Added
+
+- Markdown writer (`io::markdown::writer`): events back to Markdown in one canonical form; every specification example round-trips to the same events in CI. Markdown is now a middle node for any format that reaches the event stream.
+- Markdown -> plain text converter (native, lossy) and format `text` (txt): readable text with list markers, aligned tables, `text (url)` links, and numbered footnotes.
+- Markdown <-> `markdown-json` converters (native, lossless): the event stream as JSON, one object per event, streamed both ways. The format has no extension; select it with `--to`/`--from`.
+- Benchmark pairs `markdown-text` and `markdown-json` with their methods documents.
+- `DOCS/ROADMAP.md`: tentative formats by category with status and priority tier, keystone building blocks, and a tier list.
+
+### Changed
+
+- JSON tokenizer copies runs of plain string bytes a word at a time (also speeds up JSON -> CSV).
+- Converters share `converters::input::read_text_document` for whole-document UTF-8 input.
+- Size budget raised to 900,000 bytes (release binary 842 KB after the three Markdown renderers).
+
 ## [0.2.0] - 2026-09-23
 
 ### Added

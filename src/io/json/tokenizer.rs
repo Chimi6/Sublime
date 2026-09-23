@@ -1,6 +1,7 @@
 //! Streaming JSON tokenizer. Numbers stay as text; nothing is parsed into
 //! floats. Strings are unescaped into a reusable scratch buffer.
 
+use crate::io::scan::find_json_escape;
 use std::fmt;
 use std::io::{self, Read};
 
@@ -211,10 +212,23 @@ impl<R: Read> JsonTokenizer<R> {
         }
     }
 
+    /// Copies runs of plain bytes a word at a time; only quotes, backslashes,
+    /// and control bytes are looked at one by one.
     fn read_string(&mut self) -> Result<(), JsonError> {
         let mut bytes = std::mem::take(&mut self.scratch).into_bytes();
         bytes.clear();
         loop {
+            if self.position == self.filled && !self.fill()? {
+                return Err(self.unexpected("unterminated string"));
+            }
+            let available = &self.buffer[self.position..self.filled];
+            let run = find_json_escape(available).unwrap_or(available.len());
+            bytes.extend_from_slice(&available[..run]);
+            let buffer_exhausted = run == available.len();
+            self.skip_plain(run);
+            if buffer_exhausted {
+                continue;
+            }
             let byte = match self.next_byte()? {
                 Some(byte) => byte,
                 None => return Err(self.unexpected("unterminated string")),
@@ -222,11 +236,10 @@ impl<R: Read> JsonTokenizer<R> {
             match byte {
                 b'"' => break,
                 b'\\' => self.read_escape(&mut bytes)?,
-                0x00..=0x1F => {
-                    let message = format!("raw control character 0x{byte:02x} in string");
+                other => {
+                    let message = format!("raw control character 0x{other:02x} in string");
                     return Err(self.unexpected(message));
                 }
-                other => bytes.push(other),
             }
         }
         match String::from_utf8(bytes) {
@@ -360,6 +373,13 @@ impl<R: Read> JsonTokenizer<R> {
         self.position = 0;
         self.filled = read_count;
         Ok(true)
+    }
+
+    /// Advances over `count` buffered bytes known to hold no newline.
+    fn skip_plain(&mut self, count: usize) {
+        self.position += count;
+        self.bytes_consumed += count as u64;
+        self.column += count as u64;
     }
 
     fn next_byte(&mut self) -> io::Result<Option<u8>> {
