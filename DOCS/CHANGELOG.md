@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-23
+
 ### Added
 
 - Markdown parser (`io::markdown`): full CommonMark 0.31.2, GFM tables, strikethrough, task lists, autolink literals, tag filter, and footnotes, emitting an event stream. All specification examples run as CI tests.
