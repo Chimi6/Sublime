@@ -9,3 +9,4 @@ section under a version heading.
 ### Added
 
 - Repository scaffold: crate, release profile, docs skeleton, size budget.
+- Format declarations with detection by id, extension, and magic bytes.
