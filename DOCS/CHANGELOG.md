@@ -10,3 +10,4 @@ section under a version heading.
 
 - Repository scaffold: crate, release profile, docs skeleton, size budget.
 - Format declarations with detection by id, extension, and magic bytes.
+- Converter trait, streaming input abstraction with rewind, fidelity and tier types, typed event system with sinks and conversion report.
