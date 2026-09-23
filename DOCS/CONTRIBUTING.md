@@ -16,13 +16,27 @@
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`
   must pass before every commit.
 
+## Where format knowledge lives
+
+Every format's reading and writing code lives in `src/io/<format>/` and
+knows nothing about conversion: a reader or parser yields records, tokens,
+or events; a writer renders them. Converters in `src/converters/` only
+compose those pieces. When a second converter needs the same format, it
+reuses the module rather than parsing again. `io::csv`, `io::json`,
+`io::markdown`, and `io::html` all follow this shape.
+
+When a format has a published specification with conformance examples,
+commit the examples under `tests/fixtures/<format>/` and run them as a test;
+the specification is the reviewer.
+
 ## Adding a format or converter
 
 Six places, and the compiler or a test catches anything you miss.
 
 1. `src/format/formats.rs`: add a `pub static` for the format if it is new.
-   Give it an id, display name, extensions, and magic bytes if the format has
-   a reliable signature.
+   Give it an id, display name, extensions, magic bytes if the format has a
+   reliable signature, and a category (data, document, image, audio, video,
+   archive). Categories only group listings and docs; code stays flat.
 2. `src/converters/<from>_to_<to>.rs`: a struct implementing `Converter`.
    Declare `name`, `from`, `to`, `fidelity`, `tier`, and write `convert`.
    Stream through the `Input` and the `Write` you are given. Call

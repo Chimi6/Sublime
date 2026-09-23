@@ -335,6 +335,7 @@ mod tests {
     use super::*;
     use crate::converter::{ConvertError, Fidelity, Input, Tier};
     use crate::event::Context;
+    use crate::format::Category;
     use std::io::Write;
 
     static A: Format = Format {
@@ -342,24 +343,28 @@ mod tests {
         display_name: "A",
         extensions: &["a"],
         magic: None,
+        category: Category::Data,
     };
     static B: Format = Format {
         id: "b",
         display_name: "B",
         extensions: &["b"],
         magic: None,
+        category: Category::Data,
     };
     static C: Format = Format {
         id: "c",
         display_name: "C",
         extensions: &["c"],
         magic: None,
+        category: Category::Data,
     };
     static D: Format = Format {
         id: "d",
         display_name: "D",
         extensions: &["d"],
         magic: None,
+        category: Category::Data,
     };
 
     struct Fake {
