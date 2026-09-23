@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- `DOCS/ROADMAP.md`: tentative formats by category with status and priority tier, keystone building blocks, and a tier list.
+
 ## [0.2.0] - 2026-09-23
 
 ### Added
