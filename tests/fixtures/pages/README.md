@@ -13,9 +13,9 @@ the material the format map (`DOCS/formats/pages.md`) is built from.
 Pages imports Word documents faithfully (styles, lists, footnotes, comments,
 tracked changes, sections, columns, headers and footers, images, tables), so
 a deterministic Word file per feature is the cheapest way to a complete and
-rerunnable set. One fixture, `native-scripted.pages`, is authored through
-the scripting dictionary instead, so the set also has objects Pages created
-from scratch.
+rerunnable set. Two fixtures, `native-scripted.pages` and
+`native-objects.pages`, are authored through the scripting dictionary
+instead, so the set also has objects Pages created from scratch.
 
 ## Making them
 
@@ -43,11 +43,31 @@ prints one line per fixture. Commit `*.pages` and `reference/`.
 | notes | two footnotes, an endnote, a comment on a word, a comment on a sentence, a tracked insertion and deletion |
 | layout | section one with a header and a page-number footer; section two on a new page in two columns with its own header |
 | everything | a realistic mix: title, headings, a paragraph with bold, italic, link, and footnote, a nested list, a table, a captioned image, a quote |
+| tabs | right tab with a dotted leader, decimal tab, and a left/center/right tab row |
+| custom-styles | a user-defined paragraph style (bordered, shaded Callout) and a user-defined character style (Code Char) |
+| rtl | right-to-left Arabic and Hebrew paragraphs, and a left-to-right paragraph with an inline right-to-left phrase |
+| headers | different headers for the first page, even pages, and odd pages in one section, with a page-number footer |
+| toc | a table-of-contents field over Heading 1 and 2, then those sections each on their own page |
+| revisions | a two-message comment thread (a comment and its reply), a tracked formatting change, and a tracked insertion |
 | native-scripted | built by AppleScript from the Blank template: paragraphs with fonts, sizes, and colors, a table, a placed image, a floating text box |
+| native-objects | built by AppleScript: a shape with text, a straight line, and a chart with data |
+
+### What Pages drops on import
+
+The fixtures are the ground truth for what Pages *keeps*, which is not everything
+a Word file can carry. Observed with the sources here on Pages 12.0:
+
+- endnotes are dropped (`notes` has one in its source; the fixture has none);
+- custom *character* styles are flattened to direct formatting, though custom
+  *paragraph* styles survive (`custom-styles`);
+- tracked *formatting* changes are dropped, though tracked insertions and
+  deletions survive (`revisions`, `notes`);
+- hyperlinks are re-exported as Word `HYPERLINK` field codes rather than
+  `w:hyperlink` elements (`links`).
 
 ## Add by hand
 
-Two more kinds of document are wanted and cannot be generated:
+These documents are wanted and cannot be generated:
 
 - `messy-*.pages`: any real documents you have, as they are. Real files
   carry the accumulated state (view settings, revision data, collaboration
@@ -55,6 +75,18 @@ Two more kinds of document are wanted and cannot be generated:
 - `native-authored.pages`: optional, made by hand in Pages using the same
   feature list as `everything`, so the map can compare objects Pages writes
   for its own styles against imported ones.
+
+A few features cannot be reached either through a Word source or through the
+scripting dictionary, so add them by hand to `native-authored.pages` (or a
+dedicated file) if the map needs them:
+
+- checklist (to-do) lists: a Pages list style with no Word equivalent, and the
+  dictionary cannot apply list styles;
+- table cell data formats (currency, percentage, date) and conditional
+  highlighting: Word tables do not carry them, and `cell` has no writable
+  format in the dictionary;
+- equations: Pages has no scripting term for them;
+- a group of objects: Pages has no `group` command.
 
 ## Public samples
 

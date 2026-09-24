@@ -1,0 +1,4 @@
+Header Variants
+This section defines a different header for the first page, for even pages, and for odd pages, so one document shows three headers. The first page suppresses the odd header in favour of its own. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.
+Page two carries the even-page header. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.
+Page three carries the odd-page (default) header. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.

@@ -1,0 +1,7 @@
+Bidirectional Text
+A right-to-left Arabic paragraph:
+مرحبا بالعالم، هذه فقرة عربية تُكتب من اليمين إلى اليسار.
+A right-to-left Hebrew paragraph:
+שלום עולם, זו פסקה בעברית הנכתבת מימין לשמאל.
+A left-to-right paragraph with an inline right-to-left phrase:
+The sign read مخرج (exit) above the door.

@@ -1,0 +1,11 @@
+A Document With a Table of Contents
+Contents
+
+Introduction
+The introduction begins on its own page so the contents page numbers mean something. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.
+Background
+Background material. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.
+A subsection
+A level-two heading the contents field includes. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.
+Conclusion
+The end. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.
