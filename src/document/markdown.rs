@@ -7,8 +7,8 @@
 use std::borrow::Cow;
 
 use super::{
-    Block, Document, FloatingContent, FloatingObject, Inline, Merge, Paragraph, Run, Table,
-    mathml_text,
+    Block, Document, FloatingContent, FloatingObject, Inline, Merge, Paragraph,
+    ParagraphProperties, Run, RunProperties, Table, mathml_text,
 };
 use crate::io::markdown::{Alignment, Event, EventSink, Tag, TagEnd};
 
@@ -17,6 +17,10 @@ pub fn emit_events<'a>(document: &'a Document, sink: &mut dyn EventSink<'a>) {
     let mut emitter = Emitter {
         document,
         sink,
+        paragraph_runs: vec![None; document.styles.paragraph.len()],
+        paragraph_formats: vec![None; document.styles.paragraph.len()],
+        character_runs: vec![None; document.styles.character.len()],
+        run_scratch: Vec::new(),
         lists: Vec::new(),
     };
     for section in &document.sections {
@@ -54,6 +58,14 @@ pub fn emit_events<'a>(document: &'a Document, sink: &mut dyn EventSink<'a>) {
 struct Emitter<'a, 's> {
     document: &'a Document,
     sink: &'s mut dyn EventSink<'a>,
+    /// Style chains resolved once per style: run formatting and paragraph
+    /// formatting of paragraph styles, run formatting of character styles.
+    paragraph_runs: Vec<Option<RunProperties>>,
+    paragraph_formats: Vec<Option<ParagraphProperties>>,
+    character_runs: Vec<Option<RunProperties>>,
+    /// The runs of the paragraph being emitted with their formatting,
+    /// reused across paragraphs.
+    run_scratch: Vec<(&'a Run, Formatting)>,
     /// One entry per open list, outermost first: whether it is ordered.
     /// Every open list has an open item.
     lists: Vec<bool>,
@@ -123,8 +135,8 @@ impl<'a> Emitter<'a, '_> {
     }
 
     /// Headings by outline level, or the `Title` style as the first level.
-    fn heading_level(&self, paragraph: &Paragraph) -> Option<u8> {
-        let properties = self.document.effective_paragraph(paragraph);
+    fn heading_level(&mut self, paragraph: &Paragraph) -> Option<u8> {
+        let properties = self.effective_paragraph(paragraph);
         if let Some(level) = properties.outline_level {
             return Some((level + 1).min(6));
         }
@@ -179,29 +191,34 @@ impl<'a> Emitter<'a, '_> {
     /// `own_formatting_only`, what the paragraph style sets is not marked
     /// up: a heading is not bold on top of being a heading.
     fn inlines(&mut self, paragraph: &'a Paragraph, own_formatting_only: bool) {
-        let runs: Vec<(&'a Run, Formatting)> = paragraph
-            .runs
-            .iter()
-            .filter(|run| !self.document.is_deleted(run))
-            .map(|run| {
-                let effective = if own_formatting_only {
-                    let mut properties = match run.style {
-                        Some(style) => self.document.character_style_run(style),
-                        None => Default::default(),
-                    };
-                    properties.overlay(&self.document.run_properties(run));
-                    properties
-                } else {
-                    self.document.effective_run(paragraph, run)
-                };
-                let wanted = Formatting {
-                    strong: effective.bold == Some(true),
-                    emphasis: effective.italic == Some(true),
-                    strike: effective.strike == Some(true),
-                };
-                (run, wanted)
-            })
-            .collect();
+        // The paragraph's share of every run's formatting, computed once.
+        let mut base = match paragraph.style {
+            Some(style) => self.paragraph_run(style),
+            None => RunProperties::default(),
+        };
+        base.overlay(&self.document.paragraph_run_properties(paragraph));
+        let mut runs = std::mem::take(&mut self.run_scratch);
+        runs.clear();
+        for run in &paragraph.runs {
+            if self.document.is_deleted(run) {
+                continue;
+            }
+            let mut effective = if own_formatting_only {
+                RunProperties::default()
+            } else {
+                base
+            };
+            if let Some(style) = run.style {
+                effective.overlay(&self.character_run(style));
+            }
+            effective.overlay(&self.document.run_properties(run));
+            let wanted = Formatting {
+                strong: effective.bold == Some(true),
+                emphasis: effective.italic == Some(true),
+                strike: effective.strike == Some(true),
+            };
+            runs.push((run, wanted));
+        }
         let mut open_link: Option<&'a str> = None;
         let mut open = Formatting::default();
         for (index, (run, wanted)) in runs.iter().enumerate() {
@@ -264,6 +281,50 @@ impl<'a> Emitter<'a, '_> {
                 }
             }
         }
+        self.run_scratch = runs;
+    }
+
+    fn paragraph_run(&mut self, style: usize) -> RunProperties {
+        if let Some(Some(cached)) = self.paragraph_runs.get(style) {
+            return *cached;
+        }
+        let resolved = self.document.paragraph_style_run(style);
+        if let Some(slot) = self.paragraph_runs.get_mut(style) {
+            *slot = Some(resolved);
+        }
+        resolved
+    }
+
+    fn character_run(&mut self, style: usize) -> RunProperties {
+        if let Some(Some(cached)) = self.character_runs.get(style) {
+            return *cached;
+        }
+        let resolved = self.document.character_style_run(style);
+        if let Some(slot) = self.character_runs.get_mut(style) {
+            *slot = Some(resolved);
+        }
+        resolved
+    }
+
+    /// A paragraph's effective paragraph formatting, with the style's
+    /// share cached.
+    fn effective_paragraph(&mut self, paragraph: &Paragraph) -> ParagraphProperties {
+        let mut properties = match paragraph.style {
+            Some(style) => {
+                if let Some(Some(cached)) = self.paragraph_formats.get(style) {
+                    *cached
+                } else {
+                    let resolved = self.document.paragraph_style_properties(style);
+                    if let Some(slot) = self.paragraph_formats.get_mut(style) {
+                        *slot = Some(resolved);
+                    }
+                    resolved
+                }
+            }
+            None => ParagraphProperties::default(),
+        };
+        properties.overlay(&self.document.paragraph_properties(paragraph));
+        properties
     }
 
     /// Closes the formatting tags that `wanted` no longer has, innermost
