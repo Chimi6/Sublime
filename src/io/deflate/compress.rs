@@ -208,7 +208,7 @@ fn huffman_lengths(weights: &[u32]) -> Vec<u8> {
     let mut next_id = count;
     let mut heap: Vec<(u64, usize)> = std::mem::take(&mut nodes);
     while heap.len() > 1 {
-        heap.sort_unstable_by(|left, right| right.0.cmp(&left.0));
+        heap.sort_unstable_by_key(|node| std::cmp::Reverse(node.0));
         let (weight_a, node_a) = heap.pop().unwrap_or((0, 0));
         let (weight_b, node_b) = heap.pop().unwrap_or((0, 0));
         let id = next_id;
