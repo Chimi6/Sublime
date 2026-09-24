@@ -1,6 +1,6 @@
 # Pages -> HTML
 
-**Latest** (2026-09-24, typed decode: pages -> html 31.6 MB/s of input on the dense shape and 30.9 on prose, at 48.2 and 34.9 MB peak; memory PASSES on both shapes, throughput FAILS on both, see Conclusions and `STATE.md`)
+**Latest** (2026-09-24, reader cursors: pages -> html 39.7 MB/s of input on the dense shape and 38.5 on prose, at 45.5 and 27.9 MB peak; memory PASSES on both shapes, throughput FAILS on both, see Conclusions and `STATE.md`)
 
 ## Purpose
 
@@ -64,6 +64,20 @@ in-process runs; inputs come from the `pages-json` pair's generator.
   document model and the package decode more than the writer.
 
 ## Results
+
+### 2026-09-24, reader cursors and one arena copy
+
+commit: 1ed4458
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Reader round: the attribute tables are read with forward cursors instead of a binary search per run (six per run before), a storage's text is copied into the arena once and runs point into it by offset, paragraphs that are ASCII are split by byte scan, and the Markdown projection caches each style's resolved chain and reuses its scratch. Dense-shape document build 38 -> 25 ms in-process.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> html, styled (2.5 MB): throughput (MB/s of input) | 39.7 | goal: 50 | FAIL |
+| pages -> html, styled: peak memory (MB) | 45.5 | goal: <= 64.0 | PASS |
+| pages -> html, prose (1.5 MB): throughput (MB/s of input) | 38.5 | goal: 50 | FAIL |
+| pages -> html, prose: peak memory (MB) | 27.9 | goal: <= 64.0 | PASS |
 
 ### 2026-09-24, typed decode of the attribute tables
 
