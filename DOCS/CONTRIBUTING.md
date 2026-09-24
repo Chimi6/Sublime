@@ -83,6 +83,15 @@ for other programs; change them only with a major version bump.
 | 3 | no path |
 | 4 | bad usage |
 
+## Development tools
+
+`cargo build --features dev-tools` adds `sublime inspect <package>`, which
+dumps an iWork package's object graph with schema-named fields; the release
+binary never includes it. The Pages schema and type tables are generated:
+`scripts/gen-pages-schema.py` fetches the community proto files into
+`temp/iwork-protos/` and writes `src/io/pages/{schema,types}.rs`. Regenerate
+rather than edit them.
+
 ## Tests
 
 - Unit tests live next to the code.
