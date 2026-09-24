@@ -15,24 +15,27 @@ docx_inputs() {
   done
 }
 
-# docx_rows <to> <shape> <timing> : the standard rows for a Word input.
+# docx_rows <to> <shape> <ours-timing> <pandoc-timing> : the standard rows for
+# a Word input, comparing ours against pandoc on the same uncompressed bytes.
 docx_rows() {
-  local to="$1" name="$2" timing="$3"
-  local file_bytes in_bytes seconds rss
+  local to="$1" name="$2" timing="$3" ptiming="$4"
+  local file_bytes in_bytes seconds rss pseconds prss
   file_bytes="$(wc -c < "$data/$name.docx" | tr -d ' ')"
   in_bytes="$(unzip -l "$data/$name.docx" | tail -1 | awk '{print $1}')"
   seconds="$(seconds_of "$timing")"; rss="$(rss_of "$timing")"
-  row "docx -> ${to}, ${name} ($(mb "$in_bytes") MB uncompressed): throughput (MB/s of uncompressed input)" "$(mbps "$in_bytes" "$seconds")" "goal: ${pages_goal_mbps}" "$(pass "$(echo "$(mbps "$in_bytes" "$seconds") >= $pages_goal_mbps" | bc -l)")"
+  pseconds="$(seconds_of "$ptiming")"; prss="$(rss_of "$ptiming")"
+  row "docx -> ${to}, ${name} ($(mb "$in_bytes") MB uncompressed): throughput (MB/s of uncompressed input)" "$(mbps "$in_bytes" "$seconds")" "$(mbps "$in_bytes" "$pseconds") (pandoc)" "$(pass "$(echo "$seconds <= $pseconds" | bc -l)")"
   row "docx -> ${to}, ${name} ($(mb "$file_bytes") MB file): throughput (MB/s of file bytes) [extra]" "$(mbps "$file_bytes" "$seconds")" "recorded" "n/a"
-  row "docx -> ${to}, ${name}: peak memory (MB)" "$(rss_mb "$rss")" "goal: <= $(rss_mb "$pages_goal_rss_kb")" "$(pass "$(echo "$rss <= $pages_goal_rss_kb" | bc -l)")"
+  row "docx -> ${to}, ${name}: peak memory (MB)" "$(rss_mb "$rss")" "$(rss_mb "$prss") (pandoc)" "$(pass "$(echo "$rss <= $prss" | bc -l)")"
 }
 
 run_pair() {
   docx_inputs
   echo "== running" >&2
   for name in styled prose; do
-    local ours
+    local ours pandoc
     ours="$(time_cmd ours "$sublime" -q convert "$data/$name.docx" "$data/$name-from-docx.html" --to html)"
-    docx_rows html "$name" "$ours"
+    pandoc="$(time_cmd pandoc pandoc -f docx -t html "$data/$name.docx" -o "$data/$name-pandoc.html")"
+    docx_rows html "$name" "$ours" "$pandoc"
   done
 }

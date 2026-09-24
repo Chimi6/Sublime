@@ -3,9 +3,8 @@
 # generator's two shapes written to HTML by our own writer (no large real
 # page can be committed), capped at 20000 units.
 # Word is a compressed package, so throughput counts the input plus the
-# output's uncompressed bytes (DOCS/benchmarks/README.md). No peer converts
-# HTML to Word in Rust; the reference column holds the goals the document
-# paths share (50 MB/s, 64 MB peak).
+# output's uncompressed bytes (DOCS/benchmarks/README.md). The reference is
+# pandoc, timed on the same workload.
 
 html_inputs() {
   local units="$rows"
@@ -26,15 +25,17 @@ run_pair() {
   html_inputs
   echo "== running" >&2
   for shape in big prose; do
-    local label input bytes ours out_bytes seconds
+    local label input bytes ours out_bytes seconds pandoc pseconds
     label="$(shape_label "$shape")"
     input="$data/html-$shape.html"
     bytes="$(wc -c < "$input" | tr -d ' ')"
     ours="$(time_cmd ours "$sublime" -q convert "$input" "$data/html-$shape-ours.docx" --to docx)"
+    pandoc="$(time_cmd pandoc pandoc -f html -t docx "$input" -o "$data/html-$shape-pandoc.docx")"
     out_bytes="$(unzip -l "$data/html-$shape-ours.docx" | tail -1 | awk '{print $1}')"
     seconds="$(seconds_of "$ours")"
-    row "html -> docx, ${label} ($(mb "$bytes") MB in + $(mb "$out_bytes") MB out): throughput (MB/s of input plus uncompressed output)" "$(mbps "$((bytes + out_bytes))" "$seconds")" "goal: 50" "$(pass "$(echo "$(mbps "$((bytes + out_bytes))" "$seconds") >= 50" | bc -l)")"
+    pseconds="$(seconds_of "$pandoc")"
+    row "html -> docx, ${label} ($(mb "$bytes") MB in + $(mb "$out_bytes") MB out): throughput (MB/s of input plus uncompressed output)" "$(mbps "$((bytes + out_bytes))" "$seconds")" "$(mbps "$((bytes + out_bytes))" "$pseconds") (pandoc)" "$(pass "$(echo "$seconds <= $pseconds" | bc -l)")"
     row "html -> docx, ${label}: throughput (MB/s of input) [extra]" "$(mbps "$bytes" "$seconds")" "recorded" "n/a"
-    row "html -> docx, ${label}: peak memory (MB)" "$(rss_mb "$(rss_of "$ours")")" "goal: <= 64.0" "$(pass "$(echo "$(rss_of "$ours") <= 65536" | bc -l)")"
+    row "html -> docx, ${label}: peak memory (MB)" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$pandoc")") (pandoc)" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$pandoc")" | bc -l)")"
   done
 }

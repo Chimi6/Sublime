@@ -2,9 +2,12 @@
 # HTML -> text. Sourced by bench/run.sh. Inputs are the markdown-html
 # generator's two shapes written to HTML by our own writer (no large real
 # page can be committed), capped at 20,000 units.
-# No peer converts HTML to text in Rust without a browser engine; the
-# reference column holds the goals the document paths share (50 MB/s of
-# input, 64 MB peak).
+# Two references: html2text, a pure-Rust HTML to text renderer built on
+# html5ever (the tight peer and the pass gate), and pandoc (a general-purpose
+# document converter) as a real-world tool for context. Two reference columns.
+
+table_header="| Target | Ours | html2text | pandoc | Result |"
+table_sep="|---|---|---|---|---|"
 
 html_inputs() {
   local units="$rows"
@@ -25,12 +28,14 @@ run_pair() {
   html_inputs
   echo "== running" >&2
   for shape in big prose; do
-    local label input bytes ours
+    local label input bytes ours crates pandoc
     label="$(shape_label "$shape")"
     input="$data/html-$shape.html"
     bytes="$(wc -c < "$input" | tr -d ' ')"
     ours="$(time_cmd ours "$sublime" -q convert "$input" "$data/html-$shape-ours.txt" --to text)"
-    row "html -> text, ${label} ($(mb "$bytes") MB): throughput (MB/s of input)" "$(mbps "$bytes" "$(seconds_of "$ours")")" "goal: 50" "$(pass "$(echo "$(mbps "$bytes" "$(seconds_of "$ours")") >= 50" | bc -l)")"
-    row "html -> text, ${label}: peak memory (MB)" "$(rss_mb "$(rss_of "$ours")")" "goal: <= 64.0" "$(pass "$(echo "$(rss_of "$ours") <= 65536" | bc -l)")"
+    crates="$(time_cmd crates "$bench" html-text crates "$input" "$data/html-$shape-crates.txt")"
+    pandoc="$(time_cmd pandoc pandoc -f html -t plain "$input" -o "$data/html-$shape-pandoc.txt")"
+    row "html -> text, ${label} ($(mb "$bytes") MB): throughput (MB/s of input)" "$(mbps "$bytes" "$(seconds_of "$ours")")" "$(mbps "$bytes" "$(seconds_of "$crates")")" "$(mbps "$bytes" "$(seconds_of "$pandoc")")" "$(pass "$(echo "$(seconds_of "$ours") <= $(seconds_of "$crates")" | bc -l)")"
+    row "html -> text, ${label}: peak memory (MB)" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$crates")")" "$(rss_mb "$(rss_of "$pandoc")")" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$crates")" | bc -l)")"
   done
 }
