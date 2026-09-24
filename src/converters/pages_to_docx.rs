@@ -10,7 +10,7 @@ use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
 use crate::io::docx::write_docx;
-use crate::io::pages::{Package, read_document};
+use crate::io::pages::{Package, Scope, read_document};
 
 const NAME: &str = "pages-to-docx";
 const FIDELITY_NOTE: &str =
@@ -47,7 +47,7 @@ impl Converter for PagesToDocx {
     ) -> Result<(), ConvertError> {
         let mut bytes = Vec::new();
         input.read_to_end(&mut bytes)?;
-        let package = Package::read(&bytes).map_err(package_error)?;
+        let package = Package::read_scope(&bytes, Scope::Document).map_err(package_error)?;
         let document = read_document(&package);
         write_docx(&document, &mut *output)?;
         output.flush()?;

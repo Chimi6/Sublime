@@ -9,7 +9,7 @@ use crate::document::markdown::emit_events;
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
-use crate::io::pages::{Package, read_document};
+use crate::io::pages::{Package, Scope, read_document};
 use crate::io::text::TextWriter;
 
 const NAME: &str = "pages-to-text";
@@ -47,7 +47,7 @@ impl Converter for PagesToText {
     ) -> Result<(), ConvertError> {
         let mut bytes = Vec::new();
         input.read_to_end(&mut bytes)?;
-        let package = Package::read(&bytes).map_err(package_error)?;
+        let package = Package::read_scope(&bytes, Scope::Document).map_err(package_error)?;
         let document = read_document(&package);
         let mut writer = TextWriter::streaming(output);
         emit_events(&document, &mut writer);
