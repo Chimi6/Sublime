@@ -20,7 +20,7 @@ less the spawn floor of `/bin/true`, median of runs from
 
 ## Results
 
-### 2026-09-24, 0.6.2 with the WebAssembly module
+### 2026-09-24, 0.7.0 with the WebAssembly module
 
 commit: 1084f36 (the commit before the release bump)
 machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
@@ -57,4 +57,4 @@ read as "under a millisecond", not as a trend.
 |---|---|---|---|---|---|
 | 0.3.0 | 651,904 | 656,000 | 1,048,576 | | |
 | 0.6.0 | 1,399,664 | 1,499,776 | 1,400,000 | | |
-| 0.6.2 | 1,420,416 | 1,520,256 | 1,430,000 | 681,266 | 700,000 |
+| 0.7.0 | 1,420,416 | 1,520,256 | 1,430,000 | 681,266 | 700,000 |
