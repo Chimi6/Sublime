@@ -8,6 +8,7 @@ section under a version heading.
 
 ### Changed
 
+- The Word writer streams its body into the package in 256 KiB parts: `ZipWriter::begin_deflated`, `write_part`, and `end_deflated` write a deflated entry in sync-flushed parts with a data descriptor, and `deflate_part` with `Level::Fast` compresses each part. Word memory on the benchmark inputs fell from 175 to 75 MB (dense) and 94 to 45 MB (prose).
 - The document model is a text arena with interned properties, links, revisions, images, and strings: a run is 64 bytes and owns no heap, `Document::paragraph_text` replaces `Paragraph::text`, and readers intern through the document. On the 55,000-paragraph benchmark input the text paths dropped from 142 to 75 MB peak and gained a third in throughput; Word from 232 to 175 MB. Size budget raised from 1.4 MB to 1.41 MB for it (binary 1,400,448 bytes after trimming).
 
 ### Added

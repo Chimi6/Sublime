@@ -1,6 +1,6 @@
 # Pages -> Word
 
-**Latest** (2026-09-24, slim model: pages -> docx 13.1 MB/s of input on the dense shape and 16.4 on prose, at 174.9 and 93.8 MB peak; all four goals FAIL, see Conclusions and `STATE.md`)
+**Latest** (2026-09-24, streamed body: pages -> docx 15.6 MB/s of input on the dense shape and 18.5 on prose, at 74.8 and 45.3 MB peak; the prose memory goal passes, the rest FAIL, see Conclusions and `STATE.md`)
 
 ## Purpose
 
@@ -67,6 +67,20 @@ in-process runs; inputs come from the `pages-json` pair's generator.
   work the Markdown, HTML, and text pairs do not.
 
 ## Results
+
+### 2026-09-24, streamed Word body
+
+commit: 9dcba8e
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Phase 2: the body is rendered in 256 KiB parts straight into a streaming deflated ZIP entry (sync-flushed parts, sizes in a data descriptor) at a fast match level, so the XML is never held whole. Same inputs as the blocks below.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> docx, styled (2.5 MB): throughput (MB/s of input) | 15.6 | goal: 50 | FAIL |
+| pages -> docx, styled: peak memory (MB) | 74.8 | goal: <= 64.0 | FAIL |
+| pages -> docx, prose (1.5 MB): throughput (MB/s of input) | 18.5 | goal: 50 | FAIL |
+| pages -> docx, prose: peak memory (MB) | 45.3 | goal: <= 64.0 | PASS |
 
 ### 2026-09-24, slim document model
 
