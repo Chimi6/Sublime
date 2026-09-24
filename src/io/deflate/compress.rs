@@ -54,7 +54,7 @@ pub fn deflate_part(input: &[u8], out: &mut Vec<u8>, level: Level, is_final: boo
         return;
     }
     let chain_limit = match level {
-        Level::Fast => 4,
+        Level::Fast => 1,
         Level::Default => MAX_CHAIN,
     };
     let mut writer = BitWriter::new(out);
@@ -69,7 +69,12 @@ pub fn deflate_part(input: &[u8], out: &mut Vec<u8>, level: Level, is_final: boo
                 length: length as u16,
                 distance: distance as u16,
             });
-            matcher.insert_range(input, position + 1, position + length);
+            // The fast level does not index the inside of long matches,
+            // as zlib's fast strategy does not; the next match starts
+            // after them anyway.
+            if level == Level::Default || length <= 8 {
+                matcher.insert_range(input, position + 1, position + length);
+            }
             position += length;
         } else {
             symbols.push(Symbol::Literal(input[position]));

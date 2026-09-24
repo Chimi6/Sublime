@@ -449,8 +449,15 @@ impl DocxWriter<'_> {
         match run.content {
             Inline::Text(span) => {
                 let element = if deleted { "w:delText" } else { "w:t" };
-                let _ = write!(out, "<{element} xml:space=\"preserve\">");
-                escape_text(out, self.document.text(span));
+                let text = self.document.text(span);
+                // Only edge whitespace needs the preserve attribute.
+                let edged = text.starts_with(' ') || text.ends_with(' ');
+                let _ = write!(out, "<{element}");
+                if edged {
+                    out.push_str(" xml:space=\"preserve\"");
+                }
+                out.push('>');
+                escape_text(out, text);
                 let _ = write!(out, "</{element}>");
             }
             Inline::PageBreak => out.push_str("<w:br w:type=\"page\"/>"),
@@ -1151,10 +1158,7 @@ fn run_properties_xml(document: &Document, properties: &RunProperties, out: &mut
     }
     if let Some(size) = properties.size {
         let half_points = (size * 2.0).round() as i64;
-        let _ = write!(
-            out,
-            "<w:sz w:val=\"{half_points}\"/><w:szCs w:val=\"{half_points}\"/>"
-        );
+        let _ = write!(out, "<w:sz w:val=\"{half_points}\"/>");
     }
     if let Some(highlight) = properties.highlight {
         let _ = write!(
