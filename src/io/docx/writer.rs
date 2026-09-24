@@ -332,9 +332,16 @@ impl DocxWriter<'_> {
                 instance + 1
             );
         }
-        paragraph_properties_xml(&paragraph.properties, &mut properties);
+        paragraph_properties_xml(
+            &self.document.paragraph_properties(paragraph),
+            &mut properties,
+        );
         let mut mark = String::new();
-        run_properties_xml(&paragraph.run_properties, &mut mark);
+        run_properties_xml(
+            self.document,
+            &self.document.paragraph_run_properties(paragraph),
+            &mut mark,
+        );
         if !mark.is_empty() {
             let _ = write!(properties, "<w:rPr>{mark}</w:rPr>");
         }
@@ -349,18 +356,18 @@ impl DocxWriter<'_> {
         }
         let mut open_link: Option<&str> = None;
         for run in &paragraph.runs {
-            if run.link.as_deref() != open_link {
+            if self.document.link(run) != open_link {
                 if open_link.is_some() {
                     out.push_str("</w:hyperlink>");
                 }
-                open_link = run.link.as_deref();
+                open_link = self.document.link(run);
                 if let Some(target) = open_link {
                     let id = self.relationship_for(RelationshipKind::Hyperlink, target);
                     let _ = write!(out, "<w:hyperlink r:id=\"rId{id}\">");
                 }
             }
             // A tracked change wraps its run.
-            let change = run.revision.as_ref().map(|revision| {
+            let change = self.document.revision(run).map(|revision| {
                 self.revisions += 1;
                 let element = match revision.kind {
                     RevisionKind::Insertion => "w:ins",
@@ -401,9 +408,9 @@ impl DocxWriter<'_> {
                 style_id(&self.document.styles.character[style].name)
             );
         }
-        let mut merged = paragraph.run_properties.clone();
-        merged.overlay(&run.properties);
-        run_properties_xml(&merged, &mut properties);
+        let mut merged = self.document.paragraph_run_properties(paragraph);
+        merged.overlay(&self.document.run_properties(run));
+        run_properties_xml(self.document, &merged, &mut properties);
         let properties = if properties.is_empty() {
             String::new()
         } else {
@@ -423,23 +430,20 @@ impl DocxWriter<'_> {
         }
         out.push_str("<w:r>");
         out.push_str(&properties);
-        let deleted = run
-            .revision
-            .as_ref()
-            .is_some_and(|revision| revision.kind == RevisionKind::Deletion);
-        match &run.content {
-            Inline::Text(text) => {
+        let deleted = self.document.is_deleted(run);
+        match run.content {
+            Inline::Text(span) => {
                 let element = if deleted { "w:delText" } else { "w:t" };
                 let _ = write!(out, "<{element} xml:space=\"preserve\">");
-                escape_text(out, text);
+                escape_text(out, self.document.text(span));
                 let _ = write!(out, "</{element}>");
             }
             Inline::PageBreak => out.push_str("<w:br w:type=\"page\"/>"),
             // Equations are written as their text until Office Math is
             // supported.
-            Inline::Math(mathml) => {
+            Inline::Math(span) => {
                 out.push_str("<w:t xml:space=\"preserve\">");
-                escape_text(out, &mathml_text(mathml));
+                escape_text(out, &mathml_text(self.document.text(span)));
                 out.push_str("</w:t>");
             }
             Inline::LineBreak => out.push_str("<w:br/>"),
@@ -447,7 +451,11 @@ impl DocxWriter<'_> {
             Inline::Footnote(note) => {
                 let _ = write!(out, "<w:footnoteReference w:id=\"{}\"/>", note + 1);
             }
-            Inline::Image(image) => self.render_image(image, out),
+            Inline::Image(id) => {
+                if let Some(image) = self.document.image(id) {
+                    self.render_image(image, out);
+                }
+            }
             Inline::PageNumber | Inline::PageCount => {}
         }
         out.push_str("</w:r>");
@@ -844,7 +852,7 @@ impl DocxWriter<'_> {
                 let _ = write!(xml, "<w:pPr>{paragraph}</w:pPr>");
             }
             let mut run = String::new();
-            run_properties_xml(&style.run, &mut run);
+            run_properties_xml(self.document, &style.run, &mut run);
             if !run.is_empty() {
                 let _ = write!(xml, "<w:rPr>{run}</w:rPr>");
             }
@@ -866,7 +874,7 @@ impl DocxWriter<'_> {
                 );
             }
             let mut run = String::new();
-            run_properties_xml(&style.run, &mut run);
+            run_properties_xml(self.document, &style.run, &mut run);
             if !run.is_empty() {
                 let _ = write!(xml, "<w:rPr>{run}</w:rPr>");
             }
@@ -1090,9 +1098,9 @@ fn paragraph_properties_xml(properties: &ParagraphProperties, out: &mut String) 
     }
 }
 
-fn run_properties_xml(properties: &RunProperties, out: &mut String) {
-    if let Some(font) = &properties.font {
-        let family = font_family(font);
+fn run_properties_xml(document: &Document, properties: &RunProperties, out: &mut String) {
+    if let Some(font) = properties.font {
+        let family = font_family(document.string(font));
         out.push_str("<w:rFonts w:ascii=\"");
         escape_attribute(out, &family);
         out.push_str("\" w:hAnsi=\"");
@@ -1152,9 +1160,9 @@ fn run_properties_xml(properties: &RunProperties, out: &mut String) {
         Some(Baseline::Subscript) => out.push_str("<w:vertAlign w:val=\"subscript\"/>"),
         None => {}
     }
-    if let Some(language) = &properties.language {
+    if let Some(language) = properties.language {
         out.push_str("<w:lang w:val=\"");
-        escape_attribute(out, language);
+        escape_attribute(out, document.string(language));
         out.push_str("\"/>");
     }
 }

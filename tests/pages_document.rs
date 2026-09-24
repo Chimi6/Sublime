@@ -53,7 +53,9 @@ fn text_styles_paragraphs_and_runs() {
     let find = |needle: &str| {
         let run = runs
             .iter()
-            .find(|run| matches!(&run.content, Inline::Text(text) if text.contains(needle)))
+            .find(|run| {
+                matches!(run.content, Inline::Text(span) if document.text(span).contains(needle))
+            })
             .unwrap_or_else(|| panic!("no run containing {needle:?}"));
         document.effective_run(paragraphs[7], run)
     };
@@ -69,8 +71,7 @@ fn text_styles_paragraphs_and_runs() {
     assert!(
         find("monospace")
             .font
-            .as_deref()
-            .is_some_and(|font| font.contains("Courier"))
+            .is_some_and(|font| document.string(font).contains("Courier"))
     );
     assert_eq!(find("script").baseline, Some(Baseline::Superscript));
     assert_ne!(find("Plain, ").bold, Some(true));
@@ -94,7 +95,7 @@ fn lists_have_levels_and_formats() {
         .iter()
         .map(|paragraph| {
             (
-                paragraph.text(),
+                document.paragraph_text(paragraph),
                 paragraph.list.map(|item| item.level),
                 paragraph.list.is_some_and(|item| item.starts_list),
             )
@@ -130,35 +131,22 @@ fn paragraph_formatting_and_breaks() {
     let by_prefix = |prefix: &str| {
         paragraphs
             .iter()
-            .find(|paragraph| paragraph.text().starts_with(prefix))
+            .find(|paragraph| document.paragraph_text(paragraph).starts_with(prefix))
             .unwrap_or_else(|| panic!("no paragraph starting {prefix:?}"))
     };
+    let properties = |prefix: &str| document.paragraph_properties(by_prefix(prefix));
+    assert_eq!(properties("Centered").alignment, Some(Alignment::Center));
     assert_eq!(
-        by_prefix("Centered").properties.alignment,
-        Some(Alignment::Center)
-    );
-    assert_eq!(
-        by_prefix("Right aligned").properties.alignment,
+        properties("Right aligned").alignment,
         Some(Alignment::Right)
     );
+    assert_eq!(properties("Justified").alignment, Some(Alignment::Justify));
+    assert_eq!(properties("Space before").space_before, Some(24.0));
     assert_eq!(
-        by_prefix("Justified").properties.alignment,
-        Some(Alignment::Justify)
-    );
-    assert_eq!(
-        by_prefix("Space before").properties.space_before,
-        Some(24.0)
-    );
-    assert_eq!(
-        by_prefix("First line indented")
-            .properties
-            .first_line_indent,
+        properties("First line indented").first_line_indent,
         Some(36.0)
     );
-    assert_eq!(
-        by_prefix("Keep with next").properties.keep_with_next,
-        Some(true)
-    );
+    assert_eq!(properties("Keep with next").keep_with_next, Some(true));
     let broken = by_prefix("A line break");
     assert!(
         broken
@@ -166,11 +154,18 @@ fn paragraph_formatting_and_breaks() {
             .iter()
             .any(|run| run.content == Inline::LineBreak)
     );
-    assert_eq!(broken.text(), "A line break inside\nthe same paragraph.");
+    assert_eq!(
+        document.paragraph_text(broken),
+        "A line break inside\nthe same paragraph."
+    );
     // The page break is a paragraph of its own before the text it leads.
     let after_break = paragraphs
         .iter()
-        .position(|paragraph| paragraph.text().starts_with("Text after the page break"))
+        .position(|paragraph| {
+            document
+                .paragraph_text(paragraph)
+                .starts_with("Text after the page break")
+        })
         .expect("paragraph after the page break");
     let break_paragraph = paragraphs[after_break - 1];
     assert_eq!(break_paragraph.runs.len(), 1);
@@ -184,8 +179,10 @@ fn links_carry_their_targets() {
     let links: Vec<(String, String)> = paragraphs[1]
         .runs
         .iter()
-        .filter_map(|run| match (&run.link, &run.content) {
-            (Some(url), Inline::Text(text)) => Some((text.clone(), url.clone())),
+        .filter_map(|run| match (document.link(run), run.content) {
+            (Some(url), Inline::Text(span)) => {
+                Some((document.text(span).to_string(), url.to_string()))
+            }
             _ => None,
         })
         .collect();
@@ -203,7 +200,7 @@ fn links_carry_their_targets() {
         ]
     );
     assert_eq!(
-        paragraphs[1].text(),
+        document.paragraph_text(paragraphs[1]),
         "A link to a web page and an email link."
     );
 }
@@ -214,7 +211,11 @@ fn footnotes_are_collected() {
     let paragraphs = paragraphs(&document);
     let with_notes = paragraphs
         .iter()
-        .find(|paragraph| paragraph.text().starts_with("A sentence with a footnote"))
+        .find(|paragraph| {
+            document
+                .paragraph_text(paragraph)
+                .starts_with("A sentence with a footnote")
+        })
         .expect("footnote paragraph");
     let notes: Vec<usize> = with_notes
         .runs
@@ -231,7 +232,7 @@ fn footnotes_are_collected() {
     );
     let first = &document.footnotes[notes[0]];
     let text = match &first.blocks[0] {
-        Block::Paragraph(paragraph) => paragraph.text(),
+        Block::Paragraph(paragraph) => document.paragraph_text(paragraph),
         _ => String::new(),
     };
     assert_eq!(text, "The first footnote.");
@@ -248,11 +249,11 @@ fn tables(document: &Document) -> Vec<&sublime::document::Table> {
         .collect()
 }
 
-fn cell_text(cell: &sublime::document::Cell) -> String {
+fn cell_text(document: &Document, cell: &sublime::document::Cell) -> String {
     cell.blocks
         .iter()
         .filter_map(|block| match block {
-            Block::Paragraph(paragraph) => Some(paragraph.text()),
+            Block::Paragraph(paragraph) => Some(document.paragraph_text(paragraph)),
             Block::Table(_) => None,
         })
         .collect::<Vec<_>>()
@@ -268,22 +269,26 @@ fn tables_come_out_as_grids_with_merges() {
     assert_eq!(simple.rows.len(), 3);
     assert_eq!(simple.header_rows, 1);
     assert_eq!(simple.columns, vec![150.0, 150.0, 150.0]);
-    let texts: Vec<String> = simple.rows[0].cells.iter().map(cell_text).collect();
+    let texts: Vec<String> = simple.rows[0]
+        .cells
+        .iter()
+        .map(|cell| cell_text(&document, cell))
+        .collect();
     assert_eq!(texts, ["Name", "Kind", "Amount"]);
-    assert_eq!(cell_text(&simple.rows[1].cells[2]), "42.50");
+    assert_eq!(cell_text(&document, &simple.rows[1].cells[2]), "42.50");
     assert!(simple.rows[0].cells[0].background.is_some());
     let merged = tables[1];
     assert_eq!(merged.rows.len(), 4);
     let wide = &merged.rows[0].cells[0];
-    assert_eq!(cell_text(wide), "Spans two columns");
+    assert_eq!(cell_text(&document, wide), "Spans two columns");
     assert_eq!(wide.column_span, 2);
     assert_eq!(merged.rows[0].cells[1].merge, Merge::Left);
     let tall = &merged.rows[1].cells[0];
-    assert_eq!(cell_text(tall), "Spans two rows");
+    assert_eq!(cell_text(&document, tall), "Spans two rows");
     assert_eq!(tall.row_span, 2);
     assert_eq!(merged.rows[2].cells[0].merge, Merge::Above);
     assert_eq!(
-        cell_text(&merged.rows[3].cells[0]),
+        cell_text(&document, &merged.rows[3].cells[0]),
         "Multi-line cell\nsecond paragraph"
     );
     // The shaded cell has its own fill, unlike its neighbours.
@@ -305,8 +310,8 @@ fn images_carry_media_size_and_placement() {
     let images: Vec<&sublime::document::InlineImage> = paragraphs(&document)
         .iter()
         .flat_map(|paragraph| paragraph.runs.iter())
-        .filter_map(|run| match &run.content {
-            Inline::Image(image) => Some(image),
+        .filter_map(|run| match run.content {
+            Inline::Image(id) => document.image(id),
             _ => None,
         })
         .collect();
@@ -326,14 +331,14 @@ fn images_carry_media_size_and_placement() {
     assert_eq!((images[2].width, images[2].height), (144.0, 96.0));
 }
 
-fn area_text(blocks: &Option<Vec<Block>>) -> String {
+fn area_text(document: &Document, blocks: &Option<Vec<Block>>) -> String {
     blocks
         .as_ref()
         .map(|blocks| {
             blocks
                 .iter()
                 .filter_map(|block| match block {
-                    Block::Paragraph(paragraph) => Some(paragraph.text()),
+                    Block::Paragraph(paragraph) => Some(document.paragraph_text(paragraph)),
                     Block::Table(_) => None,
                 })
                 .collect::<Vec<_>>()
@@ -350,22 +355,22 @@ fn headers_footers_and_page_setup() {
     assert_eq!(section.page.margin_left, 72.0);
     assert_eq!(section.page.header_distance, 35.4);
     assert_eq!(
-        area_text(&section.headers.default),
+        area_text(&document, &section.headers.default),
         "Odd-page header, shown on pages one and three"
     );
     assert_eq!(
-        area_text(&section.headers.first),
+        area_text(&document, &section.headers.first),
         "First-page header, shown only on page one"
     );
     assert_eq!(
-        area_text(&section.headers.even),
+        area_text(&document, &section.headers.even),
         "Even-page header, shown on page two"
     );
     let footer = section.footers.default.as_ref().expect("footer");
     let Block::Paragraph(paragraph) = &footer[0] else {
         panic!("footer paragraph");
     };
-    assert_eq!(paragraph.text(), "Page ");
+    assert_eq!(document.paragraph_text(paragraph), "Page ");
     assert!(
         paragraph
             .runs
@@ -382,7 +387,7 @@ fn sections_split_at_section_and_layout_breaks() {
     assert_eq!(document.sections[1].columns, 2);
     assert_eq!(document.sections[1].start, SectionStart::NewPage);
     assert_eq!(
-        area_text(&document.sections[1].headers.default),
+        area_text(&document, &document.sections[1].headers.default),
         "Section two header, two columns"
     );
     let document = read("page-layout");
@@ -401,7 +406,10 @@ fn floating_text_boxes_and_images_are_collected() {
     );
     match &lone.content {
         FloatingContent::TextBox { blocks, .. } => {
-            assert_eq!(area_text(&Some(blocks.clone())), "A lone shape with text.");
+            assert_eq!(
+                area_text(&document, &Some(blocks.clone())),
+                "A lone shape with text."
+            );
         }
         FloatingContent::Image(_) => panic!("a text box"),
     }
@@ -423,9 +431,9 @@ fn table_of_contents_entries_follow_their_paragraph() {
     let document = read("toc");
     let paragraphs = paragraphs(&document);
     assert_eq!(style_name(&document, paragraphs[3]), "TOC 1");
-    assert_eq!(paragraphs[3].text(), "Contents\t1");
+    assert_eq!(document.paragraph_text(paragraphs[3]), "Contents\t1");
     assert_eq!(style_name(&document, paragraphs[6]), "TOC 2");
-    assert_eq!(paragraphs[6].text(), "A subsection\t3");
+    assert_eq!(document.paragraph_text(paragraphs[6]), "A subsection\t3");
     assert_eq!(style_name(&document, paragraphs[9]), "Heading");
 }
 
@@ -434,17 +442,21 @@ fn tracked_changes_are_revisions() {
     let document = read("notes");
     let changed = paragraphs(&document)
         .into_iter()
-        .find(|paragraph| paragraph.text().starts_with("Tracked changes"))
+        .find(|paragraph| {
+            document
+                .paragraph_text(paragraph)
+                .starts_with("Tracked changes")
+        })
         .expect("tracked paragraph");
     assert_eq!(
-        changed.text(),
+        document.paragraph_text(changed),
         "Tracked changes: inserted words and unchanged words."
     );
     let revisions: Vec<(RevisionKind, &str)> = changed
         .runs
         .iter()
         .filter_map(|run| {
-            let revision = run.revision.as_ref()?;
+            let revision = document.revision(run)?;
             Some((revision.kind, revision.author.as_deref().unwrap_or("")))
         })
         .collect();
@@ -460,11 +472,11 @@ fn tracked_changes_are_revisions() {
 #[test]
 fn equations_keep_their_mathml() {
     let document = read("equations");
-    let math: Vec<&String> = paragraphs(&document)
+    let math: Vec<&str> = paragraphs(&document)
         .iter()
         .flat_map(|paragraph| paragraph.runs.iter())
-        .filter_map(|run| match &run.content {
-            Inline::Math(mathml) => Some(mathml),
+        .filter_map(|run| match run.content {
+            Inline::Math(span) => Some(document.text(span)),
             _ => None,
         })
         .collect();

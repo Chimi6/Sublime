@@ -7,8 +7,8 @@
 use std::borrow::Cow;
 
 use super::{
-    Block, Document, FloatingContent, FloatingObject, Inline, Merge, Paragraph, RevisionKind, Run,
-    Table, mathml_text,
+    Block, Document, FloatingContent, FloatingObject, Inline, Merge, Paragraph, Run, Table,
+    mathml_text,
 };
 use crate::io::markdown::{Alignment, Event, EventSink, Tag, TagEnd};
 
@@ -124,11 +124,7 @@ impl<'a> Emitter<'a, '_> {
 
     /// Headings by outline level, or the `Title` style as the first level.
     fn heading_level(&self, paragraph: &Paragraph) -> Option<u8> {
-        let mut properties = match paragraph.style {
-            Some(style) => self.document.paragraph_style_properties(style),
-            None => Default::default(),
-        };
-        properties.overlay(&paragraph.properties);
+        let properties = self.document.effective_paragraph(paragraph);
         if let Some(level) = properties.outline_level {
             return Some((level + 1).min(6));
         }
@@ -186,18 +182,14 @@ impl<'a> Emitter<'a, '_> {
         let runs: Vec<(&'a Run, Formatting)> = paragraph
             .runs
             .iter()
-            .filter(|run| {
-                !run.revision
-                    .as_ref()
-                    .is_some_and(|revision| revision.kind == RevisionKind::Deletion)
-            })
+            .filter(|run| !self.document.is_deleted(run))
             .map(|run| {
                 let effective = if own_formatting_only {
                     let mut properties = match run.style {
                         Some(style) => self.document.character_style_run(style),
                         None => Default::default(),
                     };
-                    properties.overlay(&run.properties);
+                    properties.overlay(&self.document.run_properties(run));
                     properties
                 } else {
                     self.document.effective_run(paragraph, run)
@@ -214,13 +206,14 @@ impl<'a> Emitter<'a, '_> {
         let mut open = Formatting::default();
         for (index, (run, wanted)) in runs.iter().enumerate() {
             let wanted = *wanted;
-            let link = run.link.as_deref();
+            let link = self.document.link(run);
             let next = runs.get(index + 1);
             let closes_after = next.is_none_or(|(next_run, next_wanted)| {
-                *next_wanted != wanted || next_run.link.as_deref() != link
+                *next_wanted != wanted || self.document.link(next_run) != link
             });
-            let (leading, core, trailing) = match &run.content {
-                Inline::Text(text) if wanted != Formatting::default() || link.is_some() => {
+            let (leading, core, trailing) = match run.content {
+                Inline::Text(span) if wanted != Formatting::default() || link.is_some() => {
+                    let text = self.document.text(span);
                     let core = text.trim_matches(is_space);
                     let start = text.len() - text.trim_start_matches(is_space).len();
                     (&text[..start], core, &text[start + core.len()..])
@@ -246,8 +239,8 @@ impl<'a> Emitter<'a, '_> {
             }
             self.close_formatting(&mut open, wanted);
             self.open_formatting(&mut open, wanted);
-            match &run.content {
-                Inline::Text(text) if wanted != Formatting::default() || link.is_some() => {
+            match run.content {
+                Inline::Text(_) if wanted != Formatting::default() || link.is_some() => {
                     if !opens_before && !leading.is_empty() {
                         self.sink.event(Event::Text(Cow::Borrowed(leading)));
                     }
@@ -257,7 +250,6 @@ impl<'a> Emitter<'a, '_> {
                     if !closes_after && !trailing.is_empty() {
                         self.sink.event(Event::Text(Cow::Borrowed(trailing)));
                     }
-                    let _ = text;
                 }
                 _ => self.run(run),
             }
@@ -319,19 +311,27 @@ impl<'a> Emitter<'a, '_> {
     }
 
     fn run(&mut self, run: &'a Run) {
-        match &run.content {
-            Inline::Text(text) if run.link.is_none() => self.text_with_bare_links(text),
-            Inline::Text(text) => self.sink.event(Event::Text(Cow::Borrowed(text))),
+        match run.content {
+            Inline::Text(span) if run.link.is_none() => {
+                self.text_with_bare_links(self.document.text(span));
+            }
+            Inline::Text(span) => self
+                .sink
+                .event(Event::Text(Cow::Borrowed(self.document.text(span)))),
             Inline::LineBreak => self.sink.event(Event::HardBreak),
             Inline::Tab => self.sink.event(Event::Text(Cow::Borrowed("\t"))),
             Inline::Footnote(note) => {
                 self.sink
                     .event(Event::FootnoteReference(Cow::Owned((note + 1).to_string())));
             }
-            Inline::Image(image) => self.image(image.media, image.description.as_deref()),
-            Inline::Math(mathml) => self
-                .sink
-                .event(Event::Code(Cow::Owned(mathml_text(mathml)))),
+            Inline::Image(id) => {
+                if let Some(image) = self.document.image(id) {
+                    self.image(image.media, image.description.as_deref());
+                }
+            }
+            Inline::Math(span) => self.sink.event(Event::Code(Cow::Owned(mathml_text(
+                self.document.text(span),
+            )))),
             Inline::PageBreak | Inline::PageNumber | Inline::PageCount => {}
         }
     }
@@ -401,12 +401,7 @@ impl<'a> Emitter<'a, '_> {
                     .and_then(|cell| cell.blocks.first())
                     .and_then(|block| match block {
                         Block::Paragraph(paragraph) => {
-                            let mut properties = match paragraph.style {
-                                Some(style) => self.document.paragraph_style_properties(style),
-                                None => Default::default(),
-                            };
-                            properties.overlay(&paragraph.properties);
-                            properties.alignment
+                            self.document.effective_paragraph(paragraph).alignment
                         }
                         Block::Table(_) => None,
                     });

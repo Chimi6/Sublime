@@ -4,7 +4,15 @@
 //! It is the hub between document formats, kept to what those formats can
 //! all express, with every property optional so "not set" means "inherit".
 //!
+//! Layout: the document owns the tables, and paragraphs and runs hold
+//! indices into them. Text is one arena the runs point into by byte range;
+//! run and paragraph properties, links, revisions, images, and strings
+//! (fonts, languages) are interned once and shared, so a run is a few
+//! words and a document of 170,000 runs is a few megabytes.
+//!
 //! Units: points for lengths and font sizes, sRGB bytes for colors.
+
+use std::collections::HashMap;
 
 pub mod markdown;
 
@@ -14,8 +22,19 @@ pub type StyleId = usize;
 pub type NoteId = usize;
 /// Index of a media file in `Document::media`.
 pub type MediaId = usize;
+/// Index into one of the document's interned tables.
+pub type Id = u32;
 
-#[derive(Debug, Clone, PartialEq, Default)]
+/// A byte range of `Document::text`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Span {
+    pub start: u32,
+    pub end: u32,
+}
+
+/// Not `Clone` or comparable as a whole: a document is built once and
+/// read; the parts that tests compare carry their own derives.
+#[derive(Default)]
 pub struct Document {
     pub styles: StyleTable,
     pub sections: Vec<Section>,
@@ -23,6 +42,19 @@ pub struct Document {
     pub media: Vec<Media>,
     /// Objects placed on pages rather than in the text flow.
     pub floating: Vec<FloatingObject>,
+    /// Every run's text, in reading order; runs hold spans of it.
+    pub text: String,
+    /// Interned strings: font names and language tags.
+    pub strings: Vec<String>,
+    string_ids: HashMap<String, usize>,
+    /// Link targets, interned.
+    pub links: Vec<String>,
+    link_ids: HashMap<String, usize>,
+    pub revisions: Vec<Revision>,
+    pub images: Vec<InlineImage>,
+    /// Direct run formatting, interned; `None` on a run means none.
+    pub run_properties: Vec<RunProperties>,
+    pub paragraph_properties: Vec<ParagraphProperties>,
 }
 
 /// A text box, shape with text, or image placed on a page.
@@ -190,11 +222,11 @@ pub enum Block {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Paragraph {
     pub style: Option<StyleId>,
-    /// Direct formatting on top of the style.
-    pub properties: ParagraphProperties,
+    /// Direct formatting on top of the style (`Document::paragraph_properties`).
+    pub properties: Option<Id>,
     /// Direct character formatting set on the whole paragraph, under
-    /// each run's own.
-    pub run_properties: RunProperties,
+    /// each run's own (`Document::run_properties`).
+    pub run_properties: Option<Id>,
     pub list: Option<ListItem>,
     pub runs: Vec<Run>,
 }
@@ -210,7 +242,7 @@ pub struct ListItem {
     pub start: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ParagraphProperties {
     pub alignment: Option<Alignment>,
     /// From the left margin, as Pages measures it.
@@ -245,9 +277,11 @@ pub enum LineSpacing {
     Exact(f32),
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+/// Character formatting. Fonts and languages are interned strings
+/// (`Document::string`), so the whole struct is a few words and copies.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct RunProperties {
-    pub font: Option<String>,
+    pub font: Option<Id>,
     pub size: Option<f32>,
     pub bold: Option<bool>,
     pub italic: Option<bool>,
@@ -257,58 +291,21 @@ pub struct RunProperties {
     pub highlight: Option<Color>,
     pub baseline: Option<Baseline>,
     pub caps: Option<Caps>,
-    pub language: Option<String>,
+    pub language: Option<Id>,
 }
 
 impl RunProperties {
     /// `other` on top of `self`: set fields win.
+    #[inline(never)]
     pub fn overlay(&mut self, other: &RunProperties) {
-        let RunProperties {
-            font,
-            size,
-            bold,
-            italic,
-            underline,
-            strike,
-            color,
-            highlight,
-            baseline,
-            caps,
-            language,
-        } = other;
-        if font.is_some() {
-            self.font.clone_from(font);
+        macro_rules! take {
+            ($($field:ident),*) => {
+                $( if other.$field.is_some() { self.$field = other.$field; } )*
+            };
         }
-        if size.is_some() {
-            self.size = *size;
-        }
-        if bold.is_some() {
-            self.bold = *bold;
-        }
-        if italic.is_some() {
-            self.italic = *italic;
-        }
-        if underline.is_some() {
-            self.underline = *underline;
-        }
-        if strike.is_some() {
-            self.strike = *strike;
-        }
-        if color.is_some() {
-            self.color = *color;
-        }
-        if highlight.is_some() {
-            self.highlight = *highlight;
-        }
-        if baseline.is_some() {
-            self.baseline = *baseline;
-        }
-        if caps.is_some() {
-            self.caps = *caps;
-        }
-        if language.is_some() {
-            self.language.clone_from(language);
-        }
+        take!(
+            font, size, bold, italic, underline, strike, color, highlight, baseline, caps, language
+        );
     }
 
     pub fn is_empty(&self) -> bool {
@@ -317,6 +314,7 @@ impl RunProperties {
 }
 
 impl ParagraphProperties {
+    #[inline(never)]
     pub fn overlay(&mut self, other: &ParagraphProperties) {
         macro_rules! take {
             ($($field:ident),*) => {
@@ -373,12 +371,13 @@ impl Color {
 pub struct Run {
     /// Named character style, if any.
     pub style: Option<StyleId>,
-    /// Direct formatting on top of the style and the paragraph's.
-    pub properties: RunProperties,
-    /// The run is part of a link to this target.
-    pub link: Option<String>,
-    /// The run is a tracked change.
-    pub revision: Option<Revision>,
+    /// Direct formatting on top of the style and the paragraph's
+    /// (`Document::run_properties`).
+    pub properties: Option<Id>,
+    /// The run is part of a link to this target (`Document::links`).
+    pub link: Option<Id>,
+    /// The run is a tracked change (`Document::revisions`).
+    pub revision: Option<Id>,
     pub content: Inline,
 }
 
@@ -397,17 +396,18 @@ pub enum RevisionKind {
     Deletion,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inline {
-    Text(String),
+    Text(Span),
     LineBreak,
     Tab,
     /// A page break; usually the only content of its paragraph.
     PageBreak,
-    /// An equation, as MathML.
-    Math(String),
+    /// An equation, as MathML (a span of the text arena).
+    Math(Span),
     Footnote(NoteId),
-    Image(InlineImage),
+    /// An image (`Document::images`).
+    Image(Id),
     /// The current page number, as a field.
     PageNumber,
     /// The number of pages, as a field.
@@ -502,6 +502,111 @@ pub enum Merge {
 }
 
 impl Document {
+    // ----- the arena and the interned tables -----
+
+    /// Appends text to the arena and returns its span.
+    pub fn push_text(&mut self, text: &str) -> Span {
+        let start = self.text.len() as u32;
+        self.text.push_str(text);
+        Span {
+            start,
+            end: self.text.len() as u32,
+        }
+    }
+
+    pub fn text(&self, span: Span) -> &str {
+        self.text
+            .get(span.start as usize..span.end as usize)
+            .unwrap_or("")
+    }
+
+    /// Interns a font name or language tag.
+    pub fn intern_string(&mut self, text: &str) -> Id {
+        intern(&mut self.strings, &mut self.string_ids, text)
+    }
+
+    pub fn string(&self, id: Id) -> &str {
+        self.strings.get(id as usize).map_or("", String::as_str)
+    }
+
+    pub fn intern_link(&mut self, target: &str) -> Id {
+        intern(&mut self.links, &mut self.link_ids, target)
+    }
+
+    pub fn link(&self, run: &Run) -> Option<&str> {
+        run.link
+            .and_then(|id| self.links.get(id as usize))
+            .map(String::as_str)
+    }
+
+    pub fn push_revision(&mut self, revision: Revision) -> Id {
+        self.revisions.push(revision);
+        (self.revisions.len() - 1) as Id
+    }
+
+    pub fn revision(&self, run: &Run) -> Option<&Revision> {
+        run.revision.and_then(|id| self.revisions.get(id as usize))
+    }
+
+    /// The run is deleted text under tracked changes.
+    pub fn is_deleted(&self, run: &Run) -> bool {
+        self.revision(run)
+            .is_some_and(|revision| revision.kind == RevisionKind::Deletion)
+    }
+
+    pub fn push_image(&mut self, image: InlineImage) -> Id {
+        self.images.push(image);
+        (self.images.len() - 1) as Id
+    }
+
+    pub fn image(&self, id: Id) -> Option<&InlineImage> {
+        self.images.get(id as usize)
+    }
+
+    /// Interns direct run formatting; empty formatting is `None`.
+    pub fn intern_run_properties(&mut self, properties: RunProperties) -> Option<Id> {
+        if properties.is_empty() {
+            return None;
+        }
+        self.run_properties.push(properties);
+        Some((self.run_properties.len() - 1) as Id)
+    }
+
+    pub fn intern_paragraph_properties(&mut self, properties: ParagraphProperties) -> Option<Id> {
+        if properties.is_empty() {
+            return None;
+        }
+        self.paragraph_properties.push(properties);
+        Some((self.paragraph_properties.len() - 1) as Id)
+    }
+
+    /// A run's own direct formatting.
+    pub fn run_properties(&self, run: &Run) -> RunProperties {
+        self.run_properties_at(run.properties)
+    }
+
+    /// A paragraph's direct paragraph formatting.
+    pub fn paragraph_properties(&self, paragraph: &Paragraph) -> ParagraphProperties {
+        paragraph
+            .properties
+            .and_then(|id| self.paragraph_properties.get(id as usize))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// A paragraph's direct character formatting, under its runs' own.
+    pub fn paragraph_run_properties(&self, paragraph: &Paragraph) -> RunProperties {
+        self.run_properties_at(paragraph.run_properties)
+    }
+
+    fn run_properties_at(&self, id: Option<Id>) -> RunProperties {
+        id.and_then(|id| self.run_properties.get(id as usize))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    // ----- styles -----
+
     /// A paragraph style's run properties with its ancestors applied,
     /// nearest last.
     pub fn paragraph_style_run(&self, style: StyleId) -> RunProperties {
@@ -558,64 +663,49 @@ impl Document {
         run
     }
 
-    /// What a run looks like: paragraph style, then character style, then
-    /// the run's own formatting.
+    /// A paragraph's effective paragraph formatting: its style's, then its
+    /// own.
+    pub fn effective_paragraph(&self, paragraph: &Paragraph) -> ParagraphProperties {
+        let mut properties = match paragraph.style {
+            Some(style) => self.paragraph_style_properties(style),
+            None => ParagraphProperties::default(),
+        };
+        properties.overlay(&self.paragraph_properties(paragraph));
+        properties
+    }
+
+    /// What a run looks like: paragraph style, then the paragraph's own
+    /// character formatting, then character style, then the run's own.
+    #[inline(never)]
     pub fn effective_run(&self, paragraph: &Paragraph, run: &Run) -> RunProperties {
         let mut properties = match paragraph.style {
             Some(style) => self.paragraph_style_run(style),
             None => RunProperties::default(),
         };
-        properties.overlay(&paragraph.run_properties);
+        properties.overlay(&self.paragraph_run_properties(paragraph));
         if let Some(style) = run.style {
             properties.overlay(&self.character_style_run(style));
         }
-        properties.overlay(&run.properties);
+        properties.overlay(&self.run_properties(run));
         properties
     }
 
-    /// Every paragraph's text, one string per paragraph, for tests and
-    /// simple projections. Footnotes and tables are included in order.
-    pub fn paragraph_texts(&self) -> Vec<String> {
-        let mut texts = Vec::new();
-        for section in &self.sections {
-            collect_texts(&section.blocks, &mut texts);
-        }
-        texts
-    }
-}
+    // ----- text -----
 
-fn collect_texts(blocks: &[Block], texts: &mut Vec<String>) {
-    for block in blocks {
-        match block {
-            Block::Paragraph(paragraph) => texts.push(paragraph.text()),
-            Block::Table(table) => {
-                for row in &table.rows {
-                    for cell in &row.cells {
-                        collect_texts(&cell.blocks, texts);
-                    }
-                }
-            }
-        }
-    }
-}
-
-impl Paragraph {
-    /// The text with tracked changes accepted: deleted runs left out.
-    pub fn text(&self) -> String {
+    /// A paragraph's text with tracked changes accepted: deleted runs left
+    /// out.
+    #[inline(never)]
+    pub fn paragraph_text(&self, paragraph: &Paragraph) -> String {
         let mut text = String::new();
-        for run in &self.runs {
-            let deleted = run
-                .revision
-                .as_ref()
-                .is_some_and(|revision| revision.kind == RevisionKind::Deletion);
-            if deleted {
+        for run in &paragraph.runs {
+            if self.is_deleted(run) {
                 continue;
             }
-            match &run.content {
-                Inline::Text(piece) => text.push_str(piece),
+            match run.content {
+                Inline::Text(span) => text.push_str(self.text(span)),
                 Inline::LineBreak => text.push('\n'),
                 Inline::Tab => text.push('\t'),
-                Inline::Math(mathml) => text.push_str(&mathml_text(mathml)),
+                Inline::Math(span) => text.push_str(&mathml_text(self.text(span))),
                 Inline::PageBreak
                 | Inline::Footnote(_)
                 | Inline::Image(_)
@@ -625,10 +715,35 @@ impl Paragraph {
         }
         text
     }
+
+    /// Every paragraph's text, one string per paragraph, for tests and
+    /// simple projections. Tables are included in order.
+    pub fn paragraph_texts(&self) -> Vec<String> {
+        let mut texts = Vec::new();
+        for section in &self.sections {
+            self.collect_texts(&section.blocks, &mut texts);
+        }
+        texts
+    }
+
+    fn collect_texts(&self, blocks: &[Block], texts: &mut Vec<String>) {
+        for block in blocks {
+            match block {
+                Block::Paragraph(paragraph) => texts.push(self.paragraph_text(paragraph)),
+                Block::Table(table) => {
+                    for row in &table.rows {
+                        for cell in &row.cells {
+                            self.collect_texts(&cell.blocks, texts);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The plain text of a MathML equation: its element text in order,
-/// which reads as the equation on one line (`E = mc2`).
+/// which reads as the equation on one line (`E=mc2`).
 pub fn mathml_text(mathml: &str) -> String {
     let mut text = String::new();
     for event in crate::io::xml::XmlReader::new(mathml) {
@@ -637,4 +752,16 @@ pub fn mathml_text(mathml: &str) -> String {
         }
     }
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Adds `text` to `table` once and returns its index.
+#[inline(never)]
+fn intern(table: &mut Vec<String>, ids: &mut HashMap<String, usize>, text: &str) -> Id {
+    if let Some(id) = ids.get(text) {
+        return *id as Id;
+    }
+    let id = table.len();
+    table.push(text.to_string());
+    ids.insert(text.to_string(), id);
+    id as Id
 }
