@@ -28,7 +28,7 @@ describes.
 ## Blockers
 
 - 2026-09-24: The Pages document paths fail the shared Pages goals of 50 MB/s of input and 64 MB peak (`DOCS/benchmarks/pages-docx.md`, `pages-markdown.md`, `pages-html.md`, `pages-text.md`). After the three phases (slim model, streamed Word body, reachable decode with a fast deflate): 17 to 30 MB/s, and 42 to 70 MB peak; the prose shape passes memory on every path, the dense shape misses it by 6 MB, and no document path reaches 50 MB/s on either shape. A real resume converts in 3 ms at 4.8 MB, inside both goals. What remains on the dense shape is the body's package decode (26 ms), the document build (30 ms), and for Word the deflate of 19 MB of XML (60 ms); reaching 50 MB/s there means rendering without the model and a faster deflate, larger than a phase. Next lever for memory: drop the object trees once the model is built. Causes measured: a 224-byte run struct with cloned font and language strings (48 MB of model for 170,000 runs), the Word body held whole before Deflate (30 MB), and the package decoding 570 objects to use 70. Fix for 0.6.1: intern strings in the style table and slim the run, stream the Word body through the compressor, decode objects on lookup.
-- 2026-09-24: `pages -> pages-json` misses the 50 MB/s goal at 32 and 38 MB/s of package bytes (`DOCS/benchmarks/pages-json.md`); the reverse direction passes at 330 MB/s. Levers: `Tree::decode` (entry writes per field, field table lookup) and the JSON writer's per-field work.
+- 2026-09-24: `pages -> pages-json` misses the 50 MB/s goal at 28 and 40 MB/s of package bytes (`DOCS/benchmarks/pages-json.md`); the reverse direction passes at 330 MB/s. Levers: the typed decode of the attribute tables written as JSON directly (the Spikes entry below), then `Tree::decode` itself and the JSON writer's per-field work.
 
 ## Tech Debt
 
@@ -71,7 +71,7 @@ describes.
   - **Merging adjacent runs with equal effective formatting.** Pages splits runs at style-object boundaries that often resolve to the same look; fewer runs means less of everything downstream.
   - **Dropping the object trees once the model is built**, for the document paths only; the media bytes are already copied out.
   - **Rendering Word straight from the storage tables without a model** was considered and set aside: it saves the model build (30 ms) at the cost of a second reader inside the writer and the loss of the hub architecture every other output depends on. Revisit only if the levers above leave the goal out of reach.
-  - With the first two levers the text paths project to about 45 ms on the dense shape (the 50 MB/s goal is 50 ms) and Word to about 65 ms; the goals stay as they are.
+  - With the first two levers the text paths (`pages -> markdown`, `html`, `text`) project to about 45 ms on the dense shape (the 50 MB/s goal is 50 ms), Word to about 65 ms, and `pages -> pages-json` to about 40 MB/s dense and past the goal on prose; the goals stay as they are. Every Pages pair document's Conclusions names the rows it fails and the levers that apply to it.
 
 - 2026-09-23: Smaller Markdown arenas (`u32` offsets in `Line`, boxed fence data in `Kind`) to cut first-touch page faults, which are now the largest single cost in the block parser on large inputs.
 - 2026-09-23: Word-at-a-time scanning for the inline parser's special characters; the byte loop with a lookup table is its largest remaining cost.
