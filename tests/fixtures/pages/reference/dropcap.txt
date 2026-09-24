@@ -1,0 +1,2 @@
+Drop Cap
+Once upon a time, a paragraph began with a large dropped capital letter set into the first three lines of the text. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.

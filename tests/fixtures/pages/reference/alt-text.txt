@@ -1,0 +1,2 @@
+Image Alt Text
+The image below carries an accessibility description (alt text), which a converter should preserve for screen readers:
