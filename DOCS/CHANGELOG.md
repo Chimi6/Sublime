@@ -6,6 +6,13 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-24
+
+Word input. A `.docx` reads into the document model, so Word reaches
+Markdown, HTML, text, and Markdown JSON; proven against Apple's own Word
+exports and benchmarked at 128 to 164 MB/s of uncompressed input on the
+three pairs, every line passing.
+
 ### Added
 
 - Word input: `src/io/docx/reader.rs` reads a `.docx` into the document model (styles with `basedOn` chains and document defaults, numbering with style links and start overrides, sections with headers and footers, footnotes and endnotes, tables with merged cells, inline and anchored pictures, text boxes, hyperlinks as elements and as fields, page fields, tracked changes, Office Math as text), giving `docx -> markdown`, `html`, `text`, and `markdown-json`. Proven against Apple's Word exports of the Pages fixtures (same text as the Pages documents on 22 of 28) and by reading our own Word output back to the same Markdown (`tests/docx_document.rs`). Map in `DOCS/formats/docx.md`. Size budget 1.43 -> 1.53 MB for the reader (binary 1,515,672 bytes); wasm budget 700,000 -> 750,000 (module 728,388).
