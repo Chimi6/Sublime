@@ -101,8 +101,8 @@ formats.
 | Format | Extensions | Status | Tier | Effort | Directions and notes |
 |---|---|---|---|---|---|
 | Markdown | md, markdown | [x] | — | — | Shipped: CommonMark plus GFM, event stream, and a writer back to Markdown. Hub for text documents. |
-| HTML | html, htm | [~] | S | L | Shipped as output only. An HTML parser (tag soup, WHATWG tokenizer subset) unlocks HTML -> Markdown, HTML -> text, HTML -> DOCX/PDF. On pause. |
-| Plain text | txt | [~] | B | S | Shipped as output (Markdown -> text). Text -> Markdown as paragraphs is the remaining direction. |
+| HTML | html, htm | [x] | — | — | Shipped both ways: written from the event stream, and read into it by a tag-soup-tolerant reader (0.10.0): HTML -> Markdown, text, Markdown JSON, Word. Notes in `formats/html.md`. |
+| Plain text | txt | [x] | — | — | Shipped both ways: text out of every document path, and text in as paragraphs (0.10.0): text -> Markdown, HTML, Word. |
 | Markdown as JSON | markdown-json | [x] | — | — | Shipped both ways: the event stream as JSON, lossless round trip. |
 | Apple Pages | pages | [~] | S | XL | Package reader, lossless `pages-json`, document reader, Word writer, and Markdown, HTML, and text paths shipped (0.6.0); performance to the benchmark pass lines next. The flagship. ZIP of Snappy-framed protobuf (IWA); schemas are reverse-engineered and published. Pages -> DOCX and Pages -> Markdown/HTML. Nobody outside Apple does this well, and Pages files are shared constantly. Notes will live in `formats/pages.md`. |
 | Apple Keynote | key | [ ] | B | L | Same keystone as Pages; to PPTX or a Markdown outline. |

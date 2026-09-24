@@ -5,6 +5,9 @@ pub mod csv_json;
 pub mod docx_html;
 pub mod docx_markdown;
 pub mod docx_text;
+pub mod html_docx;
+pub mod html_markdown;
+pub mod html_text;
 pub mod markdown_docx;
 pub mod markdown_html;
 pub mod markdown_json;
@@ -14,12 +17,16 @@ pub mod pages_html;
 pub mod pages_json;
 pub mod pages_markdown;
 pub mod pages_text;
+pub mod text_markdown;
 
 pub const NAMES: &[&str] = &[
     "csv-json",
     "docx-markdown",
     "docx-html",
     "docx-text",
+    "html-markdown",
+    "html-text",
+    "html-docx",
     "markdown-docx",
     "markdown-html",
     "markdown-text",
@@ -29,6 +36,7 @@ pub const NAMES: &[&str] = &[
     "pages-markdown",
     "pages-html",
     "pages-text",
+    "text-markdown",
 ];
 
 pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
@@ -37,6 +45,9 @@ pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
         "docx-markdown" => docx_markdown::run(mode, args),
         "docx-html" => docx_html::run(mode, args),
         "docx-text" => docx_text::run(mode, args),
+        "html-markdown" => html_markdown::run(mode, args),
+        "html-text" => html_text::run(mode, args),
+        "html-docx" => html_docx::run(mode, args),
         "markdown-docx" => markdown_docx::run(mode, args),
         "markdown-html" => markdown_html::run(mode, args),
         "markdown-text" => markdown_text::run(mode, args),
@@ -46,6 +57,7 @@ pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
         "pages-markdown" => pages_markdown::run(mode, args),
         "pages-html" => pages_html::run(mode, args),
         "pages-text" => pages_text::run(mode, args),
+        "text-markdown" => text_markdown::run(mode, args),
         other => Err(format!(
             "unknown pair '{other}'; known: {}",
             NAMES.join(", ")

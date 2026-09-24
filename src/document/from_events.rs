@@ -22,8 +22,30 @@ const LEVEL_INDENT: f32 = 36.0;
 /// table's columns.
 const TEXT_WIDTH: f32 = 468.0;
 
-pub struct DocumentBuilder {
+/// Where a streaming builder sends each top-level block as it closes.
+pub trait BlockSink {
+    fn block(&mut self, document: &Document, block: &Block) -> std::io::Result<()>;
+}
+
+impl<W: std::io::Write> BlockSink for crate::io::docx::DocxStream<W> {
+    fn block(&mut self, document: &Document, block: &Block) -> std::io::Result<()> {
+        crate::io::docx::DocxStream::block(self, document, block)
+    }
+}
+
+/// What decides a paragraph's direct properties: indent levels and alignment.
+type PropertyKey = (u32, Option<Alignment>);
+
+pub struct DocumentBuilder<'s> {
     document: Document,
+    /// Given, top-level blocks go here as they close instead of into the
+    /// document, so the whole is never held.
+    sink: Option<&'s mut dyn BlockSink>,
+    /// The first error the sink reported, returned by `finish_streaming`.
+    error: Option<std::io::Error>,
+    /// Interned paragraph properties by (indent levels, alignment), so a
+    /// list of a million items has one entry, not a million.
+    paragraph_property_ids: Vec<(PropertyKey, Option<u32>)>,
     styles: BuiltInStyles,
     /// Where finished blocks go: the body, then a table cell or a footnote
     /// definition while one is open.
@@ -89,18 +111,21 @@ struct TableState {
     in_head: bool,
 }
 
-impl Default for DocumentBuilder {
+impl Default for DocumentBuilder<'_> {
     fn default() -> Self {
         DocumentBuilder::new()
     }
 }
 
-impl DocumentBuilder {
-    pub fn new() -> DocumentBuilder {
+impl<'s> DocumentBuilder<'s> {
+    pub fn new() -> DocumentBuilder<'s> {
         let mut document = Document::default();
         let styles = built_in_styles(&mut document);
         DocumentBuilder {
             document,
+            sink: None,
+            error: None,
+            paragraph_property_ids: Vec::new(),
             styles,
             targets: vec![Vec::new()],
             current: None,
@@ -123,6 +148,20 @@ impl DocumentBuilder {
         }
     }
 
+    /// Reserves arena room for `bytes` of text, so a large input does not
+    /// grow the arena by doubling.
+    pub fn reserve_text(&mut self, bytes: usize) {
+        self.document.text.reserve(bytes);
+    }
+
+    /// A builder that hands each top-level block to `sink` as it closes;
+    /// the document it finishes with has an empty body.
+    pub fn streaming(sink: &'s mut dyn BlockSink) -> DocumentBuilder<'s> {
+        let mut builder = DocumentBuilder::new();
+        builder.sink = Some(sink);
+        builder
+    }
+
     /// The document, with everything read so far closed.
     pub fn finish(mut self) -> Document {
         self.close_paragraph();
@@ -132,6 +171,16 @@ impl DocumentBuilder {
             ..Section::default()
         });
         self.document
+    }
+
+    /// As `finish`, for a streaming builder: the sink's first error, if
+    /// any, comes back here.
+    pub fn finish_streaming(mut self) -> std::io::Result<Document> {
+        self.close_paragraph();
+        if let Some(error) = self.error.take() {
+            return Err(error);
+        }
+        Ok(self.finish())
     }
 
     /// Whether raw HTML was dropped on the way.
@@ -178,9 +227,45 @@ impl DocumentBuilder {
                 _ => None,
             };
         }
-        paragraph.properties = self.document.intern_paragraph_properties(properties);
+        paragraph.properties = self.paragraph_properties_id(indent_levels, properties);
         self.current = Some(paragraph);
         self.current_kind = kind;
+    }
+
+    fn paragraph_properties_id(
+        &mut self,
+        indent_levels: u32,
+        properties: ParagraphProperties,
+    ) -> Option<u32> {
+        let key = (indent_levels, properties.alignment);
+        if let Some((_, id)) = self
+            .paragraph_property_ids
+            .iter()
+            .find(|(known, _)| *known == key)
+        {
+            return *id;
+        }
+        let id = self.document.intern_paragraph_properties(properties);
+        self.paragraph_property_ids.push((key, id));
+        id
+    }
+
+    /// A finished top-level block: to the sink when streaming, else into
+    /// the body.
+    fn deliver(&mut self, block: Block) {
+        if self.targets.len() == 1
+            && let Some(sink) = self.sink.as_deref_mut()
+        {
+            if self.error.is_none()
+                && let Err(error) = sink.block(&self.document, &block)
+            {
+                self.error = Some(error);
+            }
+            return;
+        }
+        if let Some(target) = self.targets.last_mut() {
+            target.push(block);
+        }
     }
 
     fn close_paragraph(&mut self) {
@@ -190,9 +275,7 @@ impl DocumentBuilder {
         if self.current_kind == ParagraphKind::Code {
             self.push_code_lines(&mut paragraph);
         }
-        if let Some(target) = self.targets.last_mut() {
-            target.push(Block::Paragraph(paragraph));
-        }
+        self.deliver(Block::Paragraph(paragraph));
     }
 
     /// The code block's text as runs, one line break between lines; the
@@ -223,9 +306,7 @@ impl DocumentBuilder {
 
     fn push_block(&mut self, block: Block) {
         self.close_paragraph();
-        if let Some(target) = self.targets.last_mut() {
-            target.push(block);
-        }
+        self.deliver(block);
     }
 
     /// An item whose first block is not a paragraph (a nested list, a
@@ -603,7 +684,7 @@ impl DocumentBuilder {
     }
 }
 
-impl<'a> EventSink<'a> for DocumentBuilder {
+impl<'a> EventSink<'a> for DocumentBuilder<'_> {
     fn event(&mut self, event: Event<'a>) {
         self.transient(event);
     }
