@@ -1007,6 +1007,41 @@ def ruby_text(out):
     d.write(out / "ruby.docx", "".join(parts))
 
 
+def font_run(text, family, half_pt):
+    return run(text, f'<w:rFonts w:ascii="{family}" w:hAnsi="{family}" w:cs="{family}"/><w:sz w:val="{half_pt}"/>')
+
+
+def fonts(out):
+    d = Docx()
+    families = [
+        ("Helvetica Neue", "a sans-serif"),
+        ("Times New Roman", "a serif"),
+        ("Georgia", "another serif"),
+        ("Arial", "a common sans-serif"),
+        ("Courier New", "a monospace"),
+        ("Menlo", "another monospace"),
+        ("Comic Sans MS", "an informal face"),
+    ]
+    family_lines = [para(font_run(f"This line is set in {name}.", name, 28) + run(f"  ({desc})"))
+                    for name, desc in families]
+    sizes = [16, 22, 28, 36, 48, 72, 96]  # half-points: 8, 11, 14, 18, 24, 36, 48 pt
+    size_line = "".join(font_run(f"{s // 2}pt ", "Helvetica Neue", s) for s in sizes)
+    parts = [
+        styled("Heading1", "Fonts and Sizes"),
+        body("Each line below is set in a different font family:"),
+        *family_lines,
+        body("A range of point sizes on one line:"),
+        para(size_line),
+        para(run("Regular, ") + run("bold, ", "<w:b/>") + run("italic, ", "<w:i/>")
+             + run("and bold italic ", "<w:b/><w:i/>") + run("in the body font.")),
+        body("A run requesting a font that is probably not installed, to capture "
+             "how Pages substitutes:"),
+        para(font_run("This text asks for the font Nonexistent Sans.", "Nonexistent Sans", 28)),
+        sect(),
+    ]
+    d.write(out / "fonts.docx", "".join(parts))
+
+
 def main():
     out = Path(sys.argv[1] if len(sys.argv) > 1 else "tests/fixtures/pages/sources")
     out.mkdir(parents=True, exist_ok=True)
@@ -1014,7 +1049,8 @@ def main():
     for build in (text_styles, paragraphs, lists, links, table, images, notes, layout, everything,
                   tabs, custom_styles, rtl, headers, toc, revisions,
                   fields, metadata, alt_text, dropcap,
-                  equations, text_effects, table_layout, page_layout, outline_numbering, ruby_text):
+                  equations, text_effects, table_layout, page_layout, outline_numbering, ruby_text,
+                  fonts):
         build(out)
     print("wrote", ", ".join(sorted(path.name for path in out.iterdir())))
 
