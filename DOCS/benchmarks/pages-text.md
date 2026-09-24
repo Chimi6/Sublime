@@ -1,6 +1,6 @@
 # Pages -> plain text
 
-**Latest** (2026-09-24: pages -> text 15.9 MB/s of input on the dense shape and 19.3 on prose, at 142.3 and 64.5 MB peak; both goals (50 MB/s, 64 MB) FAIL, see Conclusions and `STATE.md`)
+**Latest** (2026-09-24, slim model: pages -> text 25.9 MB/s of input on the dense shape and 26.4 on prose, at 74.8 and 44.7 MB peak; the prose memory goal passes; the rest FAIL, see Conclusions and `STATE.md`)
 
 ## Purpose
 
@@ -66,6 +66,20 @@ in-process runs; inputs come from the `pages-json` pair's generator.
   measure of the document model's own cost.
 
 ## Results
+
+### 2026-09-24, slim document model
+
+commit: b8c1a66
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Phase 1 of the performance plan: the document model became a text arena with interned properties, links, revisions, and strings (a run is 64 bytes and owns no heap). Same inputs as the block below.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> text, styled (2.5 MB): throughput (MB/s of input) | 25.9 | goal: 50 | FAIL |
+| pages -> text, styled: peak memory (MB) | 74.8 | goal: <= 64.0 | FAIL |
+| pages -> text, prose (1.5 MB): throughput (MB/s of input) | 26.4 | goal: 50 | FAIL |
+| pages -> text, prose: peak memory (MB) | 44.7 | goal: <= 64.0 | PASS |
 
 ### 2026-09-24
 
