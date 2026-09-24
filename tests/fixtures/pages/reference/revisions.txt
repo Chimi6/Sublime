@@ -1,0 +1,3 @@
+Comment Threads and Tracked Formatting
+A reviewer commented on this phrase and the author replied, forming a two-message thread.
+The words now bold carry a tracked formatting change (not bold to bold), and here is an inserted clause kept as a tracked insertion.

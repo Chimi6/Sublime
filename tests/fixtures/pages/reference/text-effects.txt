@@ -1,0 +1,8 @@
+Character Effects
+Baseline raised and baseline lowered.
+Widely letter-spaced text.
+Kerned heading text.
+all caps applied to lowercase input
+outlined text, shadowed text, embossed text, and engraved text.
+Visible text, then visible again.
+A run with a coloured background behind the glyphs.

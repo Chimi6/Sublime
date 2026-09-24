@@ -36,10 +36,10 @@ formats.
 
 | Keystone | Unlocks | Effort |
 |---|---|---|
-| Inflate and deflate (zlib, gzip, zip) | ZIP, gzip, PNG, DOCX, XLSX, PPTX, ODT, EPUB, KMZ, WOFF, NPZ, JAR, Minecraft region, many game archives | M |
+| Inflate and deflate (zlib, gzip, zip) | ZIP, gzip, PNG, DOCX, XLSX, PPTX, ODT, EPUB, KMZ, WOFF, NPZ, JAR, Minecraft region, many game archives | M (inflate shipped) |
 | XML parser and writer (streaming) | DOCX, ODT, SVG, KML, GPX, plist, FB2, X3D, TTML, RSS, XLSX, 3MF, DAE | M |
-| ZIP container | Everything that is "a zip of XML": Office, OpenDocument, EPUB, KMZ, ORA, 3MF, Krita | S (on top of inflate) |
-| Protobuf wire decoder, Snappy | Pages, Numbers, Keynote (IWA), OSM PBF | M |
+| ZIP container | Everything that is "a zip of XML": Office, OpenDocument, EPUB, KMZ, ORA, 3MF, Krita | S (reader and stored writer shipped) |
+| Protobuf wire decoder, Snappy | Pages, Numbers, Keynote (IWA), OSM PBF | M (shipped; Snappy decode only) |
 | PNG codec | The image hub: every image format converts through pixels and out to PNG first | M (on top of inflate) |
 | JPEG baseline codec | Photos in and out; JPEG in DOCX and PDF; camera raw previews | L |
 | Compound File Binary (OLE2) | Legacy `.doc`, `.xls`, `.ppt`, Outlook `.msg` | M |
@@ -104,7 +104,7 @@ formats.
 | HTML | html, htm | [~] | S | L | Shipped as output only. An HTML parser (tag soup, WHATWG tokenizer subset) unlocks HTML -> Markdown, HTML -> text, HTML -> DOCX/PDF. On pause. |
 | Plain text | txt | [~] | B | S | Shipped as output (Markdown -> text). Text -> Markdown as paragraphs is the remaining direction. |
 | Markdown as JSON | markdown-json | [x] | — | — | Shipped both ways: the event stream as JSON, lossless round trip. |
-| Apple Pages | pages | [ ] | S | XL | The flagship. ZIP of Snappy-framed protobuf (IWA); schemas are reverse-engineered and published. Pages -> DOCX and Pages -> Markdown/HTML. Nobody outside Apple does this well, and Pages files are shared constantly. Notes will live in `formats/pages.md`. |
+| Apple Pages | pages | [~] | S | XL | Package reader and lossless `pages-json` shipped; document reader next. The flagship. ZIP of Snappy-framed protobuf (IWA); schemas are reverse-engineered and published. Pages -> DOCX and Pages -> Markdown/HTML. Nobody outside Apple does this well, and Pages files are shared constantly. Notes will live in `formats/pages.md`. |
 | Apple Keynote | key | [ ] | B | L | Same keystone as Pages; to PPTX or a Markdown outline. |
 | Word | docx | [ ] | S | L | ZIP plus XML (WordprocessingML). Both directions with Markdown/HTML; the target for Pages. Styles, lists, tables, images. |
 | Word legacy | doc | [ ] | C | L | Word 97 binary over OLE2; text and basic formatting extraction only. |

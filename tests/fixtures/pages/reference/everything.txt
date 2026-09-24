@@ -1,0 +1,15 @@
+A Document With Everything
+Mixed features in one file, as real documents are
+Introduction
+This document mixes bold, italic, a link, and a footnote in one paragraph. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.
+A list
+One
+One point one
+Two
+A table
+
+An image
+
+Figure 1: mixed
+A closing quotation, indented.
+The end.￼ A footnote in the mixed document.

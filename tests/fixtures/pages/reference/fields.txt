@@ -1,0 +1,7 @@
+Fields
+The date field: September 23, 2026.
+The file-name field: fields.docx.
+The page-count field:  page(s).
+This paragraph is the reference target.
+A cross-reference (REF) to it: This paragraph is the reference target..
+A page reference (PAGEREF) to it: 1.

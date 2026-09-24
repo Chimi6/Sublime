@@ -1,0 +1,1 @@
+Native Scripted DocumentThis paragraph was written by AppleScript, with a font, a size, and a color set on ranges.A second paragraph in a different font.The last paragraph.
