@@ -24,7 +24,7 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 
 | Target | Ours | Reference | Result |
 |---|---|---|---|
-| Binary size, gnu (bytes) | 1399664 | <= 1400000 (size-budget, what CI checks) | PASS |
+| Binary size, gnu (bytes) | 1399665 | <= 1400000 (size-budget, what CI checks) | PASS |
 | Binary size, musl static (bytes, the release asset) | 1499776 | recorded | n/a |
 | Startup above spawn floor (ms, 1 KB file) | -0.117 (spawn 0.857, floor 0.974) | < 1 | PASS |
 
