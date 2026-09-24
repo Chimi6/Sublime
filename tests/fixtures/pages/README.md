@@ -35,6 +35,7 @@ prints one line per fixture. Commit `*.pages` and `reference/`.
 | Fixture | Contents |
 |---|---|
 | text-styles | Title, Subtitle, Heading 1 to 3, Body; bold, italic, underline, strikethrough, color, sizes, a monospace font, highlight, superscript, subscript, small caps; Emphasis and Strong character styles; non-ASCII text and an emoji; a Quote paragraph |
+| fonts | seven distinct font families (serif, sans, monospace, informal), a point-size ramp from 8 to 48, bold/italic/bold-italic, and a run requesting an uninstalled font |
 | paragraphs | left, center, right, justified; double line spacing; space before and after; first-line, left, and hanging indents; a line break inside a paragraph; a page break; keep-with-next |
 | lists | bullets three levels deep; numbers with letters and roman numerals below; a list restarting at one; a list starting at ten; upper-case letters with parentheses; an item with a continuation paragraph |
 | links | web link, email link, bare URLs as text, a link to a bookmark, a paragraph that is entirely a link |
@@ -86,7 +87,9 @@ a Word file can carry. Observed with the sources here on Pages 12.0:
   `w:hyperlink` elements (`links`).
 
 Kept, for the record: fields, image alt text, drop caps, table cell formulas,
-OMML equations, and multilevel outline numbering all survive.
+OMML equations, and multilevel outline numbering all survive. Font family names
+survive even when the font is not installed: Pages keeps the requested name (for
+example `Nonexistent Sans` in `fonts`) and substitutes only for display.
 
 ## Add by hand
 
