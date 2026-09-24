@@ -53,6 +53,45 @@ is the release profile.
 
 ## Results
 
+### 2026-09-24, commit 9245c0f, every path, in-process phases
+
+Linux 7.1.5 x86_64, Intel Core i7-13700K, release binary. In-process
+numbers are the minimum of 15 calls of each phase inside one process
+(`Package::read`, `read_document`, then each writer over the same
+document); wall clock is the minimum of 25 process runs; process start
+alone is 2 ms. The machine was under load, so medians ran two to three
+times the minimums.
+
+| Input | Package decode | Document read | Word write | Markdown | HTML | Text |
+|---|---|---|---|---|---|---|
+| resume (328 KB) | 1.98 ms | 0.05 ms | 0.23 ms | 0.01 ms | 0.01 ms | 0.01 ms |
+| everything (733 KB) | 2.90 ms | 0.06 ms | 0.65 ms | < 0.01 ms | < 0.01 ms | < 0.01 ms |
+| fonts (706 KB) | 2.69 ms | 0.04 ms | 0.15 ms | < 0.01 ms | < 0.01 ms | < 0.01 ms |
+
+| Input | Path | wall min ms | peak RSS |
+|---|---|---|---|
+| resume | `pages -> pages-json` | 10 | 7 MB |
+| resume | `pages -> docx` | 5 | 6 MB |
+| resume | `pages -> markdown` | 5 | 7 MB |
+| resume | `pages -> html` | 4 | 7 MB |
+| resume | `pages -> text` | 4 | 7 MB |
+| everything | `pages -> pages-json` | 10 | 8 MB |
+| everything | `pages -> docx` | 7 | 8 MB |
+| everything | `pages -> markdown` | 6 | 8 MB |
+| everything | `pages -> html` | 5 | 7 MB |
+| everything | `pages -> text` | 5 | 7 MB |
+| fonts | `pages -> pages-json` | 9 | 7 MB |
+| fonts | `pages -> docx` | 6 | 7 MB |
+| fonts | `pages -> markdown` | 7 | 8 MB |
+| fonts | `pages -> html` | 5 | 7 MB |
+| fonts | `pages -> text` | 5 | 7 MB |
+
+Every pass line holds. The package decode is 85 to 95 percent of the
+in-process time on every path; the document reader and the writers are
+noise. `pages-json` costs more than the document paths because it
+serializes every object (the JSON is 5 to 10 times the package's stream
+bytes).
+
 ### 2026-09-24, commit bb8b657 plus the Markdown projection
 
 Linux 7.1.5 x86_64, Intel Core i7-13700K, 25 runs each, release binary
@@ -78,8 +117,12 @@ is within budget.
 
 ## Conclusions
 
-- The document paths are as cheap as the package layer, so there is no
-  reason to optimize them before a large real document exists to measure.
+- The document reader and the writers are already at the floor (tens of
+  microseconds); the package decode is the whole cost, and most of it is
+  decoding stylesheet presets the document never uses. Lazy object
+  decoding (decode a tree when the graph looks it up) is the lever, worth
+  about 1.5 ms of the resume's 2 ms; it is listed under Spikes in
+  `STATE.md`.
 - The `everything -> docx` minimum (10 ms) is the image bytes being
   deflated into the Word package; `add_deflated` on already-compressed PNG
   and JPEG data is wasted work, and storing media uncompressed is the
