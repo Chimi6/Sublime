@@ -44,12 +44,16 @@ against each other: `csv -> json` at 333 MB/s and `pages -> docx` at
 - **Units.** MB is 1,048,576 bytes everywhere: sizes, throughput, memory.
   Time is the median of three runs of the whole process. Nothing is
   reported per second of CPU or in-process.
-- **Reference cell.** The named reference's number when a peer crate
-  exists, run in the same session on the same input. When no peer exists,
-  a stated goal (`goal: 50`, `goal: <= 64.0`) that the pair's document
-  defines and justifies, the same goal for every direction and shape of
-  the format, so the rows read alike. Never a number copied from
-  elsewhere, and never one direction of a pair judged against the other.
+- **Reference cell.** The named reference's number, run in the same session
+  on the same input: a peer crate compiled into the bench binary, or an
+  external tool (pandoc, lynx) spawned and timed the same way, labelled with
+  the tool in parentheses. A pair with two references uses two reference
+  columns (`Reference 1`, `Reference 2`); the pass gate is the tighter peer,
+  the other is context. When no tool anywhere does the conversion, a stated
+  goal (`goal: 50`, `goal: <= 64.0`) that the pair's document defines and
+  justifies, the same goal for every direction and shape of the format, so
+  the rows read alike. Never a number copied from elsewhere, and never one
+  direction of a pair judged against the other.
 - **Result cell.** PASS or FAIL against that line; `n/a` for a recorded
   extra row with no line.
 - **Latest** line at the top of every document: the standard rows' current

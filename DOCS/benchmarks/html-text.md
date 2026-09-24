@@ -1,6 +1,6 @@
 # HTML -> text
 
-**Latest** (2026-09-24, first release of the HTML reader: html -> text 193.8 MB/s of input on the markup-dense shape and 344.3 on prose, at 29.6 and 14.9 MB peak; every line PASSES)
+**Latest** (2026-09-24, references wired on an Apple M1 Max: html -> text 148.8 MB/s of input on the markup-dense shape and 271.3 on prose, at 29.5 and 14.2 MB peak, faster and far leaner than html2text and orders ahead of pandoc; every line PASSES)
 
 ## Purpose
 
@@ -10,14 +10,14 @@ wants.
 
 ## Reference
 
-Currently a stated goal (`pages-json.md`), with the HTML *reader* peer-checked
-against `htmd` in `html-markdown.md`. This is a known gap, not a settled choice.
-Real peers exist: `html2text`, a pure-Rust HTML-to-text renderer on html5ever
-(no browser engine), is the cleanest — it does essentially this job (wrapped
-text, tables, links) and compiles into the bench binary; `lynx -dump` and
-`pandoc` are external alternatives. `html2text` should be wired into
-`bench/src/pairs/html_text.rs` as the reference; until it is, the goal stands in
-and this note keeps the gap visible.
+Two references, in two columns. `html2text`, a pure-Rust HTML-to-text renderer
+on html5ever (no browser engine), is the tight peer and the pass gate — it does
+essentially this job (wrapped text, tables, links) and compiles into the bench
+binary via `bench/src/pairs/html_text.rs`. `pandoc`, a general-purpose document
+converter, runs as an external process for real-world context; it does far more
+than we do (full document model, Haskell runtime), so it is a loose reference,
+not the gate. The HTML *reader* is additionally peer-checked against `htmd` in
+`html-markdown.md`.
 
 ## Pass lines
 
@@ -37,6 +37,21 @@ statistics, `bench/run.sh html-text`, and per shape the command
 As `html-markdown.md`: our own writer's HTML is cleaner than a real page.
 
 ## Results
+
+### 2026-09-24, references wired: html2text and pandoc
+
+commit: 64b08e7 (the reference wiring's working tree, before its commit)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | html2text | pandoc | Result |
+|---|---|---|---|---|
+| html -> text, markup-dense (26.6 MB): throughput (MB/s of input) | 148.8 | 15.8 | 0.7 | PASS |
+| html -> text, markup-dense: peak memory (MB) | 29.5 | 982.2 | 7605.7 | PASS |
+| html -> text, prose (12.1 MB): throughput (MB/s of input) | 271.3 | 33.0 | 0.9 | PASS |
+| html -> text, prose: peak memory (MB) | 14.2 | 175.5 | 3001.5 | PASS |
+
+The pass gate is html2text (the tight peer); pandoc is context. Both are far
+heavier than our streaming renderer — pandoc reaches gigabytes of RSS.
 
 ### 2026-09-24, first release of the HTML reader
 

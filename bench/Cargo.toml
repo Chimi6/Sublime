@@ -13,6 +13,7 @@ pulldown-cmark = { version = "0.13", features = ["serde"] }
 pulldown-cmark-to-cmark = "22"
 docx-rs = "0.4"
 htmd = "0.2"
+html2text = "0.12"
 
 [profile.release]
 lto = "fat"

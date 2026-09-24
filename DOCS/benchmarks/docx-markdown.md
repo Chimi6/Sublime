@@ -1,6 +1,6 @@
 # Word -> Markdown
 
-**Latest** (2026-09-24, first release of the Word reader: docx -> markdown 139.4 MB/s of uncompressed input on the dense shape and 127.6 on prose, at 47.2 and 25.9 MB peak; every line PASSES)
+**Latest** (2026-09-24, pandoc reference wired on an Apple M1 Max: docx -> markdown 99.7 MB/s of uncompressed input on the styled shape and 98.0 on prose, at 21.2 and 31.9 MB peak, far faster and leaner than pandoc; every line PASSES)
 
 ## Purpose
 
@@ -11,12 +11,12 @@ reference); this pair adds the Markdown writer's cost on top.
 
 ## Reference
 
-A stated goal today (`pages-json.md`), with the docx *reader* peer-checked
-against `docx-rs` in `docx-text.md`. No Rust crate does Word to Markdown end to
-end, but `pandoc` does and should be wired in as an external reference. It does
-far more than we do, so it is a loose upper bound, but a real number beats a
-goal; until it is wired in, the goal stands and this note keeps the gap visible.
-Implemented in `bench/src/pairs/docx_markdown.rs`.
+`pandoc` converts docx to Markdown and is the reference, run as an external
+process and timed on the same uncompressed input bytes as ours
+(`bench/pairs/docx-markdown.sh`). No Rust crate does Word to Markdown end to end;
+pandoc does full-fidelity conversion with a Haskell runtime, so it is a loose
+upper bound — we are much faster — but a real tool rather than a goal. The docx
+*reader* is additionally peer-checked against `docx-rs` in `docx-text.md`.
 
 ## Pass lines
 
@@ -52,6 +52,20 @@ Word files with larger style sheets and more properties per run will
 read somewhat slower; repeated text makes the per-file-byte row read low.
 
 ## Results
+
+### 2026-09-24, pandoc reference wired
+
+commit: 64b08e7 (the reference wiring's working tree, before its commit)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| docx -> markdown, styled (6.0 MB uncompressed): throughput (MB/s of uncompressed input) | 99.7 | 1.3 (pandoc) | PASS |
+| docx -> markdown, styled (0.2 MB file): throughput (MB/s of file bytes) [extra] | 3.4 | recorded | n/a |
+| docx -> markdown, styled: peak memory (MB) | 21.2 | 821.5 (pandoc) | PASS |
+| docx -> markdown, prose (7.5 MB uncompressed): throughput (MB/s of uncompressed input) | 98.0 | 1.3 (pandoc) | PASS |
+| docx -> markdown, prose (0.2 MB file): throughput (MB/s of file bytes) [extra] | 2.9 | recorded | n/a |
+| docx -> markdown, prose: peak memory (MB) | 31.9 | 1331.7 (pandoc) | PASS |
 
 ### 2026-09-24, first release of the Word reader
 

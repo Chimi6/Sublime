@@ -1,6 +1,6 @@
 # HTML -> Word
 
-**Latest** (2026-09-24, first release of the HTML reader, with the streaming bridge: html -> docx 217.8 MB/s of input plus uncompressed output on the markup-dense shape and 288.9 on prose, at 57.8 and 30.9 MB peak; every line PASSES)
+**Latest** (2026-09-24, pandoc reference wired on an Apple M1 Max: html -> docx 153.0 MB/s of input plus uncompressed output on the markup-dense shape and 150.1 on prose, at 24.2 and 12.8 MB peak, orders of magnitude faster and leaner than pandoc; every line PASSES)
 
 ## Purpose
 
@@ -11,13 +11,13 @@ Word, and the heaviest thing the bridge does.
 
 ## Reference
 
-A stated goal today (`pages-json.md`), with both stages peer-checked in sibling
-pairs: the HTML *reader* against `htmd` in `html-markdown.md`, and the Word
-*writer* against `docx-rs` in `markdown-docx.md`. No Rust crate does HTML to
-Word end to end, but `pandoc` does and should be wired in as an external
-reference — a loose upper bound, since it does more, but a real number rather
-than a goal. Until it is, the goal stands and this note keeps the gap visible.
-Implemented in `bench/src/pairs/html_docx.rs`.
+`pandoc` converts HTML to docx and is the reference, run as an external process
+and timed on the same workload (input plus uncompressed output) as ours
+(`bench/pairs/html-docx.sh`). No Rust crate does HTML to Word end to end; pandoc
+does full-fidelity conversion with a Haskell runtime, so it is a loose upper
+bound — we are much faster — but a real tool rather than a goal. Both stages are
+additionally peer-checked in sibling pairs: the HTML *reader* against `htmd` in
+`html-markdown.md`, and the Word *writer* against `docx-rs` in `markdown-docx.md`.
 
 ## Pass lines
 
@@ -54,6 +54,24 @@ bytes (`unzip -l`), with the rate per input byte as an extra row.
   the honest one.
 
 ## Results
+
+### 2026-09-24, pandoc reference wired
+
+commit: 64b08e7 (the reference wiring's working tree, before its commit)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+At 20,000 units pandoc's html -> docx needed about 15 GB of RSS and its memory
+measurement was unstable, so this block uses 4,000 units, where pandoc stays a
+few GB. Throughput counts input plus uncompressed output (`README.md`).
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| html -> docx, markup-dense (5.3 MB in + 18.1 MB out): throughput (MB/s of input plus uncompressed output) | 153.0 | 2.2 (pandoc) | PASS |
+| html -> docx, markup-dense: throughput (MB/s of input) [extra] | 34.6 | recorded | n/a |
+| html -> docx, markup-dense: peak memory (MB) | 24.2 | 2782.8 (pandoc) | PASS |
+| html -> docx, prose (2.4 MB in + 4.0 MB out): throughput (MB/s of input plus uncompressed output) | 150.1 | 2.5 (pandoc) | PASS |
+| html -> docx, prose: throughput (MB/s of input) [extra] | 56.2 | recorded | n/a |
+| html -> docx, prose: peak memory (MB) | 12.8 | 327.9 (pandoc) | PASS |
 
 ### 2026-09-24, first release of the HTML reader, with the streaming bridge
 
