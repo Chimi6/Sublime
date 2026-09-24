@@ -46,6 +46,8 @@ pub fn write_docx<W: io::Write>(document: &Document, sink: W) -> io::Result<W> {
         even_pages: false,
         floating_done: vec![false; document.floating.len()],
         revisions: 0,
+        formatting_styles: HashMap::new(),
+        formatting_style_list: Vec::new(),
     };
     let mut zip = ZipWriter::new(sink);
     // The body goes first, streamed; the parts it discovers (media,
@@ -123,6 +125,11 @@ struct DocxWriter<'d> {
     floating_done: Vec<bool>,
     /// Tracked changes written so far, for unique ids.
     revisions: u32,
+    /// Character styles made from run formatting: key -> index into the
+    /// list (`formatting_style`).
+    formatting_styles: HashMap<u64, usize>,
+    /// The named character style each is based on, and its formatting.
+    formatting_style_list: Vec<(Option<usize>, RunProperties)>,
 }
 
 /// A relationship of a part: what it links to and how.
@@ -416,16 +423,30 @@ impl DocxWriter<'_> {
 
     fn render_run(&mut self, paragraph: &Paragraph, run: &Run, out: &mut String) {
         let mut properties = String::new();
-        if let Some(style) = run.style {
-            let _ = write!(
-                properties,
-                "<w:rStyle w:val=\"{}\"/>",
-                style_id(&self.document.styles.character[style].name)
-            );
-        }
         let mut merged = self.document.paragraph_run_properties(paragraph);
         merged.overlay(&self.document.run_properties(run));
-        run_properties_xml(self.document, &merged, &mut properties);
+        // Formatting that repeats across runs goes into a character style
+        // once and the run carries its id; the toggle properties (bold,
+        // italic, strike, caps) stay inline, since Word applies them
+        // relative to the paragraph style when they come from a character
+        // style. A run with a named character style and direct formatting
+        // gets a style based on the named one, as Word allows one style
+        // per run.
+        let (styled, inline) = split_for_style(merged);
+        if styled.is_empty() {
+            if let Some(style) = run.style {
+                let _ = write!(
+                    properties,
+                    "<w:rStyle w:val=\"{}\"/>",
+                    style_id(&self.document.styles.character[style].name)
+                );
+            }
+            run_properties_xml(self.document, &merged, &mut properties);
+        } else {
+            let style = self.formatting_style(paragraph, run, styled);
+            let _ = write!(properties, "<w:rStyle w:val=\"r{style}\"/>");
+            run_properties_xml(self.document, &inline, &mut properties);
+        }
         let properties = if properties.is_empty() {
             String::new()
         } else {
@@ -481,6 +502,27 @@ impl DocxWriter<'_> {
             Inline::PageNumber | Inline::PageCount => {}
         }
         out.push_str("</w:r>");
+    }
+
+    /// The character style for a run's non-toggle formatting, one per
+    /// (named style, paragraph formatting, run formatting) triple the
+    /// document interned; based on the named style when there is one.
+    fn formatting_style(
+        &mut self,
+        paragraph: &Paragraph,
+        run: &Run,
+        styled: RunProperties,
+    ) -> usize {
+        let key = (run.style.map_or(0, |id| id as u64 + 1) << 42)
+            | (u64::from(paragraph.run_properties.map_or(0, |id| id + 1)) << 21)
+            | u64::from(run.properties.map_or(0, |id| id + 1));
+        if let Some(index) = self.formatting_styles.get(&key) {
+            return *index;
+        }
+        let index = self.formatting_style_list.len();
+        self.formatting_style_list.push((run.style, styled));
+        self.formatting_styles.insert(key, index);
+        index
     }
 
     /// A picture, inline or anchored beside the text. Media Word cannot
@@ -902,6 +944,22 @@ impl DocxWriter<'_> {
             }
             xml.push_str("</w:style>");
         }
+        for (index, (based_on, formatting)) in self.formatting_style_list.iter().enumerate() {
+            let _ = write!(
+                xml,
+                "<w:style w:type=\"character\" w:styleId=\"r{index}\"><w:name w:val=\"Run {index}\"/>"
+            );
+            if let Some(parent) = based_on {
+                let _ = write!(
+                    xml,
+                    "<w:basedOn w:val=\"{}\"/>",
+                    style_id(&styles.character[*parent].name)
+                );
+            }
+            xml.push_str("<w:rPr>");
+            run_properties_xml(self.document, formatting, &mut xml);
+            xml.push_str("</w:rPr></w:style>");
+        }
         xml.push_str("</w:styles>");
         xml
     }
@@ -1184,6 +1242,30 @@ fn run_properties_xml(document: &Document, properties: &RunProperties, out: &mut
         escape_attribute(out, document.string(language));
         out.push_str("\"/>");
     }
+}
+
+/// Splits run formatting into what a character style can carry without
+/// changing meaning (fonts, size, colors, underline, baseline, language)
+/// and the toggle properties that must stay inline.
+fn split_for_style(merged: RunProperties) -> (RunProperties, RunProperties) {
+    let styled = RunProperties {
+        font: merged.font,
+        size: merged.size,
+        color: merged.color,
+        highlight: merged.highlight,
+        underline: merged.underline,
+        baseline: merged.baseline,
+        language: merged.language,
+        ..RunProperties::default()
+    };
+    let inline = RunProperties {
+        bold: merged.bold,
+        italic: merged.italic,
+        strike: merged.strike,
+        caps: merged.caps,
+        ..RunProperties::default()
+    };
+    (styled, inline)
 }
 
 /// Pages names fonts by PostScript name (`HelveticaNeue-Bold`,
