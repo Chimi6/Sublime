@@ -143,3 +143,90 @@ fn every_iwa_stream_parses_into_objects() {
         eprintln!("  type {kind}: {count}");
     }
 }
+
+/// The strong oracle for the reader: every stream, decoded to trees and
+/// encoded again, must reproduce its decompressed bytes exactly. Fields the
+/// schema does not know are kept raw, so this holds regardless of schema
+/// coverage; it fails only when decoding changed something.
+#[test]
+fn every_stream_re_encodes_to_the_same_bytes() {
+    use sublime::io::pages::package::{decode_stream, encode_stream};
+    let mut checked = 0usize;
+    for path in fixtures() {
+        let bytes = std::fs::read(&path).expect("fixture readable");
+        let archive = ZipArchive::parse(&bytes).unwrap();
+        let mut compressed = Vec::new();
+        for entry in archive.entries() {
+            if !entry.name.ends_with(".iwa") {
+                continue;
+            }
+            compressed.clear();
+            archive.read(entry, &mut compressed).unwrap();
+            let original = decompress_stream(&compressed).unwrap();
+            let objects = decode_stream(&entry.name, &compressed)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            let mut encoded = Vec::new();
+            encode_stream(&entry.name, &objects, &mut encoded)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            if encoded != original {
+                let first = encoded
+                    .iter()
+                    .zip(&original)
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(encoded.len().min(original.len()));
+                panic!(
+                    "{}: {} differs at byte {first} (encoded {} bytes, original {} bytes)",
+                    path.display(),
+                    entry.name,
+                    encoded.len(),
+                    original.len()
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 17);
+}
+
+/// The whole package survives a write and a read.
+#[test]
+fn packages_round_trip_through_write_and_read() {
+    use sublime::io::pages::package::{Entry, Package, encode_stream};
+    for path in fixtures().into_iter().take(4) {
+        let bytes = std::fs::read(&path).expect("fixture readable");
+        let package =
+            Package::read(&bytes).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let written = package.write(Vec::new()).unwrap();
+        let again =
+            Package::read(&written).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        // Compared as bytes: a NaN float is never equal to itself as a value.
+        assert_eq!(
+            package.entries.len(),
+            again.entries.len(),
+            "{}",
+            path.display()
+        );
+        for (before, after) in package.entries.iter().zip(&again.entries) {
+            assert_eq!(before.name(), after.name(), "{}", path.display());
+            match (before, after) {
+                (Entry::File { bytes: left, .. }, Entry::File { bytes: right, .. }) => {
+                    assert_eq!(left, right, "{}: {}", path.display(), before.name());
+                }
+                (Entry::Stream { objects: left, .. }, Entry::Stream { objects: right, .. }) => {
+                    let mut left_bytes = Vec::new();
+                    let mut right_bytes = Vec::new();
+                    encode_stream(before.name(), left, &mut left_bytes).unwrap();
+                    encode_stream(after.name(), right, &mut right_bytes).unwrap();
+                    assert_eq!(
+                        left_bytes,
+                        right_bytes,
+                        "{}: {}",
+                        path.display(),
+                        before.name()
+                    );
+                }
+                _ => panic!("{}: {} changed kind", path.display(), before.name()),
+            }
+        }
+    }
+}

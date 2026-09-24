@@ -1,5 +1,6 @@
 //! Our own format readers and writers. Zero dependencies.
 
+pub mod base64;
 pub mod csv;
 pub mod deflate;
 pub mod html;

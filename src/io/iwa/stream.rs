@@ -122,6 +122,8 @@ pub struct IwaObject<'a> {
     pub messages: Vec<MessageInfo<'a>>,
     /// Byte offset of the object in the decompressed stream.
     pub offset: usize,
+    /// The serialized `ArchiveInfo`, for readers that decode it whole.
+    pub info: &'a [u8],
 }
 
 impl IwaObject<'_> {
@@ -181,6 +183,7 @@ pub fn parse_objects(stream: &[u8]) -> Result<Vec<IwaObject<'_>>, IwaError> {
             identifier,
             messages,
             offset: object_offset,
+            info,
         });
     }
     Ok(objects)
