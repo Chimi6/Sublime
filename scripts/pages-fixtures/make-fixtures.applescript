@@ -113,14 +113,16 @@ on buildNative(sourcesDir, fixturesDir, referenceDir)
 		-- not of the document itself; making them on `theDocument` fails.
 		try
 			tell page 1 of theDocument
-				set theTable to make new table with properties {row count:3, column count:2, header row count:1}
+				set theTable to make new table with properties {row count:4, column count:2, header row count:1}
 				tell theTable
 					set value of cell "A1" to "Header A"
 					set value of cell "B1" to "Header B"
 					set value of cell "A2" to "one"
-					set value of cell "B2" to "1"
+					set value of cell "B2" to 1
 					set value of cell "A3" to "two"
-					set value of cell "B3" to "2"
+					set value of cell "B3" to 2
+					set value of cell "A4" to "Total"
+					set value of cell "B4" to "=SUM(B2:B3)"
 				end tell
 			end tell
 		end try
