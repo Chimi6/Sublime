@@ -56,6 +56,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: ./scripts/check-size.sh
 
+  wasm:
+    name: wasm module
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            wasm -> wasm/target
+      - run: ./scripts/check-versions.sh
+      - run: cargo clippy --release --target wasm32-unknown-unknown --manifest-path wasm/Cargo.toml -- -D warnings
+      - run: ./scripts/check-wasm.sh
+
   deps-gate:
     name: dependency ledger
     runs-on: ubuntu-latest

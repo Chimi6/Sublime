@@ -1,6 +1,6 @@
 [package]
 name = "sublime"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 rust-version = "1.85"
 description = "Universal efficient file conversion"
@@ -18,7 +18,7 @@ dev-tools = []
 [dev-dependencies]
 
 [workspace]
-exclude = ["bench"]
+exclude = ["bench", "wasm"]
 
 [profile.release]
 lto = "fat"

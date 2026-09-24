@@ -13,8 +13,12 @@
 - One action per line. Prefer a named intermediate variable over a nested call.
 - Descriptive names. No single-letter names outside tiny closures.
 - No `unsafe` (forbidden in `Cargo.toml`). No `unwrap()` or `expect()` outside tests.
+  The one exception is `wasm/src/lib.rs`, the WebAssembly boundary, where
+  the host's pointers become slices; each block carries its safety note.
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`
-  must pass before every commit.
+  must pass before every commit. A change that touches the library also
+  runs `scripts/check-wasm.sh` (the module builds, its smoke test passes,
+  and it fits `wasm/size-budget`).
 
 ## Where format knowledge lives
 

@@ -1,6 +1,9 @@
 //! Builds the format graph from the registry and finds the cheapest path.
 
+#[cfg(not(target_arch = "wasm32"))]
+mod chain;
 pub mod execute;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod pipe;
 
 use std::fmt;
@@ -9,7 +12,7 @@ use crate::converter::{Converter, FidelityKind};
 use crate::event::Hop;
 use crate::format::Format;
 
-pub use execute::execute;
+pub use execute::{execute, execute_in_memory};
 
 pub struct Plan {
     pub hops: Vec<&'static dyn Converter>,

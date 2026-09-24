@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sublime converter</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 24px 16px; background: #f6f6f4; color: #1d1d1b; }
+  main { max-width: 640px; margin: 0 auto; background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.lead { margin: 0 0 20px; color: #55554f; }
+  label { display: block; margin: 12px 0 4px; font-weight: 600; }
+  input, select, button { font: inherit; }
+  select, input[type=file] { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box; }
+  button { margin-top: 16px; padding: 10px 18px; border: 0; border-radius: 8px; background: #1d1d1b; color: #fff; cursor: pointer; }
+  button:disabled { background: #999; cursor: default; }
+  #result { margin-top: 16px; white-space: pre-wrap; }
+  #result a { font-weight: 600; }
+  .note { color: #8a6d00; }
+  .error { color: #a22; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Convert a file</h1>
+  <p class="lead">Runs entirely in your browser. Nothing is uploaded.</p>
+  <label for="file">File</label>
+  <input id="file" type="file">
+  <label for="to">Convert to</label>
+  <select id="to" disabled><option>Choose a file first</option></select>
+  <button id="go" disabled>Convert</button>
+  <div id="result"></div>
+</main>
+<script type="module">
+  import { Sublime } from "./sublime.js";
+  const sublime = await Sublime.load(new URL("./sublime.wasm", import.meta.url));
+  const formats = sublime.formats();
+  const paths = sublime.paths();
+  const byId = Object.fromEntries(formats.map(f => [f.id, f]));
+  const file = document.getElementById("file");
+  const to = document.getElementById("to");
+  const go = document.getElementById("go");
+  const result = document.getElementById("result");
+  let from = null;
+
+  file.addEventListener("change", () => {
+    result.textContent = "";
+    from = file.files[0] ? sublime.formatFor(file.files[0].name) : null;
+    to.innerHTML = "";
+    if (!from) {
+      to.innerHTML = "<option>Unknown file type</option>";
+      to.disabled = true; go.disabled = true;
+      return;
+    }
+    const targets = paths.filter(p => p.from === from);
+    for (const path of targets) {
+      const option = document.createElement("option");
+      option.value = path.to;
+      option.textContent = `${byId[path.to].name} (${path.fidelity})`;
+      to.appendChild(option);
+    }
+    to.disabled = targets.length === 0; go.disabled = targets.length === 0;
+  });
+
+  go.addEventListener("click", async () => {
+    const input = new Uint8Array(await file.files[0].arrayBuffer());
+    const outcome = sublime.convert(input, from, to.value);
+    result.innerHTML = "";
+    if (outcome.status === "converted" || outcome.status === "converted-with-loss") {
+      const extension = byId[to.value].extensions[0];
+      const name = file.files[0].name.replace(/\.[^.]+$/, "") + "." + extension;
+      const url = URL.createObjectURL(new Blob([outcome.bytes]));
+      const link = document.createElement("a");
+      link.href = url; link.download = name; link.textContent = `Download ${name}`;
+      result.appendChild(link);
+      if (outcome.status === "converted-with-loss") {
+        const note = document.createElement("div");
+        note.className = "note"; note.textContent = outcome.message;
+        result.appendChild(note);
+      }
+    } else {
+      result.innerHTML = `<div class="error">${outcome.status}: ${outcome.message}</div>`;
+    }
+  });
+</script>
+</body>
+</html>
