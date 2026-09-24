@@ -23,6 +23,13 @@ against each other: `csv -> json` at 333 MB/s and `pages -> docx` at
   of the whole process, spawn included. Bytes are what the user hands us,
   compressed or not, so a compressed format (Pages) reads low per byte;
   the extra row below says why.
+- **Compressed-output paths.** When the output is a compressed package
+  (Word, and later EPUB, ODF, and the Office family), the throughput row
+  counts the bytes the converter handles: the input plus the output's
+  uncompressed bytes, since the compressor's work is proportional to what
+  it must compress, not to the input. The label says so:
+  `<from> -> <to>, <shape> (<in> MB in + <out> MB out): throughput (MB/s of input plus uncompressed output)`.
+  The goal number is the same as for every other path of the format.
 - **Peak memory row**, one per direction and shape:
   `<from> -> <to>, <shape>: peak memory (MB)`, the process's maximum
   resident set from GNU `time`.

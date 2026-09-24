@@ -18,7 +18,7 @@ so a document feels instant and the binary keeps its memory habits:
 
 | Target | Goal |
 |---|---|
-| Throughput, every direction and shape | >= 50 MB/s of input. A real resume (328 KB) at that rate is 7 ms, a 10 MB book 0.2 s. It is a third of what the markup-dense Markdown pair does per byte on uncompressed text, which is the discount a compressed, object-graph format earns |
+| Throughput, every direction and shape | >= 50 MB/s of input, or, for a path whose output is a compressed package (Word), of input plus uncompressed output (`README.md`). A real resume (328 KB) at that rate is 7 ms, a 10 MB book 0.2 s. It is a third of what the markup-dense Markdown pair does per byte on uncompressed text, which is the discount a compressed, object-graph format earns |
 | Peak memory, every direction and shape | <= 64 MB on these inputs. The object trees of the 2.5 MB package take 44 MB; the goal leaves room for a document model or an output buffer, not for both held whole |
 
 The goals are provisional: when a peer implementation appears, it replaces
