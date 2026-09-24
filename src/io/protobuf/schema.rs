@@ -168,8 +168,15 @@ impl MessageRef {
     }
 
     /// Position of the field with `number` among this message's fields.
+    /// Most messages have a handful of fields, where a scan beats a search.
     pub fn slot(&self, number: u32) -> Option<u16> {
         let records = self.records();
+        if records.len() <= 8 {
+            let index = records
+                .iter()
+                .position(|record| u32::from(record.number) == number)?;
+            return Some(index as u16);
+        }
         let index = records
             .binary_search_by_key(&number, |record| u32::from(record.number))
             .ok()?;

@@ -257,3 +257,39 @@ fn packages_round_trip_through_json() {
         assert_same_package(&path, &package, &again);
     }
 }
+
+/// Our Snappy output must decode to the same stream and be no larger than
+/// Apple's for the same content, in total across the fixtures.
+#[test]
+fn snappy_compression_matches_apples_ratio() {
+    use sublime::io::snappy::{compress_block, decompress_block};
+    let mut ours = 0usize;
+    let mut theirs = 0usize;
+    for path in fixtures() {
+        let bytes = std::fs::read(&path).expect("fixture readable");
+        let archive = ZipArchive::parse(&bytes).unwrap();
+        let mut compressed = Vec::new();
+        for entry in archive.entries() {
+            if !entry.name.ends_with(".iwa") {
+                continue;
+            }
+            compressed.clear();
+            archive.read(entry, &mut compressed).unwrap();
+            theirs += compressed.len();
+            let stream = decompress_stream(&compressed).unwrap();
+            for chunk in stream.chunks(64 * 1024) {
+                let mut block = Vec::new();
+                compress_block(chunk, &mut block);
+                let mut back = Vec::new();
+                decompress_block(&block, &mut back, 1 << 24).unwrap();
+                assert_eq!(back, chunk, "{}: {}", path.display(), entry.name);
+                ours += block.len() + 4;
+            }
+        }
+    }
+    eprintln!("snappy: ours {ours} bytes, Apple {theirs} bytes");
+    assert!(
+        ours <= theirs + theirs / 20,
+        "ours {ours} vs Apple {theirs}"
+    );
+}

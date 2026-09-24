@@ -10,7 +10,7 @@ use super::schema::SCHEMA;
 use super::{message_schema, type_name};
 use crate::io::iwa::{IwaError, decompress_stream, parse_objects};
 use crate::io::protobuf::tree::{NONE, Node, Tree, TreeError, write_varint};
-use crate::io::snappy::encode_literal_block;
+use crate::io::snappy::compress_block;
 use crate::io::zip::{ZipArchive, ZipError, ZipWriter};
 
 /// Uncompressed bytes per IWA chunk when writing.
@@ -126,8 +126,8 @@ impl Package {
         Ok(Package { entries })
     }
 
-    /// Writes the package as a ZIP with stored entries; streams are
-    /// re-encoded and chunked as literal Snappy blocks.
+    /// Writes the package as a ZIP with stored entries, as Pages does;
+    /// streams are re-encoded and Snappy-compressed in 64 KiB chunks.
     pub fn write<W: std::io::Write>(&self, sink: W) -> Result<W, PackageError> {
         let mut zip = ZipWriter::new(sink);
         let mut encoded = Vec::new();
@@ -141,7 +141,7 @@ impl Package {
                     chunked.clear();
                     for chunk in encoded.chunks(CHUNK_SIZE) {
                         let mut block = Vec::with_capacity(chunk.len() + 8);
-                        encode_literal_block(chunk, &mut block);
+                        compress_block(chunk, &mut block);
                         chunked.push(0);
                         chunked.extend_from_slice(&(block.len() as u32).to_le_bytes()[..3]);
                         chunked.extend_from_slice(&block);
