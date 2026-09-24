@@ -1,6 +1,6 @@
 # Pages -> Word
 
-**Latest** (2026-09-24, styles interned: pages -> docx 20.0 MB/s of input on the dense shape and 22.1 on prose, at 48.2 and 35.2 MB peak; memory PASSES on both shapes, throughput FAILS on both, see Conclusions and `STATE.md`)
+**Latest** (2026-09-24, reader cursors: pages -> docx 21.5 MB/s of input on the dense shape and 24.6 on prose, at 46.4 and 28.0 MB peak; memory PASSES on both shapes, throughput FAILS on both, see Conclusions and `STATE.md`)
 
 ## Purpose
 
@@ -67,6 +67,20 @@ in-process runs; inputs come from the `pages-json` pair's generator.
   work the Markdown, HTML, and text pairs do not.
 
 ## Results
+
+### 2026-09-24, reader cursors and one arena copy
+
+commit: 1ed4458
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Reader round: the attribute tables are read with forward cursors instead of a binary search per run (six per run before), a storage's text is copied into the arena once and runs point into it by offset, paragraphs that are ASCII are split by byte scan, and the Markdown projection caches each style's resolved chain and reuses its scratch. Dense-shape document build 38 -> 25 ms in-process.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> docx, styled (2.5 MB): throughput (MB/s of input) | 21.5 | goal: 50 | FAIL |
+| pages -> docx, styled: peak memory (MB) | 46.4 | goal: <= 64.0 | PASS |
+| pages -> docx, prose (1.5 MB): throughput (MB/s of input) | 24.6 | goal: 50 | FAIL |
+| pages -> docx, prose: peak memory (MB) | 28.0 | goal: <= 64.0 | PASS |
 
 ### 2026-09-24, run formatting interned into character styles
 
