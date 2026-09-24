@@ -11,7 +11,7 @@ describes.
 
 ## Next
 
-- 2026-09-24: Benchmarks note for `pages -> docx` and `pages -> markdown`; 0.6.0. Then Word input (the XML reader is in), which gives `docx -> markdown`, `html`, `text`, and `pages` later.
+- 2026-09-24: Pages performance to the benchmark goals, in three phases, each its own PR with its own benchmark block: a slim document model (one text arena, interned properties, 32-byte runs), the Word body streamed through a faster deflate, and objects decoded on lookup. 0.6.1 when every Pages row passes. Then Word input (the XML reader is in), which gives `docx -> markdown`, `html`, `text`, and `pages` later.
 - 2026-09-23: HTML input, deferred behind Pages. Choose between HTML input (an HTML parser, unlocking HTML -> Markdown, text, and later DOCX and PDF) and Apple Pages (the flagship). See `ROADMAP.md`.
 
 ## Future
