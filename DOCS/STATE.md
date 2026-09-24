@@ -12,8 +12,13 @@ describes.
 
 ## Next
 
-- 2026-09-24: Pages performance to the benchmark goals, in three phases, each its own PR with its own benchmark block: a slim document model (one text arena, interned properties, 32-byte runs), the Word body streamed through a faster deflate, and objects decoded on lookup. 0.6.1 when every Pages row passes. Then Word input (the XML reader is in), which gives `docx -> markdown`, `html`, `text`, and `pages` later.
-- 2026-09-23: HTML input, deferred behind Pages. Choose between HTML input (an HTML parser, unlocking HTML -> Markdown, text, and later DOCX and PDF) and Apple Pages (the flagship). See `ROADMAP.md`.
+Close the document category's one-way streets before any other category, one phase per release, each with its benchmark pairs:
+
+- 2026-09-24, phase 1 (0.8.0): Word reader into the document model (`src/io/docx/reader.rs`: styles, numbering, sections, headers and footers, footnotes, tables, images, fields, revisions, links, text boxes), giving `docx -> markdown`, `html`, `text`, `markdown-json`. Oracles: the 28 Apple Word exports against their text exports, and `pages -> docx -> markdown` equal to `pages -> markdown` on every fixture. Pairs: `docx-markdown`, `docx-html`, `docx-text`.
+- 2026-09-24, phase 2 (0.9.0): events-to-model bridge (`src/document/from_events.rs`) with built-in named styles, giving `markdown -> docx` and `markdown-json -> docx`, and later HTML and text to Word through the same bridge. Oracle: `markdown -> docx -> markdown` on the CommonMark and GFM corpus for the represented subset. Pair: `markdown-docx`.
+- 2026-09-24, phase 3 (0.10.0): HTML reader (`src/io/html/reader.rs`: tokenizer subset, tag-soup tolerant tree builder, whitespace collapsing) emitting Markdown events, giving `html -> markdown`, `text`, `markdown-json`, `docx`. Oracle: `markdown -> html -> markdown` on the corpus plus saved real pages. Pairs: `html-markdown`, `html-text`, `html-docx`.
+- 2026-09-24, phase 4: plain text reader (paragraphs from blank lines, conditional), giving `text -> markdown`, `docx`, `html`. Pair: `text-markdown`. Ships with phase 3 or alone.
+- 2026-09-24, decide after phase 4: a Pages writer from the model (`docx -> pages`), which needs a Snappy and protobuf encoder and a complete object graph Pages will open (XL). Measure demand first; otherwise Pages stays input-only and the roadmap says so.
 
 ## Future
 
