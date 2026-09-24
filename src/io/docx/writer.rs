@@ -34,43 +34,99 @@ const PICTURE: &str = "http://schemas.openxmlformats.org/drawingml/2006/picture"
 
 /// Writes `document` as a `.docx` to `sink`.
 pub fn write_docx<W: io::Write>(document: &Document, sink: W) -> io::Result<W> {
-    let mut writer = DocxWriter {
-        document,
-        body: String::new(),
-        relationships: Vec::new(),
-        hyperlink_ids: HashMap::new(),
-        numbering: Numbering::default(),
-        page_parts: Vec::new(),
-        media_targets: vec![None; document.media.len()],
-        drawings: 0,
-        even_pages: false,
-        floating_done: vec![false; document.floating.len()],
-        revisions: 0,
-        formatting_styles: HashMap::new(),
-        formatting_style_list: Vec::new(),
-    };
+    let mut writer = DocxWriter::new(document);
     let mut zip = ZipWriter::new(sink);
     // The body goes first, streamed; the parts it discovers (media,
     // headers, relationships) follow it. Entry order in a package is free.
     zip.begin_deflated("word/document.xml")?;
-    writer.render_body(&mut |part| zip.write_part(part, Level::Fast))?;
+    writer.render_body(document, &mut |part| zip.write_part(part, Level::Fast))?;
     zip.end_deflated()?;
+    write_parts(writer, zip, document)
+}
+
+/// A `.docx` written one top-level block at a time, for builders that
+/// would rather not hold the whole document: the body streams into the
+/// package as blocks arrive, and the parts that depend on the whole
+/// (styles, numbering, footnotes, media) are written at the end from the
+/// document as it stands then. The document's first section supplies the
+/// page setup; floating objects, headers, and footers are not streamed.
+pub struct DocxStream<W: io::Write> {
+    writer: DocxWriter,
+    zip: ZipWriter<W>,
+    body: String,
+}
+
+impl<W: io::Write> DocxStream<W> {
+    pub fn new(sink: W) -> io::Result<DocxStream<W>> {
+        let mut zip = ZipWriter::new(sink);
+        zip.begin_deflated("word/document.xml")?;
+        let mut body = String::with_capacity(BODY_PART + 4096);
+        body.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
+        let _ = write!(body, "<w:document {W} {R} {DRAWING}><w:body>");
+        Ok(DocxStream {
+            writer: DocxWriter::new(&Document::default()),
+            zip,
+            body,
+        })
+    }
+
+    /// Renders one block of the body. `document` is the arena and tables
+    /// the block refers to, as they stand now.
+    pub fn block(&mut self, document: &Document, block: &Block) -> io::Result<()> {
+        match block {
+            Block::Paragraph(paragraph) => {
+                self.writer
+                    .render_paragraph(document, paragraph, &mut self.body, "", &[]);
+            }
+            Block::Table(table) => self.writer.render_table(document, table, &mut self.body),
+        }
+        if self.body.len() >= BODY_PART {
+            self.zip.write_part(self.body.as_bytes(), Level::Fast)?;
+            self.body.clear();
+        }
+        Ok(())
+    }
+
+    /// Closes the body with the first section's properties and writes
+    /// every other part.
+    pub fn finish(mut self, document: &Document) -> io::Result<W> {
+        let default_section = Section::default();
+        let section = document.sections.first().unwrap_or(&default_section);
+        let properties = self.writer.section_properties(document, section);
+        self.body.push_str(&properties);
+        self.body.push_str("</w:body></w:document>");
+        self.zip.write_part(self.body.as_bytes(), Level::Fast)?;
+        self.zip.end_deflated()?;
+        write_parts(self.writer, self.zip, document)
+    }
+}
+
+/// Every part but the body, from the writer's bookkeeping and the
+/// document's tables.
+fn write_parts<W: io::Write>(
+    mut writer: DocxWriter,
+    mut zip: ZipWriter<W>,
+    document: &Document,
+) -> io::Result<W> {
     let footnotes = if document.footnotes.is_empty() {
         None
     } else {
-        Some(writer.footnotes_part())
+        Some(writer.footnotes_part(document))
     };
-    zip.add_deflated("[Content_Types].xml", writer.content_types().as_bytes())?;
+    zip.add_deflated(
+        "[Content_Types].xml",
+        writer.content_types(document).as_bytes(),
+    )?;
     zip.add_deflated("_rels/.rels", root_relationships().as_bytes())?;
     zip.add_deflated(
         "word/_rels/document.xml.rels",
         writer
-            .relationships_xml(&writer.relationships, true)
+            .relationships_xml(document, &writer.relationships, true)
             .as_bytes(),
     )?;
-    zip.add_deflated("word/styles.xml", writer.styles_xml().as_bytes())?;
+    zip.add_deflated("word/styles.xml", writer.styles_xml(document).as_bytes())?;
     if !writer.numbering.instances.is_empty() {
-        zip.add_deflated("word/numbering.xml", writer.numbering_xml().as_bytes())?;
+        writer.write_numbering(document, &mut zip)?;
     }
     if let Some(footnotes) = &footnotes {
         zip.add_deflated("word/footnotes.xml", footnotes.xml.as_bytes())?;
@@ -78,7 +134,7 @@ pub fn write_docx<W: io::Write>(document: &Document, sink: W) -> io::Result<W> {
             zip.add_deflated(
                 "word/_rels/footnotes.xml.rels",
                 writer
-                    .relationships_xml(&footnotes.relationships, false)
+                    .relationships_xml(document, &footnotes.relationships, false)
                     .as_bytes(),
             )?;
         }
@@ -92,7 +148,7 @@ pub fn write_docx<W: io::Write>(document: &Document, sink: W) -> io::Result<W> {
             zip.add_deflated(
                 &format!("word/_rels/{}.rels", part.name),
                 writer
-                    .relationships_xml(&part.relationships, false)
+                    .relationships_xml(document, &part.relationships, false)
                     .as_bytes(),
             )?;
         }
@@ -105,13 +161,10 @@ pub fn write_docx<W: io::Write>(document: &Document, sink: W) -> io::Result<W> {
     zip.finish()
 }
 
-struct DocxWriter<'d> {
-    document: &'d Document,
+struct DocxWriter {
     body: String,
     /// The document part's relationships: `rId<n+10>`.
     relationships: Vec<Relationship>,
-    /// Hyperlink target -> its index in `relationships`.
-    hyperlink_ids: HashMap<String, usize>,
     numbering: Numbering,
     /// Header and footer parts, in order of creation.
     page_parts: Vec<Part>,
@@ -141,7 +194,6 @@ struct Relationship {
 
 #[derive(PartialEq, Clone, Copy)]
 enum RelationshipKind {
-    Hyperlink,
     Image,
     Header,
     Footer,
@@ -163,22 +215,42 @@ struct Numbering {
     current: Vec<Option<usize>>,
 }
 
-impl DocxWriter<'_> {
+impl DocxWriter {
+    fn new(document: &Document) -> DocxWriter {
+        DocxWriter {
+            body: String::new(),
+            relationships: Vec::new(),
+            numbering: Numbering::default(),
+            page_parts: Vec::new(),
+            media_targets: vec![None; document.media.len()],
+            drawings: 0,
+            even_pages: false,
+            floating_done: vec![false; document.floating.len()],
+            revisions: 0,
+            formatting_styles: HashMap::new(),
+            formatting_style_list: Vec::new(),
+        }
+    }
+
     /// Renders the document part, handing `flush` each part of it as
     /// `BODY_PART` fills, so the XML is never held whole.
-    fn render_body(&mut self, flush: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+    fn render_body(
+        &mut self,
+        document: &Document,
+        flush: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
         let mut body = std::mem::take(&mut self.body);
         body.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
         let _ = write!(body, "<w:document {W} {R} {DRAWING}><w:body>");
         // Floating objects are anchored to the first paragraph on their
         // page, counting the page breaks the document spells out.
         let mut page = 0u32;
-        for (index, section) in self.document.sections.iter().enumerate() {
-            let last = index + 1 == self.document.sections.len();
+        for (index, section) in document.sections.iter().enumerate() {
+            let last = index + 1 == document.sections.len();
             if index > 0 && section.start == SectionStart::NewPage {
                 page += 1;
             }
-            let properties = self.section_properties(section);
+            let properties = self.section_properties(document, section);
             for (position, block) in section.blocks.iter().enumerate() {
                 let is_last_block = position + 1 == section.blocks.len();
                 match block {
@@ -189,15 +261,15 @@ impl DocxWriter<'_> {
                             .filter(|run| run.content == Inline::PageBreak)
                             .count();
                         page += breaks as u32;
-                        let anchors = self.floating_due(page, last && is_last_block);
+                        let anchors = self.floating_due(document, page, last && is_last_block);
                         let trailer = if is_last_block && !last {
                             properties.as_str()
                         } else {
                             ""
                         };
-                        self.render_paragraph(paragraph, &mut body, trailer, &anchors);
+                        self.render_paragraph(document, paragraph, &mut body, trailer, &anchors);
                     }
-                    Block::Table(table) => self.render_table(table, &mut body),
+                    Block::Table(table) => self.render_table(document, table, &mut body),
                 }
                 if body.len() >= BODY_PART {
                     flush(body.as_bytes())?;
@@ -209,8 +281,14 @@ impl DocxWriter<'_> {
             // an empty one.
             let ends_with_paragraph = matches!(section.blocks.last(), Some(Block::Paragraph(_)));
             if !ends_with_paragraph {
-                let anchors = self.floating_due(page, last);
-                self.render_paragraph(&Paragraph::default(), &mut body, &properties, &anchors);
+                let anchors = self.floating_due(document, page, last);
+                self.render_paragraph(
+                    document,
+                    &Paragraph::default(),
+                    &mut body,
+                    &properties,
+                    &anchors,
+                );
             } else if last {
                 body.push_str(&properties);
             }
@@ -224,9 +302,9 @@ impl DocxWriter<'_> {
 
     /// The floating objects to anchor now: those on `page` or before it
     /// that have no anchor yet, and every remaining one at the very end.
-    fn floating_due(&mut self, page: u32, all: bool) -> Vec<usize> {
+    fn floating_due(&mut self, document: &Document, page: u32, all: bool) -> Vec<usize> {
         let mut due = Vec::new();
-        for (index, object) in self.document.floating.iter().enumerate() {
+        for (index, object) in document.floating.iter().enumerate() {
             if self.floating_done[index] {
                 continue;
             }
@@ -238,17 +316,19 @@ impl DocxWriter<'_> {
         due
     }
 
-    fn render_blocks(&mut self, blocks: &[Block], out: &mut String) {
+    fn render_blocks(&mut self, document: &Document, blocks: &[Block], out: &mut String) {
         for block in blocks {
             match block {
-                Block::Paragraph(paragraph) => self.render_paragraph(paragraph, out, "", &[]),
-                Block::Table(table) => self.render_table(table, out),
+                Block::Paragraph(paragraph) => {
+                    self.render_paragraph(document, paragraph, out, "", &[])
+                }
+                Block::Table(table) => self.render_table(document, table, out),
             }
         }
     }
 
     #[inline(never)]
-    fn render_table(&mut self, table: &Table, out: &mut String) {
+    fn render_table(&mut self, document: &Document, table: &Table, out: &mut String) {
         let column_width =
             |column: usize| twips(table.columns.get(column).copied().unwrap_or(100.0));
         let column_count = table
@@ -313,7 +393,7 @@ impl DocxWriter<'_> {
                 if cell.blocks.is_empty() {
                     out.push_str("<w:p/>");
                 } else {
-                    self.render_blocks(&cell.blocks, out);
+                    self.render_blocks(document, &cell.blocks, out);
                     if !ends_with_paragraph {
                         out.push_str("<w:p/>");
                     }
@@ -329,6 +409,7 @@ impl DocxWriter<'_> {
     /// properties; `anchors` are the floating objects anchored here.
     fn render_paragraph(
         &mut self,
+        document: &Document,
         paragraph: &Paragraph,
         out: &mut String,
         trailer: &str,
@@ -340,7 +421,7 @@ impl DocxWriter<'_> {
             let _ = write!(
                 properties,
                 "<w:pStyle w:val=\"{}\"/>",
-                style_id(&self.document.styles.paragraph[style].name)
+                style_id(&document.styles.paragraph[style].name)
             );
         }
         if let Some(item) = paragraph.list {
@@ -354,14 +435,11 @@ impl DocxWriter<'_> {
                 instance + 1
             );
         }
-        paragraph_properties_xml(
-            &self.document.paragraph_properties(paragraph),
-            &mut properties,
-        );
+        paragraph_properties_xml(&document.paragraph_properties(paragraph), &mut properties);
         let mut mark = String::new();
         run_properties_xml(
-            self.document,
-            &self.document.paragraph_run_properties(paragraph),
+            document,
+            &document.paragraph_run_properties(paragraph),
             &mut mark,
         );
         if !mark.is_empty() {
@@ -374,22 +452,27 @@ impl DocxWriter<'_> {
             out.push_str("</w:pPr>");
         }
         for anchor in anchors {
-            self.render_floating(*anchor, out);
+            self.render_floating(document, *anchor, out);
         }
         let mut open_link: Option<&str> = None;
         for run in &paragraph.runs {
-            if self.document.link(run) != open_link {
+            // Links are HYPERLINK fields, as Pages writes them: a field
+            // carries its target itself, where a `w:hyperlink` needs a
+            // relationship per target in the part's table (a document of a
+            // hundred thousand links held eighty megabytes of them).
+            if document.link(run) != open_link {
                 if open_link.is_some() {
-                    out.push_str("</w:hyperlink>");
+                    out.push_str("</w:fldSimple>");
                 }
-                open_link = self.document.link(run);
+                open_link = document.link(run);
                 if let Some(target) = open_link {
-                    let id = self.relationship_for(RelationshipKind::Hyperlink, target);
-                    let _ = write!(out, "<w:hyperlink r:id=\"rId{id}\">");
+                    out.push_str("<w:fldSimple w:instr=\" HYPERLINK &quot;");
+                    escape_attribute(out, &target.replace('"', "%22"));
+                    out.push_str("&quot; \">");
                 }
             }
             // A tracked change wraps its run.
-            let change = self.document.revision(run).map(|revision| {
+            let change = document.revision(run).map(|revision| {
                 self.revisions += 1;
                 let element = match revision.kind {
                     RevisionKind::Insertion => "w:ins",
@@ -410,21 +493,27 @@ impl DocxWriter<'_> {
                 );
                 element
             });
-            self.render_run(paragraph, run, out);
+            self.render_run(document, paragraph, run, out);
             if let Some(element) = change {
                 let _ = write!(out, "</{element}>");
             }
         }
         if open_link.is_some() {
-            out.push_str("</w:hyperlink>");
+            out.push_str("</w:fldSimple>");
         }
         out.push_str("</w:p>");
     }
 
-    fn render_run(&mut self, paragraph: &Paragraph, run: &Run, out: &mut String) {
+    fn render_run(
+        &mut self,
+        document: &Document,
+        paragraph: &Paragraph,
+        run: &Run,
+        out: &mut String,
+    ) {
         let mut properties = String::new();
-        let mut merged = self.document.paragraph_run_properties(paragraph);
-        merged.overlay(&self.document.run_properties(run));
+        let mut merged = document.paragraph_run_properties(paragraph);
+        merged.overlay(&document.run_properties(run));
         // Formatting that repeats across runs goes into a character style
         // once and the run carries its id; the toggle properties (bold,
         // italic, strike, caps) stay inline, since Word applies them
@@ -438,14 +527,14 @@ impl DocxWriter<'_> {
                 let _ = write!(
                     properties,
                     "<w:rStyle w:val=\"{}\"/>",
-                    style_id(&self.document.styles.character[style].name)
+                    style_id(&document.styles.character[style].name)
                 );
             }
-            run_properties_xml(self.document, &merged, &mut properties);
+            run_properties_xml(document, &merged, &mut properties);
         } else {
             let style = self.formatting_style(paragraph, run, styled);
             let _ = write!(properties, "<w:rStyle w:val=\"r{style}\"/>");
-            run_properties_xml(self.document, &inline, &mut properties);
+            run_properties_xml(document, &inline, &mut properties);
         }
         let properties = if properties.is_empty() {
             String::new()
@@ -466,11 +555,11 @@ impl DocxWriter<'_> {
         }
         out.push_str("<w:r>");
         out.push_str(&properties);
-        let deleted = self.document.is_deleted(run);
+        let deleted = document.is_deleted(run);
         match run.content {
             Inline::Text(span) => {
                 let element = if deleted { "w:delText" } else { "w:t" };
-                let text = self.document.text(span);
+                let text = document.text(span);
                 // Only edge whitespace needs the preserve attribute.
                 let edged = text.starts_with(' ') || text.ends_with(' ');
                 let _ = write!(out, "<{element}");
@@ -486,7 +575,7 @@ impl DocxWriter<'_> {
             // supported.
             Inline::Math(span) => {
                 out.push_str("<w:t xml:space=\"preserve\">");
-                escape_text(out, &mathml_text(self.document.text(span)));
+                escape_text(out, &mathml_text(document.text(span)));
                 out.push_str("</w:t>");
             }
             Inline::LineBreak => out.push_str("<w:br/>"),
@@ -495,8 +584,8 @@ impl DocxWriter<'_> {
                 let _ = write!(out, "<w:footnoteReference w:id=\"{}\"/>", note + 1);
             }
             Inline::Image(id) => {
-                if let Some(image) = self.document.image(id) {
-                    self.render_image(image, out);
+                if let Some(image) = document.image(id) {
+                    self.render_image(document, image, out);
                 }
             }
             Inline::PageNumber | Inline::PageCount => {}
@@ -528,8 +617,8 @@ impl DocxWriter<'_> {
     /// A picture, inline or anchored beside the text. Media Word cannot
     /// show as a picture (such as PDF) is left out.
     #[inline(never)]
-    fn render_image(&mut self, image: &InlineImage, out: &mut String) {
-        let Some(target) = self.media_target(image.media) else {
+    fn render_image(&mut self, document: &Document, image: &InlineImage, out: &mut String) {
+        let Some(target) = self.media_target(document, image.media) else {
             return;
         };
         let file_name = target.rsplit('/').next().unwrap_or("image").to_string();
@@ -582,8 +671,8 @@ impl DocxWriter<'_> {
     /// A floating object as a run holding a page-anchored drawing: an
     /// image, or a text box shape with the blocks inside.
     #[inline(never)]
-    fn render_floating(&mut self, index: usize, out: &mut String) {
-        let object = &self.document.floating[index];
+    fn render_floating(&mut self, document: &Document, index: usize, out: &mut String) {
+        let object = &document.floating[index];
         let horizontal = Anchor {
             from: AnchorBase::Page,
             offset: object.x,
@@ -605,12 +694,12 @@ impl DocxWriter<'_> {
                     },
                 };
                 out.push_str("<w:r>");
-                self.render_image(&image, out);
+                self.render_image(document, &image, out);
                 out.push_str("</w:r>");
             }
             FloatingContent::TextBox { blocks, fill } => {
                 let mut content = String::new();
-                self.render_blocks(blocks, &mut content);
+                self.render_blocks(document, blocks, &mut content);
                 if content.is_empty() {
                     content.push_str("<w:p/>");
                 }
@@ -639,11 +728,11 @@ impl DocxWriter<'_> {
     /// The package path of a media file under `word/`, when Word can show
     /// it as a picture.
     #[inline(never)]
-    fn media_target(&mut self, media: usize) -> Option<String> {
+    fn media_target(&mut self, document: &Document, media: usize) -> Option<String> {
         if let Some(Some(target)) = self.media_targets.get(media) {
             return Some(target.clone());
         }
-        let file = self.document.media.get(media)?;
+        let file = document.media.get(media)?;
         let extension = file
             .name
             .rsplit('.')
@@ -652,44 +741,44 @@ impl DocxWriter<'_> {
             .to_ascii_lowercase();
         image_content_type(&extension)?;
         let target = format!("media/image{}.{extension}", media + 1);
+        if self.media_targets.len() <= media {
+            self.media_targets.resize(media + 1, None);
+        }
         self.media_targets[media] = Some(target.clone());
         Some(target)
     }
 
     fn relationship_for(&mut self, kind: RelationshipKind, target: &str) -> usize {
-        // Hyperlinks repeat across a document; the others are few.
-        if kind == RelationshipKind::Hyperlink
-            && let Some(index) = self.hyperlink_ids.get(target)
-        {
-            return *index + 10;
-        }
         self.relationships.push(Relationship {
             kind,
             target: target.to_string(),
         });
-        let index = self.relationships.len() - 1;
-        if kind == RelationshipKind::Hyperlink {
-            self.hyperlink_ids.insert(target.to_string(), index);
-        }
-        index + 10
+        self.relationships.len() - 1 + 10
     }
 
     /// Renders blocks as a part of their own, with their own relationships.
-    fn render_part(&mut self, blocks: &[Block]) -> (String, Vec<Relationship>) {
+    fn render_part(
+        &mut self,
+        document: &Document,
+        blocks: &[Block],
+    ) -> (String, Vec<Relationship>) {
         let outer = std::mem::take(&mut self.relationships);
-        let outer_ids = std::mem::take(&mut self.hyperlink_ids);
         let mut xml = String::new();
-        self.render_blocks(blocks, &mut xml);
+        self.render_blocks(document, blocks, &mut xml);
         let relationships = std::mem::replace(&mut self.relationships, outer);
-        self.hyperlink_ids = outer_ids;
         (xml, relationships)
     }
 
     /// A header or footer part; the relationship id the section refers
     /// to it by.
     #[inline(never)]
-    fn page_part(&mut self, blocks: &[Block], kind: RelationshipKind) -> usize {
-        let (inner, relationships) = self.render_part(blocks);
+    fn page_part(
+        &mut self,
+        document: &Document,
+        blocks: &[Block],
+        kind: RelationshipKind,
+    ) -> usize {
+        let (inner, relationships) = self.render_part(document, blocks);
         let (element, prefix) = match kind {
             RelationshipKind::Header => ("w:hdr", "header"),
             _ => ("w:ftr", "footer"),
@@ -713,7 +802,7 @@ impl DocxWriter<'_> {
     }
 
     #[inline(never)]
-    fn section_properties(&mut self, section: &Section) -> String {
+    fn section_properties(&mut self, document: &Document, section: &Section) -> String {
         let page = &section.page;
         let mut xml = String::new();
         xml.push_str("<w:sectPr>");
@@ -739,7 +828,7 @@ impl DocxWriter<'_> {
                 let Some(blocks) = blocks else {
                     continue;
                 };
-                let id = self.page_part(blocks, kind);
+                let id = self.page_part(document, blocks, kind);
                 let _ = write!(
                     xml,
                     "<w:{element} w:type=\"{page_kind}\" r:id=\"rId{id}\"/>"
@@ -784,11 +873,16 @@ impl DocxWriter<'_> {
 
     /// The relationships of a part; the document part also links the
     /// styles, numbering, footnotes, and settings parts.
-    fn relationships_xml(&self, relationships: &[Relationship], document: bool) -> String {
+    fn relationships_xml(
+        &self,
+        document: &Document,
+        relationships: &[Relationship],
+        is_document: bool,
+    ) -> String {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
         let _ = write!(xml, "<Relationships xmlns=\"{PACKAGE_REL}\">");
-        if document {
+        if is_document {
             let _ = write!(
                 xml,
                 "<Relationship Id=\"rId1\" Type=\"{REL}/styles\" Target=\"styles.xml\"/>"
@@ -799,7 +893,7 @@ impl DocxWriter<'_> {
                     "<Relationship Id=\"rId2\" Type=\"{REL}/numbering\" Target=\"numbering.xml\"/>"
                 );
             }
-            if !self.document.footnotes.is_empty() {
+            if !document.footnotes.is_empty() {
                 let _ = write!(
                     xml,
                     "<Relationship Id=\"rId3\" Type=\"{REL}/footnotes\" Target=\"footnotes.xml\"/>"
@@ -814,7 +908,6 @@ impl DocxWriter<'_> {
         }
         for (index, relationship) in relationships.iter().enumerate() {
             let kind = match relationship.kind {
-                RelationshipKind::Hyperlink => "hyperlink",
                 RelationshipKind::Image => "image",
                 RelationshipKind::Header => "header",
                 RelationshipKind::Footer => "footer",
@@ -825,17 +918,13 @@ impl DocxWriter<'_> {
                 index + 10
             );
             escape_attribute(&mut xml, &relationship.target);
-            xml.push('"');
-            if relationship.kind == RelationshipKind::Hyperlink {
-                xml.push_str(" TargetMode=\"External\"");
-            }
-            xml.push_str("/>");
+            xml.push_str("\"/>");
         }
         xml.push_str("</Relationships>");
         xml
     }
 
-    fn content_types(&self) -> String {
+    fn content_types(&self, document: &Document) -> String {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
         xml.push_str(
@@ -863,7 +952,7 @@ impl DocxWriter<'_> {
         if !self.numbering.instances.is_empty() {
             xml.push_str("<Override PartName=\"/word/numbering.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml\"/>");
         }
-        if !self.document.footnotes.is_empty() {
+        if !document.footnotes.is_empty() {
             xml.push_str("<Override PartName=\"/word/footnotes.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml\"/>");
         }
         if self.even_pages {
@@ -885,8 +974,8 @@ impl DocxWriter<'_> {
         xml
     }
 
-    fn styles_xml(&self) -> String {
-        let styles = &self.document.styles;
+    fn styles_xml(&self, document: &Document) -> String {
+        let styles = &document.styles;
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
         let _ = write!(xml, "<w:styles {W}>");
@@ -916,7 +1005,7 @@ impl DocxWriter<'_> {
                 let _ = write!(xml, "<w:pPr>{paragraph}</w:pPr>");
             }
             let mut run = String::new();
-            run_properties_xml(self.document, &style.run, &mut run);
+            run_properties_xml(document, &style.run, &mut run);
             if !run.is_empty() {
                 let _ = write!(xml, "<w:rPr>{run}</w:rPr>");
             }
@@ -938,7 +1027,7 @@ impl DocxWriter<'_> {
                 );
             }
             let mut run = String::new();
-            run_properties_xml(self.document, &style.run, &mut run);
+            run_properties_xml(document, &style.run, &mut run);
             if !run.is_empty() {
                 let _ = write!(xml, "<w:rPr>{run}</w:rPr>");
             }
@@ -957,15 +1046,42 @@ impl DocxWriter<'_> {
                 );
             }
             xml.push_str("<w:rPr>");
-            run_properties_xml(self.document, formatting, &mut xml);
+            run_properties_xml(document, formatting, &mut xml);
             xml.push_str("</w:rPr></w:style>");
         }
         xml.push_str("</w:styles>");
         xml
     }
 
-    fn numbering_xml(&self) -> String {
-        let styles = &self.document.styles.list;
+    /// Writes `numbering.xml` in parts: the list styles, then one
+    /// `w:num` per list start, of which a long document has many.
+    fn write_numbering<W: io::Write>(
+        &self,
+        document: &Document,
+        zip: &mut ZipWriter<W>,
+    ) -> io::Result<()> {
+        zip.begin_deflated("word/numbering.xml")?;
+        let mut xml = self.numbering_styles_xml(document);
+        for (index, (style, start)) in self.numbering.instances.iter().enumerate() {
+            let _ = write!(
+                xml,
+                "<w:num w:numId=\"{}\"><w:abstractNumId w:val=\"{style}\"/><w:lvlOverride w:ilvl=\"0\"><w:startOverride w:val=\"{start}\"/></w:lvlOverride></w:num>",
+                index + 1
+            );
+            if xml.len() >= BODY_PART {
+                zip.write_part(xml.as_bytes(), Level::Default)?;
+                xml.clear();
+            }
+        }
+        xml.push_str("</w:numbering>");
+        zip.write_part(xml.as_bytes(), Level::Default)?;
+        zip.end_deflated()
+    }
+
+    /// The head of `numbering.xml`: the abstract numbering of each list
+    /// style.
+    fn numbering_styles_xml(&self, document: &Document) -> String {
+        let styles = &document.styles.list;
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
         let _ = write!(xml, "<w:numbering {W}>");
@@ -1003,29 +1119,20 @@ impl DocxWriter<'_> {
             }
             xml.push_str("</w:abstractNum>");
         }
-        for (index, (style, start)) in self.numbering.instances.iter().enumerate() {
-            let _ = write!(
-                xml,
-                "<w:num w:numId=\"{}\"><w:abstractNumId w:val=\"{style}\"/><w:lvlOverride w:ilvl=\"0\"><w:startOverride w:val=\"{start}\"/></w:lvlOverride></w:num>",
-                index + 1
-            );
-        }
-        xml.push_str("</w:numbering>");
         xml
     }
 
-    fn footnotes_part(&mut self) -> Part {
+    fn footnotes_part(&mut self, document: &Document) -> Part {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
         let _ = write!(xml, "<w:footnotes {W} {R} {DRAWING}>");
         xml.push_str("<w:footnote w:type=\"separator\" w:id=\"-1\"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>");
         xml.push_str("<w:footnote w:type=\"continuationSeparator\" w:id=\"0\"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>");
         let outer = std::mem::take(&mut self.relationships);
-        let outer_ids = std::mem::take(&mut self.hyperlink_ids);
-        for (index, note) in self.document.footnotes.iter().enumerate() {
+        for (index, note) in document.footnotes.iter().enumerate() {
             let _ = write!(xml, "<w:footnote w:id=\"{}\">", index + 1);
             let mut body = String::new();
-            self.render_blocks(&note.blocks, &mut body);
+            self.render_blocks(document, &note.blocks, &mut body);
             // The reference mark leads the first paragraph.
             match body.find("<w:p>") {
                 Some(_) => {
@@ -1040,7 +1147,6 @@ impl DocxWriter<'_> {
         }
         xml.push_str("</w:footnotes>");
         let relationships = std::mem::replace(&mut self.relationships, outer);
-        self.hyperlink_ids = outer_ids;
         Part {
             name: "footnotes.xml".to_string(),
             xml,

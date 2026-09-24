@@ -1,6 +1,6 @@
 # Markdown -> Word
 
-**Latest** (2026-09-24, first release of the bridge: markdown -> docx 167.7 MB/s of input plus uncompressed output on the markup-dense shape and 233.1 on prose, at 360.1 and 63.7 MB peak; every line PASSES against pulldown-cmark feeding docx-rs, at 3.7 and 2.6 times its throughput and a quarter of its memory)
+**Latest** (2026-09-24, the streaming bridge: markdown -> docx 204.8 MB/s of input plus uncompressed output on the markup-dense shape and 291.4 on prose, at 91.5 and 34.8 MB peak; every line PASSES against pulldown-cmark feeding docx-rs, at 4.5 and 3.2 times its throughput and a seventeenth of its memory)
 
 ## Purpose
 
@@ -62,6 +62,27 @@ row. Rows and units follow `README.md`.
 
 ## Results
 
+### 2026-09-24, the streaming bridge
+
+commit: 34a9e90 (the working tree, before its commit)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| markdown -> docx, markup-dense (14.6 MB in + 90.7 MB out): throughput (MB/s of input plus uncompressed output) | 204.8 | 46.0 (pulldown-cmark + docx-rs, paragraphs and runs only) | PASS |
+| markdown -> docx, markup-dense: throughput (MB/s of input) [extra] | 28.4 | 8.4 (reference) | n/a |
+| markdown -> docx, markup-dense: peak memory (MB) | 91.5 | 1579.8 (reference) | PASS |
+| markdown -> docx, prose (11.3 MB in + 20.2 MB out): throughput (MB/s of input plus uncompressed output) | 291.4 | 90.7 (pulldown-cmark + docx-rs, paragraphs and runs only) | PASS |
+| markdown -> docx, prose: throughput (MB/s of input) [extra] | 104.6 | 27.1 (reference) | n/a |
+| markdown -> docx, prose: peak memory (MB) | 34.8 | 445.1 (reference) | PASS |
+
+The bridge now hands each top-level block to the Word writer as it
+closes; links are HYPERLINK fields rather than relationships; and
+`numbering.xml` streams into the package. Dense peak memory 360 -> 92 MB
+(the Markdown parser's block tree is what remains above the HTML path's
+58 MB), prose 64 -> 35; throughput up a fifth. The output is 12 MB
+smaller uncompressed without the relationship ids.
+
 ### 2026-09-24, first release of the bridge
 
 commit: e25c786 (the bridge's working tree, before its commit)
@@ -79,9 +100,6 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 ## Conclusions
 
 Both shapes pass both lines with room. Prose runs at the Word writer's
-pace; the dense shape spends its time in the writer's paragraph and
-list machinery (a numbering instance per list, a character style per
-formatting triple) and holds a large model. If memory on very large
-dense inputs ever matters, the bridge can hand each top-level block to
-the writer as it closes instead of building the whole document first;
-the writer already streams its body, so the change is in the bridge.
+pace; the dense shape spends its time in the writer's paragraph and list
+machinery. Memory is now the input, the parser's block tree, the text
+arena, and the link table; the whole document is never held.
