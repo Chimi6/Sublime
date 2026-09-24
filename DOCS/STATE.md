@@ -6,14 +6,12 @@ describes.
 
 ## Now
 
-- 2026-09-23: Apple Pages, the flagship. The package reader and the lossless `pages-json` form are in; next is the document reader over it (text, paragraph and character styles, lists, tables, images, footnotes, links) feeding the Markdown event stream, so Pages reaches Markdown, HTML, text, and Markdown JSON. Map in `DOCS/formats/pages.md`, fixtures in `tests/fixtures/pages/`.
+- 2026-09-24: Apple Pages, the flagship. The package reader, the lossless `pages-json` form, the document reader into the document model (`src/document`), the Word writer, and the Markdown event projection are in: `pages -> docx` matches Apple's own export paragraph for paragraph on 23 of 28 fixtures, and Pages reaches Markdown, HTML, text, and Markdown JSON through the model. Released as 0.6.0. Map in `DOCS/formats/pages.md`, fixtures in `tests/fixtures/pages/`.
 - 2026-09-23: Format roadmap in `DOCS/ROADMAP.md`: every tentative format by category with a status and a priority tier (S to D, mixing value, difficulty, and novelty), plus the keystones (inflate, XML, ZIP, PNG, protobuf) that unlock whole categories.
-
-- 2026-09-23: Apple Pages -> DOCX native converter (flagship). Reverse-engineering notes will live in `DOCS/formats/pages.md`.
 
 ## Next
 
-- 2026-09-23: Pages document reader (see Now), then formatting-faithful output, which needs a richer document model than Markdown events and a DOCX writer.
+- 2026-09-24: Benchmarks note for `pages -> docx` and `pages -> markdown`; 0.6.0. Then Word input (the XML reader is in), which gives `docx -> markdown`, `html`, `text`, and `pages` later.
 - 2026-09-23: HTML input, deferred behind Pages. Choose between HTML input (an HTML parser, unlocking HTML -> Markdown, text, and later DOCX and PDF) and Apple Pages (the flagship). See `ROADMAP.md`.
 
 ## Future
@@ -33,6 +31,15 @@ describes.
 
 ## Tech Debt
 
+- 2026-09-24: Pages document reader and Word writer leftovers:
+  - Equations are written as MathML text; Office Math (OMML) from MathML is the proper output.
+  - Floating objects anchor to the first paragraph on their page by counting explicit page breaks; pages that begin by overflow are not known without layout.
+  - PDF and other non-picture media are left out of the Word file; converting PDF vector images to PNG needs a rasterizer.
+  - Text box fills are solid colors only; gradients, image fills, strokes, and shape geometry other than rectangles are dropped. Lines and charts are dropped.
+  - Comments (`table_highlight`) are not read.
+  - Drop caps come out as an ordinary first letter (Apple splits them into a framed paragraph).
+  - Header and footer areas (left, center, right) are joined as paragraphs; Word has no three-area header.
+  - The release binary grew to 1.36 MB with the document pipeline (budget raised to 1.4 MB); std's backtrace symbolizer (gimli, addr2line, about 100 KB) is the largest non-feature cost and the lever if size matters.
 - 2026-09-23: Pages leftovers from the package reader:
   - Deflate has no lazy matching; it is 7% larger than zlib level 9 on mixed data and level-6 class overall. Add lazy matching if a writer path needs the last percent.
   - 31 registry types without a schema; they decode raw. Resolve as the document reader needs them.
@@ -67,6 +74,7 @@ describes.
 
 ## Done
 
+- 2026-09-24: Pages document paths released as 0.6.0: `pages -> docx` matching Apple's export on 23 of 28 fixtures, and `pages -> markdown`, `html`, `text`, `markdown-json` through the document model.
 - 2026-09-23: Markdown finished as 0.3.0: Markdown writer (round-trips every specification example), Markdown -> plain text, Markdown <-> events as JSON, all faster and leaner than the reference pipelines.
 - 2026-09-23: Markdown -> HTML released as 0.2.0: full CommonMark plus GFM extensions and footnotes, all specification examples passing, faster and leaner than `pulldown-cmark` on the benchmark input.
 - 2026-09-22: Foundation released as 0.1.0: framework, CSV <-> JSON, docs, CI, release pipeline, benchmark harness with all pass lines met.

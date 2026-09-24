@@ -3,11 +3,13 @@
 //! (TST) archives. This module holds what is specific to Pages: the type
 //! registry and, as they are mapped, the readers for its archives.
 
+pub mod document;
 pub mod json;
 pub mod package;
 pub mod schema;
 pub mod types;
 
+pub use document::read_document;
 pub use package::{Entry, Object, ObjectMessage, Package, PackageError, Stream};
 pub use types::type_name;
 

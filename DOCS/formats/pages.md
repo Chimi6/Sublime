@@ -12,20 +12,38 @@ the reader; `STATE.md` records what is being built now.
   its exact bytes; the JSON reads back to the same trees (CI,
   `tests/pages_fixtures.rs`). Rebuilt packages are Snappy-compressed and
   come out slightly smaller than Pages' own.
-- Reading the document as a document (text, styles, lists, tables, images,
-  footnotes) into the event stream: next. The map below is what that reader
-  is built from.
+- `pages` -> `docx`: shipped. The document reader (`src/io/pages/document.rs`)
+  projects the object graph into the document model (`src/document`): body
+  text with paragraph and character styles, direct formatting, lists,
+  links, footnotes, page and section breaks, tables (merged cells, fills,
+  header rows, column widths), inline and anchored images, floating text
+  boxes and images, headers and footers (first, even, odd), page setup,
+  columns, tables of contents, page-number fields, tracked changes, and
+  equations (as MathML). The Word writer (`src/io/docx/writer.rs`) renders
+  it. On 23 of the 28 fixtures the output matches Apple's own Word export
+  paragraph for paragraph in text and style names (CI,
+  `tests/pages_docx.rs`); the other five differ where Apple's export is the
+  lossy one (drop caps split, ruby base text dropped, equations flattened
+  to Office Math without operator glyphs) or where text boxes anchor to a
+  different paragraph.
+- `pages` -> `markdown`, `html`, `text`, `markdown-json`: shipped, as a
+  projection of the document model into the Markdown event stream
+  (`src/document/markdown.rs`): headings by outline level, lists by
+  level, inline formatting, links, images, tables, footnotes; page layout,
+  headers, and footers have no Markdown form and are dropped; text boxes
+  follow the body in page order.
 - Writing Pages from other formats: later, by rewriting a real Pages
   document's storage objects rather than generating Apple's object graph
   from nothing.
 
 On the largest fixture (733 KB, 87 KB of object streams, the rest images)
 the package reads to JSON in about 11 ms and rebuilds from JSON in 18 ms,
-at 8 MB peak memory.
+at 8 MB peak memory. A real two-page resume converts to Word in 5 ms at
+7 MB peak.
 
 ## Fixtures
 
-`tests/fixtures/pages/`: twenty-seven documents, one per feature area, saved
+`tests/fixtures/pages/`: twenty-eight documents, one per feature area, saved
 by Pages 12 on macOS from generated Word sources (plus one authored through
 the scripting dictionary), each with Apple's own Word, PDF, and text
 exports as references. The fixture README lists what each contains and what
@@ -90,37 +108,107 @@ Established from the fixtures with `sublime inspect` (a `dev-tools` build).
   the floating drawables, the body storage, the section, the theme, and the
   settings.
 - **Text.** `TSWP.StorageArchive` (2001): `text` is one string for the whole
-  storage with `\n` between paragraphs; attribute tables map character
-  offsets to objects: `table_para_style` (paragraph style per paragraph
-  start), `table_char_style` (character style runs), `table_list_style`,
-  `table_para_data` (list levels), `table_attachment` (inline drawables,
-  footnote marks), `table_smartfield` (hyperlinks, bookmarks, fields),
-  `table_footnote`, `table_section`, `table_insertion` and `table_deletion`
-  (tracked changes), `table_highlight` (comments). The body storage in
-  `text-styles` shows the whole document's text in one string with eleven
-  paragraph style runs.
+  storage with `\n` between paragraphs (`\r` in documents written through
+  the scripting dictionary); attribute tables map character offsets, counted
+  in UTF-16 units, to objects: `table_para_style` (paragraph style per
+  paragraph start; an entry without an object means the previous style
+  continues), `table_char_style` (character style runs; the default style
+  is named `None`), `table_list_style`, `table_para_data` (`first` is the
+  list level, `second` whether the paragraph starts a list),
+  `table_attachment` (inline drawables, page-number fields, TOC entries),
+  `table_smartfield` (hyperlinks as `TSWP.HyperlinkFieldArchive.url_ref`,
+  bookmarks), `table_footnote`, `table_section`, `table_layout_style`
+  (column layouts), `table_insertion` and `table_deletion` (tracked
+  changes, each entry a `TSWP.ChangeArchive` whose session names the
+  author), `table_highlight` (comments).
+- **Special characters.** U+2028 is a line break inside a paragraph; U+0005
+  a page break, U+0004 a section break, and U+000C a layout (column)
+  break, each leading the paragraph that follows the break and each an
+  empty paragraph of its own in the style table; U+FFFC an attachment;
+  U+000E a footnote mark. A newline at the very end of the text is an empty
+  paragraph Pages does not show.
 - **Styles.** `TSWP.ParagraphStyleArchive` (2022) and
   `TSWP.CharacterStyleArchive` (2021) carry property archives and inherit
-  through `super.parent`; `TSS.StylesheetArchive` maps names to styles.
-  Headings are paragraph styles by name (`Heading 1` and so on), which is
-  how the reader will recognize them.
-- **Sections and page templates.** `TP.SectionArchive` (10011) refers to
+  through `super.parent`; unnamed variation styles carry direct formatting
+  over a named parent. Alignment 0 left, 1 right, 2 center, 3 justify,
+  4 natural; the first-line indent is measured from the margin (hanging
+  when it is less than the left indent); line spacing modes 0 relative,
+  1 minimum, 2 exact. `TSWP.TOCEntryStyleArchive` (2026) wraps a paragraph
+  style for table of contents entries (`TOC 1`, `TOC 2`, and so on).
+- **Sections and page templates.** `table_section` entries start sections;
+  `TP.SectionArchive` (10011) names its first, even, and odd
   `TP.SectionTemplateArchive` (10143; the registries still call it
-  `PageMasterArchive`), which holds three header and three footer storages
-  (first, left, right pages).
-- **Lists.** `TSWP.ListStyleArchive` (2023) per list style; the level of a
-  paragraph is in `table_para_data`.
-- **Tables.** `TST.TableInfoArchive` and `TST.TableModelArchive` with cell
-  data in `Tables/Tile*.iwa` and strings in `Tables/DataList*.iwa`. Not yet
-  mapped beyond decoding.
-- **Drawables.** `TSD.*` archives for images, shapes, lines, and text boxes;
-  `TP.FloatingDrawablesArchive` and `TP.DrawablesZOrderArchive` place them.
-  Not yet mapped beyond decoding.
+  `PageMasterArchive`) and whether the first and even pages differ. A
+  template holds three header and three footer storages (left, center,
+  right areas). Page size and margins are on `TP.DocumentArchive` fields
+  30 to 37 (`page_width`, `page_height`, the four margins, and the header
+  and footer margins). Columns come from `table_layout_style` entries:
+  `TSWP.ColumnStyleArchive` (2024) variation chains ending in
+  `column_properties.columns.equal_columns.count`.
+- **Fields.** `TSWP.NumberAttachmentArchive` (2043) in a header or footer
+  is the page number (`super.kind` 0) or the page count (1).
+- **Lists.** `TSWP.ListStyleArchive` (2023) per list style: `label_types`
+  per level (2 text, 3 number), `number_types` (Roman and letter variants
+  in groups of three by pattern: `%1.`, `(%1)`, `%1)`), `strings`, `indents`,
+  `text_indents`.
+- **Tables.** A `TSWP.DrawableAttachmentArchive` in the text refers to
+  `TST.TableInfoArchive` (6000), whose `tableModel` is
+  `TST.TableModelArchive` (6001): row and column counts, header row count,
+  default sizes, and `base_data_store`. Column widths are
+  `TST.HeaderStorageBucket` entries (`columnHeaders`), row heights the
+  `rowHeaders.buckets`. Cells live in `TST.Tile` (6002) `rowInfos`:
+  `cell_offsets` is one little-endian `u16` per column (`0xFFFF` empty,
+  times four when `has_wide_offsets`) into `cell_storage_buffer`, where
+  each record (version 5) is: version byte, cell type byte, six bytes, a
+  `u32` of flags at offset 8, then the fields the flags select in order:
+  `0x1` decimal128 (16 bytes), `0x2` double, `0x4` seconds since 2001,
+  `0x8` string id, `0x10` rich text id, `0x20` cell style id, `0x40` text
+  style id, and twelve more four-byte ids (conditional styles, formula,
+  control, formula error, suggestion, and the number, currency, date,
+  duration, text, and boolean formats, comment, import warning). Cell types:
+  0 empty, 2 and 10 number, 3 text, 5 date, 6 boolean, 7 duration, 8 error,
+  9 rich text. Ids index `TST.TableDataList` (6005) objects: the string
+  table (`listType` 1, `entries.string`), the rich text table (8,
+  `rich_text_payload` -> `TST.RichTextPayloadArchive.storage`, a full text
+  storage), and the style table (4, `reference` to a
+  `TST.CellStyleArchive` with `cell_properties.cell_fill.color` or a
+  paragraph style). Merged regions are not in the table: the model's
+  `merge_owner.owner_id` names a formula owner in
+  `TSCE.CalculationEngineArchive.dependency_tracker.formula_owner_info`,
+  whose `range_dependencies.back_dependency[].internal_range_reference.range`
+  entries are the merged rectangles. Pages exports a table before the
+  paragraph that held it, which then stays as an empty paragraph.
+- **Images.** `TSD.ImageArchive` (3005): `data.identifier` names a
+  `TSP.PackageMetadata.datas` entry whose `file_name` is the file under
+  `Data/`; the size is `super.geometry.size` (points), the alt text
+  `super.accessibility_description`. Inline attachments carry NaN offsets;
+  anchored ones carry `h_offset_type` (2 is the page) and offsets. An
+  equation is an image archive with `equation_source_text` (MathML).
+- **Floating drawables.** `TP.FloatingDrawablesArchive` (10010)
+  `page_groups[]` place drawables by page index: `TSWP.ShapeInfoArchive`
+  (2011, a text box when it has `owned_storage`; the fill is in its
+  `TSWP.ShapeStyleArchive`), `TSD.ImageArchive`, `TSD.GroupArchive` (3008,
+  `children` positioned relative to the group), lines, and charts.
+- **Table of contents.** `TSWP.TOCAttachmentArchive` (2241) refers to
+  `TSWP.TOCInfoArchive` (2240), a shape whose `owned_storage` holds the
+  rendered entries with `TSWP.TSWPTOCPageNumberAttachmentArchive` (2010)
+  `page_number` strings at the tab stops.
+- **Footnotes.** `TSWP.FootnoteReferenceAttachmentArchive` at the mark,
+  `contained_storage` the note's text, which starts with a placeholder
+  U+FFFC for the mark.
 
 ## Known deviations
 
 - 31 registry types have no schema; they decode raw and survive a round
   trip.
+- Equations reach Word as their MathML text (`E=mc2`), not as Office Math.
+- Floating objects are anchored to the first paragraph on their page,
+  counting only the page breaks the document spells out; on a page that
+  starts by overflow they land on the paragraph after the last explicit
+  break.
+- Media Word cannot show as a picture (PDF, for instance) is left out of
+  the Word file; only solid text box fills are kept; comments and
+  highlights are not read.
 
 ## Sources
 

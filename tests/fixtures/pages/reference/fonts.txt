@@ -1,0 +1,14 @@
+Fonts and Sizes
+Each line below is set in a different font family:
+This line is set in Helvetica Neue.  (a sans-serif)
+This line is set in Times New Roman.  (a serif)
+This line is set in Georgia.  (another serif)
+This line is set in Arial.  (a common sans-serif)
+This line is set in Courier New.  (a monospace)
+This line is set in Menlo.  (another monospace)
+This line is set in Comic Sans MS.  (an informal face)
+A range of point sizes on one line:
+8pt 11pt 14pt 18pt 24pt 36pt 48pt 
+Regular, bold, italic, and bold italic in the body font.
+A run requesting a font that is probably not installed, to capture how Pages substitutes:
+This text asks for the font Nonexistent Sans.
