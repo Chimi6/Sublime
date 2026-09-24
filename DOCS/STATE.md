@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-09-24: Markdown into Word (phase 2): the events bridge builds the document model from the Markdown event stream, so every text input reaches Word; `markdown -> docx`, `markdown-json -> docx`. Oracles in `tests/markdown_docx.rs`, pair `markdown-docx`.
 - 2026-09-24: Word input (phase 1 of the document-category plan under Next): the Word reader fills the document model and every projection out of it now takes `.docx`. Map in `DOCS/formats/docx.md`, oracles in `tests/docx_document.rs`, pairs `docx-markdown`, `docx-html`, `docx-text`.
 - 2026-09-24: Sublime in the browser. `wasm/` is a second crate that exports the converter as a WebAssembly module with a small JavaScript loader (`wasm/README.md`); CI builds and smoke-tests it and every release publishes `sublime-<version>-wasm.zip`. The module is a first-class export: every library change ships in it, and its size is budgeted in `wasm/size-budget` the way the binary's is.
 - 2026-09-24: Apple Pages, the flagship. The package reader, the lossless `pages-json` form, the document reader into the document model (`src/document`), the Word writer, and the Markdown event projection are in: `pages -> docx` matches Apple's own export paragraph for paragraph on 23 of 28 fixtures, and Pages reaches Markdown, HTML, text, and Markdown JSON through the model. Released as 0.6.0, with the performance work as 0.6.1 and the WebAssembly module as 0.7.0. Map in `DOCS/formats/pages.md`, fixtures in `tests/fixtures/pages/`.
@@ -16,7 +17,7 @@ describes.
 Close the document category's one-way streets before any other category, one phase per release, each with its benchmark pairs:
 
 - 2026-09-24, phase 1 (0.8.0, done): Word reader into the document model (`src/io/docx/reader.rs`: styles, numbering, sections, headers and footers, footnotes, tables, images, fields, revisions, links, text boxes), giving `docx -> markdown`, `html`, `text`, `markdown-json`. Oracles: the 28 Apple Word exports against their text exports, and `pages -> docx -> markdown` equal to `pages -> markdown` on every fixture. Pairs: `docx-markdown`, `docx-html`, `docx-text`.
-- 2026-09-24, phase 2 (0.9.0): events-to-model bridge (`src/document/from_events.rs`) with built-in named styles, giving `markdown -> docx` and `markdown-json -> docx`, and later HTML and text to Word through the same bridge. Oracle: `markdown -> docx -> markdown` on the CommonMark and GFM corpus for the represented subset. Pair: `markdown-docx`.
+- 2026-09-24, phase 2 (0.9.0, done): events-to-model bridge (`src/document/from_events.rs`) with built-in named styles, giving `markdown -> docx` and `markdown-json -> docx`, and later HTML and text to Word through the same bridge. Oracle: `markdown -> docx -> markdown` on the CommonMark and GFM corpus for the represented subset. Pair: `markdown-docx`.
 - 2026-09-24, phase 3 (0.10.0): HTML reader (`src/io/html/reader.rs`: tokenizer subset, tag-soup tolerant tree builder, whitespace collapsing) emitting Markdown events, giving `html -> markdown`, `text`, `markdown-json`, `docx`. Oracle: `markdown -> html -> markdown` on the corpus plus saved real pages. Pairs: `html-markdown`, `html-text`, `html-docx`.
 - 2026-09-24, phase 4: plain text reader (paragraphs from blank lines, conditional), giving `text -> markdown`, `docx`, `html`. Pair: `text-markdown`. Ships with phase 3 or alone.
 - 2026-09-24, decide after phase 4: a Pages writer from the model (`docx -> pages`), which needs a Snappy and protobuf encoder and a complete object graph Pages will open (XL). Measure demand first; otherwise Pages stays input-only and the roadmap says so.
@@ -39,6 +40,10 @@ Close the document category's one-way streets before any other category, one pha
 
 ## Tech Debt
 
+- 2026-09-24: Events bridge (Markdown into Word) leftovers:
+  - The whole model is built before the Word writer streams it: 360 MB peak on 14.6 MB of markup-dense Markdown (`DOCS/benchmarks/markdown-docx.md`); passes the peer line, would fail a 64 MB goal. Lever: hand each top-level block to the writer as it closes.
+  - Loose lists come out tight, and a list item's later paragraphs read back outside the list; blocks other than paragraphs inside quotes and items lose their container (`DOCS/formats/docx.md`, Known deviations).
+  - Images not given as data URIs become links; the converter cannot read files beside the input.
 - 2026-09-24: WebAssembly leftovers:
   - Multi-hop paths hold each intermediate whole in memory (no threads in the browser); a single-hop path streams as on the command line. Fine for documents, a concern only for large data files through two hops.
   - The module has no size tooling beyond `opt-level = "z"`; `wasm-opt` would take 10 to 20% more off but is a toolchain dependency the build does not assume.
@@ -94,6 +99,7 @@ Close the document category's one-way streets before any other category, one pha
 
 ## Done
 
+- 2026-09-24: Markdown into Word released as 0.9.0 (document-category phase 2): the events bridge with named styles, `markdown -> docx` and `markdown-json -> docx`, corpus oracles, the `markdown-docx` pair.
 - 2026-09-24: Word input released as 0.8.0 (document-category phase 1): the Word reader into the document model, `docx -> markdown`, `html`, `text`, `markdown-json`, oracles against Apple's exports and our own writer, three benchmark pairs passing every line.
 - 2026-09-24: WebAssembly module released as 0.7.0: `wasm/` crate, `sublime.js` loader, demo page, node smoke test, CI job with a size budget, and `sublime-<version>-wasm.zip` in every release.
 - 2026-09-24: Pages performance released as 0.6.1: slim document model, streamed Word body, reachable decode, typed attribute tables, interned Word styles, reader cursors; benchmark pairs and documents for every Pages path with the compressed-output standard.

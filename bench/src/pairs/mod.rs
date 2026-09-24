@@ -5,6 +5,7 @@ pub mod csv_json;
 pub mod docx_html;
 pub mod docx_markdown;
 pub mod docx_text;
+pub mod markdown_docx;
 pub mod markdown_html;
 pub mod markdown_json;
 pub mod markdown_text;
@@ -19,6 +20,7 @@ pub const NAMES: &[&str] = &[
     "docx-markdown",
     "docx-html",
     "docx-text",
+    "markdown-docx",
     "markdown-html",
     "markdown-text",
     "markdown-json",
@@ -35,6 +37,7 @@ pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
         "docx-markdown" => docx_markdown::run(mode, args),
         "docx-html" => docx_html::run(mode, args),
         "docx-text" => docx_text::run(mode, args),
+        "markdown-docx" => markdown_docx::run(mode, args),
         "markdown-html" => markdown_html::run(mode, args),
         "markdown-text" => markdown_text::run(mode, args),
         "markdown-json" => markdown_json::run(mode, args),

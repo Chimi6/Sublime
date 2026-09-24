@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 
+pub mod from_events;
 pub mod markdown;
 
 /// Index of a style in its table.
