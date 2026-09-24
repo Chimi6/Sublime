@@ -54,9 +54,10 @@ fn headings_and_inline_formatting() {
             .starts_with("# Text Styles\n\n*Every character-level attribute Pages can carry*\n")
     );
     assert!(markdown.contains("\n### Heading Three\n"));
-    // Formatting is marked up with the whitespace outside the delimiters.
+    // Formatting is marked up with the whitespace outside the delimiters,
+    // and a mark the next run keeps stays open across it.
     assert!(markdown.contains(
-        "Plain, **bold,** *italic,* **_bold italic,_** underlined, ~~struck through,~~ red,"
+        "Plain, **bold,** *italic, **bold italic,*** underlined, ~~struck through,~~ red,"
     ));
     assert!(markdown.contains("A run in the *Emphasis* character style and one in **Strong**."));
 }

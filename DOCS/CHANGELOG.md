@@ -6,6 +6,21 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-24
+
+Markdown into Word. The events bridge builds the document model from the
+Markdown event stream, so Markdown and Markdown JSON reach Word with named
+styles; 472 CommonMark and 21 GFM examples survive the bridge, and the
+projection out of Word learned code, quotes, and rules by style name.
+
+### Added
+
+- Markdown into Word: `src/document/from_events.rs` builds the document model from the Markdown event stream (headings with outline levels, paragraphs, quotes by indent, code blocks as one paragraph of lines, code spans, lists with nesting and start numbers, tables with alignment, links, emphasis, footnotes, rules, images by data URI), with named styles Word users know; `markdown -> docx` and `markdown-json -> docx`, declared conditional (raw HTML dropped, other images become links, loose lists come out tight). Oracles in `tests/markdown_docx.rs`: 472 CommonMark and 21 GFM examples survive the bridge, and a document with every construct survives the trip through a Word file. Benchmark pair `markdown-docx` against pulldown-cmark feeding docx-rs. Size budget 1.53 -> 1.56 MB for the bridge, the converter, and the projection's formatting stack (binary 1,544,072 bytes).
+
+### Changed
+
+- The Markdown projection reads code blocks, quotes, and rules out of Word documents by their style names (`Source Code`, `Code`, `HTML Preformatted`, `Quote`, `Block Text`, `Horizontal Line`, and the character styles `Source Text`, `Code`, `HTML Code`, `Verbatim Char`); opens and closes inline formatting as a stack ordered by what the next run keeps, so `**foo *bar* baz**` no longer closes and reopens the bold around the italic; opens an empty list item as an item; and links bare email addresses by the GFM rules (`a@b-` is not one).
+
 ## [0.8.0] - 2026-09-24
 
 Word input. A `.docx` reads into the document model, so Word reaches
