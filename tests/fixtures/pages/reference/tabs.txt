@@ -1,0 +1,11 @@
+Tabs and Leaders
+A right tab with a dotted leader, as in a table of contents or a price list:
+Introduction	1
+Methods and Materials	12
+Conclusion	120
+A decimal tab aligns numbers on the decimal point:
+Widget	3.5
+Gadget	12.75
+Sprocket	100.0
+Left, center, and right tab stops across the line:
+left	center	right

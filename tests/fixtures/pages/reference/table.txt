@@ -1,0 +1,6 @@
+Tables
+A simple table with a header row and a numeric column:
+
+A table with merged cells, a shaded cell, and a multi-paragraph cell:
+
+Text after the tables.

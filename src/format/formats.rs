@@ -42,6 +42,24 @@ pub static TEXT: Format = Format {
     category: Category::Document,
 };
 
+pub static PAGES: Format = Format {
+    id: "pages",
+    display_name: "Apple Pages",
+    extensions: &["pages"],
+    magic: None,
+    category: Category::Document,
+};
+
+/// A Pages package as JSON (see `io::pages::json`). No extension of its
+/// own; select it with `--to` or `--from`.
+pub static PAGES_JSON: Format = Format {
+    id: "pages-json",
+    display_name: "Apple Pages package as JSON",
+    extensions: &[],
+    magic: None,
+    category: Category::Document,
+};
+
 /// The Markdown event stream as JSON (see `io::markdown::events_json`).
 /// It has no extension of its own; select it with `--to` or `--from`.
 pub static MARKDOWN_JSON: Format = Format {

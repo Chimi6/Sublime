@@ -6,13 +6,15 @@ describes.
 
 ## Now
 
+- 2026-09-23: Apple Pages, the flagship. The package reader and the lossless `pages-json` form are in; next is the document reader over it (text, paragraph and character styles, lists, tables, images, footnotes, links) feeding the Markdown event stream, so Pages reaches Markdown, HTML, text, and Markdown JSON. Map in `DOCS/formats/pages.md`, fixtures in `tests/fixtures/pages/`.
 - 2026-09-23: Format roadmap in `DOCS/ROADMAP.md`: every tentative format by category with a status and a priority tier (S to D, mixing value, difficulty, and novelty), plus the keystones (inflate, XML, ZIP, PNG, protobuf) that unlock whole categories.
 
 - 2026-09-23: Apple Pages -> DOCX native converter (flagship). Reverse-engineering notes will live in `DOCS/formats/pages.md`.
 
 ## Next
 
-- 2026-09-23: Choose between HTML input (an HTML parser, unlocking HTML -> Markdown, text, and later DOCX and PDF) and Apple Pages (the flagship). See `ROADMAP.md`.
+- 2026-09-23: Pages document reader (see Now), then formatting-faithful output, which needs a richer document model than Markdown events and a DOCX writer.
+- 2026-09-23: HTML input, deferred behind Pages. Choose between HTML input (an HTML parser, unlocking HTML -> Markdown, text, and later DOCX and PDF) and Apple Pages (the flagship). See `ROADMAP.md`.
 
 ## Future
 
@@ -31,6 +33,12 @@ describes.
 
 ## Tech Debt
 
+- 2026-09-23: Pages leftovers from the package reader:
+  - No Snappy compressor: rebuilt packages use literal blocks and stored ZIP entries, so `pages-json -> pages` output is larger than Pages' own. Write the LZ77 matcher when a writer path ships.
+  - Inflate only; no deflate compressor yet (needed for writing DOCX, PNG, ZIP with compression).
+  - 31 registry types without a schema and type 10016 without a name; they decode raw. Resolve as the document reader needs them.
+  - The schema comes from community protos of two vintages; fields Pages 12 added since decode raw. Coverage is measured by the round-trip test, not by name.
+  - No benchmark reference for `pages-json`: there is no Rust reader of the modern format to compare against, and the fixtures are small. Record throughput once a large real document is in hand.
 - 2026-09-23: Markdown leftovers, deliberately deferred in favor of the next flagship:
   - Text -> Markdown (paragraphs only, conditional). Do it when a second text-shaped input can share it.
   - Unicode general-category tables for exact delimiter-run classification; today an approximation that no corpus example reaches (`DOCS/formats/markdown.md`, known deviations). Costs binary size; do it when a real document hits it.
@@ -68,6 +76,8 @@ describes.
 
 - 2026-09-23: Licensed AGPL-3.0-or-later, contributions inbound under Apache-2.0, no CLA, no public commercial track. The goal is that nobody paywalls the work without sharing back; exceptions are handled privately on request (`LICENSING.md`). Releases 0.1.0 to 0.3.0 stay Apache-2.0.
 - 2026-09-23: The Markdown parser pushes events into a sink (`parse_into` and `EventSink`) as the production path; the iterator `Parser` stays for renderers that want to pull. Buffering events between parser and renderer cost more than rendering them.
+- 2026-09-23: Pages is read into the exact object graph first (`pages-json`, lossless, byte-for-byte re-encodable), and every document-level reader is a projection over that graph. The round trip is the correctness oracle for the package layer, so schema gaps can never lose data silently.
+- 2026-09-23: Reverse-engineered schemas are compiled in as packed tables generated from the community's proto files, never as a runtime dependency; the generator records its sources.
 - 2026-09-22: Writers own a 64 KiB buffer and hand sinks whole chunks. Per-field writes through `dyn Write` cost more than parsing did; buffering inside the writer was the single largest win in the first performance spike.
 - 2026-09-22: Byte scanning is done eight bytes at a time with plain integer bit tricks before reaching for SIMD intrinsics. It is portable, dependency-free, and readable, and it was enough to beat the reference pipeline.
 - 2026-09-22: Zero runtime dependencies. Every proposed runtime dependency needs an entry in `DEPENDENCIES.md` with measured cost.

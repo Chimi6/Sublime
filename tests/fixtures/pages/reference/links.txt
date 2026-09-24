@@ -1,0 +1,7 @@
+Links
+A link to a web page and an email link.
+A bare URL as text: https://example.org/plain and www.example.net without a scheme.
+Jump to the bookmark below.
+Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.
+This paragraph is the bookmark target.
+The whole paragraph is one link

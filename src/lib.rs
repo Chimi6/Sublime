@@ -8,6 +8,8 @@ pub mod converter;
 pub mod converters;
 pub mod event;
 pub mod format;
+#[cfg(feature = "dev-tools")]
+pub mod inspect;
 pub mod io;
 pub mod planner;
 pub mod registry;

@@ -1,0 +1,5 @@
+Custom Styles
+The paragraph below uses a user-defined paragraph style named Callout, not one of the styles Pages ships with:
+This is a callout: a bordered, shaded, indented, italic paragraph whose look comes entirely from a custom style definition.
+The next sentence contains an inline span in a user-defined character style named Code Char:
+Run git status before you commit.

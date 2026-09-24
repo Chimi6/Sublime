@@ -1,0 +1,2 @@
+Document Metadata
+This document carries a title, subject, author, keywords, and a description in its document properties (docProps/core.xml). The body text is incidental; the fixture exists for what Pages does with the properties on import. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.

@@ -1,0 +1,8 @@
+Outline Numbering
+A legal-style multilevel list that numbers as 1, 1.1, 1.1.1:
+First top-level item
+A sub-item
+A sub-sub-item
+Another sub-item
+Second top-level item
+Its sub-item
