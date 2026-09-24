@@ -110,12 +110,17 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 
 ## Conclusions
 
-- After the three phases the dense shape stands at about 27 MB/s and 70 MB
-  (from 15 MB/s and 142 MB) and the prose shape at 25 to 30 MB/s and 42 MB
-  (from 18 and 65); prose passes memory. The Markdown writer is a few
-  milliseconds; what remains is the package decode of the body (26 ms
-  in-process on the dense shape) and the document build (30 ms), shared
-  with every document path and analysed in `pages-docx.md`.
-- A real resume converts in 3 ms at 4.8 MB peak, inside both goals; the
-  synthetic dense shape misses throughput by half. The levers that remain
-  are the reader's and are recorded in `STATE.md`.
+- Failing rows after the three phases: throughput on both shapes (about
+  27 MB/s dense, 25 to 30 MB/s prose, against 50) and memory on the dense
+  shape (70 MB against 64). Prose memory passes. A real resume converts in
+  3 ms at 4.8 MB, inside both goals.
+- Where the dense shape's time goes, in-process: package decode 26 ms
+  (the body's 300,000 attribute entries), document build 30 ms, the Markdown
+  writer about 18 ms, process and I/O the rest. The goal is 50 ms
+  for all of it, so the writer is not the problem; the reader is.
+- Levers, recorded under Spikes in `STATE.md`: a typed decode of the
+  attribute tables straight into vectors (about 12 ms off decode, 15 ms
+  off the build, and 25 MB of trees, which passes the memory goal), then
+  merging adjacent runs of equal formatting and dropping the source trees
+  once the model is built. With the first, this path projects to about
+  45 ms on the dense shape, on the goal line. The goals stand.
