@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- `DOCS/FORMATS.md` ends with a generated Mermaid map of the converters (`sublime paths --markdown`); the README gains an Install section and a binary-or-browser table.
+
 ## [0.7.0] - 2026-09-24
 
 Sublime in the browser: the converter ships as a WebAssembly module with every

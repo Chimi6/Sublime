@@ -339,6 +339,8 @@ fn formats_and_paths_list_the_registry() {
 
     let markdown = run(&["paths", "--markdown"]);
     assert!(stdout(&markdown).starts_with("# Formats and Conversion Paths"));
+    assert!(stdout(&markdown).contains("```mermaid\ngraph LR\n"));
+    assert!(stdout(&markdown).contains("  pages -- conditional --> docx\n"));
 }
 
 #[test]
