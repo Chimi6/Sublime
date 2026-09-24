@@ -9,6 +9,16 @@ by the events bridge one block at a time, and streamed out as a Word
 package. It is the path from a web page or an exported document into
 Word, and the heaviest thing the bridge does.
 
+## Reference
+
+A stated goal today (`pages-json.md`), with both stages peer-checked in sibling
+pairs: the HTML *reader* against `htmd` in `html-markdown.md`, and the Word
+*writer* against `docx-rs` in `markdown-docx.md`. No Rust crate does HTML to
+Word end to end, but `pandoc` does and should be wired in as an external
+reference — a loose upper bound, since it does more, but a real number rather
+than a goal. Until it is, the goal stands and this note keeps the gap visible.
+Implemented in `bench/src/pairs/html_docx.rs`.
+
 ## Pass lines
 
 Throughput >= 50 MB/s of input plus uncompressed output and peak memory

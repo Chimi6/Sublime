@@ -7,6 +7,13 @@
 A Pages document as HTML through the Markdown event projection and the
 HTML writer: the browser view of a document, and the last step before PDF.
 
+## Reference
+
+No tool in any language reads the modern Pages (IWA) format, so the Pages
+*reader* has no peer and the reference is the shared goal (`pages-json.md`). The
+HTML *writer* is the same one peer-checked against `pulldown-cmark` in
+`markdown-html.md`. Implemented in `bench/src/pairs/pages_html.rs`.
+
 ## Pass lines
 
 The goals every Pages pair shares, defined and justified in

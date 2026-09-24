@@ -9,6 +9,14 @@ Markdown is small and ubiquitous, so absolute throughput matters less than
 for tabular data, but the parser is the shared front end for every future
 Markdown path (plain text, JSON, PDF), so its cost is paid everywhere.
 
+## Reference
+
+`pulldown-cmark` 0.13 with the same extension set (tables, footnotes,
+strikethrough, task lists, GFM autolinks), rendered by its own HTML writer. It
+is the de facto Rust CommonMark and GFM implementation, the one every Markdown
+tool is measured against, so it is the fair peer for this path. Implemented in
+`bench/src/pairs/markdown_html.rs`.
+
 ## Pass lines
 
 | Target | Pass line |

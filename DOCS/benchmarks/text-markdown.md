@@ -9,6 +9,14 @@ written as Markdown, with everything that would read as markup escaped.
 It measures the text reader and the Markdown writer's escaping; the
 same reader feeds `text -> html` and `text -> docx`.
 
+## Reference
+
+A stated goal (`pages-json.md`). Turning plain text into Markdown is close to
+identity — paragraphs kept, blank lines preserved, nothing to escape in the
+common case. `pandoc` can run it, but with no structure to recover the
+comparison measures pandoc's fixed overhead, not the conversion, so a goal is
+the more honest reference here. Implemented in `bench/src/pairs/text_markdown.rs`.
+
 ## Pass lines
 
 Throughput >= 50 MB/s of input and peak memory <= 64 MB on the benchmark

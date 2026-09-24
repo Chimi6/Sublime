@@ -9,6 +9,15 @@ Markdown event stream, which the Markdown writer renders. The reader is the same
 as the text pair's (`docx-text.md`, which also carries the peer
 reference); this pair adds the Markdown writer's cost on top.
 
+## Reference
+
+A stated goal today (`pages-json.md`), with the docx *reader* peer-checked
+against `docx-rs` in `docx-text.md`. No Rust crate does Word to Markdown end to
+end, but `pandoc` does and should be wired in as an external reference. It does
+far more than we do, so it is a loose upper bound, but a real number beats a
+goal; until it is wired in, the goal stands and this note keeps the gap visible.
+Implemented in `bench/src/pairs/docx_markdown.rs`.
+
 ## Pass lines
 
 Throughput >= 50 MB/s of uncompressed input and peak memory <= 64 MB on

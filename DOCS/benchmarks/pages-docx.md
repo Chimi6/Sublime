@@ -9,6 +9,13 @@ its styles by name, lists, tables, images, headers and footers, and tracked
 changes. It has to feel instant on a resume and stay inside the binary's
 memory habits on a book.
 
+## Reference
+
+No tool in any language reads the modern Pages (IWA) format, so the Pages
+*reader* has no peer and the reference is the shared goal (`pages-json.md`). The
+other half, the Word *writer*, is the same one peer-checked against `docx-rs` in
+`markdown-docx.md`. Implemented in `bench/src/pairs/pages_docx.rs`.
+
 ## Pass lines
 
 The goals every Pages pair shares, defined and justified in
