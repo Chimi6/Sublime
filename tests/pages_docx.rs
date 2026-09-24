@@ -31,6 +31,7 @@ fn paragraphs(docx: &[u8]) -> Vec<(String, String)> {
     let mut in_paragraph = false;
     let mut depth_in_tbl = 0usize;
     let mut in_instruction = false;
+    let mut depth_in_drawing = 0usize;
     for event in XmlReader::new(&xml) {
         match event {
             XmlEvent::Start { name: "w:p", .. } => {
@@ -51,6 +52,13 @@ fn paragraphs(docx: &[u8]) -> Vec<(String, String)> {
             XmlEvent::Start { name: "w:br", .. } if in_paragraph => text.push('\n'),
             XmlEvent::Start { name: "w:tbl", .. } => depth_in_tbl += 1,
             XmlEvent::End { name: "w:tbl" } => depth_in_tbl = depth_in_tbl.saturating_sub(1),
+            // Drawings carry numbers as element text; they are not prose.
+            XmlEvent::Start {
+                name: "w:drawing", ..
+            } => depth_in_drawing += 1,
+            XmlEvent::End { name: "w:drawing" } => {
+                depth_in_drawing = depth_in_drawing.saturating_sub(1);
+            }
             // Apple writes hyperlinks as field codes; the code is not text.
             XmlEvent::Start {
                 name: "w:instrText",
@@ -59,10 +67,12 @@ fn paragraphs(docx: &[u8]) -> Vec<(String, String)> {
             XmlEvent::End {
                 name: "w:instrText",
             } => in_instruction = false,
-            XmlEvent::Text(piece) if in_paragraph && !in_instruction => match piece {
-                Cow::Borrowed(piece) => text.push_str(piece),
-                Cow::Owned(piece) => text.push_str(&piece),
-            },
+            XmlEvent::Text(piece) if in_paragraph && !in_instruction && depth_in_drawing == 0 => {
+                match piece {
+                    Cow::Borrowed(piece) => text.push_str(piece),
+                    Cow::Owned(piece) => text.push_str(&piece),
+                }
+            }
             XmlEvent::End { name: "w:p" } if in_paragraph => {
                 in_paragraph = false;
                 if depth_in_tbl == 0 {
@@ -101,15 +111,35 @@ fn normalize(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Fixtures whose body is text only, where the comparison is exact.
+/// Fixtures where the comparison is exact. Left out: `dropcap` (Apple
+/// splits the dropped letter into a paragraph of its own), `ruby` (Apple
+/// drops the base text under ruby), `equations` (Apple's Office Math
+/// leaves operator glyphs out of the text), `toc` (Apple adds an empty
+/// paragraph after the entries), and the `native-*` fixtures (their text
+/// boxes are anchored to different paragraphs, which the flat paragraph
+/// walk interleaves differently).
 const TEXT_FIXTURES: &[&str] = &[
-    "text-styles",
-    "paragraphs",
-    "lists",
-    "links",
-    "notes",
+    "alt-text",
     "custom-styles",
+    "everything",
+    "fields",
+    "headers",
+    "images",
+    "layout",
+    "links",
+    "lists",
+    "metadata",
+    "notes",
+    "outline-numbering",
+    "page-layout",
+    "paragraphs",
+    "revisions",
+    "rtl",
+    "table",
+    "table-layout",
     "tabs",
+    "text-effects",
+    "text-styles",
 ];
 
 #[test]

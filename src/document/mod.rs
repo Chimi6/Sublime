@@ -19,6 +19,30 @@ pub struct Document {
     pub sections: Vec<Section>,
     pub footnotes: Vec<Note>,
     pub media: Vec<Media>,
+    /// Objects placed on pages rather than in the text flow.
+    pub floating: Vec<FloatingObject>,
+}
+
+/// A text box, shape with text, or image placed on a page.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloatingObject {
+    /// Zero-based page of the document.
+    pub page: u32,
+    /// Position of the top-left corner from the page's top-left, in points.
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub content: FloatingContent,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FloatingContent {
+    Image(MediaId),
+    TextBox {
+        blocks: Vec<Block>,
+        fill: Option<Color>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -94,9 +118,35 @@ pub enum NumberKind {
 pub struct Section {
     pub page: PageSetup,
     pub columns: u16,
-    pub header: Option<Vec<Block>>,
-    pub footer: Option<Vec<Block>>,
+    /// How the section begins relative to the previous one.
+    pub start: SectionStart,
+    pub headers: PageVariants,
+    pub footers: PageVariants,
     pub blocks: Vec<Block>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SectionStart {
+    /// On a new page.
+    #[default]
+    NewPage,
+    /// Where the previous section ended, as for a column change.
+    Continuous,
+}
+
+/// A header or footer, with the pages it may differ on. `default` is the
+/// odd pages when `even` is set, and every page otherwise.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PageVariants {
+    pub default: Option<Vec<Block>>,
+    pub first: Option<Vec<Block>>,
+    pub even: Option<Vec<Block>>,
+}
+
+impl PageVariants {
+    pub fn is_empty(&self) -> bool {
+        self.default.is_none() && self.first.is_none() && self.even.is_none()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,6 +157,10 @@ pub struct PageSetup {
     pub margin_bottom: f32,
     pub margin_left: f32,
     pub margin_right: f32,
+    /// Distance of the header from the top edge, and of the footer from
+    /// the bottom edge.
+    pub header_distance: f32,
+    pub footer_distance: f32,
 }
 
 impl Default for PageSetup {
@@ -119,6 +173,8 @@ impl Default for PageSetup {
             margin_bottom: 72.0,
             margin_left: 72.0,
             margin_right: 72.0,
+            header_distance: 36.0,
+            footer_distance: 36.0,
         }
     }
 }
@@ -138,8 +194,6 @@ pub struct Paragraph {
     /// each run's own.
     pub run_properties: RunProperties,
     pub list: Option<ListItem>,
-    /// A page break before this paragraph.
-    pub page_break_before: bool,
     pub runs: Vec<Run>,
 }
 
@@ -319,7 +373,24 @@ pub struct Run {
     pub properties: RunProperties,
     /// The run is part of a link to this target.
     pub link: Option<String>,
+    /// The run is a tracked change.
+    pub revision: Option<Revision>,
     pub content: Inline,
+}
+
+/// A tracked change on a run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revision {
+    pub kind: RevisionKind,
+    pub author: Option<String>,
+    /// When the change was made, as `YYYY-MM-DDTHH:MM:SSZ`.
+    pub date: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevisionKind {
+    Insertion,
+    Deletion,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -327,8 +398,16 @@ pub enum Inline {
     Text(String),
     LineBreak,
     Tab,
+    /// A page break; usually the only content of its paragraph.
+    PageBreak,
+    /// An equation, as MathML.
+    Math(String),
     Footnote(NoteId),
     Image(InlineImage),
+    /// The current page number, as a field.
+    PageNumber,
+    /// The number of pages, as a field.
+    PageCount,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -337,6 +416,34 @@ pub struct InlineImage {
     pub width: f32,
     pub height: f32,
     pub description: Option<String>,
+    pub placement: Placement,
+}
+
+/// Where an image sits: in the text line, or floating beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Placement {
+    #[default]
+    Inline,
+    /// Anchored to the paragraph, with text wrapping around it.
+    Floating {
+        horizontal: Anchor,
+        vertical: Anchor,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Anchor {
+    pub from: AnchorBase,
+    /// Offset in points from `from`.
+    pub offset: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorBase {
+    Page,
+    Margin,
+    /// The line the image is anchored in (vertical only).
+    Line,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -361,15 +468,33 @@ pub struct Table {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Row {
+    /// One cell per grid column, merged ones included.
     pub cells: Vec<Cell>,
+    /// Minimum height in points.
+    pub height: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Cell {
     pub blocks: Vec<Block>,
+    /// Columns covered, at least one, when this cell is not `Merge::Left`.
     pub column_span: u32,
     pub row_span: u32,
     pub background: Option<Color>,
+    pub merge: Merge,
+}
+
+/// A cell's part in a merged region: the grid keeps every cell, and the
+/// covered ones say which way their origin lies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Merge {
+    /// A cell of its own, or the top-left of a merged region.
+    #[default]
+    Origin,
+    /// Covered by a cell to the left in the same row.
+    Left,
+    /// Covered by a cell above; the first column of a region's lower rows.
+    Above,
 }
 
 impl Document {
@@ -471,16 +596,41 @@ fn collect_texts(blocks: &[Block], texts: &mut Vec<String>) {
 }
 
 impl Paragraph {
+    /// The text with tracked changes accepted: deleted runs left out.
     pub fn text(&self) -> String {
         let mut text = String::new();
         for run in &self.runs {
+            let deleted = run
+                .revision
+                .as_ref()
+                .is_some_and(|revision| revision.kind == RevisionKind::Deletion);
+            if deleted {
+                continue;
+            }
             match &run.content {
                 Inline::Text(piece) => text.push_str(piece),
                 Inline::LineBreak => text.push('\n'),
                 Inline::Tab => text.push('\t'),
-                Inline::Footnote(_) | Inline::Image(_) => {}
+                Inline::Math(mathml) => text.push_str(&mathml_text(mathml)),
+                Inline::PageBreak
+                | Inline::Footnote(_)
+                | Inline::Image(_)
+                | Inline::PageNumber
+                | Inline::PageCount => {}
             }
         }
         text
     }
+}
+
+/// The plain text of a MathML equation: its element text in order,
+/// which reads as the equation on one line (`E = mc2`).
+pub fn mathml_text(mathml: &str) -> String {
+    let mut text = String::new();
+    for event in crate::io::xml::XmlReader::new(mathml) {
+        if let crate::io::xml::XmlEvent::Text(piece) = event {
+            text.push_str(&piece);
+        }
+    }
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
