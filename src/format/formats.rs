@@ -42,6 +42,14 @@ pub static TEXT: Format = Format {
     category: Category::Document,
 };
 
+pub static DOCX: Format = Format {
+    id: "docx",
+    display_name: "Word document",
+    extensions: &["docx"],
+    magic: None,
+    category: Category::Document,
+};
+
 pub static PAGES: Format = Format {
     id: "pages",
     display_name: "Apple Pages",

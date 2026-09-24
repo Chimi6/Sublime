@@ -11,4 +11,5 @@ pub mod markdown_json_to_markdown;
 pub mod markdown_to_html;
 pub mod markdown_to_json;
 pub mod markdown_to_text;
+pub mod pages_to_docx;
 pub mod pages_to_json;

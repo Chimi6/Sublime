@@ -267,6 +267,8 @@ pub struct Reader<'p> {
     paragraph_styles: HashMap<u64, StyleId>,
     character_styles: HashMap<u64, StyleId>,
     list_styles: HashMap<u64, Option<StyleId>>,
+    /// The last paragraph style object seen, for entries without one.
+    last_paragraph_style: Option<u64>,
 }
 
 /// Reads the document the package holds.
@@ -277,6 +279,7 @@ pub fn read_document(package: &Package) -> Document {
         paragraph_styles: HashMap::new(),
         character_styles: HashMap::new(),
         list_styles: HashMap::new(),
+        last_paragraph_style: None,
     };
     reader.read();
     reader.document
@@ -381,7 +384,11 @@ impl Reader<'_> {
         let mut paragraph = Paragraph::default();
         // Paragraph style: the variation chain gives direct properties, the
         // named ancestor gives the style.
-        if let Some(style_object) = covering(paragraph_styles, unit_start) {
+        // An entry without a style means the previous paragraph's style
+        // continues, which is also how Pages exports it.
+        let style_object = covering(paragraph_styles, unit_start).or(self.last_paragraph_style);
+        if let Some(style_object) = style_object {
+            self.last_paragraph_style = Some(style_object);
             let (style, properties, run) = self.resolve_paragraph_style(style_object);
             paragraph.style = style;
             paragraph.properties = properties;
@@ -541,7 +548,11 @@ impl Reader<'_> {
         let message = self.graph.object(attachment)?;
         let storage = View::of(message).reference("contained_storage")?;
         let storage = self.graph.object(storage)?;
+        // A note is its own storage; the body's running style must not
+        // leak in or out.
+        let outer_style = self.last_paragraph_style.take();
         let mut blocks = self.storage_blocks(View::of(storage));
+        self.last_paragraph_style = outer_style;
         // The note's text starts with the mark placeholder; drop it.
         if let Some(Block::Paragraph(first)) = blocks.first_mut()
             && let Some(run) = first.runs.first_mut()
