@@ -102,16 +102,21 @@ compare objects Pages writes for itself against imported ones. While you are in
 there, add the features nothing else can produce, since JSON output is lossless
 and should carry them:
 
-1. a **checklist (to-do) list** — Format > Bullets & Lists > checklist;
+1. a **checklist (to-do) list** — Format > Bullets & Lists > Checklist. A real
+   Pages list style with tickable checkboxes, stored as its own construct, not
+   a bullet character;
 2. a table with **cell data formats**: one currency column, one percentage
    column, one date column, and a cell with **conditional highlighting**
    (Organize > a rule that colours cells over a threshold);
-3. a **group of objects** — draw two shapes, select both, Arrange > Group;
-4. a couple of **other chart types** (a pie and a line chart) and **other shape
-   types** (an arrow, a star) beyond the single bar chart and generic shape the
-   scripted fixtures already have.
+3. a **group of objects** — draw two shapes, select both, Arrange > Group.
 
-(Equations are no longer on this list: Pages imports Word OMML math, so the
+These are real constructs that belong in a real document, so build them into
+`native-authored.pages` rather than as separate one-feature files. Do not add
+extra chart or shape *types* (pie vs. bar, arrow vs. rectangle): those are the
+same chart and shape objects with different geometry, already covered by
+`native-objects`, not new constructs to map.
+
+(Equations are not on this list: Pages imports Word OMML math, so the
 `equations` fixture is generated.)
 
 **`messy-1.pages`, `messy-2.pages`** — one or two of your own real documents,
