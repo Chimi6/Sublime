@@ -9,6 +9,13 @@ as Markdown: headings, lists, formatting, links, images, tables, footnotes.
 It is the path into every Markdown workflow, and the projection also feeds
 the HTML and text pairs.
 
+## Reference
+
+No tool in any language reads the modern Pages (IWA) format, so the Pages
+*reader* has no peer and the reference is the shared goal (`pages-json.md`). The
+Markdown *writer* is the same one peer-checked in `markdown-json.md`.
+Implemented in `bench/src/pairs/pages_markdown.rs`.
+
 ## Pass lines
 
 The goals every Pages pair shares, defined and justified in

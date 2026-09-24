@@ -10,6 +10,13 @@ and the proof that the Markdown writer round-trips. This pair therefore
 also measures the writer, which is what turns Markdown into a middle node
 for every format that reaches the events.
 
+## Reference
+
+`pulldown-cmark` events serialized per event by `serde_json`, and deserialized
+back and rendered by `pulldown-cmark-to-cmark`. That is the conventional way to
+turn a Markdown event stream into JSON and back in Rust, so it is the fair peer
+for both directions. Implemented in `bench/src/pairs/markdown_json.rs`.
+
 ## Pass lines
 
 | Target | Pass line |

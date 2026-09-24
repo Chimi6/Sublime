@@ -25,6 +25,9 @@ cargo build --release --quiet
 sublime="target/release/sublime"
 bench="bench/target/release/sublime-bench"
 
+# GNU time: `/usr/bin/time` on Linux, `gtime` on macOS (brew install gnu-time).
+time_bin="$(command -v gtime || echo /usr/bin/time)"
+
 # time_cmd <label> <command...> : prints "label median_seconds max_rss_kb"
 # over three runs, wall clock per run, peak RSS from GNU time.
 time_cmd() {
@@ -34,7 +37,7 @@ time_cmd() {
   for _ in 1 2 3; do
     local start end
     start="$(date +%s.%N)"
-    /usr/bin/time -f "%M" -o "$data/rss.txt" "$@"
+    "$time_bin" -f "%M" -o "$data/rss.txt" "$@"
     end="$(date +%s.%N)"
     results+=("$(echo "$end - $start" | bc -l)")
     rss="$(cat "$data/rss.txt")"
@@ -43,17 +46,19 @@ time_cmd() {
   median="$(printf '%s\n' "${results[@]}" | sort -n | sed -n 2p)"
   echo "$label $median $rss"
 }
-mbps() { echo "scale=1; $1 / $2 / 1048576" | bc -l; }
-mb() { echo "scale=1; $1 / 1048576" | bc -l; }
+mbps() { awk "BEGIN{printf \"%.1f\", $1 / $2 / 1048576}"; }
+mb() { awk "BEGIN{printf \"%.1f\", $1 / 1048576}"; }
 seconds_of() { echo "$1" | awk '{print $2}'; }
 rss_of() { echo "$1" | awk '{print $3}'; }
-rss_mb() { echo "scale=1; $1 / 1024" | bc -l; }
+rss_mb() { awk "BEGIN{printf \"%.1f\", $1 / 1024}"; }
 pass() { if [ "$1" = "1" ]; then echo PASS; else echo FAIL; fi; }
-row() { echo "| $1 | $2 | $3 | $4 |"; }
+row() { local out="|"; local cell; for cell in "$@"; do out="$out $cell |"; done; echo "$out"; }
 
-echo
-echo "| Target | Ours | Reference | Result |"
-echo "|---|---|---|---|"
+# One reference column by default. A pair with two reference tools overrides
+# table_header and table_sep before run_pair to add a column, and calls `row`
+# with the extra cell (Target, Ours, Reference 1, Reference 2, Result).
+table_header="| Target | Ours | Reference | Result |"
+table_sep="|---|---|---|---|"
 
 # The pair script defines run_pair, which prints its table rows in the
 # standard form (DOCS/benchmarks/README.md): one throughput row and one
@@ -61,6 +66,9 @@ echo "|---|---|---|---|"
 # binary-wide rows instead (size, startup), recorded in binary.md per
 # release rather than in every pair.
 if [ "$pair" = binary ]; then
+  echo
+  echo "$table_header"
+  echo "$table_sep"
   size_bytes="$(wc -c < "$sublime" | tr -d ' ')"
   size_budget="$(tr -d '[:space:]' < size-budget)"
   row "Binary size, gnu (bytes)" "$size_bytes" "<= ${size_budget} (size-budget, what CI checks)" "$(pass "$(echo "$size_bytes <= $size_budget" | bc -l)")"
@@ -86,9 +94,14 @@ if [ "$pair" = binary ]; then
 else
   # shellcheck source=/dev/null
   source "bench/pairs/${pair}.sh"
+  echo
+  echo "$table_header"
+  echo "$table_sep"
   run_pair
 fi
 
+cpus="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+brand="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || awk -F: '/model name/{print $2; exit}' /proc/cpuinfo 2>/dev/null | sed 's/^ *//')"
 echo
 echo "commit: $(git rev-parse --short HEAD)"
-echo "machine: $(uname -srm), $(nproc) cpus"
+echo "machine: $(uname -srm), ${cpus} cpus${brand:+, ${brand}}"

@@ -9,6 +9,14 @@ bridge (`src/document/from_events.rs`), and written as a Word package.
 It is the first path into Word from a text format, and the bridge it
 measures will carry HTML and plain text into Word as well.
 
+## Reference
+
+`pulldown-cmark` (the Rust Markdown parser, with tables, footnotes,
+strikethrough, and task lists enabled) feeding `docx-rs` (a Rust Word writer)
+with paragraphs and runs. The reference does less than we do (no lists, tables,
+links, or footnotes), so it bounds from below what a conventional Rust pipeline
+to Word costs. Implemented in `bench/src/pairs/markdown_docx.rs`.
+
 ## Pass lines
 
 Not slower, and no more memory, than a reference pipeline of
