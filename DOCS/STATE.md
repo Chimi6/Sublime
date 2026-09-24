@@ -73,7 +73,6 @@ describes.
   - **Rendering Word straight from the storage tables without a model** was considered and set aside: it saves the model build (30 ms) at the cost of a second reader inside the writer and the loss of the hub architecture every other output depends on. Revisit only if the levers above leave the goal out of reach.
   - With the first two levers the text paths project to about 45 ms on the dense shape (the 50 MB/s goal is 50 ms) and Word to about 65 ms; the goals stay as they are.
 
-- 2026-09-24: Lazy object decoding for the document paths (now part of the blocker above). In-process, the resume's `pages -> docx` is 2.0 ms of package decode (zip, Snappy, and protobuf trees for every object) against 0.06 ms of document reading and 0.26 ms of Word writing; 500 of the 570 objects are stylesheet presets the document never references. Decoding an object's tree only when the graph looks it up would take the document paths near 1 ms; the lossless `pages-json` path still decodes everything.
 - 2026-09-23: Smaller Markdown arenas (`u32` offsets in `Line`, boxed fence data in `Kind`) to cut first-touch page faults, which are now the largest single cost in the block parser on large inputs.
 - 2026-09-23: Word-at-a-time scanning for the inline parser's special characters; the byte loop with a lookup table is its largest remaining cost.
 - 2026-09-23: Unicode general-category tables for exact delimiter-run classification (see `DOCS/formats/markdown.md`, known deviations).
