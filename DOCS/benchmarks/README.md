@@ -32,11 +32,12 @@ against each other: `csv -> json` at 333 MB/s and `pages -> docx` at
 - **Units.** MB is 1,048,576 bytes everywhere: sizes, throughput, memory.
   Time is the median of three runs of the whole process. Nothing is
   reported per second of CPU or in-process.
-- **Reference cell.** The named reference's number and, when the line is
-  not simply "beat the reference", the line itself in words
-  (`line: ours >= floor / 4`). The reference is a peer crate when one
-  exists, otherwise a measurable floor or one of our own paths, always run
-  in the same session on the same input. Never a number from elsewhere.
+- **Reference cell.** The named reference's number when a peer crate
+  exists, run in the same session on the same input. When no peer exists,
+  a stated goal (`goal: 50`, `goal: <= 64.0`) that the pair's document
+  defines and justifies, the same goal for every direction and shape of
+  the format, so the rows read alike. Never a number copied from
+  elsewhere, and never one direction of a pair judged against the other.
 - **Result cell.** PASS or FAIL against that line; `n/a` for a recorded
   extra row with no line.
 - **Latest** line at the top of every document: the standard rows' current
@@ -55,8 +56,7 @@ Every pair document has these sections, in this order.
 2. **Pass lines.** One row per direction. A pass line is a comparison
    against a named reference on the same machine in the same session,
    never an absolute number copied from elsewhere. When no peer exists,
-   the reference is a measurable floor or one of our own paths, and the
-   document says which and why.
+   the reference is a stated goal, and the document says why that goal.
 3. **Method.** Machine. How inputs are generated and their shape. The exact
    commands. How many runs and which statistic is reported. How memory,
    size, and startup are measured. What the reference pipelines are, with
