@@ -167,12 +167,35 @@ impl MessageRef {
         }
     }
 
+    /// Position of the field with `number` among this message's fields.
+    pub fn slot(&self, number: u32) -> Option<u16> {
+        let records = self.records();
+        let index = records
+            .binary_search_by_key(&number, |record| u32::from(record.number))
+            .ok()?;
+        Some(index as u16)
+    }
+
+    pub fn field_at(&self, slot: u16) -> Option<Field> {
+        let record = self.records().get(usize::from(slot))?;
+        Some(self.field_from(record))
+    }
+
     pub fn field(&self, number: u32) -> Option<Field> {
         let records = self.records();
         let index = records
             .binary_search_by_key(&number, |record| u32::from(record.number))
             .ok()?;
         Some(self.field_from(&records[index]))
+    }
+
+    /// Slot and field of the field called `name`.
+    pub fn slot_named(&self, name: &str) -> Option<(u16, Field)> {
+        self.records()
+            .iter()
+            .enumerate()
+            .map(|(slot, record)| (slot as u16, self.field_from(record)))
+            .find(|(_, field)| field.name == name)
     }
 
     pub fn field_named(&self, name: &str) -> Option<Field> {

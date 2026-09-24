@@ -2,6 +2,29 @@
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+/// Appends the encoding to a byte buffer (the output is ASCII).
+pub fn encode_into(bytes: &[u8], out: &mut Vec<u8>) {
+    out.reserve(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        let triple = (u32::from(first) << 16) | (u32::from(second) << 8) | u32::from(third);
+        out.push(ALPHABET[(triple >> 18) as usize & 63]);
+        out.push(ALPHABET[(triple >> 12) as usize & 63]);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(triple >> 6) as usize & 63]
+        } else {
+            b'='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[triple as usize & 63]
+        } else {
+            b'='
+        });
+    }
+}
+
 pub fn encode(bytes: &[u8], out: &mut String) {
     for chunk in bytes.chunks(3) {
         let first = chunk[0];
