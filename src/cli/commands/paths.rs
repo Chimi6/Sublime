@@ -6,6 +6,7 @@ use std::io::Write;
 use crate::cli::args::LogFormat;
 use crate::cli::render::json_lines::write_hop;
 use crate::cli::{CliError, ExitCode};
+use crate::converter::FidelityKind;
 use crate::io::json::JsonWriter;
 use crate::planner::{self, Plan, PlanOptions};
 use crate::registry;
@@ -165,7 +166,65 @@ pub fn render_markdown() -> String {
         );
         text.push_str(&line);
     }
+
+    text.push_str("\n## Map\n\n");
+    text.push_str("One arrow per converter: solid for lossless, labeled for conditional, dotted for lossy. Longer paths chain them.\n\n");
+    text.push_str(&render_mermaid());
     text
+}
+
+/// A Mermaid graph of the converters, grouped by format category, which
+/// GitHub renders inline at the bottom of DOCS/FORMATS.md.
+#[inline(never)]
+fn render_mermaid() -> String {
+    let mut text = String::from("```mermaid\ngraph LR\n");
+    let mut formats = registry::all_formats();
+    formats.sort_by(|left, right| (left.category, left.id).cmp(&(right.category, right.id)));
+    let mut current_category = None;
+    for format in formats {
+        if current_category != Some(format.category) {
+            if current_category.is_some() {
+                text.push_str("  end\n");
+            }
+            text.push_str("  subgraph ");
+            text.push_str(format.category.label());
+            text.push('\n');
+            current_category = Some(format.category);
+        }
+        text.push_str("    ");
+        push_mermaid_id(&mut text, format.id);
+        text.push_str("[\"");
+        text.push_str(format.id);
+        text.push_str("\"]\n");
+    }
+    if current_category.is_some() {
+        text.push_str("  end\n");
+    }
+    for converter in registry::all_converters() {
+        let arrow = match converter.fidelity().kind() {
+            FidelityKind::Lossless => " --> ",
+            FidelityKind::Conditional => " -- conditional --> ",
+            FidelityKind::Lossy => " -. lossy .-> ",
+        };
+        text.push_str("  ");
+        push_mermaid_id(&mut text, converter.from().id);
+        text.push_str(arrow);
+        push_mermaid_id(&mut text, converter.to().id);
+        text.push('\n');
+    }
+    text.push_str("```\n");
+    text
+}
+
+/// Mermaid node ids cannot contain hyphens, which read as edge syntax.
+fn push_mermaid_id(text: &mut String, format_id: &str) {
+    for ch in format_id.chars() {
+        if ch == '-' {
+            text.push('_');
+        } else {
+            text.push(ch);
+        }
+    }
 }
 
 fn or_dash(names: &[&str]) -> String {
