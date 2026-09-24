@@ -10,6 +10,15 @@ byte-identical package. Every document conversion pays the forward decode,
 so its speed is the floor of the flagship; the round trip is the
 correctness oracle for the format (`tests/pages_fixtures.rs`).
 
+## Reference
+
+No tool in any language reads the modern Pages (IWA) format — pandoc,
+LibreOffice, and macOS `textutil` all decline it — so there is no peer for
+either direction, in Rust or out of it. The reference is a stated goal — >= 50
+MB/s of input and <= 64 MB peak memory — defined and justified in the Pass lines
+below and shared by every Pages pair. Implemented in
+`bench/src/pairs/pages_json.rs`.
+
 ## Pass lines
 
 No other tool reads the modern Pages format, so there is no peer to

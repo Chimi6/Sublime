@@ -10,6 +10,16 @@ that is what a browser downloads. Startup is spawn to first output byte on a 1 K
 less the spawn floor of `/bin/true`, median of runs from
 `bench/src/startup.rs`.
 
+## Reference
+
+Startup has a real reference: the `/bin/true` process-spawn floor, the same
+spawn-to-first-byte measurement for the smallest possible program on the same
+machine, so the reported number is what our binary adds above the OS floor, not
+raw spawn time. Size has no peer tool — a general converter's binary is not
+comparable to any single-format utility — so it is held to the project's
+`size-budget` (and `wasm/size-budget`), an absolute product promise rather than
+a comparison. Startup is implemented in `bench/src/startup.rs`.
+
 ## Pass lines
 
 | Target | Pass line |

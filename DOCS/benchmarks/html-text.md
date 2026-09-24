@@ -8,6 +8,17 @@ HTML read into the Markdown event stream and written as plain text: the
 cheapest path out of a page, and the one a search index or a summary
 wants.
 
+## Reference
+
+Currently a stated goal (`pages-json.md`), with the HTML *reader* peer-checked
+against `htmd` in `html-markdown.md`. This is a known gap, not a settled choice.
+Real peers exist: `html2text`, a pure-Rust HTML-to-text renderer on html5ever
+(no browser engine), is the cleanest — it does essentially this job (wrapped
+text, tables, links) and compiles into the bench binary; `lynx -dump` and
+`pandoc` are external alternatives. `html2text` should be wired into
+`bench/src/pairs/html_text.rs` as the reference; until it is, the goal stands in
+and this note keeps the gap visible.
+
 ## Pass lines
 
 Throughput >= 50 MB/s of input and peak memory <= 64 MB on the benchmark

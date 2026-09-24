@@ -9,6 +9,13 @@ the text writer: the "just give me the text" ask, and the least work any
 document path can do. If this path cannot meet the goals, no document path
 can.
 
+## Reference
+
+No tool in any language reads the modern Pages (IWA) format, so the Pages
+*reader* has no peer and the reference is the shared goal (`pages-json.md`). The
+text *writer* is the same one measured against a `pulldown-cmark` text dump in
+`markdown-text.md`. Implemented in `bench/src/pairs/pages_text.rs`.
+
 ## Pass lines
 
 The goals every Pages pair shares, defined and justified in

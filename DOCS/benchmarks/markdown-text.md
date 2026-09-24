@@ -9,6 +9,15 @@ existing Markdown event stream. It exists so the event stream is proven as
 the shared front end for every Markdown output, and because "just give me
 the text" is a daily ask.
 
+## Reference
+
+A bare text dump of `pulldown-cmark` events (text and code concatenated, a
+newline per block end). This is a floor, not a peer: no widely used
+Markdown-to-text crate exists, so the reference does strictly less than our
+renderer (no list markers, aligned tables, link URLs, or footnotes) and only
+bounds the parse-and-render cost from below. Implemented in
+`bench/src/pairs/markdown_text.rs`.
+
 ## Pass lines
 
 | Target | Pass line |

@@ -9,6 +9,17 @@ Markdown event stream, which the HTML writer renders. The reader is the same
 as the text pair's (`docx-text.md`, which also carries the peer
 reference); this pair adds the HTML writer's cost on top.
 
+## Reference
+
+A stated goal today (the shared 50 MB/s throughput and 64 MB memory bars,
+defined in `pages-json.md`), with the docx *reader* peer-checked against
+`docx-rs` in `docx-text.md`. No Rust crate does Word to HTML end to end, but a
+real tool does: `pandoc` converts docx to HTML and should be wired in as an
+external reference (run as a process, timed like ours). It does far more than we
+do, so it is a loose upper bound, but it is a real number rather than a goal.
+Until it is wired in, the goal stands and this note keeps the gap visible.
+Implemented in `bench/src/pairs/docx_html.rs`.
+
 ## Pass lines
 
 Throughput >= 50 MB/s of uncompressed input and peak memory <= 64 MB on
