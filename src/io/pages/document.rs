@@ -274,6 +274,28 @@ fn paragraph_data(view: &View<'_>) -> Vec<(usize, u8, bool)> {
         .collect()
 }
 
+/// The paragraph starts table: `(start, first number)` per entry, the
+/// number a list starts at for the paragraph that starts it.
+fn paragraph_starts(view: &View<'_>) -> Vec<(usize, u32)> {
+    let table = match view.message("table_para_starts") {
+        Some(table) => table,
+        None => return Vec::new(),
+    };
+    table
+        .messages("entries")
+        .iter()
+        .map(|entry| {
+            (
+                entry.integer("character_index").unwrap_or(0) as usize,
+                entry
+                    .integer("first")
+                    .unwrap_or(0)
+                    .clamp(0, i64::from(u32::MAX)) as u32,
+            )
+        })
+        .collect()
+}
+
 /// The entry of a table that covers `position`: the last one at or before it.
 fn covering(spans: &[Span], position: usize) -> Option<u64> {
     spans
@@ -792,6 +814,7 @@ impl Reader<'_> {
         let insertions = attribute_table(&storage, "table_insertion");
         let deletions = attribute_table(&storage, "table_deletion");
         let data = paragraph_data(&storage);
+        let starts = paragraph_starts(&storage);
         let mut blocks = Vec::new();
         let mut start = 0usize;
         let bytes = text.as_bytes();
@@ -841,6 +864,7 @@ impl Reader<'_> {
                 &insertions,
                 &deletions,
                 &data,
+                &starts,
             );
             for table in self.pending_blocks.drain(..) {
                 blocks.push((start_units, table));
@@ -896,6 +920,7 @@ impl Reader<'_> {
         insertions: &[Span],
         deletions: &[Span],
         data: &[(usize, u8, bool)],
+        starts: &[(usize, u32)],
     ) -> Paragraph {
         let mut paragraph = Paragraph::default();
         // Paragraph style: the variation chain gives direct properties, the
@@ -919,10 +944,17 @@ impl Reader<'_> {
                 .take_while(|(start, _, _)| *start <= unit_start)
                 .last()
                 .map_or((0, false), |(_, level, starts)| (*level, *starts));
+            let start = starts
+                .iter()
+                .take_while(|(start, _)| *start <= unit_start)
+                .last()
+                .map_or(1, |(_, number)| *number)
+                .max(1);
             paragraph.list = Some(ListItem {
                 style: list,
                 level,
                 starts_list,
+                start,
             });
         }
         // Split the text at every boundary of the character style, link,
@@ -1836,7 +1868,11 @@ fn paragraph_properties(view: View<'_>) -> ParagraphProperties {
         keep_with_next: view.boolean("keep_with_next"),
         keep_lines_together: view.boolean("keep_lines_together"),
         widow_control: view.boolean("widow_control"),
-        outline_level: view.integer("outline_level").map(|level| level as u8),
+        // Pages stores "no outline level" as -1 in a uint32 field.
+        outline_level: view
+            .integer("outline_level")
+            .filter(|level| (0..=8).contains(level))
+            .map(|level| level as u8),
         background: view.message("fill").and_then(color),
     }
 }

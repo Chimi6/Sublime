@@ -6,12 +6,12 @@ describes.
 
 ## Now
 
-- 2026-09-24: Apple Pages, the flagship. The package reader, the lossless `pages-json` form, the document reader into the document model (`src/document`), and the Word writer are in: `pages -> docx` matches Apple's own export paragraph for paragraph on 22 of 27 fixtures. Next is the projection of the document model into the Markdown event stream, so Pages reaches Markdown, HTML, and text, then the 0.6.0 release. Map in `DOCS/formats/pages.md`, fixtures in `tests/fixtures/pages/`.
+- 2026-09-24: Apple Pages, the flagship. The package reader, the lossless `pages-json` form, the document reader into the document model (`src/document`), the Word writer, and the Markdown event projection are in: `pages -> docx` matches Apple's own export paragraph for paragraph on 22 of 27 fixtures, and Pages reaches Markdown, HTML, text, and Markdown JSON through the model. Next: benchmarks note, then the 0.6.0 release. Map in `DOCS/formats/pages.md`, fixtures in `tests/fixtures/pages/`.
 - 2026-09-23: Format roadmap in `DOCS/ROADMAP.md`: every tentative format by category with a status and a priority tier (S to D, mixing value, difficulty, and novelty), plus the keystones (inflate, XML, ZIP, PNG, protobuf) that unlock whole categories.
 
 ## Next
 
-- 2026-09-24: Document model -> Markdown events, then `pages -> markdown`, `html`, `text` through it; benchmarks note for `pages -> docx`; 0.6.0.
+- 2026-09-24: Benchmarks note for `pages -> docx` and `pages -> markdown`; 0.6.0. Then Word input (the XML reader is in), which gives `docx -> markdown`, `html`, `text`, and `pages` later.
 - 2026-09-23: HTML input, deferred behind Pages. Choose between HTML input (an HTML parser, unlocking HTML -> Markdown, text, and later DOCX and PDF) and Apple Pages (the flagship). See `ROADMAP.md`.
 
 ## Future

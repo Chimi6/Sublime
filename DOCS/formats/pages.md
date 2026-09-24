@@ -26,8 +26,12 @@ the reader; `STATE.md` records what is being built now.
   lossy one (drop caps split, ruby base text dropped, equations flattened
   to Office Math without operator glyphs) or where text boxes anchor to a
   different paragraph.
-- Pages -> Markdown, HTML, text: next, as a projection of the document
-  model into the Markdown event stream.
+- `pages` -> `markdown`, `html`, `text`, `markdown-json`: shipped, as a
+  projection of the document model into the Markdown event stream
+  (`src/document/markdown.rs`): headings by outline level, lists by
+  level, inline formatting, links, images, tables, footnotes; page layout,
+  headers, and footers have no Markdown form and are dropped; text boxes
+  follow the body in page order.
 - Writing Pages from other formats: later, by rewriting a real Pages
   document's storage objects rather than generating Apple's object graph
   from nothing.

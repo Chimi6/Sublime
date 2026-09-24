@@ -135,10 +135,11 @@ struct Part {
     relationships: Vec<Relationship>,
 }
 
-/// One `w:num` per list start: which list style it uses.
+/// One `w:num` per list start: which list style it uses and the number it
+/// starts at.
 #[derive(Default)]
 struct Numbering {
-    instances: Vec<usize>,
+    instances: Vec<(usize, u32)>,
     /// The current instance for each list style, until a list restarts.
     current: Vec<Option<usize>>,
 }
@@ -312,7 +313,9 @@ impl DocxWriter<'_> {
             );
         }
         if let Some(item) = paragraph.list {
-            let instance = self.numbering.instance_for(item.style, item.starts_list);
+            let instance = self
+                .numbering
+                .instance_for(item.style, item.starts_list, item.start);
             let _ = write!(
                 properties,
                 "<w:numPr><w:ilvl w:val=\"{}\"/><w:numId w:val=\"{}\"/></w:numPr>",
@@ -908,10 +911,10 @@ impl DocxWriter<'_> {
             }
             xml.push_str("</w:abstractNum>");
         }
-        for (index, style) in self.numbering.instances.iter().enumerate() {
+        for (index, (style, start)) in self.numbering.instances.iter().enumerate() {
             let _ = write!(
                 xml,
-                "<w:num w:numId=\"{}\"><w:abstractNumId w:val=\"{style}\"/><w:lvlOverride w:ilvl=\"0\"><w:startOverride w:val=\"1\"/></w:lvlOverride></w:num>",
+                "<w:num w:numId=\"{}\"><w:abstractNumId w:val=\"{style}\"/><w:lvlOverride w:ilvl=\"0\"><w:startOverride w:val=\"{start}\"/></w:lvlOverride></w:num>",
                 index + 1
             );
         }
@@ -954,14 +957,14 @@ impl DocxWriter<'_> {
 
 impl Numbering {
     /// The `w:num` a paragraph uses; a new one per list start.
-    fn instance_for(&mut self, style: usize, starts_list: bool) -> usize {
+    fn instance_for(&mut self, style: usize, starts_list: bool, start: u32) -> usize {
         if self.current.len() <= style {
             self.current.resize(style + 1, None);
         }
         match self.current[style] {
             Some(instance) if !starts_list => instance,
             _ => {
-                self.instances.push(style);
+                self.instances.push((style, start));
                 let instance = self.instances.len() - 1;
                 self.current[style] = Some(instance);
                 instance
