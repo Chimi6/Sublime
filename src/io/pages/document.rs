@@ -384,13 +384,50 @@ fn paragraph_starts(view: &View<'_>) -> Vec<(usize, u32)> {
         .collect()
 }
 
-/// The entry of a table that covers `position`: the last one at or before
-/// it. Tables are sorted by start, so this is a binary search.
-fn covering(spans: &[Span], position: usize) -> Option<u64> {
-    let count = spans.partition_point(|span| span.start <= position);
-    spans
-        .get(count.wrapping_sub(1))
-        .and_then(|span| span.object)
+/// A position in one attribute table. Runs are produced in text order,
+/// so the entry covering the next position is at or just after the one
+/// covering the last: the cursor steps forward and never searches.
+#[derive(Clone, Copy, Default)]
+struct Cursor {
+    /// Number of entries whose start is at or before the last position.
+    index: usize,
+}
+
+impl Cursor {
+    #[inline(never)]
+    fn at(&mut self, spans: &[Span], position: usize) -> Option<u64> {
+        while self.index < spans.len() && spans[self.index].start <= position {
+            self.index += 1;
+        }
+        spans
+            .get(self.index.wrapping_sub(1))
+            .and_then(|span| span.object)
+    }
+
+    #[inline(never)]
+    fn at_data<T: Copy>(&mut self, entries: &[(usize, T)], position: usize) -> Option<T> {
+        while self.index < entries.len() && entries[self.index].0 <= position {
+            self.index += 1;
+        }
+        entries
+            .get(self.index.wrapping_sub(1))
+            .map(|(_, value)| *value)
+    }
+}
+
+/// The cursors of the storage being read, one per table.
+#[derive(Clone, Copy, Default)]
+struct Cursors {
+    paragraph_style: Cursor,
+    character_style: Cursor,
+    list_style: Cursor,
+    smart_field: Cursor,
+    insertion: Cursor,
+    deletion: Cursor,
+    data: Cursor,
+    starts: Cursor,
+    /// Boundary collection per paragraph, over the six run-splitting tables.
+    boundaries: [Cursor; 6],
 }
 
 /// The entries of a table that start inside `[from, to)`.
@@ -398,12 +435,6 @@ fn within(spans: &[Span], from: usize, to: usize) -> &[Span] {
     let first = spans.partition_point(|span| span.start < from);
     let end = spans.partition_point(|span| span.start < to);
     &spans[first..end.max(first)]
-}
-
-/// The last entry of a sorted `(start, ..)` table at or before `position`.
-fn last_at<T>(entries: &[(usize, T)], position: usize) -> Option<&(usize, T)> {
-    let count = entries.partition_point(|(start, _)| *start <= position);
-    entries.get(count.wrapping_sub(1))
 }
 
 pub struct Reader<'p> {
@@ -428,6 +459,11 @@ pub struct Reader<'p> {
     revision_ids: HashMap<u64, usize>,
     /// Run boundaries of the paragraph being split, reused.
     boundary_scratch: Vec<usize>,
+    /// Where the storage being read sits in the text arena.
+    storage_base: u32,
+    /// Positions into the storage's tables, advanced as the text is
+    /// walked, so each lookup is a step rather than a search.
+    cursors: Cursors,
     /// Tables met inside the paragraph being read; they go before it.
     pending_blocks: Vec<Block>,
     /// Table of contents entries met inside the paragraph; they follow it.
@@ -471,6 +507,8 @@ pub fn read_document(package: &Package) -> Document {
         resolved_characters: Vec::new(),
         revision_ids: HashMap::new(),
         boundary_scratch: Vec::new(),
+        storage_base: 0,
+        cursors: Cursors::default(),
         pending_blocks: Vec::new(),
         following_blocks: Vec::new(),
         media: HashMap::new(),
@@ -909,10 +947,14 @@ impl Reader<'_> {
         let outer_style = self.last_paragraph_style.take();
         let outer_pending = std::mem::take(&mut self.pending_blocks);
         let outer_following = std::mem::take(&mut self.following_blocks);
+        let outer_cursors = self.cursors;
+        let outer_base = self.storage_base;
         let blocks = self.storage_blocks(storage);
         self.last_paragraph_style = outer_style;
         self.pending_blocks = outer_pending;
         self.following_blocks = outer_following;
+        self.cursors = outer_cursors;
+        self.storage_base = outer_base;
         blocks
     }
 
@@ -928,7 +970,20 @@ impl Reader<'_> {
     /// paragraph each came from. A table sits before the paragraph that
     /// held its attachment, as Pages exports it.
     fn storage_paragraphs(&mut self, storage: View<'_>) -> Vec<(usize, Block)> {
-        let text: String = storage.strings("text").concat();
+        // A storage's text is one string; it is joined only when it is not.
+        let parts = storage.strings("text");
+        let joined: String;
+        let text: &str = match parts.as_slice() {
+            [single] => single,
+            _ => {
+                joined = parts.concat();
+                &joined
+            }
+        };
+        // The whole storage text goes into the arena once; runs point into
+        // it by offset.
+        self.storage_base = self.document.push_text(text).start;
+        self.cursors = Cursors::default();
         let paragraph_styles = attribute_table(&storage, "table_para_style");
         let character_styles = attribute_table(&storage, "table_char_style");
         let list_styles = attribute_table(&storage, "table_list_style");
@@ -942,9 +997,10 @@ impl Reader<'_> {
         let mut blocks = Vec::new();
         let mut start = 0usize;
         let bytes = text.as_bytes();
-        // Character indices in Pages count UTF-16 units; a cursor walks
-        // the text once, converting byte offsets as it goes.
-        let mut offsets = Utf16Offsets::new(&text);
+        // Character indices in Pages count UTF-16 units; they are tracked
+        // paragraph by paragraph as the text is walked.
+        let mut units_so_far = 0usize;
+        let mut units_at_byte = 0usize;
         loop {
             // Paragraphs end at a newline, or at a carriage return in
             // documents written by scripts.
@@ -952,7 +1008,10 @@ impl Reader<'_> {
                 .iter()
                 .position(|byte| matches!(*byte, b'\n' | b'\r'))
                 .map_or(bytes.len(), |relative| start + relative);
-            let mut start_units = offsets.units_at(start);
+            // Units of the text before this paragraph, advanced in one pass.
+            units_so_far += text[units_at_byte..start].encode_utf16().count();
+            units_at_byte = start;
+            let mut start_units = units_so_far;
             // A break character is an empty paragraph of its own before
             // the paragraph it leads: a page break run, or the end of a
             // section.
@@ -978,7 +1037,6 @@ impl Reader<'_> {
                 &text[start..end],
                 start,
                 start_units,
-                &mut offsets,
                 &paragraph_styles,
                 &character_styles,
                 &list_styles,
@@ -1017,7 +1075,11 @@ impl Reader<'_> {
     /// that covers it.
     fn break_paragraph(&mut self, unit: usize, paragraph_styles: &[Span]) -> Paragraph {
         let mut paragraph = Paragraph::default();
-        let style_object = covering(paragraph_styles, unit).or(self.last_paragraph_style);
+        let style_object = self
+            .cursors
+            .paragraph_style
+            .at(paragraph_styles, unit)
+            .or(self.last_paragraph_style);
         if let Some(style_object) = style_object {
             self.last_paragraph_style = Some(style_object);
             let (style, properties, run) = self.resolve_paragraph_style(style_object);
@@ -1034,7 +1096,6 @@ impl Reader<'_> {
         text: &str,
         byte_start: usize,
         unit_start: usize,
-        offsets: &mut Utf16Offsets,
         paragraph_styles: &[Span],
         character_styles: &[Span],
         list_styles: &[Span],
@@ -1051,7 +1112,11 @@ impl Reader<'_> {
         // named ancestor gives the style.
         // An entry without a style means the previous paragraph's style
         // continues, which is also how Pages exports it.
-        let style_object = covering(paragraph_styles, unit_start).or(self.last_paragraph_style);
+        let style_object = self
+            .cursors
+            .paragraph_style
+            .at(paragraph_styles, unit_start)
+            .or(self.last_paragraph_style);
         if let Some(style_object) = style_object {
             self.last_paragraph_style = Some(style_object);
             let (style, properties, run) = self.resolve_paragraph_style(style_object);
@@ -1060,13 +1125,19 @@ impl Reader<'_> {
             paragraph.run_properties = run;
         }
         // List membership: a list style other than "None" plus the level.
-        if let Some(list_object) = covering(list_styles, unit_start)
+        if let Some(list_object) = self.cursors.list_style.at(list_styles, unit_start)
             && let Some(list) = self.resolve_list_style(list_object)
         {
-            let (level, starts_list) = last_at(data, unit_start)
-                .map_or((0, false), |(_, (level, starts))| (*level, *starts));
-            let start = last_at(starts, unit_start)
-                .map_or(1, |(_, number)| *number)
+            let (level, starts_list) = self
+                .cursors
+                .data
+                .at_data(data, unit_start)
+                .unwrap_or((0, false));
+            let start = self
+                .cursors
+                .starts
+                .at_data(starts, unit_start)
+                .unwrap_or(1)
                 .max(1);
             paragraph.list = Some(ListItem {
                 style: list,
@@ -1077,26 +1148,125 @@ impl Reader<'_> {
         }
         // Split the text at every boundary of the character style, link,
         // attachment, and change tables, and at the special characters.
-        let paragraph_unit_end = unit_start + text.encode_utf16().count();
+        let ascii = text.is_ascii();
+        let paragraph_unit_end = if ascii {
+            unit_start + text.len()
+        } else {
+            unit_start + text.encode_utf16().count()
+        };
         let mut boundaries = std::mem::take(&mut self.boundary_scratch);
         boundaries.clear();
-        for table in [
+        let tables = [
             character_styles,
             smart_fields,
             attachments,
             footnotes,
             insertions,
             deletions,
-        ] {
-            for span in within(table, unit_start + 1, paragraph_unit_end) {
-                boundaries.push(span.start);
+        ];
+        for (table, cursor) in tables.iter().zip(self.cursors.boundaries.iter_mut()) {
+            // Paragraphs come in text order, so each table's cursor only
+            // ever moves forward.
+            while cursor.index < table.len() && table[cursor.index].start <= unit_start {
+                cursor.index += 1;
+            }
+            let mut probe = cursor.index;
+            while probe < table.len() && table[probe].start < paragraph_unit_end {
+                boundaries.push(table[probe].start);
+                probe += 1;
             }
         }
         boundaries.sort_unstable();
         boundaries.dedup();
         paragraph.runs.reserve(boundaries.len() + 1);
         let tracked = !insertions.is_empty() || !deletions.is_empty();
-        let mut position_bytes = byte_start;
+        let bytes = text.as_bytes();
+        if ascii {
+            // Units are bytes; only tabs and footnote marks can be special.
+            let mut piece_start = 0usize;
+            let mut boundary_index = 0usize;
+            let mut position = 0usize;
+            while position < bytes.len() {
+                let next_boundary = boundaries
+                    .get(boundary_index)
+                    .map_or(usize::MAX, |unit| unit - unit_start);
+                let next_special = bytes[position..]
+                    .iter()
+                    .position(|byte| matches!(*byte, b'\t' | 0x0E))
+                    .map_or(usize::MAX, |relative| position + relative);
+                let next = next_boundary.min(next_special);
+                if next >= bytes.len() {
+                    break;
+                }
+                if piece_start < next {
+                    self.push_text_run(
+                        &mut paragraph,
+                        byte_start + piece_start..byte_start + next,
+                        unit_start + piece_start,
+                        character_styles,
+                        smart_fields,
+                    );
+                    if tracked {
+                        self.mark_revision(
+                            &mut paragraph,
+                            unit_start + piece_start,
+                            insertions,
+                            deletions,
+                        );
+                    }
+                }
+                if next == next_special {
+                    let ch = char::from(bytes[next]);
+                    let run = self.special_run(
+                        ch,
+                        unit_start + next,
+                        character_styles,
+                        smart_fields,
+                        attachments,
+                        footnotes,
+                    );
+                    if let Some(run) = run {
+                        paragraph.runs.push(run);
+                        if tracked {
+                            self.mark_revision(
+                                &mut paragraph,
+                                unit_start + next,
+                                insertions,
+                                deletions,
+                            );
+                        }
+                    }
+                    piece_start = next + 1;
+                } else {
+                    piece_start = next;
+                }
+                position = piece_start.max(next);
+                while boundary_index < boundaries.len()
+                    && boundaries[boundary_index] - unit_start <= next
+                {
+                    boundary_index += 1;
+                }
+            }
+            if piece_start < bytes.len() {
+                self.push_text_run(
+                    &mut paragraph,
+                    byte_start + piece_start..byte_start + bytes.len(),
+                    unit_start + piece_start,
+                    character_styles,
+                    smart_fields,
+                );
+                if tracked {
+                    self.mark_revision(
+                        &mut paragraph,
+                        unit_start + piece_start,
+                        insertions,
+                        deletions,
+                    );
+                }
+            }
+            self.boundary_scratch = boundaries;
+            return paragraph;
+        }
         let mut position_units = unit_start;
         let mut piece_start = 0usize;
         let mut piece_start_units = unit_start;
@@ -1109,7 +1279,7 @@ impl Reader<'_> {
             if (at_boundary || special) && piece_start < index {
                 self.push_text_run(
                     &mut paragraph,
-                    &text[piece_start..index],
+                    byte_start + piece_start..byte_start + index,
                     piece_start_units,
                     character_styles,
                     smart_fields,
@@ -1142,13 +1312,11 @@ impl Reader<'_> {
                 piece_start_units = unit + ch.len_utf16();
             }
             position_units += ch.len_utf16();
-            position_bytes += ch.len_utf8();
-            let _ = offsets;
         }
         if piece_start < text.len() {
             self.push_text_run(
                 &mut paragraph,
-                &text[piece_start..],
+                byte_start + piece_start..byte_start + text.len(),
                 piece_start_units,
                 character_styles,
                 smart_fields,
@@ -1157,7 +1325,6 @@ impl Reader<'_> {
                 self.mark_revision(&mut paragraph, piece_start_units, insertions, deletions);
             }
         }
-        let _ = position_bytes;
         self.boundary_scratch = boundaries;
         paragraph
     }
@@ -1172,9 +1339,17 @@ impl Reader<'_> {
         insertions: &[Span],
         deletions: &[Span],
     ) {
-        let change = covering(deletions, unit)
+        let change = self
+            .cursors
+            .deletion
+            .at(deletions, unit)
             .map(|object| (RevisionKind::Deletion, object))
-            .or_else(|| covering(insertions, unit).map(|object| (RevisionKind::Insertion, object)));
+            .or_else(|| {
+                self.cursors
+                    .insertion
+                    .at(insertions, unit)
+                    .map(|object| (RevisionKind::Insertion, object))
+            });
         let Some((kind, object)) = change else {
             return;
         };
@@ -1206,17 +1381,22 @@ impl Reader<'_> {
         }
     }
 
+    /// A text run for `bytes` (a byte range of the storage text), whose
+    /// text is already in the arena at `storage_base`.
     fn push_text_run(
         &mut self,
         paragraph: &mut Paragraph,
-        text: &str,
+        bytes: std::ops::Range<usize>,
         unit: usize,
         character_styles: &[Span],
         smart_fields: &[Span],
     ) {
         let (style, properties) = self.run_formatting(unit, character_styles);
         let link = self.link_id(unit, smart_fields);
-        let span = self.document.push_text(text);
+        let span = crate::document::Span {
+            start: self.storage_base + bytes.start as u32,
+            end: self.storage_base + bytes.end as u32,
+        };
         paragraph.runs.push(Run {
             style,
             properties,
@@ -1264,8 +1444,8 @@ impl Reader<'_> {
         Some(self.document.intern_link(&target))
     }
 
-    fn link_at(&self, unit: usize, smart_fields: &[Span]) -> Option<String> {
-        let object = covering(smart_fields, unit)?;
+    fn link_at(&mut self, unit: usize, smart_fields: &[Span]) -> Option<String> {
+        let object = self.cursors.smart_field.at(smart_fields, unit)?;
         let message = self.graph.object(object)?;
         let view = View::of(message);
         view.string("url_ref").map(str::to_string)
@@ -1793,7 +1973,7 @@ impl Reader<'_> {
         unit: usize,
         character_styles: &[Span],
     ) -> (Option<StyleId>, Option<Id>) {
-        match covering(character_styles, unit) {
+        match self.cursors.character_style.at(character_styles, unit) {
             Some(object) => self.resolve_character_style(object),
             None => (None, None),
         }
@@ -2282,37 +2462,5 @@ fn number_format(number_type: i64) -> NumberFormat {
     NumberFormat {
         kind,
         pattern: pattern.to_string(),
-    }
-}
-
-/// Maps byte offsets of a string to UTF-16 unit offsets, which is how the
-/// attribute tables count characters. Offsets are asked for in increasing
-/// order, so a cursor over the text does it in one pass without a table.
-struct Utf16Offsets<'t> {
-    text: &'t str,
-    byte: usize,
-    units: usize,
-}
-
-impl<'t> Utf16Offsets<'t> {
-    fn new(text: &'t str) -> Utf16Offsets<'t> {
-        Utf16Offsets {
-            text,
-            byte: 0,
-            units: 0,
-        }
-    }
-
-    fn units_at(&mut self, byte: usize) -> usize {
-        if byte < self.byte {
-            self.byte = 0;
-            self.units = 0;
-        }
-        let end = byte.min(self.text.len());
-        for ch in self.text[self.byte..end].chars() {
-            self.units += ch.len_utf16();
-        }
-        self.byte = end;
-        self.units
     }
 }
