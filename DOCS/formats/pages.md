@@ -20,7 +20,7 @@ the reader; `STATE.md` records what is being built now.
   boxes and images, headers and footers (first, even, odd), page setup,
   columns, tables of contents, page-number fields, tracked changes, and
   equations (as MathML). The Word writer (`src/io/docx/writer.rs`) renders
-  it. On 22 of the 27 fixtures the output matches Apple's own Word export
+  it. On 23 of the 28 fixtures the output matches Apple's own Word export
   paragraph for paragraph in text and style names (CI,
   `tests/pages_docx.rs`); the other five differ where Apple's export is the
   lossy one (drop caps split, ruby base text dropped, equations flattened
@@ -43,7 +43,7 @@ at 8 MB peak memory. A real two-page resume converts to Word in 5 ms at
 
 ## Fixtures
 
-`tests/fixtures/pages/`: twenty-seven documents, one per feature area, saved
+`tests/fixtures/pages/`: twenty-eight documents, one per feature area, saved
 by Pages 12 on macOS from generated Word sources (plus one authored through
 the scripting dictionary), each with Apple's own Word, PDF, and text
 exports as references. The fixture README lists what each contains and what

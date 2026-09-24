@@ -123,6 +123,7 @@ const TEXT_FIXTURES: &[&str] = &[
     "custom-styles",
     "everything",
     "fields",
+    "fonts",
     "headers",
     "images",
     "layout",
