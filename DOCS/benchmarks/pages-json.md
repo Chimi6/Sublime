@@ -1,6 +1,6 @@
 # Pages <-> pages-json
 
-**Latest** (2026-09-24: pages -> pages-json runs at 30 MB/s of package bytes (90 MB/s of decompressed streams) on the dense shape and 40 (174) on prose, at 45 and 27 MB peak, inside the floor line; pages-json -> pages runs at 328 MB/s of JSON, 18 percent below the forward direction, so its line FAILs)
+**Latest** (2026-09-24: pages -> pages-json runs at 31 MB/s of package bytes (84 MB/s of decompressed streams) on the dense shape and 38 (172) on prose, at 44 and 27 MB peak; pages-json -> pages at 329 MB/s of JSON, 46 MB peak. Both directions FAIL their line of four times the floor: forward is 5.2x and 4.1x an unzip-and-decompress floor, reverse 4.2x and 4.5x a compress-and-zip floor)
 
 ## Purpose
 
@@ -17,24 +17,24 @@ own floor and its other direction.
 
 | Target | Pass line |
 |---|---|
-| `pages -> pages-json` throughput | within four times the decompression floor: `bench pages-json floor`, which opens the ZIP and Snappy-decompresses every stream and does nothing else. Ours decodes every object into trees and writes JSON five times the stream size on top, so a factor of four is the line to hold, not a peer to beat |
-| `pages-json -> pages` throughput (MB/s of the JSON) | >= `pages -> pages-json` measured over the same JSON bytes: rebuilding the package from JSON (tokenize, encode, Snappy-compress, ZIP) must not cost more than producing it |
+| `pages -> pages-json` throughput | within four times the decompression floor: `bench pages-json floor`, which opens the ZIP and Snappy-decompresses every stream and does nothing else. Ours decodes every object into trees and writes JSON four to five times the stream size on top; four decompressions' worth of time is the line to hold, not a peer to beat |
+| `pages-json -> pages` time | within four times the compression floor: `bench pages-json floor-back`, which Snappy-compresses the decompressed streams in 64 KiB chunks and ZIPs them, no JSON. Ours tokenizes the JSON and re-encodes every object on top. Shown in seconds, since the floor has no JSON input to rate by |
 | Peak resident memory, either direction | <= 64 MB on these inputs |
 
 ## How to read the table
 
-Both directions are ours; nothing in the table is another tool. The
-forward rows (`pages -> pages-json`) are judged against the floor, a
-harness mode that only unzips and Snappy-decompresses the package; ours
-must stay within four times it. The reverse rows (`pages-json -> pages`)
-are judged against our own forward direction over the same bytes, so a
-FAIL there means "rebuilding the package is slower than dumping it", not
-"slower than a competitor". Throughput is always MB/s of the input file,
-so the forward rows count package bytes (compressed, 2.5 MB) and the
-reverse rows count JSON bytes (33.7 MB); the two are not comparable to
-each other, only to their own lines. The `[extra]` row restates the
-forward rate per decompressed byte, which is the number to hold against
-the text-format pairs.
+Every number in the table is ours or a floor; there is no other tool. A
+floor is the least work the direction could possibly do (`bench/src/pairs/pages_json.rs`):
+forward, unzip and Snappy-decompress; reverse, Snappy-compress and ZIP.
+Each floor is run ten times inside one process and divided, because one
+pass takes 20 ms and process noise swings a single run by half (it did:
+an earlier block passed on noise). The line in both directions is the
+same: ours within four times its floor. Throughput is MB/s of the input
+file, so forward rows count package bytes (2.5 MB, compressed) and
+reverse rows count JSON bytes (33.7 MB); they are not comparable to each
+other, only to their own lines, which is why the reverse row also shows
+seconds. The `[extra]` row restates the forward rate per decompressed
+byte, the number to hold against the text-format pairs.
 
 ## Method
 
@@ -98,6 +98,29 @@ pairs.
 
 ## Results
 
+### 2026-09-24, both floors repeated in-process
+
+commit: b18aba2
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Same inputs as the blocks below. The floors are now stable numbers (the
+earlier blocks measured them in one 20 ms pass), and with that both
+directions fail the four-times line: forward at 5.2x and 4.1x, reverse at
+4.2x and 4.5x. Memory passes.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> pages-json, styled (2.5 MB): throughput (MB/s of input) | 31.4 | 163.8 floor (unzip + Snappy only); line: ours >= floor / 4 | FAIL |
+| pages -> pages-json, styled: throughput (MB/s of decompressed streams, 7.5 MB) [extra] | 93.2 | 485.4 floor | n/a |
+| pages -> pages-json, styled: peak memory (MB) | 44.7 | 13.4 floor; line: <= 64 | PASS |
+| pages-json -> pages, styled (33.7 MB): throughput (MB/s of input) | 329.2 (0.103 s) | floor (Snappy + ZIP only, no JSON): 0.025 s; line: ours within 4x the floor's time | FAIL |
+| pages-json -> pages, styled: peak memory (MB) | 46.0 | line: <= 64 | PASS |
+| pages -> pages-json, prose (1.5 MB): throughput (MB/s of input) | 37.8 | 154.8 floor (unzip + Snappy only); line: ours >= floor / 4 | FAIL |
+| pages -> pages-json, prose: throughput (MB/s of decompressed streams, 6.6 MB) [extra] | 166.0 | 678.4 floor | n/a |
+| pages -> pages-json, prose: peak memory (MB) | 27.4 | 10.6 floor; line: <= 64 | PASS |
+| pages-json -> pages, prose (16.1 MB): throughput (MB/s of input) | 324.4 (0.050 s) | floor (Snappy + ZIP only, no JSON): 0.011 s; line: ours within 4x the floor's time | FAIL |
+| pages-json -> pages, prose: peak memory (MB) | 31.0 | line: <= 64 | PASS |
+
 ### 2026-09-24, standard rows
 
 commit: c60d037
@@ -146,11 +169,16 @@ compressor is the greedy matcher tuned for ratio.
 
 ## Conclusions
 
-- The decode floor is not the problem: 3x of "unzip and decompress" for
-  full schema-named trees plus JSON is a healthy ratio. The lever that
-  matters is not here but in the document paths, which decode all 570
-  preset objects to use 70 (see `pages-docx.md`).
-- The reverse direction's miss is the compressor. A faster Snappy match
-  mode for the rebuild (skip the 8-byte extension, smaller table) or a
-  streaming JSON tokenizer without the token buffer are the candidates;
-  recorded as a blocker in `STATE.md`.
+- Per decompressed byte the forward direction runs at 84 and 172 MB/s,
+  the class of our markup-dense Markdown parse, and the reverse at 329 MB/s
+  of JSON. Neither is slow in absolute terms; both spend four to five
+  decompressions' worth of time on decoding trees and moving JSON, and the
+  line says that should be under four.
+- Forward: `Tree::decode` and the JSON writer are the cost, in that order
+  (symbolized samples). The lossless path cannot decode lazily, so the
+  levers are decode itself (fewer entry writes per field, the field table
+  lookup) and the JSON writer's per-field work.
+- Reverse: the JSON tokenizer and the Snappy compressor tuned for ratio; a
+  faster match mode for the rebuild is the first thing to try.
+- Both are recorded as blockers in `STATE.md` for 0.6.1 alongside the
+  document paths.

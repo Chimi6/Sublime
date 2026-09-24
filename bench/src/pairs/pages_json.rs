@@ -22,11 +22,66 @@ pub fn run(mode: &str, args: &[String]) -> Result<(), String> {
         ("ours", [input, output]) => run_ours(&PagesToJson, input, output),
         ("ours-back", [input, output]) => run_ours(&JsonToPages, input, output),
         ("floor", [input, output]) => floor(input, output),
+        ("floor-back", [input, output]) => floor_back(input, output),
+        // The floors take 20 ms on the benchmark inputs, where process
+        // spawn and timer noise swing a single run by half; repeating the
+        // work inside one process makes the floor a stable number.
+        ("floor", [input, output, repeat]) => repeated(repeat, || floor(input, output)),
+        ("floor-back", [input, output, repeat]) => repeated(repeat, || floor_back(input, output)),
         _ => Err(
-            "pages-json modes: gen <seed.pages> <units> <out.pages> | ours <in> <out> | ours-back <in> <out> | floor <in> <out>"
+            "pages-json modes: gen <seed.pages> <units> <out.pages> | ours <in> <out> | ours-back <in> <out> | floor <in> <out> [repeat] | floor-back <in> <out> [repeat]"
                 .to_string(),
         ),
     }
+}
+
+fn repeated(repeat: &str, mut work: impl FnMut() -> Result<(), String>) -> Result<(), String> {
+    let count = parse_rows(repeat)?.max(1);
+    for _ in 0..count {
+        work()?;
+    }
+    Ok(())
+}
+
+/// The least a writer of the package could do: take the decompressed
+/// streams (obtained by unzipping and decompressing the original) and
+/// Snappy-compress them in 64 KiB chunks into a new ZIP. No JSON, no
+/// objects. Ours parses 33 MB of JSON and re-encodes every object on top,
+/// so this is the floor of the reverse direction, not a peer.
+fn floor_back(input: &str, output: &str) -> Result<(), String> {
+    use sublime::io::iwa::decompress_stream;
+    use sublime::io::snappy::compress_block;
+    use sublime::io::zip::{ZipArchive, ZipWriter};
+    let bytes = std::fs::read(input).map_err(|error| error.to_string())?;
+    let archive = ZipArchive::parse(&bytes).map_err(|error| error.to_string())?;
+    let file = File::create(output).map_err(|error| error.to_string())?;
+    let mut zip = ZipWriter::new(BufWriter::new(file));
+    let mut compressed = Vec::new();
+    let mut chunked = Vec::new();
+    for entry in archive.entries() {
+        compressed.clear();
+        archive
+            .read(entry, &mut compressed)
+            .map_err(|error| error.to_string())?;
+        if entry.name.ends_with(".iwa") {
+            let decompressed = decompress_stream(&compressed).map_err(|error| error.to_string())?;
+            chunked.clear();
+            for chunk in decompressed.chunks(65_536) {
+                let mut block = Vec::with_capacity(chunk.len() + 8);
+                compress_block(chunk, &mut block);
+                chunked.push(0);
+                chunked.extend_from_slice(&(block.len() as u32).to_le_bytes()[..3]);
+                chunked.extend_from_slice(&block);
+            }
+            zip.add(&entry.name, &chunked)
+                .map_err(|error| error.to_string())?;
+        } else {
+            zip.add(&entry.name, &compressed)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    zip.finish().map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 /// The least a reader of the package could do: open the ZIP, Snappy-
