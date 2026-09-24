@@ -9,10 +9,11 @@ use crate::converters::markdown_json_to_markdown::MarkdownJsonToMarkdown;
 use crate::converters::markdown_to_html::MarkdownToHtml;
 use crate::converters::markdown_to_json::MarkdownToJson;
 use crate::converters::markdown_to_text::MarkdownToText;
+use crate::converters::pages_to_docx::PagesToDocx;
 use crate::converters::pages_to_json::PagesToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 8] = [
+static CONVERTERS: [&dyn Converter; 9] = [
     &CsvToJson,
     &JsonToCsv,
     &MarkdownToHtml,
@@ -21,6 +22,7 @@ static CONVERTERS: [&dyn Converter; 8] = [
     &MarkdownJsonToMarkdown,
     &PagesToJson,
     &JsonToPages,
+    &PagesToDocx,
 ];
 
 pub fn all_converters() -> &'static [&'static dyn Converter] {
@@ -93,6 +95,7 @@ mod tests {
             ids,
             vec![
                 "csv",
+                "docx",
                 "html",
                 "json",
                 "markdown",
