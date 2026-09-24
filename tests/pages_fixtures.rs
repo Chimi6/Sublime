@@ -230,3 +230,52 @@ fn packages_round_trip_through_write_and_read() {
         }
     }
 }
+
+/// JSON in the middle: package -> JSON -> package must give the same
+/// re-encoded streams and files.
+#[test]
+fn packages_round_trip_through_json() {
+    use sublime::io::pages::json::{read_json, write_json};
+    use sublime::io::pages::package::{Entry, Package, encode_stream};
+    for path in fixtures() {
+        let bytes = std::fs::read(&path).expect("fixture readable");
+        let package =
+            Package::read(&bytes).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let mut json = Vec::new();
+        write_json(&package, &mut json).unwrap();
+        let again = read_json(json.as_slice())
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        assert_eq!(
+            package.entries.len(),
+            again.entries.len(),
+            "{}",
+            path.display()
+        );
+        for (before, after) in package.entries.iter().zip(&again.entries) {
+            match (before, after) {
+                (Entry::File { bytes: left, .. }, Entry::File { bytes: right, .. }) => {
+                    assert_eq!(left, right, "{}: {}", path.display(), before.name());
+                }
+                (Entry::Stream { objects: left, .. }, Entry::Stream { objects: right, .. }) => {
+                    let mut left_bytes = Vec::new();
+                    let mut right_bytes = Vec::new();
+                    encode_stream(before.name(), left, &mut left_bytes).unwrap();
+                    encode_stream(after.name(), right, &mut right_bytes).unwrap();
+                    if left_bytes != right_bytes {
+                        let first = left_bytes
+                            .iter()
+                            .zip(&right_bytes)
+                            .position(|(a, b)| a != b)
+                            .unwrap_or(left_bytes.len().min(right_bytes.len()));
+                        panic!(
+                            "{}: {} differs after JSON at byte {first}",
+                            path.display(),
+                            before.name()
+                        );
+                    }
+                }
+                _ => panic!("{}: {} changed kind", path.display(), before.name()),
+            }
+        }
+    }
+}

@@ -6,10 +6,9 @@
 
 use std::fmt;
 
-use super::schema::MESSAGES;
+use super::schema::SCHEMA;
 use super::{message_schema, type_name};
 use crate::io::iwa::{IwaError, decompress_stream, parse_objects};
-use crate::io::protobuf::schema::find_message;
 use crate::io::protobuf::tree::{self, Fields, Node, TreeError, write_varint};
 use crate::io::snappy::encode_literal_block;
 use crate::io::zip::{ZipArchive, ZipError, ZipWriter};
@@ -164,18 +163,18 @@ pub fn decode_stream(name: &str, compressed: &[u8]) -> Result<Vec<Object>, Packa
         stream: name.to_string(),
         error,
     })?;
-    let info_schema = find_message(MESSAGES, "TSP.ArchiveInfo");
+    let info_schema = SCHEMA.message("TSP.ArchiveInfo");
     let mut objects = Vec::with_capacity(raw_objects.len());
     for raw in raw_objects {
         let info =
-            tree::decode(raw.info, info_schema, MESSAGES).map_err(|error| PackageError::Tree {
+            tree::decode(raw.info, info_schema, &SCHEMA).map_err(|error| PackageError::Tree {
                 stream: name.to_string(),
                 error,
             })?;
         let mut messages = Vec::with_capacity(raw.messages.len());
         for message in &raw.messages {
             let schema = message_schema(message.message_type);
-            let fields = tree::decode(message.payload, schema, MESSAGES).map_err(|error| {
+            let fields = tree::decode(message.payload, schema, &SCHEMA).map_err(|error| {
                 PackageError::Tree {
                     stream: name.to_string(),
                     error,

@@ -4,19 +4,23 @@
 use crate::converter::Converter;
 use crate::converters::csv_to_json::CsvToJson;
 use crate::converters::json_to_csv::JsonToCsv;
+use crate::converters::json_to_pages::JsonToPages;
 use crate::converters::markdown_json_to_markdown::MarkdownJsonToMarkdown;
 use crate::converters::markdown_to_html::MarkdownToHtml;
 use crate::converters::markdown_to_json::MarkdownToJson;
 use crate::converters::markdown_to_text::MarkdownToText;
+use crate::converters::pages_to_json::PagesToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 6] = [
+static CONVERTERS: [&dyn Converter; 8] = [
     &CsvToJson,
     &JsonToCsv,
     &MarkdownToHtml,
     &MarkdownToText,
     &MarkdownToJson,
     &MarkdownJsonToMarkdown,
+    &PagesToJson,
+    &JsonToPages,
 ];
 
 pub fn all_converters() -> &'static [&'static dyn Converter] {
@@ -67,7 +71,7 @@ mod tests {
 
     /// Formats selected only by id (`--to`, `--from`), because no file
     /// extension is theirs alone.
-    const EXTENSIONLESS: [&str; 1] = ["markdown-json"];
+    const EXTENSIONLESS: [&str; 2] = ["markdown-json", "pages-json"];
 
     #[test]
     fn every_format_has_an_extension_unless_listed() {
@@ -87,7 +91,16 @@ mod tests {
         let ids: Vec<&str> = formats.iter().map(|format| format.id).collect();
         assert_eq!(
             ids,
-            vec!["csv", "html", "json", "markdown", "markdown-json", "text"]
+            vec![
+                "csv",
+                "html",
+                "json",
+                "markdown",
+                "markdown-json",
+                "pages",
+                "pages-json",
+                "text"
+            ]
         );
     }
 
