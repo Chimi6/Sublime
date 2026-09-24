@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Pages -> text. Sourced by bench/run.sh. Inputs are the pages-json pair's
-# scaled fixtures. There is no peer implementation; the reference is our
-# own package round trip (pages -> pages-json) on the same input, which
-# decodes every object and writes several times more bytes, so a document
-# path that costs more than it is doing avoidable work.
+# Pages -> text. Sourced by bench/run.sh. Inputs and goals come from the
+# pages-json pair: no other tool reads the modern Pages format, so the
+# reference column holds the goals every Pages pair shares.
 
 # shellcheck source=/dev/null
 source "bench/pairs/pages-json.sh"
@@ -12,13 +10,9 @@ run_pair() {
   pages_inputs
   echo "== running" >&2
   for name in styled prose; do
-    local input="$data/$name.pages" bytes ours reference
+    local input="$data/$name.pages" bytes ours
     bytes="$(wc -c < "$input" | tr -d ' ')"
     ours="$(time_cmd ours "$sublime" -q convert "$input" "$data/$name.txt" --to text)"
-    reference="$(time_cmd reference "$sublime" -q convert "$input" "$data/$name.json" --to pages-json)"
-    local os rs
-    os="$(seconds_of "$ours")"; rs="$(seconds_of "$reference")"
-    row "pages -> text, $name ($(mb "$bytes") MB): throughput (MB/s of input)" "$(mbps "$bytes" "$os")" "$(mbps "$bytes" "$rs") our pages -> pages-json on the same input; line: not slower" "$(pass "$(echo "$os <= $rs" | bc -l)")"
-    row "pages -> text, $name: peak memory (MB)" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$reference")") our pages -> pages-json on the same input; line: not more" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$reference")" | bc -l)")"
+    pages_rows pages text "$name" "$bytes" "$ours"
   done
 }
