@@ -748,6 +748,10 @@ pub fn mathml_text(mathml: &str) -> String {
     let mut text = String::new();
     for event in crate::io::xml::XmlReader::new(mathml) {
         if let crate::io::xml::XmlEvent::Text(piece) = event {
+            // Indentation between elements is not part of the formula.
+            if piece.trim().is_empty() {
+                continue;
+            }
             text.push_str(&piece);
         }
     }

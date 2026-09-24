@@ -30,6 +30,11 @@ against each other: `csv -> json` at 333 MB/s and `pages -> docx` at
   it must compress, not to the input. The label says so:
   `<from> -> <to>, <shape> (<in> MB in + <out> MB out): throughput (MB/s of input plus uncompressed output)`.
   The goal number is the same as for every other path of the format.
+- **Compressed-input paths.** When the input is a compressed package
+  (Word in), the throughput row counts the input's uncompressed bytes,
+  what the reader parses, for the same reason; the rate per file byte is
+  an extra row. The label says so:
+  `<from> -> <to>, <shape> (<in> MB uncompressed): throughput (MB/s of uncompressed input)`.
 - **Peak memory row**, one per direction and shape:
   `<from> -> <to>, <shape>: peak memory (MB)`, the process's maximum
   resident set from GNU `time`.

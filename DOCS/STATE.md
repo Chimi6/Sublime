@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-09-24: Word input (phase 1 of the document-category plan under Next): the Word reader fills the document model and every projection out of it now takes `.docx`. Map in `DOCS/formats/docx.md`, oracles in `tests/docx_document.rs`, pairs `docx-markdown`, `docx-html`, `docx-text`.
 - 2026-09-24: Sublime in the browser. `wasm/` is a second crate that exports the converter as a WebAssembly module with a small JavaScript loader (`wasm/README.md`); CI builds and smoke-tests it and every release publishes `sublime-<version>-wasm.zip`. The module is a first-class export: every library change ships in it, and its size is budgeted in `wasm/size-budget` the way the binary's is.
 - 2026-09-24: Apple Pages, the flagship. The package reader, the lossless `pages-json` form, the document reader into the document model (`src/document`), the Word writer, and the Markdown event projection are in: `pages -> docx` matches Apple's own export paragraph for paragraph on 23 of 28 fixtures, and Pages reaches Markdown, HTML, text, and Markdown JSON through the model. Released as 0.6.0, with the performance work as 0.6.1 and the WebAssembly module as 0.7.0. Map in `DOCS/formats/pages.md`, fixtures in `tests/fixtures/pages/`.
 - 2026-09-23: Format roadmap in `DOCS/ROADMAP.md`: every tentative format by category with a status and a priority tier (S to D, mixing value, difficulty, and novelty), plus the keystones (inflate, XML, ZIP, PNG, protobuf) that unlock whole categories.
@@ -14,7 +15,7 @@ describes.
 
 Close the document category's one-way streets before any other category, one phase per release, each with its benchmark pairs:
 
-- 2026-09-24, phase 1 (0.8.0): Word reader into the document model (`src/io/docx/reader.rs`: styles, numbering, sections, headers and footers, footnotes, tables, images, fields, revisions, links, text boxes), giving `docx -> markdown`, `html`, `text`, `markdown-json`. Oracles: the 28 Apple Word exports against their text exports, and `pages -> docx -> markdown` equal to `pages -> markdown` on every fixture. Pairs: `docx-markdown`, `docx-html`, `docx-text`.
+- 2026-09-24, phase 1 (0.8.0, done): Word reader into the document model (`src/io/docx/reader.rs`: styles, numbering, sections, headers and footers, footnotes, tables, images, fields, revisions, links, text boxes), giving `docx -> markdown`, `html`, `text`, `markdown-json`. Oracles: the 28 Apple Word exports against their text exports, and `pages -> docx -> markdown` equal to `pages -> markdown` on every fixture. Pairs: `docx-markdown`, `docx-html`, `docx-text`.
 - 2026-09-24, phase 2 (0.9.0): events-to-model bridge (`src/document/from_events.rs`) with built-in named styles, giving `markdown -> docx` and `markdown-json -> docx`, and later HTML and text to Word through the same bridge. Oracle: `markdown -> docx -> markdown` on the CommonMark and GFM corpus for the represented subset. Pair: `markdown-docx`.
 - 2026-09-24, phase 3 (0.10.0): HTML reader (`src/io/html/reader.rs`: tokenizer subset, tag-soup tolerant tree builder, whitespace collapsing) emitting Markdown events, giving `html -> markdown`, `text`, `markdown-json`, `docx`. Oracle: `markdown -> html -> markdown` on the corpus plus saved real pages. Pairs: `html-markdown`, `html-text`, `html-docx`.
 - 2026-09-24, phase 4: plain text reader (paragraphs from blank lines, conditional), giving `text -> markdown`, `docx`, `html`. Pair: `text-markdown`. Ships with phase 3 or alone.
@@ -93,6 +94,7 @@ Close the document category's one-way streets before any other category, one pha
 
 ## Done
 
+- 2026-09-24: Word input released as 0.8.0 (document-category phase 1): the Word reader into the document model, `docx -> markdown`, `html`, `text`, `markdown-json`, oracles against Apple's exports and our own writer, three benchmark pairs passing every line.
 - 2026-09-24: WebAssembly module released as 0.7.0: `wasm/` crate, `sublime.js` loader, demo page, node smoke test, CI job with a size budget, and `sublime-<version>-wasm.zip` in every release.
 - 2026-09-24: Pages performance released as 0.6.1: slim document model, streamed Word body, reachable decode, typed attribute tables, interned Word styles, reader cursors; benchmark pairs and documents for every Pages path with the compressed-output standard.
 - 2026-09-24: Pages document paths released as 0.6.0: `pages -> docx` matching Apple's export on 23 of 28 fixtures, and `pages -> markdown`, `html`, `text`, `markdown-json` through the document model.

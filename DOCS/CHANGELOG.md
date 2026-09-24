@@ -6,9 +6,22 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-24
+
+Word input. A `.docx` reads into the document model, so Word reaches
+Markdown, HTML, text, and Markdown JSON; proven against Apple's own Word
+exports and benchmarked at 128 to 164 MB/s of uncompressed input on the
+three pairs, every line passing.
+
 ### Added
 
+- Word input: `src/io/docx/reader.rs` reads a `.docx` into the document model (styles with `basedOn` chains and document defaults, numbering with style links and start overrides, sections with headers and footers, footnotes and endnotes, tables with merged cells, inline and anchored pictures, text boxes, hyperlinks as elements and as fields, page fields, tracked changes, Office Math as text), giving `docx -> markdown`, `html`, `text`, and `markdown-json`. Proven against Apple's Word exports of the Pages fixtures (same text as the Pages documents on 22 of 28) and by reading our own Word output back to the same Markdown (`tests/docx_document.rs`). Map in `DOCS/formats/docx.md`. Size budget 1.43 -> 1.53 MB for the reader (binary 1,515,672 bytes); wasm budget 700,000 -> 750,000 (module 728,388).
+- Benchmark pairs `docx-markdown`, `docx-html`, `docx-text` (the last against `docx-rs`), and the standard's rule for compressed inputs: throughput over the uncompressed bytes the reader parses.
 - `DOCS/FORMATS.md` ends with a generated Mermaid map of the converters (`sublime paths --markdown`); the README gains an Install section and a binary-or-browser table.
+
+### Changed
+
+- The XML reader hands whitespace-only text nodes through (a Word run of one space is text); the MathML text helper skips them itself. The Markdown projection drops line breaks at the very end of a paragraph.
 
 ## [0.7.0] - 2026-09-24
 

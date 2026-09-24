@@ -1,5 +1,6 @@
 //! A pull reader over well-formed XML: start and end tags with attributes,
-//! text with entities decoded, and nothing else (comments, processing
+//! text with entities decoded (whitespace-only text included: a Word run
+//! of one space is text), and nothing else (comments, processing
 //! instructions, and the prolog are skipped; CDATA is text). Enough for
 //! the Office and OpenDocument formats, which are machine-written.
 
@@ -86,9 +87,6 @@ impl<'a> Iterator for XmlReader<'a> {
             let end = rest.find('<').unwrap_or(rest.len());
             let text = &rest[..end];
             self.position += end;
-            if text.chars().all(char::is_whitespace) {
-                continue;
-            }
             return Some(XmlEvent::Text(decode_entities(text)));
         }
     }

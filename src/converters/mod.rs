@@ -5,6 +5,9 @@ pub mod errors;
 pub mod input;
 
 pub mod csv_to_json;
+pub mod docx_to_html;
+pub mod docx_to_markdown;
+pub mod docx_to_text;
 pub mod json_to_csv;
 pub mod json_to_pages;
 pub mod markdown_json_to_markdown;
