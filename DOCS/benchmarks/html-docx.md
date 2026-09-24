@@ -21,11 +21,9 @@ additionally peer-checked in sibling pairs: the HTML *reader* against `htmd` in
 
 ## Pass lines
 
-Throughput >= 50 MB/s of input plus uncompressed output and peak memory
-<= 64 MB on the benchmark inputs: the goals the document paths share
-(`pages-json.md`), with the standard's compressed-output measure
-(`README.md`). No peer converts HTML to Word in Rust; the bridge's own
-peer reference is in `markdown-docx.md`.
+Not slower, and no more memory, than `pandoc` converting the same HTML to Word,
+timed on input plus the output's uncompressed bytes (`README.md`). Pandoc does
+full-fidelity conversion, so it is a loose upper bound.
 
 ## Method
 

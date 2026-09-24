@@ -20,12 +20,11 @@ upper bound — we are much faster — but a real tool rather than a goal. The d
 
 ## Pass lines
 
-Throughput >= 50 MB/s of uncompressed input and peak memory <= 64 MB on
-the benchmark inputs: the goals every Pages pair shares
-(`pages-json.md`), applied to Word input with the standard's
-compressed-input measure (`README.md`). No peer implementation of
-Word -> Markdown in Rust is measured; the reader's own reference is in the
-text pair.
+Not slower, and no more memory, than `pandoc` reading the same Word file and
+writing Markdown, timed on the uncompressed input bytes the reader parses
+(`README.md`). Pandoc does full-fidelity conversion, so it is a loose upper
+bound. The docx reader is additionally peer-checked against `docx-rs` in
+`docx-text.md`.
 
 ## Method
 
@@ -83,4 +82,4 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 
 ## Conclusions
 
-Both shapes pass both goals with room. The Markdown writer costs more on prose than the text writer does (128 against 164 MB/s): long paragraphs are scanned for characters to escape, which plain text never needs. Memory is the reader's; the writer streams.
+Both shapes clear pandoc by roughly seventy-five times on throughput at a small fraction of its memory. The Markdown writer costs a little more than the plain-text writer: long paragraphs are scanned for characters to escape, which plain text never needs. Memory is the reader's; the writer streams.

@@ -21,10 +21,9 @@ not the gate. The HTML *reader* is additionally peer-checked against `htmd` in
 
 ## Pass lines
 
-Throughput >= 50 MB/s of input and peak memory <= 64 MB on the benchmark
-inputs: the goals the document paths share (`pages-json.md`). No peer
-converts HTML to text in Rust without a browser engine; the reader's own
-peer reference is in `html-markdown.md`.
+Not slower, and no more memory, than `html2text` on the same input — the tight
+peer and the pass gate. `pandoc` is recorded alongside as a real-world tool for
+context but does not gate; it is far heavier. Throughput is MB/s of input.
 
 ## Method
 
@@ -67,5 +66,6 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 
 ## Conclusions
 
-Four to seven times the goal on throughput and a quarter to a half of
-the memory line. The text writer costs almost nothing over the reader.
+About nine times html2text's throughput at a few percent of its memory, and
+hundreds of times pandoc's. The text writer costs almost nothing over the
+reader.
