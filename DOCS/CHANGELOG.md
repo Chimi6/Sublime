@@ -6,6 +6,12 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-24
+
+### Changed
+
+- Deflate's Huffman builder sorts by key, which the current clippy requires; no behavior change.
+
 ## [0.5.0] - 2026-09-23
 
 ### Added
