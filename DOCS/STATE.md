@@ -27,8 +27,8 @@ describes.
 
 ## Blockers
 
-- 2026-09-24: The Pages document paths fail their benchmark pass lines (`DOCS/benchmarks/pages-docx.md`, `pages-markdown.md`, `pages-html.md`, `pages-text.md`): throughput a third to a half of the package round trip on the same input, peak memory 2.3x to 5.2x. Causes measured: a 224-byte run struct with cloned font and language strings (48 MB of model for 170,000 runs), the Word body held whole before Deflate (30 MB), and the package decoding 570 objects to use 70. Fix for 0.6.1: intern strings in the style table and slim the run, stream the Word body through the compressor, decode objects on lookup.
-- 2026-09-24: `pages-json -> pages` misses its line by 21 percent (`DOCS/benchmarks/pages-json.md`): the Snappy compressor tuned for ratio and the JSON tokenizer. Candidate: a faster match mode for the rebuild.
+- 2026-09-24: The Pages document paths fail the shared Pages goals of 50 MB/s of input and 64 MB peak (`DOCS/benchmarks/pages-docx.md`, `pages-markdown.md`, `pages-html.md`, `pages-text.md`): 10 to 19 MB/s, and 64 to 232 MB peak. Causes measured: a 224-byte run struct with cloned font and language strings (48 MB of model for 170,000 runs), the Word body held whole before Deflate (30 MB), and the package decoding 570 objects to use 70. Fix for 0.6.1: intern strings in the style table and slim the run, stream the Word body through the compressor, decode objects on lookup.
+- 2026-09-24: `pages -> pages-json` misses the 50 MB/s goal at 32 and 38 MB/s of package bytes (`DOCS/benchmarks/pages-json.md`); the reverse direction passes at 330 MB/s. Levers: `Tree::decode` (entry writes per field, field table lookup) and the JSON writer's per-field work.
 
 ## Tech Debt
 
