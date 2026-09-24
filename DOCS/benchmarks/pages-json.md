@@ -135,12 +135,19 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 
 ## Conclusions
 
-- The reverse direction passes with a wide margin: 330 MB/s of JSON is the
-  class of our JSON tokenizer everywhere else.
-- The forward direction misses the goal by a third on both shapes. Per
-  decompressed byte it runs at 84 to 172 MB/s (the package is 3x
-  compressed), so the decode itself is in the class of the markup-dense
-  Markdown parse; the goal asks for more because every document path pays
-  this cost first. The levers, from symbolized samples: `Tree::decode`
-  (entry writes per field, field table lookup) and the JSON writer's
-  per-field work. Recorded as a blocker in `STATE.md`.
+- Failing rows: the forward direction's throughput on both shapes (28 and
+  40 MB/s of package bytes against 50). Memory passes everywhere and the
+  reverse direction passes with a wide margin (330 MB/s of JSON, the class
+  of our JSON tokenizer everywhere else).
+- Per decompressed byte the forward direction runs at 84 to 172 MB/s (the
+  package is 3x compressed), the class of the markup-dense Markdown parse;
+  the goal asks for more because every document path pays this decode
+  first.
+- Levers, recorded under Spikes in `STATE.md`: the typed decode of the
+  attribute tables serves this path too, since a typed table can be
+  written as JSON directly (the same key-named entries the tree produces
+  today) without ever building the tree entries; behind it, `Tree::decode`
+  itself (one entry write per field, the field-slot lookup by number) and
+  the JSON writer's per-field work. With the typed table the forward
+  direction projects to about 40 MB/s dense and past the goal on prose;
+  the last stretch on the dense shape is the tree decode of the rest.
