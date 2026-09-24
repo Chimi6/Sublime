@@ -392,7 +392,7 @@ impl Reader<'_> {
             let (style, properties, run) = self.resolve_paragraph_style(style_object);
             paragraph.style = style;
             paragraph.properties = properties;
-            let _ = run;
+            paragraph.run_properties = run;
         }
         // List membership: a list style other than "None" plus the level.
         if let Some(list_object) = covering(list_styles, unit_start)
@@ -774,7 +774,7 @@ fn paragraph_properties(view: View<'_>) -> ParagraphProperties {
             1 => Some(Alignment::Right),
             2 => Some(Alignment::Center),
             3 => Some(Alignment::Justify),
-            _ => None,
+            _ => None, // 4 is "natural": the language's default
         }),
         first_line_indent: view.float("first_line_indent"),
         left_indent: view.float("left_indent"),
