@@ -6,6 +6,8 @@
 //!
 //! Units: points for lengths and font sizes, sRGB bytes for colors.
 
+pub mod markdown;
+
 /// Index of a style in its table.
 pub type StyleId = usize;
 /// Index of a footnote in `Document::footnotes`.
@@ -204,6 +206,8 @@ pub struct ListItem {
     pub level: u8,
     /// This item starts a new list (numbering restarts).
     pub starts_list: bool,
+    /// The number the list starts at when this item starts it.
+    pub start: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

@@ -78,7 +78,9 @@ pub struct MarkdownWriter<'o> {
     heading: Option<(u8, String)>,
     in_heading: bool,
     /// Destination and title of each open link or image, innermost last.
-    links: Vec<(String, String)>,
+    /// Open links and images: destination, title, and where their text
+    /// starts in the output.
+    links: Vec<(String, String, usize)>,
     /// Delimiter character of each open emphasis or strong run, innermost
     /// last, and whether the run sits inside a word. A run opened right
     /// after another uses the other character, so `*_a_*` does not come
@@ -400,14 +402,16 @@ impl<'o> MarkdownWriter<'o> {
             Tag::Link { destination, title } => {
                 self.begin_content();
                 self.out.push('[');
+                let text_start = self.out.len();
                 self.links
-                    .push((destination.into_owned(), title.into_owned()));
+                    .push((destination.into_owned(), title.into_owned(), text_start));
             }
             Tag::Image { destination, title } => {
                 self.begin_content();
                 self.out.push_str("![");
+                let text_start = self.out.len();
                 self.links
-                    .push((destination.into_owned(), title.into_owned()));
+                    .push((destination.into_owned(), title.into_owned(), text_start));
             }
         }
     }
@@ -444,7 +448,8 @@ impl<'o> MarkdownWriter<'o> {
             TagEnd::Emphasis => self.close_run(1),
             TagEnd::Strong => self.close_run(2),
             TagEnd::Strikethrough => self.out.push_str("~~"),
-            TagEnd::Link | TagEnd::Image => self.end_link(),
+            TagEnd::Link => self.end_link(false),
+            TagEnd::Image => self.end_link(true),
         }
     }
 
@@ -517,11 +522,22 @@ impl<'o> MarkdownWriter<'o> {
     /// Writes `](destination "title")`. A destination with spaces, angle
     /// brackets, or parentheses goes in angle brackets, where only `<`,
     /// `>`, and `\` need escaping.
-    fn end_link(&mut self) {
-        let (destination, title) = match self.links.pop() {
+    fn end_link(&mut self, image: bool) {
+        let (destination, title, text_start) = match self.links.pop() {
             Some(link) => link,
             None => return,
         };
+        // A link whose text is its own address is an autolink.
+        if !image
+            && title.is_empty()
+            && let Some(address) = autolink(&self.out[text_start..], &destination)
+        {
+            self.out.truncate(text_start - 1);
+            self.out.push('<');
+            self.out.push_str(&address);
+            self.out.push('>');
+            return;
+        }
         self.out.push_str("](");
         let needs_brackets = destination.is_empty()
             || destination
@@ -805,6 +821,45 @@ impl<'a> EventSink<'a> for MarkdownWriter<'_> {
         }
         MarkdownWriter::event(self, event);
     }
+}
+
+/// The autolink form of a link, when its written text (escapes removed)
+/// is the destination itself, an absolute URI, or the destination less a
+/// `mailto:` scheme, an email address.
+fn autolink(written: &str, destination: &str) -> Option<String> {
+    let plain: String = written.chars().filter(|ch| *ch != '\\').collect();
+    let unsafe_char = |text: &str| {
+        text.chars()
+            .any(|ch| ch.is_whitespace() || matches!(ch, '<' | '>' | '\\'))
+    };
+    if unsafe_char(destination) || plain.is_empty() {
+        return None;
+    }
+    if plain == destination && has_scheme(destination) {
+        return Some(destination.to_string());
+    }
+    let email = destination.strip_prefix("mailto:")?;
+    if email == plain
+        && email
+            .split_once('@')
+            .is_some_and(|(user, host)| !user.is_empty() && host.contains('.'))
+    {
+        return Some(plain);
+    }
+    None
+}
+
+/// An absolute URI scheme, as CommonMark autolinks require: a letter, then
+/// up to 31 letters, digits, `+`, `.`, or `-`, then a colon.
+fn has_scheme(uri: &str) -> bool {
+    let Some((scheme, _)) = uri.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    let first_is_letter = chars.next().is_some_and(|ch| ch.is_ascii_alphabetic());
+    first_is_letter
+        && (2..=32).contains(&scheme.len())
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '.' | '-'))
 }
 
 #[cfg(test)]
