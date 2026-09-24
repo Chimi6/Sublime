@@ -24,7 +24,8 @@ what the reader and writer handle, tied to the tests that prove it.
   bridge (compared as HTML without what Word has no form for: paragraph
   tags, link titles, code languages, soft breaks), and a document with
   every construct survives the whole trip through a Word file.
-- HTML and plain text into Word: next, through the same bridge.
+- `html -> docx` and `text -> docx`: shipped (0.10.0), through the same
+  bridge from the HTML and text readers (`html.md`).
 
 Oracles (`tests/docx_document.rs`): Apple's own Word exports of the 28
 Pages fixtures (`tests/fixtures/pages/reference/*.docx`) read to the same

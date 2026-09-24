@@ -35,6 +35,9 @@ struct Open {
     compressed_size: u32,
 }
 
+/// Entries above this size are compressed in parts of this size.
+const LARGE_ENTRY: usize = 1024 * 1024;
+
 pub struct ZipWriter<W: Write> {
     sink: W,
     position: u32,
@@ -155,7 +158,16 @@ impl<W: Write> ZipWriter<W> {
     }
 
     /// Adds one entry, deflated when that is smaller and stored otherwise.
+    /// A large entry goes through the part writer, whose compressor's
+    /// tables are sized by the part, not the whole.
     pub fn add_deflated(&mut self, name: &str, data: &[u8]) -> io::Result<()> {
+        if data.len() > LARGE_ENTRY {
+            self.begin_deflated(name)?;
+            for part in data.chunks(LARGE_ENTRY) {
+                self.write_part(part, Level::Default)?;
+            }
+            return self.end_deflated();
+        }
         let mut compressed = Vec::with_capacity(data.len() / 2);
         deflate(data, &mut compressed);
         if compressed.len() < data.len() {

@@ -1,7 +1,6 @@
-//! Markdown -> Word. Parses with `io::markdown`, builds the document model
-//! through the events bridge, and writes it with the Word writer. Markdown
-//! allows a link to be defined after its use, so the whole input is read
-//! before parsing.
+//! Text -> Docx. Reads plain text into the Markdown event stream (a
+//! paragraph per run of lines) and builds the document model through the
+//! events bridge, which the Word writer renders.
 
 use std::io::Write;
 
@@ -12,20 +11,20 @@ use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
 use crate::io::docx::DocxStream;
-use crate::io::markdown::{Options, parse_into};
+use crate::io::text::reader::parse_into;
 
-const NAME: &str = "markdown-to-docx";
-const FIDELITY_NOTE: &str = "lossless for headings, paragraphs, lists, quotes, code, tables, links, footnotes, and images given as data URIs; raw HTML is dropped, other images become links, and loose lists come out tight";
+const NAME: &str = "text-to-docx";
+const FIDELITY_NOTE: &str = "paragraphs are runs of lines separated by blank lines; line breaks inside a paragraph become spaces";
 
-pub struct MarkdownToDocx;
+pub struct TextToDocx;
 
-impl Converter for MarkdownToDocx {
+impl Converter for TextToDocx {
     fn name(&self) -> &'static str {
         NAME
     }
 
     fn from(&self) -> &'static Format {
-        &formats::MARKDOWN
+        &formats::TEXT
     }
 
     fn to(&self) -> &'static Format {
@@ -50,7 +49,7 @@ impl Converter for MarkdownToDocx {
         let mut stream = DocxStream::new(&mut *output)?;
         let mut builder = DocumentBuilder::streaming(&mut stream);
         builder.reserve_text(text.len());
-        parse_into(&text, Options::default(), &mut builder);
+        parse_into(&text, &mut builder);
         let document = builder.finish_streaming()?;
         stream.finish(&document)?;
         output.flush()?;
@@ -64,12 +63,9 @@ mod tests {
 
     #[test]
     fn declares_contract() {
-        assert_eq!(MarkdownToDocx.name(), "markdown-to-docx");
-        assert_eq!(MarkdownToDocx.from().id, "markdown");
-        assert_eq!(MarkdownToDocx.to().id, "docx");
-        assert_eq!(
-            MarkdownToDocx.fidelity(),
-            Fidelity::Conditional(FIDELITY_NOTE)
-        );
+        assert_eq!(TextToDocx.name(), "text-to-docx");
+        assert_eq!(TextToDocx.from().id, "text");
+        assert_eq!(TextToDocx.to().id, "docx");
+        assert_eq!(TextToDocx.fidelity(), Fidelity::Conditional(FIDELITY_NOTE));
     }
 }
