@@ -44,12 +44,16 @@ against each other: `csv -> json` at 333 MB/s and `pages -> docx` at
 - **Units.** MB is 1,048,576 bytes everywhere: sizes, throughput, memory.
   Time is the median of three runs of the whole process. Nothing is
   reported per second of CPU or in-process.
-- **Reference cell.** The named reference's number when a peer crate
-  exists, run in the same session on the same input. When no peer exists,
-  a stated goal (`goal: 50`, `goal: <= 64.0`) that the pair's document
-  defines and justifies, the same goal for every direction and shape of
-  the format, so the rows read alike. Never a number copied from
-  elsewhere, and never one direction of a pair judged against the other.
+- **Reference cell.** The named reference's number, run in the same session
+  on the same input: a peer crate compiled into the bench binary, or an
+  external tool (pandoc, lynx) spawned and timed the same way, labelled with
+  the tool in parentheses. A pair with two references uses two reference
+  columns (`Reference 1`, `Reference 2`); the pass gate is the tighter peer,
+  the other is context. When no tool anywhere does the conversion, a stated
+  goal (`goal: 50`, `goal: <= 64.0`) that the pair's document defines and
+  justifies, the same goal for every direction and shape of the format, so
+  the rows read alike. Never a number copied from elsewhere, and never one
+  direction of a pair judged against the other.
 - **Result cell.** PASS or FAIL against that line; `n/a` for a recorded
   extra row with no line.
 - **Latest** line at the top of every document: the standard rows' current
@@ -65,21 +69,32 @@ against each other: `csv -> json` at 333 MB/s and `pages -> docx` at
 Every pair document has these sections, in this order.
 
 1. **Purpose.** What the pair is and why its performance matters.
-2. **Pass lines.** One row per direction. A pass line is a comparison
-   against a named reference on the same machine in the same session,
-   never an absolute number copied from elsewhere. When no peer exists,
-   the reference is a stated goal, and the document says why that goal.
-3. **Method.** Machine. How inputs are generated and their shape. The exact
+2. **Reference.** What we compare against and why it was chosen, in a
+   sentence or two. A reference is any real, conventional way to do the same
+   job: a Rust crate compiled into the bench binary, or a widely used tool
+   in another language (pandoc, lynx, LibreOffice) run as an external
+   process and timed the same way. A cross-language or general-purpose tool
+   does more work than we do, so it is a loose reference — beating it is
+   expected — but a real number from a tool people actually use beats an
+   invented one. Prefer a real tool wherever one exists in any language; a
+   stated goal is the fallback only when no tool anywhere does the
+   conversion (the Pages format, a near-identity conversion). If a plausible
+   tool exists but is not yet wired in, name it here so the gap is visible
+   rather than silently a goal.
+3. **Pass lines.** One row per direction. A pass line is a comparison
+   against the reference above on the same machine in the same session,
+   never an absolute number copied from elsewhere.
+4. **Method.** Machine. How inputs are generated and their shape. The exact
    commands. How many runs and which statistic is reported. How memory,
    size, and startup are measured. What the reference pipelines are, with
    the file that implements them.
-4. **Threats to validity.** Everything that could make the numbers mislead:
+5. **Threats to validity.** Everything that could make the numbers mislead:
    synthetic data shape, page cache state, CPU power state, a single
    machine, choices made in the reference implementation.
-5. **Results.** Dated blocks, newest first, each with the commit hash and
+6. **Results.** Dated blocks, newest first, each with the commit hash and
    machine line printed by the harness. Never edit an old block; add a new
    one.
-6. **Conclusions.** What the numbers say to do next, and what they do not
+7. **Conclusions.** What the numbers say to do next, and what they do not
    justify claiming.
 
 ## Recording a result

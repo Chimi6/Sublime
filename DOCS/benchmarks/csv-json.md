@@ -9,6 +9,14 @@ the most common tabular conversion people reach for a script to do; JSON to
 CSV is its inverse and the first two-pass converter. This pair is where the
 zero-dependency parsers were first proven against the conventional crates.
 
+## Reference
+
+The `csv` crate reading records into a streaming `serde_json` map serializer
+(CSV to JSON), and `serde_json` into the `csv` writer (JSON to CSV). These are
+the crates a Rust programmer reaches for by default, so the numbers stand
+against the conventional tabular pipeline rather than a strawman. Implemented
+in `bench/src/pairs/csv_json.rs`.
+
 ## Pass lines
 
 | Target | Pass line |

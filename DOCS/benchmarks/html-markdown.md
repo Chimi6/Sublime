@@ -9,6 +9,13 @@ HTML read into the Markdown event stream by the tag-soup reader
 reader itself with the lightest structured writer behind it; the text
 and Word pairs share the reader.
 
+## Reference
+
+`htmd`, an HTML-to-Markdown converter in Rust built on html5ever (a full HTML5
+parser building a DOM). It is the closest peer available: the same job done the
+conventional way, so the comparison is real rather than a goal. Implemented in
+`bench/src/pairs/html_markdown.rs`.
+
 ## Pass lines
 
 Not slower, and no more memory, than `htmd`, an HTML to Markdown

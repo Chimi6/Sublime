@@ -9,6 +9,14 @@ text. It is the cheapest path out of Word, so it measures the reader
 itself: ZIP, XML, styles, and the model build, with the lightest writer
 behind them. The Markdown and HTML pairs add their writers on top.
 
+## Reference
+
+`docx-rs` 0.4, a Rust Word reader: `read_docx`, then the text of every run in
+every body paragraph. It is a real peer for the reader stage that the other
+Word paths share; it does less than we do (no styles resolved, no model), so it
+bounds the cost of a Rust docx reader from below. Implemented in
+`bench/src/pairs/docx_text.rs`.
+
 ## Pass lines
 
 - Throughput >= 50 MB/s of uncompressed input and peak memory <= 64 MB on
