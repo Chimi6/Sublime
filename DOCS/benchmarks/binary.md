@@ -20,6 +20,22 @@ less the spawn floor of `/bin/true`, median of runs from
 
 ## Results
 
+### 2026-09-24, 0.8.0 with the Word reader
+
+commit: 436b708 (the feature commit, before the release bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 1515672 | <= 1530000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 1618560 | recorded | n/a |
+| WebAssembly module (bytes) | 728388 | <= 750000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 301208 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | -0.007 (spawn 0.510, floor 0.517) | < 1 | PASS |
+
+The Word reader added 86 KB to the binary and 47 KB to the module; both
+budgets were raised for it (changelog).
+
 ### 2026-09-24, 0.7.0 with the WebAssembly module
 
 commit: 1084f36 (the commit before the release bump)
@@ -58,3 +74,4 @@ read as "under a millisecond", not as a trend.
 | 0.3.0 | 651,904 | 656,000 | 1,048,576 | | |
 | 0.6.0 | 1,399,664 | 1,499,776 | 1,400,000 | | |
 | 0.7.0 | 1,420,416 | 1,520,256 | 1,430,000 | 681,266 | 700,000 |
+| 0.8.0 | 1,515,672 | 1,618,560 | 1,530,000 | 728,388 | 750,000 |
