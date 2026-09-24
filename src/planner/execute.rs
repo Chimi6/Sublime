@@ -1,14 +1,16 @@
-//! Runs a plan: one hop directly, several hops as a threaded chain.
+//! Runs a plan: one hop directly, several hops as a threaded chain, or,
+//! where there are no threads and no clock (WebAssembly), as a sequence
+//! of in-memory hops.
 
-use std::io::{self, BufWriter, Write};
+use std::io::Write;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-use crate::converter::{ConvertError, ConvertOptions, Converter, Input};
-use crate::event::{CollectingSink, Context, Event};
+use crate::converter::{ConvertError, Converter, Input};
+use crate::event::{Context, Event};
 use crate::planner::Plan;
-use crate::planner::pipe::{PipeReader, PipeWriter, pipe};
-
-const PIPE_CHUNK_SIZE: usize = 64 * 1024;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::planner::chain::run_chain;
 
 pub fn execute(
     plan: &Plan,
@@ -24,10 +26,51 @@ pub fn execute(
     if plan.hops.len() == 1 {
         return run_hop(plan.hops[0], input, output, context);
     }
-    run_chain(plan, input, output, context)
+    #[cfg(target_arch = "wasm32")]
+    {
+        execute_in_memory(plan, input, output, context)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        run_chain(plan, input, output, context)
+    }
 }
 
-fn run_hop(
+/// Runs a chain one hop at a time through in-memory buffers: no threads,
+/// so it works everywhere, at the cost of holding each intermediate whole.
+pub fn execute_in_memory(
+    plan: &Plan,
+    mut input: Input<'_>,
+    output: &mut dyn Write,
+    context: &mut Context<'_>,
+) -> Result<(), ConvertError> {
+    let Some((last, first_hops)) = plan.hops.split_last() else {
+        return Err(ConvertError::Unsupported(
+            "plan has no conversion steps".to_string(),
+        ));
+    };
+    let mut buffer = Vec::new();
+    let mut is_first = true;
+    for converter in first_hops {
+        let mut next = Vec::new();
+        if is_first {
+            run_hop(*converter, Input::Stream(&mut input), &mut next, context)?;
+            is_first = false;
+        } else {
+            let mut source: &[u8] = &buffer;
+            run_hop(*converter, Input::Stream(&mut source), &mut next, context)?;
+        }
+        buffer = next;
+    }
+    if is_first {
+        run_hop(*last, input, output, context)
+    } else {
+        let mut source: &[u8] = &buffer;
+        run_hop(*last, Input::Stream(&mut source), output, context)
+    }
+}
+
+pub(super) fn run_hop(
     converter: &'static dyn Converter,
     input: Input<'_>,
     output: &mut dyn Write,
@@ -36,132 +79,18 @@ fn run_hop(
     context.emit(Event::StepStarted {
         converter: converter.name(),
     });
+    #[cfg(not(target_arch = "wasm32"))]
     let started = Instant::now();
     let result = converter.convert(input, output, context);
+    #[cfg(not(target_arch = "wasm32"))]
     let elapsed = started.elapsed();
+    #[cfg(target_arch = "wasm32")]
+    let elapsed = std::time::Duration::ZERO;
     context.emit(Event::StepFinished {
         converter: converter.name(),
         elapsed,
     });
     result
-}
-
-enum HopSource<'a> {
-    Original(Input<'a>),
-    Pipe(PipeReader),
-}
-
-struct HopOutcome {
-    result: Result<(), ConvertError>,
-    sink: CollectingSink,
-}
-
-fn run_chain(
-    plan: &Plan,
-    input: Input<'_>,
-    output: &mut dyn Write,
-    context: &mut Context<'_>,
-) -> Result<(), ConvertError> {
-    let hop_count = plan.hops.len();
-    let options = context.options.clone();
-
-    let outcomes: Vec<HopOutcome> = std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(hop_count - 1);
-        let mut next_source = HopSource::Original(input);
-        for hop_index in 0..hop_count - 1 {
-            let converter = plan.hops[hop_index];
-            let (pipe_writer, pipe_reader) = pipe();
-            let source = std::mem::replace(&mut next_source, HopSource::Pipe(pipe_reader));
-            let thread_options = options.clone();
-            let handle = scope
-                .spawn(move || run_hop_into_pipe(converter, source, pipe_writer, &thread_options));
-            handles.push(handle);
-        }
-        let last_converter = plan.hops[hop_count - 1];
-        let final_outcome = run_hop_collecting(last_converter, next_source, output, &options);
-
-        let mut collected = Vec::with_capacity(hop_count);
-        for handle in handles {
-            let outcome = match handle.join() {
-                Ok(outcome) => outcome,
-                Err(_) => HopOutcome {
-                    result: Err(ConvertError::Unsupported(
-                        "a converter thread panicked".to_string(),
-                    )),
-                    sink: CollectingSink::new(),
-                },
-            };
-            collected.push(outcome);
-        }
-        collected.push(final_outcome);
-        collected
-    });
-
-    for outcome in &outcomes {
-        for event in outcome.sink.events() {
-            context.sink.emit(event);
-        }
-    }
-    select_error(outcomes)
-}
-
-fn run_hop_into_pipe(
-    converter: &'static dyn Converter,
-    source: HopSource<'_>,
-    pipe_writer: PipeWriter,
-    options: &ConvertOptions,
-) -> HopOutcome {
-    let mut buffered = BufWriter::with_capacity(PIPE_CHUNK_SIZE, pipe_writer);
-    let mut outcome = run_hop_collecting(converter, source, &mut buffered, options);
-    let flush_result = buffered.flush();
-    drop(buffered);
-    if outcome.result.is_ok() {
-        if let Err(error) = flush_result {
-            outcome.result = Err(ConvertError::Io(error));
-        }
-    }
-    outcome
-}
-
-fn run_hop_collecting(
-    converter: &'static dyn Converter,
-    source: HopSource<'_>,
-    output: &mut dyn Write,
-    options: &ConvertOptions,
-) -> HopOutcome {
-    let mut sink = CollectingSink::new();
-    let result = {
-        let mut context = Context::new(&mut sink, options);
-        match source {
-            HopSource::Original(input) => run_hop(converter, input, output, &mut context),
-            HopSource::Pipe(mut reader) => {
-                let input = Input::Stream(&mut reader);
-                run_hop(converter, input, output, &mut context)
-            }
-        }
-    };
-    HopOutcome { result, sink }
-}
-
-fn select_error(outcomes: Vec<HopOutcome>) -> Result<(), ConvertError> {
-    let mut first_error: Option<ConvertError> = None;
-    for outcome in outcomes {
-        let error = match outcome.result {
-            Ok(()) => continue,
-            Err(error) => error,
-        };
-        let is_broken_pipe = matches!(&error, ConvertError::Io(io_error) if io_error.kind() == io::ErrorKind::BrokenPipe);
-        if !is_broken_pipe {
-            return Err(error);
-        }
-        if first_error.is_none() {
-            first_error = Some(error);
-        }
-    }
-    match first_error {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
 }
 
 #[cfg(test)]
