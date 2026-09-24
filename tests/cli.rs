@@ -334,7 +334,7 @@ fn formats_and_paths_list_the_registry() {
     assert_eq!(code(&paths), 0);
     assert_eq!(
         stdout(&paths),
-        "csv -> json: lossless via csv-to-json\njson -> csv: conditional via json-to-csv\nmarkdown -> html: lossless via markdown-to-html\nmarkdown -> markdown-json: lossless via markdown-to-json\nmarkdown -> text: lossy via markdown-to-text\nmarkdown-json -> html: lossless via markdown-json-to-markdown -> markdown-to-html\nmarkdown-json -> markdown: lossless via markdown-json-to-markdown\nmarkdown-json -> text: lossy via markdown-json-to-markdown -> markdown-to-text\npages -> pages-json: lossless via pages-to-json\npages-json -> pages: lossless via json-to-pages\n"
+        "csv -> json: lossless via csv-to-json\njson -> csv: conditional via json-to-csv\nmarkdown -> html: lossless via markdown-to-html\nmarkdown -> markdown-json: lossless via markdown-to-json\nmarkdown -> text: lossy via markdown-to-text\nmarkdown-json -> html: lossless via markdown-json-to-markdown -> markdown-to-html\nmarkdown-json -> markdown: lossless via markdown-json-to-markdown\nmarkdown-json -> text: lossy via markdown-json-to-markdown -> markdown-to-text\npages -> docx: conditional via pages-to-docx\npages -> html: lossy via pages-to-html\npages -> markdown: lossy via pages-to-markdown\npages -> markdown-json: lossy via pages-to-markdown -> markdown-to-json\npages -> pages-json: lossless via pages-to-json\npages -> text: lossy via pages-to-text\npages-json -> docx: conditional via json-to-pages -> pages-to-docx\npages-json -> html: lossy via json-to-pages -> pages-to-html\npages-json -> markdown: lossy via json-to-pages -> pages-to-markdown\npages-json -> markdown-json: lossy via json-to-pages -> pages-to-markdown -> markdown-to-json\npages-json -> pages: lossless via json-to-pages\npages-json -> text: lossy via json-to-pages -> pages-to-text\n"
     );
 
     let markdown = run(&["paths", "--markdown"]);
@@ -463,4 +463,20 @@ fn pages_round_trips_through_json_on_the_command_line() {
     assert_eq!(stdout(&again), json);
     std::fs::remove_file(json_path).ok();
     std::fs::remove_file(pages_path).ok();
+}
+
+#[test]
+fn pages_to_docx_via_extension() {
+    let input = fixture("pages/text-styles.pages");
+    let output_path = temp_path("text-styles.docx");
+    let output = run(&[
+        "convert",
+        input.to_str().unwrap(),
+        output_path.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    let bytes = std::fs::read(&output_path).unwrap();
+    assert!(bytes.starts_with(b"PK"));
+    assert!(bytes.len() > 2_000);
+    std::fs::remove_file(output_path).ok();
 }

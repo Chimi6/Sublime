@@ -3,6 +3,7 @@
 pub mod base64;
 pub mod csv;
 pub mod deflate;
+pub mod docx;
 pub mod html;
 pub mod iwa;
 pub mod json;
@@ -12,4 +13,5 @@ pub mod protobuf;
 pub mod scan;
 pub mod snappy;
 pub mod text;
+pub mod xml;
 pub mod zip;
