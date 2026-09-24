@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-23
+
 ### Added
 
 - Apple Pages: `pages` <-> `pages-json` converters (native, lossless at the object level). The package is decoded into schema-named object trees that re-encode byte for byte; every fixture round-trips in CI. Formats `pages` (pages) and `pages-json` (no extension).
