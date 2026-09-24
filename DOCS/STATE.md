@@ -11,7 +11,7 @@ describes.
 
 ## Next
 
-- 2026-09-24: Benchmarks note for `pages -> docx` and `pages -> markdown`; 0.6.0. Then Word input (the XML reader is in), which gives `docx -> markdown`, `html`, `text`, and `pages` later.
+- 2026-09-24: Pages performance to the benchmark goals, in three phases, each its own PR with its own benchmark block: a slim document model (one text arena, interned properties, 32-byte runs), the Word body streamed through a faster deflate, and objects decoded on lookup. 0.6.1 when every Pages row passes. Then Word input (the XML reader is in), which gives `docx -> markdown`, `html`, `text`, and `pages` later.
 - 2026-09-23: HTML input, deferred behind Pages. Choose between HTML input (an HTML parser, unlocking HTML -> Markdown, text, and later DOCX and PDF) and Apple Pages (the flagship). See `ROADMAP.md`.
 
 ## Future
@@ -27,7 +27,7 @@ describes.
 
 ## Blockers
 
-- 2026-09-24: The Pages document paths fail the shared Pages goals of 50 MB/s of input and 64 MB peak (`DOCS/benchmarks/pages-docx.md`, `pages-markdown.md`, `pages-html.md`, `pages-text.md`): 10 to 19 MB/s, and 64 to 232 MB peak. Causes measured: a 224-byte run struct with cloned font and language strings (48 MB of model for 170,000 runs), the Word body held whole before Deflate (30 MB), and the package decoding 570 objects to use 70. Fix for 0.6.1: intern strings in the style table and slim the run, stream the Word body through the compressor, decode objects on lookup.
+- 2026-09-24: The Pages document paths fail the shared Pages goals of 50 MB/s of input and 64 MB peak (`DOCS/benchmarks/pages-docx.md`, `pages-markdown.md`, `pages-html.md`, `pages-text.md`). After the slim model (phase 1): 13 to 26 MB/s, and 45 to 175 MB peak; the prose shape passes memory on the text paths. Phases 2 (streamed Word body, fast deflate) and 3 (objects decoded on lookup) remain. Causes measured: a 224-byte run struct with cloned font and language strings (48 MB of model for 170,000 runs), the Word body held whole before Deflate (30 MB), and the package decoding 570 objects to use 70. Fix for 0.6.1: intern strings in the style table and slim the run, stream the Word body through the compressor, decode objects on lookup.
 - 2026-09-24: `pages -> pages-json` misses the 50 MB/s goal at 32 and 38 MB/s of package bytes (`DOCS/benchmarks/pages-json.md`); the reverse direction passes at 330 MB/s. Levers: `Tree::decode` (entry writes per field, field table lookup) and the JSON writer's per-field work.
 
 ## Tech Debt

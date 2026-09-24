@@ -1,6 +1,6 @@
 # Pages -> Word
 
-**Latest** (2026-09-24: pages -> docx 10.0 MB/s of input on the dense shape and 13.3 on prose, at 232.2 and 113.3 MB peak; both goals (50 MB/s, 64 MB) FAIL, see Conclusions and `STATE.md`)
+**Latest** (2026-09-24, slim model: pages -> docx 13.1 MB/s of input on the dense shape and 16.4 on prose, at 174.9 and 93.8 MB peak; all four goals FAIL, see Conclusions and `STATE.md`)
 
 ## Purpose
 
@@ -67,6 +67,20 @@ in-process runs; inputs come from the `pages-json` pair's generator.
   work the Markdown, HTML, and text pairs do not.
 
 ## Results
+
+### 2026-09-24, slim document model
+
+commit: b8c1a66
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Phase 1 of the performance plan: the document model became a text arena with interned properties, links, revisions, and strings (a run is 64 bytes and owns no heap). Same inputs as the block below.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> docx, styled (2.5 MB): throughput (MB/s of input) | 13.1 | goal: 50 | FAIL |
+| pages -> docx, styled: peak memory (MB) | 174.9 | goal: <= 64.0 | FAIL |
+| pages -> docx, prose (1.5 MB): throughput (MB/s of input) | 16.4 | goal: 50 | FAIL |
+| pages -> docx, prose: peak memory (MB) | 93.8 | goal: <= 64.0 | FAIL |
 
 ### 2026-09-24
 
