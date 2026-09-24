@@ -53,6 +53,12 @@ prints one line per fixture. Commit `*.pages` and `reference/`.
 | metadata | title, subject, author, keywords, and description in the document properties |
 | alt-text | an image carrying an accessibility description (alt text) |
 | dropcap | a paragraph opening with a dropped capital set into the first three lines |
+| equations | display equations (superscript, fraction, square root, summation) and an inline equation, as OMML math |
+| text-effects | baseline shift, letter spacing, kerning, all caps, outline/shadow/emboss/engrave, hidden text, and a run background colour |
+| table-layout | a table with per-cell vertical alignment, rotated cell text direction, a diagonal cell border, and a shaded cell |
+| page-layout | a portrait section with a page border, roman page numbers, and two columns split by a column break, then a landscape section |
+| outline-numbering | a legal-style multilevel list numbering as 1, 1.1, 1.1.1 |
+| ruby | Japanese kanji with ruby (furigana) readings |
 | native-scripted | built by AppleScript from the Blank template: paragraphs with fonts, sizes, and colors, a table with a live `=SUM` formula cell, a placed image, a floating text box |
 | native-objects | built by AppleScript: a shape with text, a straight line, and a chart with data |
 
@@ -68,11 +74,19 @@ a Word file can carry. Observed with the sources here on Pages 12.0:
   deletions survive (`revisions`, `notes`);
 - document metadata (title, author, keywords, description) is dropped: Pages
   writes an empty `core.xml` on export (`metadata`);
+- ruby (furigana) is dropped, keeping only the base text (`ruby`);
+- the character effects shadow, emboss, engrave, and hidden text are dropped,
+  though baseline shift, letter spacing, kerning, all caps, and outline survive
+  (`text-effects`);
+- cell text direction and diagonal cell borders are dropped, though per-cell
+  vertical alignment and shading survive (`table-layout`);
+- landscape section orientation and page borders are dropped, though the
+  page-number format, columns, and a column break survive (`page-layout`);
 - hyperlinks are re-exported as Word `HYPERLINK` field codes rather than
   `w:hyperlink` elements (`links`).
 
-Kept, for the record: fields (date, file name, page count, cross-references),
-image alt text, drop caps, and table cell formulas all survive.
+Kept, for the record: fields, image alt text, drop caps, table cell formulas,
+OMML equations, and multilevel outline numbering all survive.
 
 ## Add by hand
 
@@ -92,11 +106,13 @@ and should carry them:
 2. a table with **cell data formats**: one currency column, one percentage
    column, one date column, and a cell with **conditional highlighting**
    (Organize > a rule that colours cells over a threshold);
-3. an **equation** — Insert > Equation (type any LaTeX, e.g. `E = mc^2`);
-4. a **group of objects** — draw two shapes, select both, Arrange > Group;
-5. a couple of **other chart types** (a pie and a line chart) and **other shape
+3. a **group of objects** — draw two shapes, select both, Arrange > Group;
+4. a couple of **other chart types** (a pie and a line chart) and **other shape
    types** (an arrow, a star) beyond the single bar chart and generic shape the
    scripted fixtures already have.
+
+(Equations are no longer on this list: Pages imports Word OMML math, so the
+`equations` fixture is generated.)
 
 **`messy-1.pages`, `messy-2.pages`** — one or two of your own real documents,
 copied in as they are. Real files carry accumulated state (view settings,
