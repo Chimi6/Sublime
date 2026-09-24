@@ -142,9 +142,15 @@ fn copy(
         out.extend_from_within(from..from + length);
         return Ok(());
     }
-    for index in 0..length {
-        let byte = out[from + index];
-        out.push(byte);
+    // An overlapping copy repeats the last `offset` bytes; each chunk
+    // copied makes the next chunk up to twice as long, so a run of any
+    // length takes a few bulk copies instead of a byte at a time.
+    let mut remaining = length;
+    while remaining > 0 {
+        let available = out.len() - from;
+        let chunk = remaining.min(available);
+        out.extend_from_within(from..from + chunk);
+        remaining -= chunk;
     }
     Ok(())
 }
