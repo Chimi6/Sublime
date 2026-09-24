@@ -4,7 +4,9 @@ Binary-wide measurements, recorded once per release with `bench/run.sh
 binary` rather than in every pair document, where they would go stale
 with the next change. The size line is `size-budget` on the gnu binary
 (what CI checks); the musl static binary is the release asset and is
-recorded beside it. Startup is spawn to first output byte on a 1 KB CSV,
+recorded beside it. The WebAssembly module (`wasm/`) has its own line
+against `wasm/size-budget`, and its gzipped size is recorded because
+that is what a browser downloads. Startup is spawn to first output byte on a 1 KB CSV,
 less the spawn floor of `/bin/true`, median of runs from
 `bench/src/startup.rs`.
 
@@ -13,6 +15,7 @@ less the spawn floor of `/bin/true`, median of runs from
 | Target | Pass line |
 |---|---|
 | Binary size, gnu | <= `size-budget` |
+| WebAssembly module | <= `wasm/size-budget` |
 | Startup above spawn floor | < 1 ms |
 
 ## Results
@@ -33,7 +36,7 @@ read as "under a millisecond", not as a trend.
 
 ## History
 
-| Release | gnu bytes | musl bytes | budget |
-|---|---|---|---|
-| 0.3.0 | 651,904 | 656,000 | 1,048,576 |
-| 0.6.0 | 1,399,664 | 1,499,776 | 1,400,000 |
+| Release | gnu bytes | musl bytes | budget | wasm bytes | wasm budget |
+|---|---|---|---|---|---|
+| 0.3.0 | 651,904 | 656,000 | 1,048,576 | | |
+| 0.6.0 | 1,399,664 | 1,499,776 | 1,400,000 | | |

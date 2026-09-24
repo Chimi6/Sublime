@@ -1,0 +1,22 @@
+[package]
+name = "sublime-wasm"
+version = "0.6.1"
+edition = "2024"
+rust-version = "1.85"
+description = "Sublime as a WebAssembly module for the browser"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/Chimi6/Sublime"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+sublime = { path = ".." }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = "z"

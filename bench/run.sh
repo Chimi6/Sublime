@@ -69,6 +69,15 @@ if [ "$pair" = binary ]; then
     musl_bytes="$(wc -c < target/x86_64-unknown-linux-musl/release/sublime | tr -d ' ')"
     row "Binary size, musl static (bytes, the release asset)" "$musl_bytes" "recorded" "n/a"
   fi
+  if command -v rustup >/dev/null && rustup target list --installed | grep -q wasm32-unknown-unknown; then
+    cargo build --release --quiet --target wasm32-unknown-unknown --manifest-path wasm/Cargo.toml
+    wasm_module="wasm/target/wasm32-unknown-unknown/release/sublime_wasm.wasm"
+    wasm_bytes="$(wc -c < "$wasm_module" | tr -d ' ')"
+    wasm_budget="$(tr -d '[:space:]' < wasm/size-budget)"
+    wasm_gzip_bytes="$(gzip -9 -c "$wasm_module" | wc -c | tr -d ' ')"
+    row "WebAssembly module (bytes)" "$wasm_bytes" "<= ${wasm_budget} (wasm/size-budget, what CI checks)" "$(pass "$(echo "$wasm_bytes <= $wasm_budget" | bc -l)")"
+    row "WebAssembly module, gzipped (bytes, what a browser downloads)" "$wasm_gzip_bytes" "recorded" "n/a"
+  fi
   printf 'a,b\n1,2\n' > "$data/tiny.csv"
   startup_ms="$("$bench" startup "$sublime" "$data/tiny.csv")"
   floor_ms="$("$bench" spawn-baseline /bin/true)"

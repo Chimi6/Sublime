@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-09-24: Sublime in the browser. `wasm/` is a second crate that exports the converter as a WebAssembly module with a small JavaScript loader (`wasm/README.md`); CI builds and smoke-tests it and every release publishes `sublime-<version>-wasm.zip`. The module is a first-class export: every library change ships in it, and its size is budgeted in `wasm/size-budget` the way the binary's is.
 - 2026-09-24: Apple Pages, the flagship. The package reader, the lossless `pages-json` form, the document reader into the document model (`src/document`), the Word writer, and the Markdown event projection are in: `pages -> docx` matches Apple's own export paragraph for paragraph on 23 of 28 fixtures, and Pages reaches Markdown, HTML, text, and Markdown JSON through the model. Released as 0.6.0, with the performance work as 0.6.1. Map in `DOCS/formats/pages.md`, fixtures in `tests/fixtures/pages/`.
 - 2026-09-23: Format roadmap in `DOCS/ROADMAP.md`: every tentative format by category with a status and a priority tier (S to D, mixing value, difficulty, and novelty), plus the keystones (inflate, XML, ZIP, PNG, protobuf) that unlock whole categories.
 
@@ -32,6 +33,10 @@ describes.
 
 ## Tech Debt
 
+- 2026-09-24: WebAssembly leftovers:
+  - Multi-hop paths hold each intermediate whole in memory (no threads in the browser); a single-hop path streams as on the command line. Fine for documents, a concern only for large data files through two hops.
+  - The module has no size tooling beyond `opt-level = "z"`; `wasm-opt` would take 10 to 20% more off but is a toolchain dependency the build does not assume.
+  - No progress or event reporting across the boundary; the host gets a status, the bytes, and one message.
 - 2026-09-24: Pages document reader and Word writer leftovers:
   - Equations are written as MathML text; Office Math (OMML) from MathML is the proper output.
   - Floating objects anchor to the first paragraph on their page by counting explicit page breaks; pages that begin by overflow are not known without layout.
