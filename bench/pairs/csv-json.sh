@@ -26,9 +26,9 @@ run_pair() {
   local oc oj cc cj
   oc="$(seconds_of "$ours_c2j")"; cc="$(seconds_of "$crates_c2j")"
   oj="$(seconds_of "$ours_j2c")"; cj="$(seconds_of "$crates_j2c")"
-  row "CSV -> JSON throughput (MB/s)" "$(mbps "$csv_bytes" "$oc")" "$(mbps "$csv_bytes" "$cc")" "$(pass "$(echo "$oc <= $cc" | bc -l)")"
-  row "JSON -> CSV throughput (MB/s)" "$(mbps "$json_bytes" "$oj")" "$(mbps "$json_bytes" "$cj")" "$(pass "$(echo "$oj <= $cj" | bc -l)")"
-  row "Peak RSS CSV -> JSON file (MB)" "$(rss_mb "$(rss_of "$ours_c2j")")" "< 16" "$(pass "$(echo "$(rss_of "$ours_c2j") < 16384" | bc -l)")"
-  row "Peak RSS JSON -> CSV file (MB)" "$(rss_mb "$(rss_of "$ours_j2c")")" "< 16" "$(pass "$(echo "$(rss_of "$ours_j2c") < 16384" | bc -l)")"
-  row "Peak RSS CSV -> JSON stdin (MB)" "$(rss_mb "$stdin_rss")" "< 16" "$(pass "$(echo "$stdin_rss < 16384" | bc -l)")"
+  row "csv -> json, 10M rows ($(mb "$csv_bytes") MB): throughput (MB/s of input)" "$(mbps "$csv_bytes" "$oc")" "$(mbps "$csv_bytes" "$cc")" "$(pass "$(echo "$oc <= $cc" | bc -l)")"
+  row "json -> csv, 10M rows ($(mb "$json_bytes") MB): throughput (MB/s of input)" "$(mbps "$json_bytes" "$oj")" "$(mbps "$json_bytes" "$cj")" "$(pass "$(echo "$oj <= $cj" | bc -l)")"
+  row "csv -> json, 10M rows: peak memory (MB)" "$(rss_mb "$(rss_of "$ours_c2j")")" "< 16" "$(pass "$(echo "$(rss_of "$ours_c2j") < 16384" | bc -l)")"
+  row "json -> csv, 10M rows: peak memory (MB)" "$(rss_mb "$(rss_of "$ours_j2c")")" "< 16" "$(pass "$(echo "$(rss_of "$ours_j2c") < 16384" | bc -l)")"
+  row "csv -> json, 10M rows from stdin: peak memory (MB)" "$(rss_mb "$stdin_rss")" "< 16" "$(pass "$(echo "$stdin_rss < 16384" | bc -l)")"
 }

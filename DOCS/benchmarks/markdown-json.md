@@ -1,5 +1,7 @@
 # Markdown <-> events as JSON
 
+**Latest** (2026-09-23, 0.3.0: markdown -> markdown-json 98 MB/s of input on the markup-dense shape and 273 MB/s on prose, 303 MB peak; markdown-json -> markdown 326 MB/s, 2.4 MB peak; all lines PASS against pulldown-cmark with serde)
+
 ## Purpose
 
 `markdown-json` is the event stream serialized, which makes it two things:
