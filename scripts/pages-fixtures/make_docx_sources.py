@@ -21,7 +21,8 @@ R = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationship
 WP = 'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
 A = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
 PIC = 'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"'
-NS = f"{W} {R} {WP} {A} {PIC}"
+M = 'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"'
+NS = f"{W} {R} {WP} {A} {PIC} {M}"
 
 REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -101,6 +102,43 @@ def field(instr, cached=""):
             '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
             f'<w:r><w:t xml:space="preserve">{esc(cached)}</w:t></w:r>'
             '<w:r><w:fldChar w:fldCharType="end"/></w:r>')
+
+
+def m_run(text):
+    return f'<m:r><m:t>{esc(text)}</m:t></m:r>'
+
+
+def m_sup(base, sup):
+    return f'<m:sSup><m:e>{base}</m:e><m:sup>{sup}</m:sup></m:sSup>'
+
+
+def m_frac(num, den):
+    return f'<m:f><m:num>{num}</m:num><m:den>{den}</m:den></m:f>'
+
+
+def m_sqrt(radicand):
+    return f'<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg/><m:e>{radicand}</m:e></m:rad>'
+
+
+def m_nary(symbol, sub, sup, e):
+    return (f'<m:nary><m:naryPr><m:chr m:val="{symbol}"/><m:limLoc m:val="undOvr"/></m:naryPr>'
+            f'<m:sub>{sub}</m:sub><m:sup>{sup}</m:sup><m:e>{e}</m:e></m:nary>')
+
+
+def omath_para(content):
+    return f'<m:oMathPara><m:oMath>{content}</m:oMath></m:oMathPara>'
+
+
+def inline_math(content):
+    return f'<m:oMath>{content}</m:oMath>'
+
+
+def ruby(base, rt):
+    """East Asian ruby (furigana): reading text above base text."""
+    return ('<w:r><w:ruby><w:rubyPr><w:rubyAlign w:val="center"/><w:hps w:val="10"/>'
+            '<w:hpsRaise w:val="18"/><w:hpsBaseText w:val="20"/><w:lid w:val="ja-JP"/></w:rubyPr>'
+            f'<w:rt><w:r><w:rPr><w:sz w:val="10"/></w:rPr><w:t>{esc(rt)}</w:t></w:r></w:rt>'
+            f'<w:rubyBase><w:r><w:t>{esc(base)}</w:t></w:r></w:rubyBase></w:ruby></w:r>')
 
 
 def hyperlink(rel_id, text):
@@ -198,19 +236,26 @@ def numbering():
     def level(ilvl, fmt, text, indent):
         return (f'<w:lvl w:ilvl="{ilvl}"><w:start w:val="1"/><w:numFmt w:val="{fmt}"/><w:lvlText w:val="{text}"/>'
                 f'<w:lvlJc w:val="left"/><w:pPr><w:ind w:left="{indent}" w:hanging="360"/></w:pPr></w:lvl>')
+    def legal(ilvl, text, indent):
+        return (f'<w:lvl w:ilvl="{ilvl}"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:isLgl/>'
+                f'<w:lvlText w:val="{text}"/><w:lvlJc w:val="left"/>'
+                f'<w:pPr><w:ind w:left="{indent}" w:hanging="360"/></w:pPr></w:lvl>')
     bullets = level(0, "bullet", "•", 720) + level(1, "bullet", "◦", 1440) + level(2, "bullet", "▪", 2160)
     decimal = level(0, "decimal", "%1.", 720) + level(1, "lowerLetter", "%2.", 1440) + level(2, "lowerRoman", "%3.", 2160)
     letters = level(0, "upperLetter", "%1)", 720) + level(1, "decimal", "%2)", 1440)
+    outline = legal(0, "%1.", 432) + legal(1, "%1.%2.", 864) + legal(2, "%1.%2.%3.", 1296)
     return f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:numbering {W}>
 <w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="hybridMultilevel"/>{bullets}</w:abstractNum>
 <w:abstractNum w:abstractNumId="1"><w:multiLevelType w:val="hybridMultilevel"/>{decimal}</w:abstractNum>
 <w:abstractNum w:abstractNumId="2"><w:multiLevelType w:val="hybridMultilevel"/>{letters}</w:abstractNum>
+<w:abstractNum w:abstractNumId="3"><w:multiLevelType w:val="multilevel"/>{outline}</w:abstractNum>
 <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
 <w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
 <w:num w:numId="3"><w:abstractNumId w:val="2"/></w:num>
 <w:num w:numId="4"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>
 <w:num w:numId="5"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="10"/></w:lvlOverride></w:num>
+<w:num w:numId="6"><w:abstractNumId w:val="3"/></w:num>
 </w:numbering>'''
 
 
@@ -833,13 +878,143 @@ def dropcap(out):
     d.write(out / "dropcap.docx", "".join(parts))
 
 
+def equations(out):
+    d = Docx()
+    einstein = m_run("E = ") + m_sup(m_run("mc"), m_run("2"))
+    quadratic = (m_run("x = ")
+                 + m_frac(m_run("-b ") + m_sqrt(m_sup(m_run("b"), m_run("2")) + m_run(" - 4ac")),
+                          m_run("2a")))
+    summation = m_nary("∑", m_run("n=1"), m_run("N"), m_sup(m_run("n"), m_run("2")))
+    parts = [
+        styled("Heading1", "Equations"),
+        body("A display equation:"),
+        para(omath_para(einstein)),
+        body("The quadratic formula, with a fraction and a square root:"),
+        para(omath_para(quadratic)),
+        body("A summation with limits:"),
+        para(omath_para(summation)),
+        para(run("An inline equation ") + inline_math(m_sup(m_run("a"), m_run("2")) + m_run(" + ")
+             + m_sup(m_run("b"), m_run("2")) + m_run(" = ") + m_sup(m_run("c"), m_run("2")))
+             + run(" set within a sentence.")),
+        sect(),
+    ]
+    d.write(out / "equations.docx", "".join(parts))
+
+
+def text_effects(out):
+    d = Docx()
+    parts = [
+        styled("Heading1", "Character Effects"),
+        para(run("Baseline raised", '<w:position w:val="6"/>') + run(" and ")
+             + run("baseline lowered", '<w:position w:val="-6"/>') + run(".")),
+        para(run("Widely letter-spaced text.", '<w:spacing w:val="60"/>')),
+        para(run("Kerned heading text.", '<w:kern w:val="28"/><w:sz w:val="28"/>')),
+        para(run("all caps applied to lowercase input", "<w:caps/>")),
+        para(run("outlined text", "<w:outline/>") + run(", ") + run("shadowed text", "<w:shadow/>")
+             + run(", ") + run("embossed text", "<w:emboss/>") + run(", and ")
+             + run("engraved text", "<w:imprint/>") + run(".")),
+        para(run("Visible text, ") + run("then hidden text, ", "<w:vanish/>") + run("then visible again.")),
+        para(run("A run with a ") + run("coloured background", '<w:shd w:val="clear" w:color="auto" w:fill="FFF2CC"/>')
+             + run(" behind the glyphs.")),
+        sect(),
+    ]
+    d.write(out / "text-effects.docx", "".join(parts))
+
+
+def table_layout(out):
+    d = Docx()
+    grid = '<w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>'
+    tblpr = '<w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="9000" w:type="dxa"/><w:jc w:val="center"/></w:tblPr>'
+    tall = '<w:trPr><w:trHeight w:val="1200"/></w:trPr>'
+    v_top = '<w:vAlign w:val="top"/>'
+    v_center = '<w:vAlign w:val="center"/>'
+    v_bottom = '<w:vAlign w:val="bottom"/>'
+    sideways = '<w:textDirection w:val="btLr"/>'
+    diagonal = '<w:tcBorders><w:tl2br w:val="single" w:sz="4" w:color="000000"/></w:tcBorders>'
+    shaded = '<w:shd w:val="clear" w:color="auto" w:fill="EFEFEF"/>'
+    row_one = (f'<w:tr>{tall}{cell(body("top-aligned"), 3000, v_top)}'
+               f'{cell(body("center-aligned"), 3000, v_center)}'
+               f'{cell(body("bottom-aligned"), 3000, v_bottom)}</w:tr>')
+    row_two = (f'<w:tr>{cell(body("sideways text"), 3000, sideways)}'
+               f'{cell(body("diagonal border"), 3000, diagonal)}'
+               f'{cell(body("shaded cell"), 3000, shaded)}</w:tr>')
+    table_xml = f"<w:tbl>{tblpr}{grid}{row_one}{row_two}</w:tbl>"
+    parts = [
+        styled("Heading1", "Table Layout"),
+        body("A centered table showing per-cell vertical alignment, a cell with rotated "
+             "text direction, a cell with a diagonal border, and a shaded cell:"),
+        table_xml,
+        body("Text after the table."),
+        sect(),
+    ]
+    d.write(out / "table-layout.docx", "".join(parts))
+
+
+def page_layout(out):
+    d = Docx()
+    border_side = '<w:{0} w:val="single" w:sz="12" w:space="24" w:color="444444"/>'
+    pgborders = ("<w:pgBorders w:offsetFrom=\"page\">"
+                 + border_side.format("top") + border_side.format("left")
+                 + border_side.format("bottom") + border_side.format("right")
+                 + "</w:pgBorders>")
+    margins = '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/>'
+    sect_one = (f"<w:sectPr>{pgborders}<w:pgSz w:w=\"12240\" w:h=\"15840\"/>{margins}"
+                '<w:pgNumType w:fmt="lowerRoman" w:start="1"/><w:cols w:num="2" w:space="708"/></w:sectPr>')
+    sect_two = (f"<w:sectPr><w:pgSz w:w=\"15840\" w:h=\"12240\" w:orient=\"landscape\"/>{margins}"
+                '<w:cols w:num="1" w:space="708"/></w:sectPr>')
+    parts = [
+        styled("Heading1", "Page Layout"),
+        body("Section one is portrait, has a page border, uses lower-case roman page "
+             "numbers, and flows in two columns. " + LOREM),
+        para('<w:r><w:br w:type="column"/></w:r>'),
+        body("This paragraph follows a column break, so it opens the second column. " + LOREM),
+        para("", sect_one),
+        styled("Heading1", "Landscape"),
+        body("Section two is landscape and single column. " + LOREM),
+        para("", sect_two),
+    ]
+    # the body's final sectPr is section two; it must sit directly in the body,
+    # so re-emit it outside a paragraph as the trailing element.
+    body_xml = "".join(parts[:-1]) + sect_two
+    d.write(out / "page-layout.docx", body_xml)
+
+
+def outline_numbering(out):
+    d = Docx()
+    parts = [
+        styled("Heading1", "Outline Numbering"),
+        body("A legal-style multilevel list that numbers as 1, 1.1, 1.1.1:"),
+        list_item(6, 0, "First top-level item"),
+        list_item(6, 1, "A sub-item"),
+        list_item(6, 2, "A sub-sub-item"),
+        list_item(6, 1, "Another sub-item"),
+        list_item(6, 0, "Second top-level item"),
+        list_item(6, 1, "Its sub-item"),
+        sect(),
+    ]
+    d.write(out / "outline-numbering.docx", "".join(parts))
+
+
+def ruby_text(out):
+    d = Docx()
+    parts = [
+        styled("Heading1", "Ruby Text"),
+        body("Japanese with ruby (furigana) above the kanji:"),
+        para(ruby("漢字", "かんじ") + run(" is written with ruby readings.")),
+        para(ruby("日本", "にほん") + ruby("語", "ご") + run(" means the Japanese language.")),
+        sect(),
+    ]
+    d.write(out / "ruby.docx", "".join(parts))
+
+
 def main():
     out = Path(sys.argv[1] if len(sys.argv) > 1 else "tests/fixtures/pages/sources")
     out.mkdir(parents=True, exist_ok=True)
     (out / "image1.png").write_bytes(png(96, 64, 1))
     for build in (text_styles, paragraphs, lists, links, table, images, notes, layout, everything,
                   tabs, custom_styles, rtl, headers, toc, revisions,
-                  fields, metadata, alt_text, dropcap):
+                  fields, metadata, alt_text, dropcap,
+                  equations, text_effects, table_layout, page_layout, outline_numbering, ruby_text):
         build(out)
     print("wrote", ", ".join(sorted(path.name for path in out.iterdir())))
 
