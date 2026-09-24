@@ -94,6 +94,15 @@ def tab_stops(stops):
     return f"<w:tabs>{tags}</w:tabs>"
 
 
+def field(instr, cached=""):
+    """A Word field: begin, instruction, a cached result, end."""
+    return ('<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+            f'<w:r><w:instrText xml:space="preserve"> {instr} </w:instrText></w:r>'
+            '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+            f'<w:r><w:t xml:space="preserve">{esc(cached)}</w:t></w:r>'
+            '<w:r><w:fldChar w:fldCharType="end"/></w:r>')
+
+
 def hyperlink(rel_id, text):
     return f'<w:hyperlink r:id="{rel_id}">{run(text, LINK_STYLE)}</w:hyperlink>'
 
@@ -102,10 +111,11 @@ def anchor_link(anchor, text):
     return f'<w:hyperlink w:anchor="{anchor}">{run(text, LINK_STYLE)}</w:hyperlink>'
 
 
-def inline_image(rel_id, image_id, cx, cy, name):
+def inline_image(rel_id, image_id, cx, cy, name, descr=""):
+    alt = f' descr="{esc(descr)}"' if descr else ""
     return (
         f'<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">'
-        f'<wp:extent cx="{cx}" cy="{cy}"/><wp:docPr id="{image_id}" name="{name}"/>'
+        f'<wp:extent cx="{cx}" cy="{cy}"/><wp:docPr id="{image_id}" name="{name}"{alt}/>'
         f'{graphic(rel_id, image_id, cx, cy, name)}</wp:inline></w:drawing></w:r>'
     )
 
@@ -262,6 +272,33 @@ def footer_part():
             f'{para(run("Page ") + page_field, FOOTER_STYLE)}</w:ftr>')
 
 
+def core_props(meta):
+    """docProps/core.xml: Dublin Core document metadata."""
+    dc = "xmlns:dc=\"http://purl.org/dc/elements/1.1/\""
+    dcterms = "xmlns:dcterms=\"http://purl.org/dc/terms/\""
+    xsi = "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+    cp = "xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\""
+    when = "2026-09-23T12:00:00Z"
+    return (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            f'<cp:coreProperties {cp} {dc} {dcterms} {xsi}>'
+            f'<dc:title>{esc(meta["title"])}</dc:title>'
+            f'<dc:subject>{esc(meta["subject"])}</dc:subject>'
+            f'<dc:creator>{esc(meta["creator"])}</dc:creator>'
+            f'<cp:keywords>{esc(meta["keywords"])}</cp:keywords>'
+            f'<dc:description>{esc(meta["description"])}</dc:description>'
+            f'<cp:lastModifiedBy>{esc(meta["creator"])}</cp:lastModifiedBy>'
+            f'<dcterms:created xsi:type="dcterms:W3CDTF">{when}</dcterms:created>'
+            f'<dcterms:modified xsi:type="dcterms:W3CDTF">{when}</dcterms:modified>'
+            '</cp:coreProperties>')
+
+
+def app_props():
+    """docProps/app.xml: the extended (application) properties part."""
+    ns = "xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\""
+    return (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            f'<Properties {ns}><Application>Sublime fixtures</Application></Properties>')
+
+
 # ----- package writer -----
 
 class Docx:
@@ -271,6 +308,7 @@ class Docx:
         self.content_types = []
         self.media = []
         self.settings_extra = ""
+        self.metadata = None
 
     def rel(self, kind, target, external=False):
         rel_id = f"rId{len(self.doc_rels) + 10}"
@@ -295,15 +333,27 @@ class Docx:
         self.add_part("numbering.xml", numbering(), "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml", "numbering")
         settings = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings {W}>{self.settings_extra}<w:footnotePr><w:footnote w:id="-1"/><w:footnote w:id="0"/></w:footnotePr><w:endnotePr><w:endnote w:id="-1"/><w:endnote w:id="0"/></w:endnotePr></w:settings>'
         self.add_part("settings.xml", settings, "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml", "settings")
+        metadata_overrides = ""
+        metadata_root_rels = ""
+        if self.metadata is not None:
+            self.parts["docProps/core.xml"] = core_props(self.metadata)
+            self.parts["docProps/app.xml"] = app_props()
+            metadata_overrides = (
+                '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+                '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>')
+            metadata_root_rels = (
+                f'<Relationship Id="rId100" Type="{PKG_REL_NS}/metadata/core-properties" Target="docProps/core.xml"/>'
+                f'<Relationship Id="rId101" Type="{REL_NS}/extended-properties" Target="docProps/app.xml"/>')
         content_types = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
                          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
                          '<Default Extension="xml" ContentType="application/xml"/>'
                          '<Default Extension="png" ContentType="image/png"/>'
                          '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
-                         f'{"".join(self.content_types)}</Types>')
+                         f'{metadata_overrides}{"".join(self.content_types)}</Types>')
         root_rels = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="{PKG_REL_NS}">'
-                     f'<Relationship Id="rId1" Type="{REL_NS}/officeDocument" Target="word/document.xml"/></Relationships>')
+                     f'<Relationship Id="rId1" Type="{REL_NS}/officeDocument" Target="word/document.xml"/>'
+                     f'{metadata_root_rels}</Relationships>')
         doc_rels = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="{PKG_REL_NS}">'
                     f'{"".join(self.doc_rels)}</Relationships>')
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -717,12 +767,79 @@ def revisions(out):
     d.write(out / "revisions.docx", "".join(parts))
 
 
+def fields(out):
+    d = Docx()
+    parts = [
+        styled("Heading1", "Fields"),
+        para(run("The date field: ") + field('DATE \\@ "MMMM d, yyyy"', "September 23, 2026") + run(".")),
+        para(run("The file-name field: ") + field("FILENAME", "fields.docx") + run(".")),
+        para(run("The page-count field: ") + field("NUMPAGES", "1") + run(" page(s).")),
+        para('<w:bookmarkStart w:id="1" w:name="anchor"/>' + run("This paragraph is the reference target.") + '<w:bookmarkEnd w:id="1"/>'),
+        para(run("A cross-reference (REF) to it: ") + field("REF anchor \\h", "This paragraph is the reference target.") + run(".")),
+        para(run("A page reference (PAGEREF) to it: ") + field("PAGEREF anchor \\h", "1") + run(".")),
+        sect(),
+    ]
+    d.write(out / "fields.docx", "".join(parts))
+
+
+def metadata(out):
+    d = Docx()
+    d.metadata = {
+        "title": "A Document With Metadata",
+        "subject": "Testing document properties",
+        "creator": "Fixture Author",
+        "keywords": "sublime, pages, fixture, metadata",
+        "description": "A short comment stored in the document properties.",
+    }
+    parts = [
+        styled("Heading1", "Document Metadata"),
+        body("This document carries a title, subject, author, keywords, and a description "
+             "in its document properties (docProps/core.xml). The body text is incidental; "
+             "the fixture exists for what Pages does with the properties on import. " + LOREM),
+        sect(),
+    ]
+    d.write(out / "metadata.docx", "".join(parts))
+
+
+def alt_text(out):
+    d = Docx()
+    one = d.add_image("image1.png", png(96, 64, 1))
+    emu = 9525
+    parts = [
+        styled("Heading1", "Image Alt Text"),
+        body("The image below carries an accessibility description (alt text), which a "
+             "converter should preserve for screen readers:"),
+        para(inline_image(one, 1, 96 * emu, 64 * emu, "described.png",
+                          descr="A gradient test image described for accessibility."),
+             '<w:jc w:val="center"/>'),
+        sect(),
+    ]
+    d.write(out / "alt-text.docx", "".join(parts))
+
+
+def dropcap(out):
+    d = Docx()
+    frame = ('<w:framePr w:dropCap="drop" w:lines="3" w:wrap="around" '
+             'w:vAnchor="text" w:hAnchor="text" w:x="1" w:y="1"/>')
+    drop = para(run("O", '<w:position w:val="0"/><w:sz w:val="96"/>'), frame)
+    rest = body("nce upon a time, a paragraph began with a large dropped capital letter "
+                "set into the first three lines of the text. " + LOREM)
+    parts = [
+        styled("Heading1", "Drop Cap"),
+        drop,
+        rest,
+        sect(),
+    ]
+    d.write(out / "dropcap.docx", "".join(parts))
+
+
 def main():
     out = Path(sys.argv[1] if len(sys.argv) > 1 else "tests/fixtures/pages/sources")
     out.mkdir(parents=True, exist_ok=True)
     (out / "image1.png").write_bytes(png(96, 64, 1))
     for build in (text_styles, paragraphs, lists, links, table, images, notes, layout, everything,
-                  tabs, custom_styles, rtl, headers, toc, revisions):
+                  tabs, custom_styles, rtl, headers, toc, revisions,
+                  fields, metadata, alt_text, dropcap):
         build(out)
     print("wrote", ", ".join(sorted(path.name for path in out.iterdir())))
 
