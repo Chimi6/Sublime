@@ -6,6 +6,15 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-24
+
+A performance release for the Pages paths, measured pair by pair in
+`DOCS/benchmarks/`: memory passes on every Pages row, Word passes every
+goal under the compressed-output measure, a real resume converts to Word in
+3 ms at 4.8 MB, and the text and JSON paths' throughput on the synthetic
+dense shape stands at 30 to 40 MB/s against the 50 MB/s target, recorded as
+a standing target with the structural levers named.
+
 ### Changed
 
 - Table spans in the Pages reader are 16 bytes; the Snappy decoder copies overlapping runs in doubling chunks instead of a byte at a time.
