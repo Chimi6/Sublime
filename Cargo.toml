@@ -11,6 +11,10 @@ publish = false
 [dependencies]
 # Intentionally empty. See DOCS/DEPENDENCIES.md before adding anything.
 
+[features]
+# `sublime inspect`: dumps an iWork package's object graph. Development only.
+dev-tools = []
+
 [dev-dependencies]
 
 [workspace]
