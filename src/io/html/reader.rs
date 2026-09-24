@@ -140,7 +140,7 @@ impl<'a> Reader<'a, '_> {
             return;
         }
         if let Some(end_tag) = after.strip_prefix('/') {
-            let end = end_tag.find('>').map_or(end_tag.len(), |index| index);
+            let end = end_tag.find('>').unwrap_or(end_tag.len());
             let name = end_tag[..end].trim();
             self.position += 2 + end + 1;
             self.position = self.position.min(self.html.len());
