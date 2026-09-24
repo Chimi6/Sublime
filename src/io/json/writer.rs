@@ -90,6 +90,15 @@ impl<W: Write> JsonWriter<W> {
         self.flush_if_full()
     }
 
+    /// Writes `bytes` as a base64 string, straight into the buffer.
+    pub fn base64_string(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.before_value();
+        self.buffer.push(b'"');
+        crate::io::base64::encode_into(bytes, &mut self.buffer);
+        self.buffer.push(b'"');
+        self.flush_if_full()
+    }
+
     /// Writes `text` as is. For numbers and literals.
     pub fn raw(&mut self, text: &str) -> io::Result<()> {
         self.before_value();

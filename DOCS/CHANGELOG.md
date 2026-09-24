@@ -6,6 +6,12 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-23
+
+### Changed
+
+- Pages object trees are one arena per stream (sibling-linked 32-byte entries, strings and bytes as ranges into one buffer) instead of a heap node per field, and `pages-json` is read as a token stream straight into the arena. On the largest fixture, Pages -> JSON went from 16 ms to about 11 ms and JSON -> Pages from 41 ms to 18 ms, with allocation gone from the profile.
+
 ## [0.4.0] - 2026-09-23
 
 ### Added

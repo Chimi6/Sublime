@@ -163,10 +163,10 @@ fn every_stream_re_encodes_to_the_same_bytes() {
             compressed.clear();
             archive.read(entry, &mut compressed).unwrap();
             let original = decompress_stream(&compressed).unwrap();
-            let objects = decode_stream(&entry.name, &compressed)
+            let stream = decode_stream(&entry.name, &compressed)
                 .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
             let mut encoded = Vec::new();
-            encode_stream(&entry.name, &objects, &mut encoded)
+            encode_stream(&stream, &mut encoded)
                 .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
             if encoded != original {
                 let first = encoded
@@ -188,10 +188,47 @@ fn every_stream_re_encodes_to_the_same_bytes() {
     assert!(checked > 17);
 }
 
+fn assert_same_package(
+    path: &std::path::Path,
+    before: &sublime::io::pages::Package,
+    after: &sublime::io::pages::Package,
+) {
+    use sublime::io::pages::package::{Entry, encode_stream};
+    assert_eq!(
+        before.entries.len(),
+        after.entries.len(),
+        "{}",
+        path.display()
+    );
+    for (left, right) in before.entries.iter().zip(&after.entries) {
+        assert_eq!(left.name(), right.name(), "{}", path.display());
+        match (left, right) {
+            (Entry::File { bytes: left, .. }, Entry::File { bytes: right, .. }) => {
+                assert_eq!(left, right, "{}: {}", path.display(), left.len());
+            }
+            (Entry::Stream(left), Entry::Stream(right)) => {
+                let mut left_bytes = Vec::new();
+                let mut right_bytes = Vec::new();
+                encode_stream(left, &mut left_bytes).unwrap();
+                encode_stream(right, &mut right_bytes).unwrap();
+                if left_bytes != right_bytes {
+                    let first = left_bytes
+                        .iter()
+                        .zip(&right_bytes)
+                        .position(|(a, b)| a != b)
+                        .unwrap_or(left_bytes.len().min(right_bytes.len()));
+                    panic!("{}: {} differs at byte {first}", path.display(), left.name);
+                }
+            }
+            _ => panic!("{}: {} changed kind", path.display(), left.name()),
+        }
+    }
+}
+
 /// The whole package survives a write and a read.
 #[test]
 fn packages_round_trip_through_write_and_read() {
-    use sublime::io::pages::package::{Entry, Package, encode_stream};
+    use sublime::io::pages::Package;
     for path in fixtures().into_iter().take(4) {
         let bytes = std::fs::read(&path).expect("fixture readable");
         let package =
@@ -199,35 +236,7 @@ fn packages_round_trip_through_write_and_read() {
         let written = package.write(Vec::new()).unwrap();
         let again =
             Package::read(&written).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-        // Compared as bytes: a NaN float is never equal to itself as a value.
-        assert_eq!(
-            package.entries.len(),
-            again.entries.len(),
-            "{}",
-            path.display()
-        );
-        for (before, after) in package.entries.iter().zip(&again.entries) {
-            assert_eq!(before.name(), after.name(), "{}", path.display());
-            match (before, after) {
-                (Entry::File { bytes: left, .. }, Entry::File { bytes: right, .. }) => {
-                    assert_eq!(left, right, "{}: {}", path.display(), before.name());
-                }
-                (Entry::Stream { objects: left, .. }, Entry::Stream { objects: right, .. }) => {
-                    let mut left_bytes = Vec::new();
-                    let mut right_bytes = Vec::new();
-                    encode_stream(before.name(), left, &mut left_bytes).unwrap();
-                    encode_stream(after.name(), right, &mut right_bytes).unwrap();
-                    assert_eq!(
-                        left_bytes,
-                        right_bytes,
-                        "{}: {}",
-                        path.display(),
-                        before.name()
-                    );
-                }
-                _ => panic!("{}: {} changed kind", path.display(), before.name()),
-            }
-        }
+        assert_same_package(&path, &package, &again);
     }
 }
 
@@ -235,8 +244,8 @@ fn packages_round_trip_through_write_and_read() {
 /// re-encoded streams and files.
 #[test]
 fn packages_round_trip_through_json() {
+    use sublime::io::pages::Package;
     use sublime::io::pages::json::{read_json, write_json};
-    use sublime::io::pages::package::{Entry, Package, encode_stream};
     for path in fixtures() {
         let bytes = std::fs::read(&path).expect("fixture readable");
         let package =
@@ -245,37 +254,6 @@ fn packages_round_trip_through_json() {
         write_json(&package, &mut json).unwrap();
         let again = read_json(json.as_slice())
             .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-        assert_eq!(
-            package.entries.len(),
-            again.entries.len(),
-            "{}",
-            path.display()
-        );
-        for (before, after) in package.entries.iter().zip(&again.entries) {
-            match (before, after) {
-                (Entry::File { bytes: left, .. }, Entry::File { bytes: right, .. }) => {
-                    assert_eq!(left, right, "{}: {}", path.display(), before.name());
-                }
-                (Entry::Stream { objects: left, .. }, Entry::Stream { objects: right, .. }) => {
-                    let mut left_bytes = Vec::new();
-                    let mut right_bytes = Vec::new();
-                    encode_stream(before.name(), left, &mut left_bytes).unwrap();
-                    encode_stream(after.name(), right, &mut right_bytes).unwrap();
-                    if left_bytes != right_bytes {
-                        let first = left_bytes
-                            .iter()
-                            .zip(&right_bytes)
-                            .position(|(a, b)| a != b)
-                            .unwrap_or(left_bytes.len().min(right_bytes.len()));
-                        panic!(
-                            "{}: {} differs after JSON at byte {first}",
-                            path.display(),
-                            before.name()
-                        );
-                    }
-                }
-                _ => panic!("{}: {} changed kind", path.display(), before.name()),
-            }
-        }
+        assert_same_package(&path, &package, &again);
     }
 }
