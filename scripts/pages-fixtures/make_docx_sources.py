@@ -25,6 +25,9 @@ NS = f"{W} {R} {WP} {A} {PIC}"
 
 REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+W14 = 'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"'
+W15 = 'xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"'
+COMMENTS_EXT_REL = "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"
 
 
 # ----- PNG without any library -----
@@ -76,6 +79,19 @@ def body(text):
 
 def list_item(num_id, level, text):
     return para(run(text), f'<w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="{level}"/><w:numId w:val="{num_id}"/></w:numPr>')
+
+
+def tab():
+    return "<w:r><w:tab/></w:r>"
+
+
+def tab_stops(stops):
+    """stops: list of (val, pos_twips, leader|None)."""
+    tags = "".join(
+        f'<w:tab w:val="{val}" w:pos="{pos}"' + (f' w:leader="{leader}"' if leader else "") + "/>"
+        for val, pos, leader in stops
+    )
+    return f"<w:tabs>{tags}</w:tabs>"
 
 
 def hyperlink(rel_id, text):
@@ -163,6 +179,8 @@ STYLES = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:style w:type="character" w:styleId="EndnoteReference"><w:name w:val="endnote reference"/><w:rPr><w:vertAlign w:val="superscript"/></w:rPr></w:style>
 <w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/><w:tblPr><w:tblCellMar><w:left w:w="108" w:type="dxa"/><w:right w:w="108" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style>
 <w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:basedOn w:val="TableNormal"/><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="4" w:color="000000"/><w:left w:val="single" w:sz="4" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:color="000000"/><w:right w:val="single" w:sz="4" w:color="000000"/><w:insideH w:val="single" w:sz="4" w:color="000000"/><w:insideV w:val="single" w:sz="4" w:color="000000"/></w:tblBorders></w:tblPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="Callout"><w:name w:val="Callout"/><w:basedOn w:val="Normal"/><w:pPr><w:pBdr><w:top w:val="single" w:sz="8" w:space="6" w:color="BF9000"/><w:left w:val="single" w:sz="8" w:space="6" w:color="BF9000"/><w:bottom w:val="single" w:sz="8" w:space="6" w:color="BF9000"/><w:right w:val="single" w:sz="8" w:space="6" w:color="BF9000"/></w:pBdr><w:shd w:val="clear" w:color="auto" w:fill="FFF2CC"/><w:spacing w:before="120" w:after="120"/><w:ind w:left="360" w:right="360"/></w:pPr><w:rPr><w:i/><w:color w:val="7F6000"/></w:rPr></w:style>
+<w:style w:type="character" w:customStyle="1" w:styleId="CodeChar"><w:name w:val="Code Char"/><w:basedOn w:val="DefaultParagraphFont"/><w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/><w:shd w:val="clear" w:color="auto" w:fill="EFEFEF"/><w:color w:val="A31515"/></w:rPr></w:style>
 </w:styles>'''
 
 
@@ -252,6 +270,7 @@ class Docx:
         self.doc_rels = []
         self.content_types = []
         self.media = []
+        self.settings_extra = ""
 
     def rel(self, kind, target, external=False):
         rel_id = f"rId{len(self.doc_rels) + 10}"
@@ -274,7 +293,7 @@ class Docx:
         self.parts["word/document.xml"] = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document {NS}><w:body>{body_xml}</w:body></w:document>'
         self.add_part("styles.xml", STYLES, "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml", "styles")
         self.add_part("numbering.xml", numbering(), "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml", "numbering")
-        settings = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings {W}><w:footnotePr><w:footnote w:id="-1"/><w:footnote w:id="0"/></w:footnotePr><w:endnotePr><w:endnote w:id="-1"/><w:endnote w:id="0"/></w:endnotePr></w:settings>'
+        settings = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings {W}>{self.settings_extra}<w:footnotePr><w:footnote w:id="-1"/><w:footnote w:id="0"/></w:footnotePr><w:endnotePr><w:endnote w:id="-1"/><w:endnote w:id="0"/></w:endnotePr></w:settings>'
         self.add_part("settings.xml", settings, "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml", "settings")
         content_types = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
@@ -533,11 +552,177 @@ def everything(out):
     d.write(out / "everything.docx", "".join(parts))
 
 
+def tabs(out):
+    d = Docx()
+    toc_like = tab_stops([("right", 9000, "dot")])
+    decimal = tab_stops([("decimal", 4680, None)])
+    columns = tab_stops([("left", 3120, None), ("center", 6240, None), ("right", 9000, None)])
+    parts = [
+        styled("Heading1", "Tabs and Leaders"),
+        body("A right tab with a dotted leader, as in a table of contents or a price list:"),
+        para(run("Introduction") + tab() + run("1"), toc_like),
+        para(run("Methods and Materials") + tab() + run("12"), toc_like),
+        para(run("Conclusion") + tab() + run("120"), toc_like),
+        body("A decimal tab aligns numbers on the decimal point:"),
+        para(run("Widget") + tab() + run("3.5"), decimal),
+        para(run("Gadget") + tab() + run("12.75"), decimal),
+        para(run("Sprocket") + tab() + run("100.0"), decimal),
+        body("Left, center, and right tab stops across the line:"),
+        para(run("left") + tab() + run("center") + tab() + run("right"), columns),
+        sect(),
+    ]
+    d.write(out / "tabs.docx", "".join(parts))
+
+
+def custom_styles(out):
+    d = Docx()
+    parts = [
+        styled("Heading1", "Custom Styles"),
+        body("The paragraph below uses a user-defined paragraph style named Callout, "
+             "not one of the styles Pages ships with:"),
+        styled("Callout", "This is a callout: a bordered, shaded, indented, italic paragraph "
+                          "whose look comes entirely from a custom style definition."),
+        body("The next sentence contains an inline span in a user-defined character style "
+             "named Code Char:"),
+        para(run("Run ") + run("git status", '<w:rStyle w:val="CodeChar"/>')
+             + run(" before you commit.")),
+        sect(),
+    ]
+    d.write(out / "custom-styles.docx", "".join(parts))
+
+
+def rtl(out):
+    d = Docx()
+    arabic = "مرحبا بالعالم، هذه فقرة عربية تُكتب من اليمين إلى اليسار."
+    hebrew = "שלום עולם, זו פסקה בעברית הנכתבת מימין לשמאל."
+    parts = [
+        styled("Heading1", "Bidirectional Text"),
+        body("A right-to-left Arabic paragraph:"),
+        para(run(arabic, "<w:rtl/>"), '<w:bidi/><w:jc w:val="right"/>'),
+        body("A right-to-left Hebrew paragraph:"),
+        para(run(hebrew, "<w:rtl/>"), '<w:bidi/><w:jc w:val="right"/>'),
+        body("A left-to-right paragraph with an inline right-to-left phrase:"),
+        para(run("The sign read ") + run("مخرج", "<w:rtl/>") + run(" (exit) above the door.")),
+        sect(),
+    ]
+    d.write(out / "rtl.docx", "".join(parts))
+
+
+def headers(out):
+    d = Docx()
+    d.settings_extra = "<w:evenAndOddHeaders/>"
+    hct = "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"
+    fct = "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"
+    first = d.add_part("hdr_first.xml", header_part("First-page header, shown only on page one"), hct, "header")
+    even = d.add_part("hdr_even.xml", header_part("Even-page header, shown on page two"), hct, "header")
+    odd = d.add_part("hdr_odd.xml", header_part("Odd-page header, shown on pages one and three"), hct, "header")
+    footer = d.add_part("ftr_headers.xml", footer_part(), fct, "footer")
+    refs = (f'<w:headerReference w:type="first" r:id="{first}"/>'
+            f'<w:headerReference w:type="even" r:id="{even}"/>'
+            f'<w:headerReference w:type="default" r:id="{odd}"/>'
+            f'<w:footerReference w:type="default" r:id="{footer}"/>')
+    sectpr = (f'<w:sectPr>{refs}<w:pgSz w:w="12240" w:h="15840"/>'
+              '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/>'
+              '<w:cols w:num="1" w:space="708"/><w:titlePg/></w:sectPr>')
+    page_break = para('<w:r><w:br w:type="page"/></w:r>')
+    parts = [
+        styled("Heading1", "Header Variants"),
+        body("This section defines a different header for the first page, for even pages, and for "
+             "odd pages, so one document shows three headers. The first page suppresses the odd "
+             "header in favour of its own. " + LOREM),
+        page_break,
+        body("Page two carries the even-page header. " + LOREM),
+        page_break,
+        body("Page three carries the odd-page (default) header. " + LOREM),
+        para("", sectpr),
+    ]
+    d.write(out / "headers.docx", "".join(parts))
+
+
+def toc(out):
+    d = Docx()
+    dot = tab_stops([("right", 9000, "dot")])
+    begin = '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+    instr = '<w:r><w:instrText xml:space="preserve"> TOC \\o "1-3" \\z \\u </w:instrText></w:r>'
+    sep = '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+    end = '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+
+    def entry(text, page, first=False, last=False):
+        content = (begin + instr + sep if first else "") + run(text) + tab() + run(page) + (end if last else "")
+        return para(content, dot)
+
+    page_break = para('<w:r><w:br w:type="page"/></w:r>')
+    parts = [
+        styled("Title", "A Document With a Table of Contents"),
+        styled("Heading1", "Contents"),
+        entry("Introduction", "2", first=True),
+        entry("Background", "3"),
+        entry("Conclusion", "4", last=True),
+        page_break,
+        styled("Heading1", "Introduction"),
+        body("The introduction begins on its own page so the contents page numbers mean something. " + LOREM),
+        page_break,
+        styled("Heading1", "Background"),
+        body("Background material. " + LOREM),
+        styled("Heading2", "A subsection"),
+        body("A level-two heading the contents field includes. " + LOREM),
+        page_break,
+        styled("Heading1", "Conclusion"),
+        body("The end. " + LOREM),
+        sect(),
+    ]
+    d.write(out / "toc.docx", "".join(parts))
+
+
+def revisions(out):
+    d = Docx()
+    date = "2026-09-23T12:00:00Z"
+    # A comment (id 0) and a reply to it (id 1), threaded via commentsExtended.
+    comments_xml = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:comments {W} {W14}>'
+        f'<w:comment w:id="0" w:author="Reviewer" w:date="{date}" w:initials="RV">'
+        f'<w:p w14:paraId="0A000001">{run("Please expand this point.")}</w:p></w:comment>'
+        f'<w:comment w:id="1" w:author="Author" w:date="{date}" w:initials="AU">'
+        f'<w:p w14:paraId="0A000002">{run("Good idea; I have added a sentence.")}</w:p></w:comment>'
+        '</w:comments>')
+    d.add_part("comments.xml", comments_xml,
+               "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml", "comments")
+    ext_xml = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w15:commentsEx {W15}>'
+        '<w15:commentEx w15:paraId="0A000001" w15:done="0"/>'
+        '<w15:commentEx w15:paraId="0A000002" w15:paraIdParent="0A000001" w15:done="0"/>'
+        '</w15:commentsEx>')
+    d.parts["word/commentsExtended.xml"] = ext_xml
+    d.content_types.append('<Override PartName="/word/commentsExtended.xml" '
+                           'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"/>')
+    ext_rid = f"rId{len(d.doc_rels) + 10}"
+    d.doc_rels.append(f'<Relationship Id="{ext_rid}" Type="{COMMENTS_EXT_REL}" Target="commentsExtended.xml"/>')
+
+    def thread(content):
+        return ('<w:commentRangeStart w:id="0"/><w:commentRangeStart w:id="1"/>' + content
+                + '<w:commentRangeEnd w:id="0"/><w:commentRangeEnd w:id="1"/>'
+                '<w:r><w:commentReference w:id="0"/></w:r><w:r><w:commentReference w:id="1"/></w:r>')
+
+    fmt_change = ('<w:r><w:rPr><w:b/><w:rPrChange w:id="30" w:author="Editor" w:date="' + date + '">'
+                  '<w:rPr/></w:rPrChange></w:rPr><w:t xml:space="preserve">now bold</w:t></w:r>')
+    inserted = f'<w:ins w:id="31" w:author="Editor" w:date="{date}">' + run("an inserted clause ") + "</w:ins>"
+    parts = [
+        styled("Heading1", "Comment Threads and Tracked Formatting"),
+        para(run("A reviewer commented on ") + thread(run("this phrase"))
+             + run(" and the author replied, forming a two-message thread.")),
+        para(run("The words ") + fmt_change + run(" carry a tracked formatting change (not bold to bold), "
+             "and here is ") + inserted + run("kept as a tracked insertion.")),
+        sect(),
+    ]
+    d.write(out / "revisions.docx", "".join(parts))
+
+
 def main():
     out = Path(sys.argv[1] if len(sys.argv) > 1 else "tests/fixtures/pages/sources")
     out.mkdir(parents=True, exist_ok=True)
     (out / "image1.png").write_bytes(png(96, 64, 1))
-    for build in (text_styles, paragraphs, lists, links, table, images, notes, layout, everything):
+    for build in (text_styles, paragraphs, lists, links, table, images, notes, layout, everything,
+                  tabs, custom_styles, rtl, headers, toc, revisions):
         build(out)
     print("wrote", ", ".join(sorted(path.name for path in out.iterdir())))
 
