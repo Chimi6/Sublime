@@ -16,8 +16,13 @@ use crate::document::{
     InlineImage, LineSpacing, ListLabel, Merge, NumberKind, Paragraph, ParagraphProperties,
     Placement, RevisionKind, Run, RunProperties, Section, SectionStart, Table, mathml_text,
 };
+use crate::io::deflate::Level;
 use crate::io::xml::{escape_attribute, escape_text};
 use crate::io::zip::ZipWriter;
+
+/// The body is compressed into the package in parts of this size as it
+/// renders, so a large document never holds its XML whole.
+const BODY_PART: usize = 256 * 1024;
 
 const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
 const R: &str = r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships""#;
@@ -42,16 +47,19 @@ pub fn write_docx<W: io::Write>(document: &Document, sink: W) -> io::Result<W> {
         floating_done: vec![false; document.floating.len()],
         revisions: 0,
     };
-    writer.render_body();
+    let mut zip = ZipWriter::new(sink);
+    // The body goes first, streamed; the parts it discovers (media,
+    // headers, relationships) follow it. Entry order in a package is free.
+    zip.begin_deflated("word/document.xml")?;
+    writer.render_body(&mut |part| zip.write_part(part, Level::Fast))?;
+    zip.end_deflated()?;
     let footnotes = if document.footnotes.is_empty() {
         None
     } else {
         Some(writer.footnotes_part())
     };
-    let mut zip = ZipWriter::new(sink);
     zip.add_deflated("[Content_Types].xml", writer.content_types().as_bytes())?;
     zip.add_deflated("_rels/.rels", root_relationships().as_bytes())?;
-    zip.add_deflated("word/document.xml", writer.body.as_bytes())?;
     zip.add_deflated(
         "word/_rels/document.xml.rels",
         writer
@@ -149,10 +157,10 @@ struct Numbering {
 }
 
 impl DocxWriter<'_> {
-    /// Renders the whole document part into `self.body`, header and
-    /// footer included, so the largest part is never copied.
-    fn render_body(&mut self) {
-        let mut body = String::new();
+    /// Renders the document part, handing `flush` each part of it as
+    /// `BODY_PART` fills, so the XML is never held whole.
+    fn render_body(&mut self, flush: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+        let mut body = std::mem::take(&mut self.body);
         body.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
         let _ = write!(body, "<w:document {W} {R} {DRAWING}><w:body>");
         // Floating objects are anchored to the first paragraph on their
@@ -184,6 +192,10 @@ impl DocxWriter<'_> {
                     }
                     Block::Table(table) => self.render_table(table, &mut body),
                 }
+                if body.len() >= BODY_PART {
+                    flush(body.as_bytes())?;
+                    body.clear();
+                }
             }
             // A section's properties ride in its last paragraph, as Word
             // and Pages both write them; a section ending otherwise gets
@@ -197,7 +209,10 @@ impl DocxWriter<'_> {
             }
         }
         body.push_str("</w:body></w:document>");
+        flush(body.as_bytes())?;
+        body.clear();
         self.body = body;
+        Ok(())
     }
 
     /// The floating objects to anchor now: those on `page` or before it
