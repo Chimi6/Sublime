@@ -81,6 +81,24 @@ and `ours` / `ours-back` modes for in-process runs.
 
 ## Results
 
+### 2026-09-24, reader cursors and one arena copy
+
+commit: 1ed4458
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Unchanged in substance (the lossless path does not use the document reader); recorded for the date trail.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> pages-json, styled (2.5 MB): throughput (MB/s of input) | 29.7 | goal: 50 | FAIL |
+| pages -> pages-json, styled: peak memory (MB) | 47.9 | goal: <= 64.0 | PASS |
+| pages-json -> pages, styled (33.7 MB): throughput (MB/s of input) | 312.4 | goal: 50 | PASS |
+| pages-json -> pages, styled: peak memory (MB) | 46.0 | goal: <= 64.0 | PASS |
+| pages -> pages-json, prose (1.5 MB): throughput (MB/s of input) | 37.5 | goal: 50 | FAIL |
+| pages -> pages-json, prose: peak memory (MB) | 27.2 | goal: <= 64.0 | PASS |
+| pages-json -> pages, prose (16.1 MB): throughput (MB/s of input) | 285.3 | goal: 50 | PASS |
+| pages-json -> pages, prose: peak memory (MB) | 30.3 | goal: <= 64.0 | PASS |
+
 ### 2026-09-24, typed decode of the attribute tables
 
 commit: 08c4de5
