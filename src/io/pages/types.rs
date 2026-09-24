@@ -720,7 +720,7 @@ const TYPES: &[(u32, &str)] = &[
     (10140, "TP.MoveMasterDrawableZOrderCommandArchive"),
     (10141, "TP.SwapDrawableZOrderCommandArchive"),
     (10142, "TP.RemoveAnchoredDrawableCommandArchive"),
-    (10143, "TP.PageMasterArchive"),
+    (10143, "TP.SectionTemplateArchive"),
     (10147, "TP.UIStateArchive"),
     (10148, "TP.ChangeCTVisibilityCommandArchive"),
     (10149, "TP.TrackChangesCommandArchive"),

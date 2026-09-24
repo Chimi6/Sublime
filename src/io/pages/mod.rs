@@ -3,6 +3,15 @@
 //! (TST) archives. This module holds what is specific to Pages: the type
 //! registry and, as they are mapped, the readers for its archives.
 
+pub mod package;
+pub mod schema;
 pub mod types;
 
+pub use package::{Entry, Object, ObjectMessage, Package, PackageError};
 pub use types::type_name;
+
+/// Schema of a message type, when the registry and the schema both know it.
+pub fn message_schema(message_type: u32) -> Option<&'static crate::io::protobuf::schema::Message> {
+    let name = type_name(message_type)?;
+    crate::io::protobuf::schema::find_message(schema::MESSAGES, name)
+}
