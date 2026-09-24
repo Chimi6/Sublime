@@ -6,6 +6,14 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- Sublime in the browser: `wasm/` builds the whole converter as a WebAssembly module (`sublime.wasm`, 681 KB, 282 KB gzipped) with a small ES module (`sublime.js`) that loads it and exposes `convert`, `formats`, `paths`, and `formatFor`, plus a working page (`index.html`). Every format and path the command line has runs on the visitor's machine. CI builds the module, runs its smoke test under node, and checks it against `wasm/size-budget`; every release publishes `sublime-<version>-wasm.zip` beside the binaries from the same commit, and the release workflow refuses a tag whose two crate versions differ.
+
+### Changed
+
+- The planner runs a multi-hop plan through in-memory buffers where there are no threads (`planner::execute_in_memory`, chosen on `wasm32`); the threaded chain moved to `planner::chain` and is compiled out there.
+
 ## [0.6.1] - 2026-09-24
 
 A performance release for the Pages paths, measured pair by pair in
