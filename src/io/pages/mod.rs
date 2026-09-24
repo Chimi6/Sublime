@@ -10,7 +10,7 @@ pub mod schema;
 pub mod types;
 
 pub use document::read_document;
-pub use package::{Entry, Object, ObjectMessage, Package, PackageError, Stream};
+pub use package::{Entry, Object, ObjectMessage, Package, PackageError, Scope, Stream};
 pub use types::type_name;
 
 /// Schema of a message type, when the registry and the schema both know it.

@@ -340,6 +340,8 @@ pub struct Reader<'p> {
     resolved_characters: Vec<(Option<StyleId>, Option<Id>)>,
     /// Change objects -> interned revisions.
     revision_ids: HashMap<u64, usize>,
+    /// Run boundaries of the paragraph being split, reused.
+    boundary_scratch: Vec<usize>,
     /// Tables met inside the paragraph being read; they go before it.
     pending_blocks: Vec<Block>,
     /// Table of contents entries met inside the paragraph; they follow it.
@@ -382,6 +384,7 @@ pub fn read_document(package: &Package) -> Document {
         resolved_character: HashMap::new(),
         resolved_characters: Vec::new(),
         revision_ids: HashMap::new(),
+        boundary_scratch: Vec::new(),
         pending_blocks: Vec::new(),
         following_blocks: Vec::new(),
         media: HashMap::new(),
@@ -989,7 +992,8 @@ impl Reader<'_> {
         // Split the text at every boundary of the character style, link,
         // attachment, and change tables, and at the special characters.
         let paragraph_unit_end = unit_start + text.encode_utf16().count();
-        let mut boundaries: Vec<usize> = Vec::new();
+        let mut boundaries = std::mem::take(&mut self.boundary_scratch);
+        boundaries.clear();
         for table in [
             character_styles,
             smart_fields,
@@ -1004,9 +1008,12 @@ impl Reader<'_> {
         }
         boundaries.sort_unstable();
         boundaries.dedup();
+        paragraph.runs.reserve(boundaries.len() + 1);
+        let tracked = !insertions.is_empty() || !deletions.is_empty();
         let mut position_bytes = byte_start;
         let mut position_units = unit_start;
         let mut piece_start = 0usize;
+        let mut piece_start_units = unit_start;
         let mut boundary_index = 0usize;
         for (index, ch) in text.char_indices() {
             let unit = position_units;
@@ -1014,16 +1021,18 @@ impl Reader<'_> {
                 boundary_index < boundaries.len() && boundaries[boundary_index] == unit;
             let special = matches!(ch, LINE_SEPARATOR | '\t' | ATTACHMENT | FOOTNOTE_MARK);
             if (at_boundary || special) && piece_start < index {
-                let piece_units = position_units - text[piece_start..index].encode_utf16().count();
                 self.push_text_run(
                     &mut paragraph,
                     &text[piece_start..index],
-                    piece_units,
+                    piece_start_units,
                     character_styles,
                     smart_fields,
                 );
-                self.mark_revision(&mut paragraph, piece_units, insertions, deletions);
+                if tracked {
+                    self.mark_revision(&mut paragraph, piece_start_units, insertions, deletions);
+                }
                 piece_start = index;
+                piece_start_units = unit;
             }
             while boundary_index < boundaries.len() && boundaries[boundary_index] <= unit {
                 boundary_index += 1;
@@ -1039,26 +1048,31 @@ impl Reader<'_> {
                 );
                 if let Some(run) = run {
                     paragraph.runs.push(run);
-                    self.mark_revision(&mut paragraph, unit, insertions, deletions);
+                    if tracked {
+                        self.mark_revision(&mut paragraph, unit, insertions, deletions);
+                    }
                 }
                 piece_start = index + ch.len_utf8();
+                piece_start_units = unit + ch.len_utf16();
             }
             position_units += ch.len_utf16();
             position_bytes += ch.len_utf8();
             let _ = offsets;
         }
         if piece_start < text.len() {
-            let piece_units = position_units - text[piece_start..].encode_utf16().count();
             self.push_text_run(
                 &mut paragraph,
                 &text[piece_start..],
-                piece_units,
+                piece_start_units,
                 character_styles,
                 smart_fields,
             );
-            self.mark_revision(&mut paragraph, piece_units, insertions, deletions);
+            if tracked {
+                self.mark_revision(&mut paragraph, piece_start_units, insertions, deletions);
+            }
         }
         let _ = position_bytes;
+        self.boundary_scratch = boundaries;
         paragraph
     }
 

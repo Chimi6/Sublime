@@ -1,6 +1,6 @@
 # Pages -> Markdown
 
-**Latest** (2026-09-24, slim model: pages -> markdown 24.9 MB/s of input on the dense shape and 22.1 on prose, at 75.0 and 45.1 MB peak; the prose memory goal passes; the rest FAIL, see Conclusions and `STATE.md`)
+**Latest** (2026-09-24, phase 3: pages -> markdown 26.3 MB/s of input on the dense shape and 25.1 on prose, at 70.0 and 41.6 MB peak; styled throughput FAIL, styled memory FAIL, prose throughput FAIL, prose memory PASS; see Conclusions and `STATE.md`)
 
 ## Purpose
 
@@ -68,6 +68,20 @@ in-process runs; inputs come from the `pages-json` pair's generator.
 
 ## Results
 
+### 2026-09-24, reachable decode and fast deflate
+
+commit: b6dfbef
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Phase 3: the document paths decode only the objects reached from the document root (the stylesheet, theme, and view-state hubs are not expanded), the fast deflate level walks one candidate and skips indexing inside long matches, the Word XML drops `w:szCs` and the preserve attribute where nothing needs it, and the paragraph splitter reuses its scratch and no longer recounts UTF-16 units per run. Same inputs as the blocks below.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> markdown, styled (2.5 MB): throughput (MB/s of input) | 26.3 | goal: 50 | FAIL |
+| pages -> markdown, styled: peak memory (MB) | 70.0 | goal: <= 64.0 | FAIL |
+| pages -> markdown, prose (1.5 MB): throughput (MB/s of input) | 25.1 | goal: 50 | FAIL |
+| pages -> markdown, prose: peak memory (MB) | 41.6 | goal: <= 64.0 | PASS |
+
 ### 2026-09-24, slim document model
 
 commit: b8c1a66
@@ -96,12 +110,12 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 
 ## Conclusions
 
-- Both goals fail on both shapes: a third of the throughput goal, and
-  2.2x the memory goal on the dense shape (the prose shape is within a
-  megabyte of it). The writer is cheap; the cost is the document model the
-  reader builds and the package decode, shared with every document path
-  and diagnosed in `pages-docx.md`.
-- The reader levers there (slimmer run, decode on lookup) carry this pair
-  with them; once the model is fixed the pair should pass with room, since
-  it writes 3.4 MB of Markdown where the Word path writes and deflates
-  30 MB of XML.
+- After the three phases the dense shape stands at about 27 MB/s and 70 MB
+  (from 15 MB/s and 142 MB) and the prose shape at 25 to 30 MB/s and 42 MB
+  (from 18 and 65); prose passes memory. The Markdown writer is a few
+  milliseconds; what remains is the package decode of the body (26 ms
+  in-process on the dense shape) and the document build (30 ms), shared
+  with every document path and analysed in `pages-docx.md`.
+- A real resume converts in 3 ms at 4.8 MB peak, inside both goals; the
+  synthetic dense shape misses throughput by half. The levers that remain
+  are the reader's and are recorded in `STATE.md`.

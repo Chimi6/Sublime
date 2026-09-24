@@ -4,11 +4,12 @@
 //! exact bytes of the streams they came from (the ZIP and Snappy layers
 //! are rebuilt, so those bytes differ, their contents do not).
 
+use std::collections::HashMap;
 use std::fmt;
 
 use super::schema::SCHEMA;
 use super::{message_schema, type_name};
-use crate::io::iwa::{IwaError, decompress_stream, parse_objects};
+use crate::io::iwa::{IwaError, IwaObject, decompress_stream, parse_objects};
 use crate::io::protobuf::tree::{NONE, Node, Tree, TreeError, write_varint};
 use crate::io::snappy::compress_block;
 use crate::io::zip::{ZipArchive, ZipError, ZipWriter};
@@ -103,24 +104,84 @@ pub struct Package {
     pub entries: Vec<Entry>,
 }
 
+/// How much of the package to decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Every object of every stream: the lossless form.
+    Everything,
+    /// The objects a document reader reaches from the document root, the
+    /// package metadata, and the calculation engine, following object
+    /// references but never through the hubs (the stylesheet, the theme,
+    /// view and layout state) whose members are reached one by one from
+    /// the text. A typical document uses seventy of its six hundred
+    /// objects; the rest are presets and are left undecoded.
+    Document,
+}
+
+/// Object types the document walk starts from.
+const ROOT_TYPES: [u32; 3] = [10000, 11006, 4000];
+/// Object types whose references are not followed: hubs that list every
+/// style, theme preset, or view state in the package.
+const HUB_TYPES: [u32; 7] = [401, 10001, 210, 10133, 10131, 10147, 213];
+
 impl Package {
     pub fn read(bytes: &[u8]) -> Result<Package, PackageError> {
+        Package::read_scope(bytes, Scope::Everything)
+    }
+
+    pub fn read_scope(bytes: &[u8], scope: Scope) -> Result<Package, PackageError> {
         let archive = ZipArchive::parse(bytes)?;
-        let mut entries = Vec::new();
-        let mut data = Vec::new();
+        // Every entry is read first; the reachable set needs all streams'
+        // object headers before any stream is decoded.
+        let mut raw: Vec<(String, Vec<u8>, bool)> = Vec::new();
         for entry in archive.entries() {
             if entry.is_directory() {
                 continue;
             }
-            data.clear();
+            let mut data = Vec::new();
             archive.read(entry, &mut data)?;
-            if entry.name.ends_with(".iwa") {
-                entries.push(Entry::Stream(decode_stream(&entry.name, &data)?));
+            let is_stream = entry.name.ends_with(".iwa");
+            if is_stream {
+                let decompressed = decompress_stream(&data).map_err(|error| PackageError::Iwa {
+                    stream: entry.name.clone(),
+                    error,
+                })?;
+                raw.push((entry.name.clone(), decompressed, true));
             } else {
-                entries.push(Entry::File {
-                    name: entry.name.clone(),
-                    bytes: data.clone(),
-                });
+                raw.push((entry.name.clone(), data, false));
+            }
+        }
+        let mut parsed: Vec<Option<Vec<IwaObject<'_>>>> = Vec::with_capacity(raw.len());
+        for (name, bytes, is_stream) in &raw {
+            if *is_stream {
+                let objects = parse_objects(bytes).map_err(|error| PackageError::Iwa {
+                    stream: name.clone(),
+                    error,
+                })?;
+                parsed.push(Some(objects));
+            } else {
+                parsed.push(None);
+            }
+        }
+        let reachable = match scope {
+            Scope::Everything => None,
+            Scope::Document => Some(reachable_objects(&parsed)),
+        };
+        let mut entries = Vec::with_capacity(raw.len());
+        for ((name, bytes, _), objects) in raw.iter().zip(parsed) {
+            match objects {
+                Some(objects) => {
+                    let keep = |identifier: u64| {
+                        reachable
+                            .as_ref()
+                            .is_none_or(|set| set.contains_key(&identifier))
+                    };
+                    entries.push(Entry::Stream(decode_objects(name, bytes, objects, keep)?));
+                }
+                None => entries.push(Entry::File {
+                    name: name.clone(),
+                    bytes: bytes.clone(),
+                }),
             }
         }
         Ok(Package { entries })
@@ -154,6 +215,38 @@ impl Package {
     }
 }
 
+/// The identifiers a document reader reaches (see `Scope::Document`).
+/// The maps use the `u64 -> usize` shape the rest of the crate already
+/// instantiates, so they add no code to the binary.
+fn reachable_objects(streams: &[Option<Vec<IwaObject<'_>>>]) -> HashMap<u64, usize> {
+    let objects: Vec<&IwaObject<'_>> = streams.iter().flatten().flatten().collect();
+    let mut index: HashMap<u64, usize> = HashMap::with_capacity(objects.len());
+    let mut pending: Vec<u64> = Vec::new();
+    for (position, object) in objects.iter().enumerate() {
+        index.insert(object.identifier, position);
+        if ROOT_TYPES.contains(&object.message_type().unwrap_or(0)) {
+            pending.push(object.identifier);
+        }
+    }
+    let mut reachable: HashMap<u64, usize> = HashMap::new();
+    while let Some(identifier) = pending.pop() {
+        let Some(position) = index.get(&identifier) else {
+            continue;
+        };
+        if reachable.insert(identifier, *position).is_some() {
+            continue;
+        }
+        let object = objects[*position];
+        if HUB_TYPES.contains(&object.message_type().unwrap_or(0)) {
+            continue;
+        }
+        for message in &object.messages {
+            pending.extend(message.object_references.iter().copied());
+        }
+    }
+    reachable
+}
+
 /// Decodes one `.iwa` entry.
 pub fn decode_stream(name: &str, compressed: &[u8]) -> Result<Stream, PackageError> {
     let bytes = decompress_stream(compressed).map_err(|error| PackageError::Iwa {
@@ -164,12 +257,32 @@ pub fn decode_stream(name: &str, compressed: &[u8]) -> Result<Stream, PackageErr
         stream: name.to_string(),
         error,
     })?;
+    decode_objects(name, &bytes, raw_objects, |_| true)
+}
+
+/// Decodes the objects `keep` selects into a stream; the others keep
+/// their identifier with no messages, so lookups by identifier still
+/// resolve and readers see them as absent.
+fn decode_objects(
+    name: &str,
+    bytes: &[u8],
+    raw_objects: Vec<IwaObject<'_>>,
+    keep: impl Fn(u64) -> bool,
+) -> Result<Stream, PackageError> {
     let info_schema = SCHEMA.message("TSP.ArchiveInfo");
     let mut tree = Tree::new(&SCHEMA);
     tree.entries.reserve(bytes.len() / 8);
     tree.text.reserve(bytes.len() / 2);
     let mut objects = Vec::with_capacity(raw_objects.len());
     for raw in raw_objects {
+        if !keep(raw.identifier) {
+            objects.push(Object {
+                identifier: raw.identifier,
+                info: NONE,
+                messages: Vec::new(),
+            });
+            continue;
+        }
         let info = tree
             .decode(raw.info, info_schema)
             .map_err(|error| PackageError::Tree {
