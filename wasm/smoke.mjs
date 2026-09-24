@@ -29,6 +29,13 @@ check(text.startsWith("# Text Styles"), "pages -> markdown starts with the title
 const events = sublime.convert(pages, "pages", "markdown-json");
 check(events.status.startsWith("converted") && events.bytes.length > 100, `pages -> markdown-json: ${events.status} ${events.message}`);
 
+// Word input: Apple's own export of the lists fixture reads back as Markdown.
+const word = new Uint8Array(readFileSync("tests/fixtures/pages/reference/lists.docx"));
+const fromWord = sublime.convert(word, "docx", "markdown");
+check(fromWord.status === "converted-with-loss", `docx -> markdown status ${fromWord.status}: ${fromWord.message}`);
+check(new TextDecoder().decode(fromWord.bytes).startsWith("# Lists"), "docx -> markdown starts with the title");
+check(new TextDecoder().decode(fromWord.bytes).includes("  - Nested bullet under the second\n"), "docx -> markdown keeps nested lists");
+
 const csv = new TextEncoder().encode("a,b\n1,2\n");
 const json = sublime.convert(csv, "csv", "json");
 check(new TextDecoder().decode(json.bytes).includes("\"a\""), "csv -> json");

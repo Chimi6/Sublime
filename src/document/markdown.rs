@@ -219,6 +219,13 @@ impl<'a> Emitter<'a, '_> {
             };
             runs.push((run, wanted));
         }
+        // A break at the very end of a paragraph breaks nothing.
+        while runs
+            .last()
+            .is_some_and(|(run, _)| matches!(run.content, Inline::LineBreak))
+        {
+            runs.pop();
+        }
         let mut open_link: Option<&'a str> = None;
         let mut open = Formatting::default();
         for (index, (run, wanted)) in runs.iter().enumerate() {

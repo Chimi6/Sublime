@@ -1,0 +1,63 @@
+# Word -> HTML
+
+**Latest** (2026-09-24, first release of the Word reader: docx -> html 147.4 MB/s of uncompressed input on the dense shape and 162.3 on prose, at 47.1 and 26.0 MB peak; every line PASSES)
+
+## Purpose
+
+A Word document read into the document model and projected into the
+Markdown event stream, which the HTML writer renders. The reader is the same
+as the text pair's (`docx-text.md`, which also carries the peer
+reference); this pair adds the HTML writer's cost on top.
+
+## Pass lines
+
+Throughput >= 50 MB/s of uncompressed input and peak memory <= 64 MB on
+the benchmark inputs: the goals every Pages pair shares
+(`pages-json.md`), applied to Word input with the standard's
+compressed-input measure (`README.md`). No peer implementation of
+Word -> HTML in Rust is measured; the reader's own reference is in the
+text pair.
+
+## Method
+
+**Machine.** Recorded with each results block from the harness's
+machine line.
+
+**Inputs.** The Pages pair's generated documents written to Word by our
+own writer (`docx-text.md`, Method): 0.5 and 0.2 MB on disk, 14.9 and
+7.5 MB uncompressed, 55,000 and 30,000 paragraphs.
+
+**Statistics.** `bench/run.sh docx-html`: three runs per command, median
+wall clock of the whole process, peak resident memory from GNU `time`,
+throughput over the uncompressed bytes of the package with the
+per-file-byte rate as an extra row. Rows and units follow `README.md`.
+
+**Commands.** Per shape:
+
+- ours: `sublime -q convert styled.docx styled.html --to html`
+
+## Threats to validity
+
+As in `docx-text.md`: the inputs are our own writer's output, so real
+Word files with larger style sheets and more properties per run will
+read somewhat slower; repeated text makes the per-file-byte row read low.
+
+## Results
+
+### 2026-09-24, first release of the Word reader
+
+commit: 58d9829 (the reader's working tree, before its commit)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| docx -> html, styled (14.9 MB uncompressed): throughput (MB/s of uncompressed input) | 147.4 | goal: 50 | PASS |
+| docx -> html, styled (.5 MB file): throughput (MB/s of file bytes) [extra] | 4.9 | recorded | n/a |
+| docx -> html, styled: peak memory (MB) | 47.1 | goal: <= 64.0 | PASS |
+| docx -> html, prose (7.5 MB uncompressed): throughput (MB/s of uncompressed input) | 162.3 | goal: 50 | PASS |
+| docx -> html, prose (.2 MB file): throughput (MB/s of file bytes) [extra] | 4.7 | recorded | n/a |
+| docx -> html, prose: peak memory (MB) | 26.0 | goal: <= 64.0 | PASS |
+
+## Conclusions
+
+Both shapes pass both goals with room, within a few percent of the text pair: the HTML writer's escaping is a bulk scan and costs almost nothing over the reader. Memory is the reader's; the writer streams.
