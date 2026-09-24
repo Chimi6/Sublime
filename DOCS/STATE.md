@@ -6,7 +6,7 @@ describes.
 
 ## Now
 
-- 2026-09-24: Apple Pages, the flagship. The package reader, the lossless `pages-json` form, the document reader into the document model (`src/document`), the Word writer, and the Markdown event projection are in: `pages -> docx` matches Apple's own export paragraph for paragraph on 23 of 28 fixtures, and Pages reaches Markdown, HTML, text, and Markdown JSON through the model. Released as 0.6.0. Map in `DOCS/formats/pages.md`, fixtures in `tests/fixtures/pages/`.
+- 2026-09-24: Apple Pages, the flagship. The package reader, the lossless `pages-json` form, the document reader into the document model (`src/document`), the Word writer, and the Markdown event projection are in: `pages -> docx` matches Apple's own export paragraph for paragraph on 23 of 28 fixtures, and Pages reaches Markdown, HTML, text, and Markdown JSON through the model. Released as 0.6.0, with the performance work as 0.6.1. Map in `DOCS/formats/pages.md`, fixtures in `tests/fixtures/pages/`.
 - 2026-09-23: Format roadmap in `DOCS/ROADMAP.md`: every tentative format by category with a status and a priority tier (S to D, mixing value, difficulty, and novelty), plus the keystones (inflate, XML, ZIP, PNG, protobuf) that unlock whole categories.
 
 ## Next
@@ -83,6 +83,7 @@ describes.
 
 ## Done
 
+- 2026-09-24: Pages performance released as 0.6.1: slim document model, streamed Word body, reachable decode, typed attribute tables, interned Word styles, reader cursors; benchmark pairs and documents for every Pages path with the compressed-output standard.
 - 2026-09-24: Pages document paths released as 0.6.0: `pages -> docx` matching Apple's export on 23 of 28 fixtures, and `pages -> markdown`, `html`, `text`, `markdown-json` through the document model.
 - 2026-09-23: Markdown finished as 0.3.0: Markdown writer (round-trips every specification example), Markdown -> plain text, Markdown <-> events as JSON, all faster and leaner than the reference pipelines.
 - 2026-09-23: Markdown -> HTML released as 0.2.0: full CommonMark plus GFM extensions and footnotes, all specification examples passing, faster and leaner than `pulldown-cmark` on the benchmark input.
