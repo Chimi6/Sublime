@@ -1,1 +1,1 @@
-Native Drawn ObjectsShapes, a line, and a chart, each authored by AppleScript.
+Native Drawn ObjectsA group, a shape, a line, and a chart, authored by AppleScript.

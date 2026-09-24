@@ -141,29 +141,51 @@ on buildNative(sourcesDir, fixturesDir, referenceDir)
 end buildNative
 
 -- A second scripted document holding drawn objects Pages creates natively:
--- a shape with text, a straight line, and a chart with data. Grouping is not
--- in Pages' scripting dictionary (there is no `group` command), so a group is
--- not included; add one by hand if the map needs it.
+-- a grouped pair of shapes, a shape with text, a straight line, and a chart.
+-- Pages' scripting dictionary has no `group` command, so the group is made
+-- through the keyboard (Select All, then Group) via System Events; this needs
+-- Accessibility permission for the terminal in addition to Automation.
 on buildNativeObjects(sourcesDir, fixturesDir, referenceDir)
 	tell application "Pages"
+		activate
 		set theDocument to make new document with properties {document template:template "Blank"}
 		delay 1
+		-- Group two shapes first, before any body text exists, so Select All
+		-- catches exactly them and not the text. Setting the body text before
+		-- this would put focus in the text and Select All would select text.
+		try
+			tell page 1 of theDocument
+				make new shape with properties {object text:"Group A", position:{72, 130}, width:110, height:80}
+				make new shape with properties {object text:"Group B", position:{220, 130}, width:110, height:80}
+			end tell
+			delay 0.5
+			tell application "System Events"
+				tell process "Pages"
+					key code 53 -- Escape: leave any text editing
+					delay 0.3
+					keystroke "a" using {command down} -- select all objects
+					delay 0.3
+					keystroke "g" using {command down, option down} -- group
+					delay 0.5
+				end tell
+			end tell
+		end try
 		tell theDocument
-			set body text to "Native Drawn Objects" & return & "Shapes, a line, and a chart, each authored by AppleScript."
+			set body text to "Native Drawn Objects" & return & "A group, a shape, a line, and a chart, authored by AppleScript."
 		end tell
 		try
 			tell page 1 of theDocument
-				make new shape with properties {object text:"A shape with text.", position:{72, 140}, width:220, height:110}
+				make new shape with properties {object text:"A lone shape with text.", position:{72, 260}, width:220, height:90}
 			end tell
 		end try
 		try
 			tell page 1 of theDocument
-				make new line with properties {start point:{72, 300}, end point:{400, 300}}
+				make new line with properties {start point:{72, 380}, end point:{400, 380}}
 			end tell
 		end try
 		try
 			tell page 1 of theDocument
-				make new chart with data {{10, 20, 30}, {15, 25, 35}} with properties {position:{72, 360}}
+				make new chart with data {{10, 20, 30}, {15, 25, 35}} with properties {position:{72, 430}}
 			end tell
 		end try
 		my saveAndExport(theDocument, fixturesDir, referenceDir, "native-objects")
