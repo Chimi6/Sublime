@@ -28,7 +28,7 @@ describes.
 ## Blockers
 
 - 2026-09-24: The Pages document paths fail their benchmark pass lines (`DOCS/benchmarks/pages-docx.md`, `pages-markdown.md`, `pages-html.md`, `pages-text.md`): throughput a third to a half of the package round trip on the same input, peak memory 2.3x to 5.2x. Causes measured: a 224-byte run struct with cloned font and language strings (48 MB of model for 170,000 runs), the Word body held whole before Deflate (30 MB), and the package decoding 570 objects to use 70. Fix for 0.6.1: intern strings in the style table and slim the run, stream the Word body through the compressor, decode objects on lookup.
-- 2026-09-24: `pages-json -> pages` misses its line by 21 percent (`DOCS/benchmarks/pages-json.md`): the Snappy compressor tuned for ratio and the JSON tokenizer. Candidate: a faster match mode for the rebuild.
+- 2026-09-24: The `pages-json` pair fails its four-times-the-floor line in both directions once the floors are measured stably (`DOCS/benchmarks/pages-json.md`): forward 5.2x and 4.1x an unzip-and-decompress floor (`Tree::decode`, then the JSON writer), reverse 4.2x and 4.5x a compress-and-zip floor (the JSON tokenizer and the ratio-tuned Snappy compressor). Levers: cheaper tree decode and JSON field writes; a faster Snappy match mode for the rebuild.
 
 ## Tech Debt
 
