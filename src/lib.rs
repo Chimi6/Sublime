@@ -6,6 +6,7 @@
 pub mod cli;
 pub mod converter;
 pub mod converters;
+pub mod document;
 pub mod event;
 pub mod format;
 #[cfg(feature = "dev-tools")]
