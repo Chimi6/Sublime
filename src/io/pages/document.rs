@@ -245,8 +245,16 @@ impl<'p> View<'p> {
 
 /// A run of an attribute table: from `start` to the next entry.
 struct Span {
-    start: usize,
-    object: Option<u64>,
+    /// UTF-16 unit offset the entry starts at.
+    start: u32,
+    /// The entry's object; Pages never uses identifier zero.
+    object: Option<std::num::NonZeroU64>,
+}
+
+impl Span {
+    fn object(&self) -> Option<u64> {
+        self.object.map(std::num::NonZeroU64::get)
+    }
 }
 
 #[inline(never)]
@@ -262,8 +270,10 @@ fn attribute_table(view: &View<'_>, name: &str) -> Vec<Span> {
         .messages("entries")
         .iter()
         .map(|entry| Span {
-            start: entry.integer("character_index").unwrap_or(0) as usize,
-            object: entry.reference("object"),
+            start: entry.integer("character_index").unwrap_or(0) as u32,
+            object: entry
+                .reference("object")
+                .and_then(std::num::NonZeroU64::new),
         })
         .collect()
 }
@@ -298,7 +308,10 @@ fn parse_attribute_table(bytes: &[u8]) -> Vec<Span> {
                 _ => {}
             }
         }
-        spans.push(Span { start, object });
+        spans.push(Span {
+            start: start as u32,
+            object: object.and_then(std::num::NonZeroU64::new),
+        });
     }
     spans
 }
@@ -396,12 +409,10 @@ struct Cursor {
 impl Cursor {
     #[inline(never)]
     fn at(&mut self, spans: &[Span], position: usize) -> Option<u64> {
-        while self.index < spans.len() && spans[self.index].start <= position {
+        while self.index < spans.len() && spans[self.index].start as usize <= position {
             self.index += 1;
         }
-        spans
-            .get(self.index.wrapping_sub(1))
-            .and_then(|span| span.object)
+        spans.get(self.index.wrapping_sub(1)).and_then(Span::object)
     }
 
     #[inline(never)]
@@ -432,8 +443,8 @@ struct Cursors {
 
 /// The entries of a table that start inside `[from, to)`.
 fn within(spans: &[Span], from: usize, to: usize) -> &[Span] {
-    let first = spans.partition_point(|span| span.start < from);
-    let end = spans.partition_point(|span| span.start < to);
+    let first = spans.partition_point(|span| (span.start as usize) < from);
+    let end = spans.partition_point(|span| (span.start as usize) < to);
     &spans[first..end.max(first)]
 }
 
@@ -653,10 +664,10 @@ impl Reader<'_> {
         for (start, block) in paragraphs {
             let section_here = within(&section_starts, start, start + 1)
                 .last()
-                .and_then(|span| span.object);
+                .and_then(Span::object);
             let layout_here = within(&layout_starts, start, start + 1)
                 .last()
-                .and_then(|span| span.object);
+                .and_then(Span::object);
             let is_boundary =
                 (section_here.is_some() || layout_here.is_some()) && boundary_done != start;
             if is_boundary {
@@ -1167,12 +1178,12 @@ impl Reader<'_> {
         for (table, cursor) in tables.iter().zip(self.cursors.boundaries.iter_mut()) {
             // Paragraphs come in text order, so each table's cursor only
             // ever moves forward.
-            while cursor.index < table.len() && table[cursor.index].start <= unit_start {
+            while cursor.index < table.len() && table[cursor.index].start as usize <= unit_start {
                 cursor.index += 1;
             }
             let mut probe = cursor.index;
-            while probe < table.len() && table[probe].start < paragraph_unit_end {
-                boundaries.push(table[probe].start);
+            while probe < table.len() && (table[probe].start as usize) < paragraph_unit_end {
+                boundaries.push(table[probe].start as usize);
                 probe += 1;
             }
         }
@@ -1423,8 +1434,8 @@ impl Reader<'_> {
                 let object = footnotes
                     .iter()
                     .chain(attachments)
-                    .find(|span| span.start == unit)
-                    .and_then(|span| span.object)?;
+                    .find(|span| span.start as usize == unit)
+                    .and_then(Span::object)?;
                 self.attachment(object)?
             }
             _ => return None,
