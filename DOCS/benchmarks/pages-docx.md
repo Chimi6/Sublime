@@ -1,5 +1,7 @@
 # Pages -> Word
 
+**Latest** (2026-09-24: pages -> docx runs at 10.1 MB/s of input on the dense shape and 13.0 MB/s on prose, at 232.0 and 112.9 MB peak; both lines FAIL against our own package round trip (about 31 and 35 MB/s, 45 and 27 MB). Blockers and the 0.6.1 plan are in `STATE.md`)
+
 ## Purpose
 
 The conversion the flagship is for: a Pages document as a Word file, with its styles by name, lists, tables, images, headers and footers, and tracked changes. It has to feel instant on a resume and stay inside the binary's memory habits on a book.
@@ -16,8 +18,6 @@ The memory line is the same reference's peak.
 |---|---|
 | `pages -> docx` throughput (MB/s of the package) | >= `pages -> pages-json` on the same input |
 | Peak resident memory | <= `pages -> pages-json` on the same input |
-| Binary size | within `size-budget` (gnu, what CI checks); the musl release asset is recorded |
-| Startup above spawn floor | < 1 ms (binary-wide) |
 
 ## Method
 
@@ -79,6 +79,20 @@ for in-process runs; inputs come from the `pages-json` pair's generator.
   writer's. That is intended: the model is what must earn its keep.
 
 ## Results
+
+### 2026-09-24, standard rows
+
+commit: c60d037
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Same inputs and commit as the block below, re-run with the standard row names and units (`DOCS/benchmarks/README.md`); the numbers are within run noise of it.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> docx, styled (2.5 MB): throughput (MB/s of input) | 10.1 | 30.1 our pages -> pages-json on the same input; line: not slower | FAIL |
+| pages -> docx, styled: peak memory (MB) | 232.0 | 44.5 our pages -> pages-json on the same input; line: not more | FAIL |
+| pages -> docx, prose (1.5 MB): throughput (MB/s of input) | 13.0 | 32.8 our pages -> pages-json on the same input; line: not slower | FAIL |
+| pages -> docx, prose: peak memory (MB) | 112.9 | 27.5 our pages -> pages-json on the same input; line: not more | FAIL |
 
 ### 2026-09-24
 

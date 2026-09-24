@@ -10,8 +10,8 @@ cd "$(dirname "$0")/.."
 
 pair="${1:-}"
 rows="${2:-10000000}"
-if [ -z "$pair" ] || [ ! -f "bench/pairs/${pair}.sh" ]; then
-  echo "usage: bench/run.sh <pair> [rows]" >&2
+if [ -z "$pair" ] || { [ "$pair" != binary ] && [ ! -f "bench/pairs/${pair}.sh" ]; }; then
+  echo "usage: bench/run.sh <pair> [rows]   or   bench/run.sh binary" >&2
   echo "pairs: $(ls bench/pairs | sed 's/\.sh$//' | tr '\n' ' ')" >&2
   exit 4
 fi
@@ -44,6 +44,7 @@ time_cmd() {
   echo "$label $median $rss"
 }
 mbps() { echo "scale=1; $1 / $2 / 1048576" | bc -l; }
+mb() { echo "scale=1; $1 / 1048576" | bc -l; }
 seconds_of() { echo "$1" | awk '{print $2}'; }
 rss_of() { echo "$1" | awk '{print $3}'; }
 rss_mb() { echo "scale=1; $1 / 1024" | bc -l; }
@@ -54,27 +55,30 @@ echo
 echo "| Target | Ours | Reference | Result |"
 echo "|---|---|---|---|"
 
-# The pair script defines run_pair, which prints its table rows.
-# shellcheck source=/dev/null
-source "bench/pairs/${pair}.sh"
-run_pair
-
-echo "== binary size" >&2
-size_bytes="$(wc -c < "$sublime" | tr -d ' ')"
-size_budget="$(tr -d '[:space:]' < size-budget)"
-row "Binary size, gnu (bytes)" "$size_bytes" "<= ${size_budget} (size-budget, what CI checks)" "$(pass "$(echo "$size_bytes <= $size_budget" | bc -l)")"
-if command -v rustup >/dev/null && rustup target list --installed | grep -q x86_64-unknown-linux-musl; then
-  cargo build --release --quiet --target x86_64-unknown-linux-musl
-  musl_bytes="$(wc -c < target/x86_64-unknown-linux-musl/release/sublime | tr -d ' ')"
-  row "Binary size, musl static (bytes, the release asset)" "$musl_bytes" "recorded" "n/a"
+# The pair script defines run_pair, which prints its table rows in the
+# standard form (DOCS/benchmarks/README.md): one throughput row and one
+# peak memory row per direction and input shape. `binary` prints the
+# binary-wide rows instead (size, startup), recorded in binary.md per
+# release rather than in every pair.
+if [ "$pair" = binary ]; then
+  size_bytes="$(wc -c < "$sublime" | tr -d ' ')"
+  size_budget="$(tr -d '[:space:]' < size-budget)"
+  row "Binary size, gnu (bytes)" "$size_bytes" "<= ${size_budget} (size-budget, what CI checks)" "$(pass "$(echo "$size_bytes <= $size_budget" | bc -l)")"
+  if command -v rustup >/dev/null && rustup target list --installed | grep -q x86_64-unknown-linux-musl; then
+    cargo build --release --quiet --target x86_64-unknown-linux-musl
+    musl_bytes="$(wc -c < target/x86_64-unknown-linux-musl/release/sublime | tr -d ' ')"
+    row "Binary size, musl static (bytes, the release asset)" "$musl_bytes" "recorded" "n/a"
+  fi
+  printf 'a,b\n1,2\n' > "$data/tiny.csv"
+  startup_ms="$("$bench" startup "$sublime" "$data/tiny.csv")"
+  floor_ms="$("$bench" spawn-baseline /bin/true)"
+  above_floor="$(echo "$startup_ms - $floor_ms" | bc -l)"
+  row "Startup above spawn floor (ms, 1 KB file)" "$(printf '%.3f' "$above_floor") (spawn $(printf '%.3f' "$startup_ms"), floor $(printf '%.3f' "$floor_ms"))" "< 1" "$(pass "$(echo "$above_floor < 1" | bc -l)")"
+else
+  # shellcheck source=/dev/null
+  source "bench/pairs/${pair}.sh"
+  run_pair
 fi
-
-echo "== startup" >&2
-printf 'a,b\n1,2\n' > "$data/tiny.csv"
-startup_ms="$("$bench" startup "$sublime" "$data/tiny.csv")"
-floor_ms="$("$bench" spawn-baseline /bin/true)"
-above_floor="$(echo "$startup_ms - $floor_ms" | bc -l)"
-row "Startup above spawn floor (ms, 1 KB file)" "$(printf '%.3f' "$above_floor") (spawn $(printf '%.3f' "$startup_ms"), floor $(printf '%.3f' "$floor_ms"))" "< 1" "$(pass "$(echo "$above_floor < 1" | bc -l)")"
 
 echo
 echo "commit: $(git rev-parse --short HEAD)"

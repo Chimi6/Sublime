@@ -29,8 +29,8 @@ run_pair() {
   local os cs ops cps
   os="$(seconds_of "$ours")"; cs="$(seconds_of "$crates")"
   ops="$(seconds_of "$ours_prose")"; cps="$(seconds_of "$crates_prose")"
-  row "Markdown -> HTML throughput, markup-dense (MB/s)" "$(mbps "$md_bytes" "$os")" "$(mbps "$md_bytes" "$cs")" "$(pass "$(echo "$os <= $cs" | bc -l)")"
-  row "Markdown -> HTML throughput, prose (MB/s)" "$(mbps "$prose_bytes" "$ops")" "$(mbps "$prose_bytes" "$cps")" "$(pass "$(echo "$ops <= $cps" | bc -l)")"
-  row "Peak RSS Markdown -> HTML, markup-dense (MB)" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$crates")") (reference)" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$crates")" | bc -l)")"
-  row "Peak RSS Markdown -> HTML, prose (MB)" "$(rss_mb "$(rss_of "$ours_prose")")" "$(rss_mb "$(rss_of "$crates_prose")") (reference)" "$(pass "$(echo "$(rss_of "$ours_prose") <= $(rss_of "$crates_prose")" | bc -l)")"
+  row "markdown -> html, markup-dense ($(mb "$md_bytes") MB): throughput (MB/s of input)" "$(mbps "$md_bytes" "$os")" "$(mbps "$md_bytes" "$cs")" "$(pass "$(echo "$os <= $cs" | bc -l)")"
+  row "markdown -> html, prose ($(mb "$prose_bytes") MB): throughput (MB/s of input)" "$(mbps "$prose_bytes" "$ops")" "$(mbps "$prose_bytes" "$cps")" "$(pass "$(echo "$ops <= $cps" | bc -l)")"
+  row "markdown -> html, markup-dense: peak memory (MB)" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$crates")") (reference)" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$crates")" | bc -l)")"
+  row "markdown -> html, prose: peak memory (MB)" "$(rss_mb "$(rss_of "$ours_prose")")" "$(rss_mb "$(rss_of "$crates_prose")") (reference)" "$(pass "$(echo "$(rss_of "$ours_prose") <= $(rss_of "$crates_prose")" | bc -l)")"
 }

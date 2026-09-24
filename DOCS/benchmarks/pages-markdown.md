@@ -1,5 +1,7 @@
 # Pages -> Markdown
 
+**Latest** (2026-09-24: pages -> markdown runs at 15.0 MB/s of input on the dense shape and 18.1 MB/s on prose, at 142.4 and 64.6 MB peak; both lines FAIL against our own package round trip (about 31 and 35 MB/s, 45 and 27 MB). Blockers and the 0.6.1 plan are in `STATE.md`)
+
 ## Purpose
 
 A Pages document projected into the Markdown event stream and written as Markdown: headings, lists, formatting, links, images, tables, footnotes. It is the path into every Markdown workflow, and the projection also feeds HTML and text, so its cost is shared.
@@ -16,8 +18,6 @@ The memory line is the same reference's peak.
 |---|---|
 | `pages -> markdown` throughput (MB/s of the package) | >= `pages -> pages-json` on the same input |
 | Peak resident memory | <= `pages -> pages-json` on the same input |
-| Binary size | within `size-budget` (gnu, what CI checks); the musl release asset is recorded |
-| Startup above spawn floor | < 1 ms (binary-wide) |
 
 ## Method
 
@@ -79,6 +79,20 @@ for in-process runs; inputs come from the `pages-json` pair's generator.
   writer's. That is intended: the model is what must earn its keep.
 
 ## Results
+
+### 2026-09-24, standard rows
+
+commit: c60d037
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Same inputs and commit as the block below, re-run with the standard row names and units (`DOCS/benchmarks/README.md`); the numbers are within run noise of it.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> markdown, styled (2.5 MB): throughput (MB/s of input) | 15.0 | 31.8 our pages -> pages-json on the same input; line: not slower | FAIL |
+| pages -> markdown, styled: peak memory (MB) | 142.4 | 44.6 our pages -> pages-json on the same input; line: not more | FAIL |
+| pages -> markdown, prose (1.5 MB): throughput (MB/s of input) | 18.1 | 37.3 our pages -> pages-json on the same input; line: not slower | FAIL |
+| pages -> markdown, prose: peak memory (MB) | 64.6 | 27.2 our pages -> pages-json on the same input; line: not more | FAIL |
 
 ### 2026-09-24
 

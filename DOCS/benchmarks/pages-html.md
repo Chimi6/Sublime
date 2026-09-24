@@ -1,5 +1,7 @@
 # Pages -> HTML
 
+**Latest** (2026-09-24: pages -> html runs at 15.1 MB/s of input on the dense shape and 18.4 MB/s on prose, at 142.1 and 64.7 MB peak; both lines FAIL against our own package round trip (about 31 and 35 MB/s, 45 and 27 MB). Blockers and the 0.6.1 plan are in `STATE.md`)
+
 ## Purpose
 
 A Pages document as HTML through the Markdown event projection and the HTML writer. It is the browser view of a document, and the last step before PDF.
@@ -16,8 +18,6 @@ The memory line is the same reference's peak.
 |---|---|
 | `pages -> html` throughput (MB/s of the package) | >= `pages -> pages-json` on the same input |
 | Peak resident memory | <= `pages -> pages-json` on the same input |
-| Binary size | within `size-budget` (gnu, what CI checks); the musl release asset is recorded |
-| Startup above spawn floor | < 1 ms (binary-wide) |
 
 ## Method
 
@@ -79,6 +79,20 @@ for in-process runs; inputs come from the `pages-json` pair's generator.
   writer's. That is intended: the model is what must earn its keep.
 
 ## Results
+
+### 2026-09-24, standard rows
+
+commit: c60d037
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Same inputs and commit as the block below, re-run with the standard row names and units (`DOCS/benchmarks/README.md`); the numbers are within run noise of it.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> html, styled (2.5 MB): throughput (MB/s of input) | 15.1 | 30.3 our pages -> pages-json on the same input; line: not slower | FAIL |
+| pages -> html, styled: peak memory (MB) | 142.1 | 44.8 our pages -> pages-json on the same input; line: not more | FAIL |
+| pages -> html, prose (1.5 MB): throughput (MB/s of input) | 18.4 | 34.0 our pages -> pages-json on the same input; line: not slower | FAIL |
+| pages -> html, prose: peak memory (MB) | 64.7 | 27.6 our pages -> pages-json on the same input; line: not more | FAIL |
 
 ### 2026-09-24
 

@@ -1,5 +1,7 @@
 # Pages <-> pages-json
 
+**Latest** (2026-09-24: pages -> pages-json runs at 30 MB/s of package bytes (90 MB/s of decompressed streams) on the dense shape and 40 (174) on prose, at 45 and 27 MB peak, inside the floor line; pages-json -> pages runs at 328 MB/s of JSON, 18 percent below the forward direction, so its line FAILs)
+
 ## Purpose
 
 The lossless layer under every Pages path: the package read into
@@ -18,8 +20,21 @@ own floor and its other direction.
 | `pages -> pages-json` throughput | within four times the decompression floor: `bench pages-json floor`, which opens the ZIP and Snappy-decompresses every stream and does nothing else. Ours decodes every object into trees and writes JSON five times the stream size on top, so a factor of four is the line to hold, not a peer to beat |
 | `pages-json -> pages` throughput (MB/s of the JSON) | >= `pages -> pages-json` measured over the same JSON bytes: rebuilding the package from JSON (tokenize, encode, Snappy-compress, ZIP) must not cost more than producing it |
 | Peak resident memory, either direction | <= 64 MB on these inputs |
-| Binary size | within `size-budget` (gnu, what CI checks); the musl release asset is recorded |
-| Startup above spawn floor | < 1 ms (binary-wide) |
+
+## How to read the table
+
+Both directions are ours; nothing in the table is another tool. The
+forward rows (`pages -> pages-json`) are judged against the floor, a
+harness mode that only unzips and Snappy-decompresses the package; ours
+must stay within four times it. The reverse rows (`pages-json -> pages`)
+are judged against our own forward direction over the same bytes, so a
+FAIL there means "rebuilding the package is slower than dumping it", not
+"slower than a competitor". Throughput is always MB/s of the input file,
+so the forward rows count package bytes (compressed, 2.5 MB) and the
+reverse rows count JSON bytes (33.7 MB); the two are not comparable to
+each other, only to their own lines. The `[extra]` row restates the
+forward rate per decompressed byte, which is the number to hold against
+the text-format pairs.
 
 ## Method
 
@@ -82,6 +97,26 @@ pairs.
   35 MB of JSON; part of the gap is output volume, not decoding.
 
 ## Results
+
+### 2026-09-24, standard rows
+
+commit: c60d037
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Same inputs as the block below, re-run with the standard row names and units; forward and reverse numbers within run noise of it.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> pages-json, styled (2.5 MB): throughput (MB/s of input) | 30.2 | 85.5 floor (unzip + Snappy only); line: ours >= floor / 4 | PASS |
+| pages -> pages-json, styled: throughput (MB/s of decompressed streams, 7.5 MB) [extra] | 89.5 | 253.4 floor | n/a |
+| pages -> pages-json, styled: peak memory (MB) | 44.5 | 13.8 floor; line: <= 64 | PASS |
+| pages-json -> pages, styled (33.7 MB): throughput (MB/s of input) | 328.5 | 401.2 our pages -> pages-json over the same bytes; line: not slower | FAIL |
+| pages-json -> pages, styled: peak memory (MB) | 45.9 | line: <= 64 | PASS |
+| pages -> pages-json, prose (1.5 MB): throughput (MB/s of input) | 39.7 | 103.4 floor (unzip + Snappy only); line: ours >= floor / 4 | PASS |
+| pages -> pages-json, prose: throughput (MB/s of decompressed streams, 6.6 MB) [extra] | 174.3 | 453.4 floor | n/a |
+| pages -> pages-json, prose: peak memory (MB) | 27.1 | 10.3 floor; line: <= 64 | PASS |
+| pages-json -> pages, prose (16.1 MB): throughput (MB/s of input) | 327.5 | 421.0 our pages -> pages-json over the same bytes; line: not slower | FAIL |
+| pages-json -> pages, prose: peak memory (MB) | 30.9 | line: <= 64 | PASS |
 
 ### 2026-09-24
 
