@@ -255,8 +255,8 @@ fn attribute_table(view: &View<'_>, name: &str) -> Vec<Span> {
         .collect()
 }
 
-/// The paragraph data table: `(start, level, starts_list)` per entry.
-fn paragraph_data(view: &View<'_>) -> Vec<(usize, u8, bool)> {
+/// The paragraph data table: `(start, (level, starts_list))` per entry.
+fn paragraph_data(view: &View<'_>) -> Vec<(usize, (u8, bool))> {
     let table = match view.message("table_para_data") {
         Some(table) => table,
         None => return Vec::new(),
@@ -267,8 +267,10 @@ fn paragraph_data(view: &View<'_>) -> Vec<(usize, u8, bool)> {
         .map(|entry| {
             (
                 entry.integer("character_index").unwrap_or(0) as usize,
-                entry.integer("first").unwrap_or(0) as u8,
-                entry.integer("second").unwrap_or(0) != 0,
+                (
+                    entry.integer("first").unwrap_or(0) as u8,
+                    entry.integer("second").unwrap_or(0) != 0,
+                ),
             )
         })
         .collect()
@@ -296,13 +298,26 @@ fn paragraph_starts(view: &View<'_>) -> Vec<(usize, u32)> {
         .collect()
 }
 
-/// The entry of a table that covers `position`: the last one at or before it.
+/// The entry of a table that covers `position`: the last one at or before
+/// it. Tables are sorted by start, so this is a binary search.
 fn covering(spans: &[Span], position: usize) -> Option<u64> {
+    let count = spans.partition_point(|span| span.start <= position);
     spans
-        .iter()
-        .take_while(|span| span.start <= position)
-        .last()
+        .get(count.wrapping_sub(1))
         .and_then(|span| span.object)
+}
+
+/// The entries of a table that start inside `[from, to)`.
+fn within(spans: &[Span], from: usize, to: usize) -> &[Span] {
+    let first = spans.partition_point(|span| span.start < from);
+    let end = spans.partition_point(|span| span.start < to);
+    &spans[first..end.max(first)]
+}
+
+/// The last entry of a sorted `(start, ..)` table at or before `position`.
+fn last_at<T>(entries: &[(usize, T)], position: usize) -> Option<&(usize, T)> {
+    let count = entries.partition_point(|(start, _)| *start <= position);
+    entries.get(count.wrapping_sub(1))
 }
 
 pub struct Reader<'p> {
@@ -490,13 +505,11 @@ impl Reader<'_> {
         };
         let mut boundary_done = usize::MAX;
         for (start, block) in paragraphs {
-            let section_here = section_starts
-                .iter()
-                .find(|span| span.start == start)
+            let section_here = within(&section_starts, start, start + 1)
+                .last()
                 .and_then(|span| span.object);
-            let layout_here = layout_starts
-                .iter()
-                .find(|span| span.start == start)
+            let layout_here = within(&layout_starts, start, start + 1)
+                .last()
                 .and_then(|span| span.object);
             let is_boundary =
                 (section_here.is_some() || layout_here.is_some()) && boundary_done != start;
@@ -818,8 +831,8 @@ impl Reader<'_> {
         let mut blocks = Vec::new();
         let mut start = 0usize;
         let bytes = text.as_bytes();
-        // Character indices in Pages count UTF-16 units; the tables are
-        // converted to byte offsets as the text is walked.
+        // Character indices in Pages count UTF-16 units; a cursor walks
+        // the text once, converting byte offsets as it goes.
         let mut offsets = Utf16Offsets::new(&text);
         loop {
             // Paragraphs end at a newline, or at a carriage return in
@@ -919,7 +932,7 @@ impl Reader<'_> {
         footnotes: &[Span],
         insertions: &[Span],
         deletions: &[Span],
-        data: &[(usize, u8, bool)],
+        data: &[(usize, (u8, bool))],
         starts: &[(usize, u32)],
     ) -> Paragraph {
         let mut paragraph = Paragraph::default();
@@ -939,15 +952,9 @@ impl Reader<'_> {
         if let Some(list_object) = covering(list_styles, unit_start)
             && let Some(list) = self.resolve_list_style(list_object)
         {
-            let (level, starts_list) = data
-                .iter()
-                .take_while(|(start, _, _)| *start <= unit_start)
-                .last()
-                .map_or((0, false), |(_, level, starts)| (*level, *starts));
-            let start = starts
-                .iter()
-                .take_while(|(start, _)| *start <= unit_start)
-                .last()
+            let (level, starts_list) = last_at(data, unit_start)
+                .map_or((0, false), |(_, (level, starts))| (*level, *starts));
+            let start = last_at(starts, unit_start)
                 .map_or(1, |(_, number)| *number)
                 .max(1);
             paragraph.list = Some(ListItem {
@@ -961,15 +968,15 @@ impl Reader<'_> {
         // attachment, and change tables, and at the special characters.
         let paragraph_unit_end = unit_start + text.encode_utf16().count();
         let mut boundaries: Vec<usize> = Vec::new();
-        for span in character_styles
-            .iter()
-            .chain(smart_fields)
-            .chain(attachments)
-            .chain(footnotes)
-            .chain(insertions)
-            .chain(deletions)
-        {
-            if span.start > unit_start && span.start < paragraph_unit_end {
+        for table in [
+            character_styles,
+            smart_fields,
+            attachments,
+            footnotes,
+            insertions,
+            deletions,
+        ] {
+            for span in within(table, unit_start + 1, paragraph_unit_end) {
                 boundaries.push(span.start);
             }
         }
@@ -1880,7 +1887,12 @@ fn paragraph_properties(view: View<'_>) -> ParagraphProperties {
 /// Converts `TSWP.CharacterStylePropertiesArchive`.
 fn run_properties(view: View<'_>) -> RunProperties {
     RunProperties {
-        font: view.string("font_name").map(str::to_string),
+        // A font the document asked for but the Mac lacked is kept beside
+        // the substitute; the request is what the document means.
+        font: view
+            .string("compatibility_font_name")
+            .or_else(|| view.string("font_name"))
+            .map(str::to_string),
         size: view.float("font_size"),
         bold: view.boolean("bold"),
         italic: view.boolean("italic"),
@@ -2090,26 +2102,33 @@ fn number_format(number_type: i64) -> NumberFormat {
 }
 
 /// Maps byte offsets of a string to UTF-16 unit offsets, which is how the
-/// attribute tables count characters.
-struct Utf16Offsets {
-    /// (byte offset, unit offset) at every character start.
-    table: Vec<(usize, usize)>,
+/// attribute tables count characters. Offsets are asked for in increasing
+/// order, so a cursor over the text does it in one pass without a table.
+struct Utf16Offsets<'t> {
+    text: &'t str,
+    byte: usize,
+    units: usize,
 }
 
-impl Utf16Offsets {
-    fn new(text: &str) -> Utf16Offsets {
-        let mut table = Vec::with_capacity(text.len() + 1);
-        let mut units = 0usize;
-        for (index, ch) in text.char_indices() {
-            table.push((index, units));
-            units += ch.len_utf16();
+impl<'t> Utf16Offsets<'t> {
+    fn new(text: &'t str) -> Utf16Offsets<'t> {
+        Utf16Offsets {
+            text,
+            byte: 0,
+            units: 0,
         }
-        table.push((text.len(), units));
-        Utf16Offsets { table }
     }
 
     fn units_at(&mut self, byte: usize) -> usize {
-        let index = self.table.partition_point(|(offset, _)| *offset < byte);
-        self.table.get(index).map_or(0, |(_, units)| *units)
+        if byte < self.byte {
+            self.byte = 0;
+            self.units = 0;
+        }
+        let end = byte.min(self.text.len());
+        for ch in self.text[self.byte..end].chars() {
+            self.units += ch.len_utf16();
+        }
+        self.byte = end;
+        self.units
     }
 }

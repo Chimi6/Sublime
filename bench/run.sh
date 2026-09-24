@@ -61,13 +61,13 @@ run_pair
 
 echo "== binary size" >&2
 size_bytes="$(wc -c < "$sublime" | tr -d ' ')"
-size_note="gnu"
+size_budget="$(tr -d '[:space:]' < size-budget)"
+row "Binary size, gnu (bytes)" "$size_bytes" "<= ${size_budget} (size-budget, what CI checks)" "$(pass "$(echo "$size_bytes <= $size_budget" | bc -l)")"
 if command -v rustup >/dev/null && rustup target list --installed | grep -q x86_64-unknown-linux-musl; then
   cargo build --release --quiet --target x86_64-unknown-linux-musl
-  size_bytes="$(wc -c < target/x86_64-unknown-linux-musl/release/sublime | tr -d ' ')"
-  size_note="musl static"
+  musl_bytes="$(wc -c < target/x86_64-unknown-linux-musl/release/sublime | tr -d ' ')"
+  row "Binary size, musl static (bytes, the release asset)" "$musl_bytes" "recorded" "n/a"
 fi
-row "Binary size, ${size_note} (bytes)" "$size_bytes" "< 1048576" "$(pass "$(echo "$size_bytes < 1048576" | bc -l)")"
 
 echo "== startup" >&2
 printf 'a,b\n1,2\n' > "$data/tiny.csv"
