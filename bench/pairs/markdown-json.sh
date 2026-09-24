@@ -25,9 +25,9 @@ run_pair() {
   local os cs ops cps
   os="$(seconds_of "$ours")"; cs="$(seconds_of "$crates")"
   ops="$(seconds_of "$ours_prose")"; cps="$(seconds_of "$crates_prose")"
-  row "Markdown -> JSON throughput, markup-dense (MB/s)" "$(mbps "$md_bytes" "$os")" "$(mbps "$md_bytes" "$cs")" "$(pass "$(echo "$os <= $cs" | bc -l)")"
-  row "Markdown -> JSON throughput, prose (MB/s)" "$(mbps "$prose_bytes" "$ops")" "$(mbps "$prose_bytes" "$cps")" "$(pass "$(echo "$ops <= $cps" | bc -l)")"
-  row "Peak RSS Markdown -> JSON, markup-dense (MB)" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$crates")") (reference)" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$crates")" | bc -l)")"
+  row "markdown -> markdown-json, markup-dense ($(mb "$md_bytes") MB): throughput (MB/s of input)" "$(mbps "$md_bytes" "$os")" "$(mbps "$md_bytes" "$cs")" "$(pass "$(echo "$os <= $cs" | bc -l)")"
+  row "markdown -> markdown-json, prose ($(mb "$prose_bytes") MB): throughput (MB/s of input)" "$(mbps "$prose_bytes" "$ops")" "$(mbps "$prose_bytes" "$cps")" "$(pass "$(echo "$ops <= $cps" | bc -l)")"
+  row "markdown -> markdown-json, markup-dense: peak memory (MB)" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$crates")") (reference)" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$crates")" | bc -l)")"
 
   echo "== running back" >&2
   local json_bytes back crates_back
@@ -36,6 +36,6 @@ run_pair() {
   crates_back="$(time_cmd crates-back "$bench" markdown-json crates-back "$data/out2.json" "$data/out6.md")"
   local bs cbs
   bs="$(seconds_of "$back")"; cbs="$(seconds_of "$crates_back")"
-  row "JSON -> Markdown throughput, markup-dense (MB/s of each side's own JSON)" "$(mbps "$json_bytes" "$bs")" "$(mbps "$(wc -c < "$data/out2.json" | tr -d ' ')" "$cbs")" "$(pass "$(echo "$bs <= $cbs" | bc -l)")"
-  row "Peak RSS JSON -> Markdown, markup-dense (MB)" "$(rss_mb "$(rss_of "$back")")" "$(rss_mb "$(rss_of "$crates_back")") (reference)" "$(pass "$(echo "$(rss_of "$back") <= $(rss_of "$crates_back")" | bc -l)")"
+  row "markdown-json -> markdown, markup-dense ($(mb "$json_bytes") MB): throughput (MB/s of input, each side's own JSON)" "$(mbps "$json_bytes" "$bs")" "$(mbps "$(wc -c < "$data/out2.json" | tr -d ' ')" "$cbs")" "$(pass "$(echo "$bs <= $cbs" | bc -l)")"
+  row "markdown-json -> markdown, markup-dense: peak memory (MB)" "$(rss_mb "$(rss_of "$back")")" "$(rss_mb "$(rss_of "$crates_back")") (reference)" "$(pass "$(echo "$(rss_of "$back") <= $(rss_of "$crates_back")" | bc -l)")"
 }

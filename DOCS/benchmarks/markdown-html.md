@@ -1,5 +1,7 @@
 # Markdown -> HTML
 
+**Latest** (2026-09-23, 0.2.0: markdown -> html 118 MB/s of input on the markup-dense shape and 370 MB/s on prose, at 304 and 83 MB peak; all lines PASS against pulldown-cmark)
+
 ## Purpose
 
 The first document-shaped pair and the first full parser in the project.

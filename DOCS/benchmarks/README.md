@@ -11,14 +11,52 @@ directions share a generator and each direction's output is the other's
 input. Each direction is still its own converter with its own pass line,
 reference pipeline, and results.
 
+## Standard rows and units
+
+Every results table has the same shape, so any two documents can be read
+against each other: `csv -> json` at 333 MB/s and `pages -> docx` at
+10 MB/s are the same measurement of different work.
+
+- **Throughput row**, one per direction and input shape:
+  `<from> -> <to>, <shape> (<input size> MB): throughput (MB/s of input)`.
+  MB/s is the input file's bytes on disk divided by the median wall clock
+  of the whole process, spawn included. Bytes are what the user hands us,
+  compressed or not, so a compressed format (Pages) reads low per byte;
+  the extra row below says why.
+- **Peak memory row**, one per direction and shape:
+  `<from> -> <to>, <shape>: peak memory (MB)`, the process's maximum
+  resident set from GNU `time`.
+- **Extra rows** are allowed for work the standard rows hide (decompressed
+  bytes, a stdin variant, a floor), marked `[extra]` in the target or
+  named in the reference cell; they never replace the standard rows.
+- **Units.** MB is 1,048,576 bytes everywhere: sizes, throughput, memory.
+  Time is the median of three runs of the whole process. Nothing is
+  reported per second of CPU or in-process.
+- **Reference cell.** The named reference's number and, when the line is
+  not simply "beat the reference", the line itself in words
+  (`line: ours >= floor / 4`). The reference is a peer crate when one
+  exists, otherwise a measurable floor or one of our own paths, always run
+  in the same session on the same input. Never a number from elsewhere.
+- **Result cell.** PASS or FAIL against that line; `n/a` for a recorded
+  extra row with no line.
+- **Latest** line at the top of every document: the standard rows' current
+  numbers in one sentence, so the file answers "how fast" without
+  scrolling. It is updated with every results block.
+- **Binary size and startup** are binary-wide, not per pair; they are
+  measured with `bench/run.sh binary` and recorded per release in
+  `binary.md`, never in a pair document, where they would go stale with
+  the next change.
+
 ## Template
 
 Every pair document has these sections, in this order.
 
 1. **Purpose.** What the pair is and why its performance matters.
-2. **Pass lines.** One row per direction plus the binary-wide targets. A pass
-   line is a comparison against a named reference on the same machine in the
-   same session, never an absolute number copied from elsewhere.
+2. **Pass lines.** One row per direction. A pass line is a comparison
+   against a named reference on the same machine in the same session,
+   never an absolute number copied from elsewhere. When no peer exists,
+   the reference is a measurable floor or one of our own paths, and the
+   document says which and why.
 3. **Method.** Machine. How inputs are generated and their shape. The exact
    commands. How many runs and which statistic is reported. How memory,
    size, and startup are measured. What the reference pipelines are, with

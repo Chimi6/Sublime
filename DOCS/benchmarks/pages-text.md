@@ -1,5 +1,7 @@
 # Pages -> plain text
 
+**Latest** (2026-09-24: pages -> text runs at 15.3 MB/s of input on the dense shape and 18.9 MB/s on prose, at 142.5 and 64.7 MB peak; both lines FAIL against our own package round trip (about 31 and 35 MB/s, 45 and 27 MB). Blockers and the 0.6.1 plan are in `STATE.md`)
+
 ## Purpose
 
 A Pages document as plain text through the Markdown event projection and the text writer: the "just give me the text" ask, and the least work any document path can do. If this path cannot pass, no document path can.
@@ -16,8 +18,6 @@ The memory line is the same reference's peak.
 |---|---|
 | `pages -> text` throughput (MB/s of the package) | >= `pages -> pages-json` on the same input |
 | Peak resident memory | <= `pages -> pages-json` on the same input |
-| Binary size | within `size-budget` (gnu, what CI checks); the musl release asset is recorded |
-| Startup above spawn floor | < 1 ms (binary-wide) |
 
 ## Method
 
@@ -79,6 +79,20 @@ for in-process runs; inputs come from the `pages-json` pair's generator.
   writer's. That is intended: the model is what must earn its keep.
 
 ## Results
+
+### 2026-09-24, standard rows
+
+commit: c60d037
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Same inputs and commit as the block below, re-run with the standard row names and units (`DOCS/benchmarks/README.md`); the numbers are within run noise of it.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> text, styled (2.5 MB): throughput (MB/s of input) | 15.3 | 32.4 our pages -> pages-json on the same input; line: not slower | FAIL |
+| pages -> text, styled: peak memory (MB) | 142.5 | 44.6 our pages -> pages-json on the same input; line: not more | FAIL |
+| pages -> text, prose (1.5 MB): throughput (MB/s of input) | 18.9 | 36.9 our pages -> pages-json on the same input; line: not slower | FAIL |
+| pages -> text, prose: peak memory (MB) | 64.7 | 27.7 our pages -> pages-json on the same input; line: not more | FAIL |
 
 ### 2026-09-24
 
