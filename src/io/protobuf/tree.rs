@@ -42,6 +42,9 @@ pub enum Node {
     RawFixed32(u32),
     RawFixed64(u64),
     RawBytes(Span),
+    /// A known nested message kept as its encoded bytes, for a reader
+    /// that parses it straight into its own structure (`Tree::deferred`).
+    Deferred(Span),
 }
 
 const NO_SCHEMA: u16 = u16::MAX;
@@ -140,6 +143,10 @@ pub struct Tree {
     pub schema: &'static Schema,
     pub entries: Vec<Entry>,
     pub text: Vec<u8>,
+    /// Nested message fields, as (message index, field number), that
+    /// decode to `Node::Deferred` instead of entries: the hot repeated
+    /// tables a reader parses itself, at a tenth of the memory.
+    pub deferred: Vec<(u16, u32)>,
 }
 
 /// Where a chain being built starts and currently ends.
@@ -170,6 +177,7 @@ impl Tree {
             schema,
             entries: Vec::new(),
             text: Vec::new(),
+            deferred: Vec::new(),
         }
     }
 
@@ -315,6 +323,11 @@ impl Tree {
                 Some(identifier) => Node::Reference(identifier),
                 None => Node::RawBytes(self.push_bytes(bytes)?),
             },
+            (Kind::Message(_), Value::Bytes(bytes))
+                if !self.deferred.is_empty() && self.deferred.contains(&(index, number)) =>
+            {
+                Node::Deferred(self.push_bytes(bytes)?)
+            }
             (Kind::Message(nested_index), Value::Bytes(bytes)) => {
                 // Push the entry first so the nested chain follows it; on a
                 // failed nested decode, drop what was added and keep raw.
@@ -441,7 +454,7 @@ impl Tree {
 
     fn value_size(&self, entry: &Entry) -> usize {
         match entry.value {
-            Node::Str(span) | Node::Bytes(span) | Node::RawBytes(span) => {
+            Node::Str(span) | Node::Bytes(span) | Node::RawBytes(span) | Node::Deferred(span) => {
                 varint_size(u64::from(span.length)) + span.length as usize
             }
             Node::Reference(identifier) => {
@@ -483,7 +496,7 @@ impl Tree {
     fn encode_entry(&self, entry: &Entry, out: &mut Vec<u8>) -> Result<(), TreeError> {
         let number = entry.number;
         match entry.value {
-            Node::Str(span) | Node::Bytes(span) | Node::RawBytes(span) => {
+            Node::Str(span) | Node::Bytes(span) | Node::RawBytes(span) | Node::Deferred(span) => {
                 write_tag(out, number, 2);
                 write_varint(out, u64::from(span.length));
                 out.extend_from_slice(self.bytes(span));

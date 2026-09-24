@@ -13,6 +13,7 @@ use crate::document::{
     ParagraphStyle, Placement, Row, Run, RunProperties, Section, SectionStart, StyleId, Table,
 };
 use crate::document::{FloatingContent, FloatingObject, Id, Revision, RevisionKind};
+use crate::io::protobuf::reader::{FieldReader, Value};
 use crate::io::protobuf::tree::{Node, Tree};
 
 /// Pages marks a line break, a page break, and an attachment with these.
@@ -175,6 +176,14 @@ impl<'p> View<'p> {
         }
     }
 
+    /// A nested message the package kept encoded (`Tree::deferred`).
+    fn deferred(&self, name: &str) -> Option<&'p [u8]> {
+        match self.node(name)? {
+            Node::Deferred(span) => Some(self.tree.bytes(span)),
+            _ => None,
+        }
+    }
+
     fn string(&self, name: &str) -> Option<&'p str> {
         match self.node(name)? {
             Node::Str(span) => Some(self.tree.str(span)),
@@ -240,7 +249,11 @@ struct Span {
     object: Option<u64>,
 }
 
+#[inline(never)]
 fn attribute_table(view: &View<'_>, name: &str) -> Vec<Span> {
+    if let Some(bytes) = view.deferred(name) {
+        return parse_attribute_table(bytes);
+    }
     let table = match view.message(name) {
         Some(table) => table,
         None => return Vec::new(),
@@ -255,8 +268,75 @@ fn attribute_table(view: &View<'_>, name: &str) -> Vec<Span> {
         .collect()
 }
 
+/// `TSWP.ObjectAttributeTable` from its encoded bytes: entries (field 1)
+/// of `character_index` (1) and `object` (2, a reference whose field 1
+/// is the identifier). Twelve bytes an entry instead of three tree
+/// entries.
+#[inline(never)]
+fn parse_attribute_table(bytes: &[u8]) -> Vec<Span> {
+    let mut spans = Vec::with_capacity(bytes.len() / 8);
+    for field in FieldReader::new(bytes).flatten() {
+        let Value::Bytes(entry) = field.value else {
+            continue;
+        };
+        if field.number != 1 {
+            continue;
+        }
+        let mut start = 0usize;
+        let mut object = None;
+        for inner in FieldReader::new(entry).flatten() {
+            match (inner.number, inner.value) {
+                (1, Value::Varint(index)) => start = index as usize,
+                (2, Value::Bytes(reference)) => {
+                    object = FieldReader::new(reference).flatten().find_map(|field| {
+                        match (field.number, field.value) {
+                            (1, Value::Varint(identifier)) => Some(identifier),
+                            _ => None,
+                        }
+                    });
+                }
+                _ => {}
+            }
+        }
+        spans.push(Span { start, object });
+    }
+    spans
+}
+
+/// `TSWP.ParaDataAttributeTable` from its encoded bytes: entries of
+/// `character_index` (1), `first` (2), `second` (3).
+#[inline(never)]
+fn parse_paragraph_data(bytes: &[u8]) -> Vec<(usize, u32, u32)> {
+    let mut entries = Vec::with_capacity(bytes.len() / 6);
+    for field in FieldReader::new(bytes).flatten() {
+        let Value::Bytes(entry) = field.value else {
+            continue;
+        };
+        if field.number != 1 {
+            continue;
+        }
+        let (mut start, mut first, mut second) = (0usize, 0u32, 0u32);
+        for inner in FieldReader::new(entry).flatten() {
+            match (inner.number, inner.value) {
+                (1, Value::Varint(value)) => start = value as usize,
+                (2, Value::Varint(value)) => first = value as u32,
+                (3, Value::Varint(value)) => second = value as u32,
+                _ => {}
+            }
+        }
+        entries.push((start, first, second));
+    }
+    entries
+}
+
 /// The paragraph data table: `(start, (level, starts_list))` per entry.
 fn paragraph_data(view: &View<'_>) -> Vec<(usize, (u8, bool))> {
+    if let Some(bytes) = view.deferred("table_para_data") {
+        return parse_paragraph_data(bytes)
+            .into_iter()
+            .map(|(start, first, second)| (start, (first as u8, second != 0)))
+            .collect();
+    }
     let table = match view.message("table_para_data") {
         Some(table) => table,
         None => return Vec::new(),
@@ -279,6 +359,12 @@ fn paragraph_data(view: &View<'_>) -> Vec<(usize, (u8, bool))> {
 /// The paragraph starts table: `(start, first number)` per entry, the
 /// number a list starts at for the paragraph that starts it.
 fn paragraph_starts(view: &View<'_>) -> Vec<(usize, u32)> {
+    if let Some(bytes) = view.deferred("table_para_starts") {
+        return parse_paragraph_data(bytes)
+            .into_iter()
+            .map(|(start, first, _)| (start, first))
+            .collect();
+    }
     let table = match view.message("table_para_starts") {
         Some(table) => table,
         None => return Vec::new(),
