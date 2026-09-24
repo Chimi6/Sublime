@@ -18,6 +18,7 @@ COMMANDS
   check     Show the path and fidelity between two formats without converting.
   formats   List every known format.
   paths     List every conversion path. --markdown emits DOCS/FORMATS.md.
+  inspect   Dump an iWork package's object graph (dev-tools builds only).
   version   Print the version.
 
 FLAGS
@@ -83,6 +84,15 @@ pub struct ConvertArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InspectArgs {
+    pub path: String,
+    pub stream: Option<String>,
+    pub object: Option<u64>,
+    pub message_type: Option<u32>,
+    pub depth: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckArgs {
     pub from: String,
     pub to: String,
@@ -94,7 +104,12 @@ pub enum Command {
     Convert(ConvertArgs),
     Check(CheckArgs),
     Formats,
-    Paths { markdown: bool },
+    Paths {
+        markdown: bool,
+    },
+    /// `inspect <package> [--stream name] [--object id] [--type id] [--depth n]`;
+    /// only does anything in a `dev-tools` build.
+    Inspect(InspectArgs),
     Version,
     Help,
 }
@@ -179,6 +194,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParsedArgs, Args
             Command::Formats
         }
         "paths" => parse_paths(rest)?,
+        "inspect" => Command::Inspect(parse_inspect(rest)?),
         "version" => {
             reject_extra(rest)?;
             Command::Version
@@ -296,6 +312,61 @@ fn parse_check(rest: Vec<String>) -> Result<CheckArgs, ArgsError> {
         None => return Err(ArgsError::MissingPositional("to")),
     };
     Ok(CheckArgs { from, to, strict })
+}
+
+fn parse_inspect(rest: Vec<String>) -> Result<InspectArgs, ArgsError> {
+    let mut path = None;
+    let mut stream = None;
+    let mut object = None;
+    let mut message_type = None;
+    let mut depth = 6usize;
+    let mut args = rest.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--stream" => stream = Some(flag_value(&mut args, "--stream")?),
+            "--object" => {
+                let value = flag_value(&mut args, "--object")?;
+                object = Some(
+                    value
+                        .parse()
+                        .map_err(|_| ArgsError::UnknownFlag(format!("--object {value}")))?,
+                );
+            }
+            "--type" => {
+                let value = flag_value(&mut args, "--type")?;
+                message_type = Some(
+                    value
+                        .parse()
+                        .map_err(|_| ArgsError::UnknownFlag(format!("--type {value}")))?,
+                );
+            }
+            "--depth" => {
+                let value = flag_value(&mut args, "--depth")?;
+                depth = value
+                    .parse()
+                    .map_err(|_| ArgsError::UnknownFlag(format!("--depth {value}")))?;
+            }
+            other if is_flag(other) => return Err(ArgsError::UnknownFlag(other.to_string())),
+            other if path.is_none() => path = Some(other.to_string()),
+            other => return Err(ArgsError::TooManyPositionals(other.to_string())),
+        }
+    }
+    let path = path.ok_or(ArgsError::MissingPositional("package"))?;
+    Ok(InspectArgs {
+        path,
+        stream,
+        object,
+        message_type,
+        depth,
+    })
+}
+
+fn flag_value(
+    args: &mut impl Iterator<Item = String>,
+    flag: &'static str,
+) -> Result<String, ArgsError> {
+    args.next()
+        .ok_or_else(|| ArgsError::MissingValue(flag.to_string()))
 }
 
 fn parse_paths(rest: Vec<String>) -> Result<Command, ArgsError> {

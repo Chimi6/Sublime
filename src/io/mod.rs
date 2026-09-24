@@ -6,6 +6,7 @@ pub mod html;
 pub mod iwa;
 pub mod json;
 pub mod markdown;
+pub mod pages;
 pub mod protobuf;
 pub mod scan;
 pub mod snappy;
