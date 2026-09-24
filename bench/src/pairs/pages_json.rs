@@ -21,41 +21,11 @@ pub fn run(mode: &str, args: &[String]) -> Result<(), String> {
         ("gen", [seed, units, path]) => generate(seed, units, path),
         ("ours", [input, output]) => run_ours(&PagesToJson, input, output),
         ("ours-back", [input, output]) => run_ours(&JsonToPages, input, output),
-        ("floor", [input, output]) => floor(input, output),
         _ => Err(
-            "pages-json modes: gen <seed.pages> <units> <out.pages> | ours <in> <out> | ours-back <in> <out> | floor <in> <out>"
+            "pages-json modes: gen <seed.pages> <units> <out.pages> | ours <in> <out> | ours-back <in> <out>"
                 .to_string(),
         ),
     }
-}
-
-/// The least a reader of the package could do: open the ZIP, Snappy-
-/// decompress every IWA stream, and write the decompressed bytes out. No
-/// protobuf decoding, no objects, no JSON. Ours does all of that on top,
-/// so this is the floor of the pair's cost, not a peer.
-fn floor(input: &str, output: &str) -> Result<(), String> {
-    use std::io::Write;
-    use sublime::io::iwa::decompress_stream;
-    use sublime::io::zip::ZipArchive;
-    let bytes = std::fs::read(input).map_err(|error| error.to_string())?;
-    let archive = ZipArchive::parse(&bytes).map_err(|error| error.to_string())?;
-    let mut out = BufWriter::new(File::create(output).map_err(|error| error.to_string())?);
-    let mut compressed = Vec::new();
-    for entry in archive.entries() {
-        compressed.clear();
-        archive
-            .read(entry, &mut compressed)
-            .map_err(|error| error.to_string())?;
-        if entry.name.ends_with(".iwa") {
-            let decompressed = decompress_stream(&compressed).map_err(|error| error.to_string())?;
-            out.write_all(&decompressed)
-                .map_err(|error| error.to_string())?;
-        } else {
-            out.write_all(&compressed)
-                .map_err(|error| error.to_string())?;
-        }
-    }
-    out.flush().map_err(|error| error.to_string())
 }
 
 /// Writes `seed` with its body text and attribute tables repeated `units`
