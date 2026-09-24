@@ -8,7 +8,7 @@ section under a version heading.
 
 ### Added
 
-- The `pages-json` pair judges both directions against their own floors (unzip and decompress; compress and zip), each repeated in-process for a stable number; both directions fail the four-times line and are recorded as blockers.
+- Every Pages pair is judged against the same two goals, 50 MB/s of input and 64 MB peak, defined in `pages-json.md`, since no peer reads the format; the two directions of a pair are never judged against each other. The Pages documents are rewritten to the template with those goals.
 - Benchmark standard (`DOCS/benchmarks/README.md`): the same throughput and peak memory rows, units, and reference wording in every pair document, a Latest line at the top of each, and binary size and startup moved to `binary.md` per release.
 - Benchmark pairs for Pages (`pages-json`, `pages-docx`, `pages-markdown`, `pages-html`, `pages-text`): a generator that scales a fixture into a large package through the lossless JSON form, a decompression floor for the package layer, one script and one document per pair, and a first results block each. The document paths fail their lines; the causes and the 0.6.1 plan are in `STATE.md`.
 

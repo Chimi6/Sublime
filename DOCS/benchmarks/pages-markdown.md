@@ -1,125 +1,93 @@
 # Pages -> Markdown
 
-**Latest** (2026-09-24: pages -> markdown runs at 15.0 MB/s of input on the dense shape and 18.1 MB/s on prose, at 142.4 and 64.6 MB peak; both lines FAIL against our own package round trip (about 31 and 35 MB/s, 45 and 27 MB). Blockers and the 0.6.1 plan are in `STATE.md`)
+**Latest** (2026-09-24: pages -> markdown 15.3 MB/s of input on the dense shape and 18.1 on prose, at 142.0 and 64.8 MB peak; both goals (50 MB/s, 64 MB) FAIL, see Conclusions and `STATE.md`)
 
 ## Purpose
 
-A Pages document projected into the Markdown event stream and written as Markdown: headings, lists, formatting, links, images, tables, footnotes. It is the path into every Markdown workflow, and the projection also feeds HTML and text, so its cost is shared.
+A Pages document projected into the Markdown event stream and written
+as Markdown: headings, lists, formatting, links, images, tables, footnotes.
+It is the path into every Markdown workflow, and the projection also feeds
+the HTML and text pairs.
 
 ## Pass lines
 
-No peer implementation exists. The reference is our own package round
-trip, `pages -> pages-json`, on the same input and in the same session: it
-decodes every object and writes several times more bytes than any document
-path, so a document path that costs more than it is doing avoidable work.
-The memory line is the same reference's peak.
-
-| Target | Pass line |
-|---|---|
-| `pages -> markdown` throughput (MB/s of the package) | >= `pages -> pages-json` on the same input |
-| Peak resident memory | <= `pages -> pages-json` on the same input |
+The goals every Pages pair shares, defined and justified in
+`pages-json.md`: throughput >= 50 MB/s of input and peak memory <= 64 MB on
+the benchmark inputs. No peer implementation exists to measure against.
 
 ## Method
 
-**Machine.** Recorded with each results block from the harness's machine
-line.
+**Machine.** Recorded with each results block from the harness's
+machine line.
 
-**Inputs.** No large real Pages document can be committed, and Pages
-cannot be scripted from this machine, so the harness scales fixtures:
-`bench/target/release/sublime-bench pages-json gen <seed> <units> <out>`
-reads a fixture, repeats its body text `units` times with a paragraph
-break between copies, repeats every character-indexed attribute table
-(paragraph and character styles, list styles and levels, list starts,
-sections, layouts, fields) shifted to match, and writes the result back as
-a real package through the lossless JSON form. Two shapes:
+**Inputs.** No large real Pages document can be committed and Pages
+cannot be scripted from this machine, so the harness scales fixtures
+(`bench/target/release/sublime-bench pages-json gen <seed> <units> <out>`):
+a fixture's body text is repeated `units` times with a paragraph break
+between copies, every character-indexed attribute table (paragraph and
+character styles, lists and levels, list starts, sections, layouts) is
+repeated and shifted to match, and the result is written back as a real
+package through the lossless JSON form. The stylesheet and every other
+stream stay exactly as Pages wrote them. Two shapes:
 
-- `styled`: `text-styles.pages` x 5,000 (2.7 MB package, 7.9 MB of
-  decompressed streams, 55,000 paragraphs, 170,000 formatted runs). Short
-  paragraphs with a character style change every few words: the
-  markup-dense shape.
-- `prose`: `paragraphs.pages` x 2,000 (1.6 MB package, 7.0 MB decompressed,
-  30,000 paragraphs, 34,000 runs, with line and page breaks). Long
-  paragraphs, few runs: what most documents look like.
-
-The stylesheet, theme, and every other stream stay exactly as Pages wrote
-them, so the fixed costs (570 objects of presets) are real and the text is
-what grows.
+- `styled`: `text-styles.pages` x 5,000: 2.5 MB package, 7.5 MB of
+  decompressed streams, 55,000 paragraphs, 170,000 formatted runs. Short
+  paragraphs with a character style change every few words.
+- `prose`: `paragraphs.pages` x 2,000: 1.5 MB package, 6.6 MB decompressed,
+  30,000 paragraphs, 34,000 runs, with line and page breaks. What most
+  documents look like.
 
 **Statistics.** `bench/run.sh <pair>`: three runs per command, median wall
-clock, peak resident memory from GNU `time`, throughput in MB/s over the
-package's bytes on disk (the compressed input a user hands us).
+clock of the whole process, peak resident memory from GNU `time`,
+throughput in MB/s over the input file's bytes on disk. Rows and units
+follow `DOCS/benchmarks/README.md`.
 
 **Commands.** `bench/run.sh pages-markdown` runs, per shape:
 
-- ours: `sublime -q convert styled.pages styled.markdown --to markdown`
-- reference: `sublime -q convert styled.pages styled.json --to pages-json`
+- ours: `sublime -q convert styled.pages styled.md --to markdown`
 
-The pair's harness module (`bench/src/pairs/pages_markdown.rs`) exposes `ours`
-for in-process runs; inputs come from the `pages-json` pair's generator.
+The harness module (`bench/src/pairs/pages_markdown.rs`) exposes `ours` for
+in-process runs; inputs come from the `pages-json` pair's generator.
 
 ## Threats to validity
 
-- Repetition compresses unusually well, so Snappy and Deflate work is
-  lighter per byte than on a real document; the package is 2.7 MB for
-  7.9 MB of streams, where the resume in hand is 328 KB for 75 KB. Ratios
-  between our paths are trustworthy; absolute MB/s of the package is
-  flattering.
-- The scaled document has 5,000 identical copies of the seed's styles and
-  sections; style resolution repeats the same forty objects. A document
-  with 5,000 distinct styles would stress the stylesheet reader instead.
-- Single machine, and it was busy during these runs: the startup row's
-  spawn floor moved by a millisecond between pairs. Medians of three cover
-  the throughput rows; the startup row is not to be read from these blocks.
-- No peer implementation exists for the modern Pages format, so nothing
-  here says how we compare to another tool; the pass lines are internal
-  floors and our own package layer.
-- The reference does its work without a document model; a path that builds
-  one (paragraphs, runs, resolved styles) pays allocation the reference
-  never does, so the line measures the model's cost as much as the
-  writer's. That is intended: the model is what must earn its keep.
+- No other tool reads the modern Pages format, so the goals are ours, not
+  a peer's; they say whether the path is fast enough to feel free, not
+  whether it is the fastest possible.
+- Repeated text compresses unusually well: the package is 2.5 MB for 7.5 MB
+  of streams where a real resume is 328 KB for 75 KB. MB/s of the package
+  is therefore lower than a real document would show; ratios between our
+  own paths are trustworthy.
+- The scaled document reuses the seed's forty style objects 5,000 times; a
+  document with thousands of distinct styles would stress the stylesheet
+  reader instead.
+- Single machine, sometimes busy; medians of three absorb most of it.
+- The Markdown writer is a small part of the cost (22 ms of 170 ms on
+  `styled` in-process); this pair measures the document model and the
+  package decode more than the writer.
 
 ## Results
 
-### 2026-09-24, standard rows
-
-commit: c60d037
-machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
-
-Same inputs and commit as the block below, re-run with the standard row names and units (`DOCS/benchmarks/README.md`); the numbers are within run noise of it.
-
-| Target | Ours | Reference | Result |
-|---|---|---|---|
-| pages -> markdown, styled (2.5 MB): throughput (MB/s of input) | 15.0 | 31.8 our pages -> pages-json on the same input; line: not slower | FAIL |
-| pages -> markdown, styled: peak memory (MB) | 142.4 | 44.6 our pages -> pages-json on the same input; line: not more | FAIL |
-| pages -> markdown, prose (1.5 MB): throughput (MB/s of input) | 18.1 | 37.3 our pages -> pages-json on the same input; line: not slower | FAIL |
-| pages -> markdown, prose: peak memory (MB) | 64.6 | 27.2 our pages -> pages-json on the same input; line: not more | FAIL |
-
 ### 2026-09-24
 
-commit: 73fd5f5
+commit: 8dbe707
 machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 
 | Target | Ours | Reference | Result |
 |---|---|---|---|
-| pages -> markdown throughput, styled (MB/s of the package) | 15.6 | 32.6 (pages-json) | FAIL |
-| Peak RSS pages -> markdown, styled (MB) | 142.4 | 44.6 (pages-json) | FAIL |
-| pages -> markdown throughput, prose (MB/s of the package) | 17.7 | 38.3 (pages-json) | FAIL |
-| Peak RSS pages -> markdown, prose (MB) | 64.7 | 27.8 (pages-json) | FAIL |
-| Binary size, gnu (bytes) | 1399664 | <= 1400000 (size-budget, what CI checks) | PASS |
-| Binary size, musl static (bytes, the release asset) | 1499776 | recorded | n/a |
-| Startup above spawn floor (ms, 1 KB file) | 0.137 (spawn 0.483, floor 0.346) | < 1 | PASS |
-
-Both lines fail on both shapes: throughput is half the reference, memory
-3.2x on the dense shape and 2.3x on prose. The writer itself is cheap
-(22 ms of the 170 ms on `styled` in-process); the cost is the document
-model the reader builds and the package decode, which every document path
-shares (see `pages-docx.md` for the split).
+| pages -> markdown, styled (2.5 MB): throughput (MB/s of input) | 15.3 | goal: 50 | FAIL |
+| pages -> markdown, styled: peak memory (MB) | 142.0 | goal: <= 64.0 | FAIL |
+| pages -> markdown, prose (1.5 MB): throughput (MB/s of input) | 18.1 | goal: 50 | FAIL |
+| pages -> markdown, prose: peak memory (MB) | 64.8 | goal: <= 64.0 | FAIL |
 
 ## Conclusions
 
-- The Markdown projection and writer are not the problem; the model and
-  the package decode are. The three levers in `pages-docx.md` (a slimmer
-  run, decode on lookup) carry this pair with them; the streaming Word
-  body does not apply here.
-- Once the model is fixed, this pair should pass with room: the reference
-  writes 35 MB of JSON where this path writes 3.4 MB of Markdown.
+- Both goals fail on both shapes: a third of the throughput goal, and
+  2.2x the memory goal on the dense shape (the prose shape is within a
+  megabyte of it). The writer is cheap; the cost is the document model the
+  reader builds and the package decode, shared with every document path
+  and diagnosed in `pages-docx.md`.
+- The reader levers there (slimmer run, decode on lookup) carry this pair
+  with them; once the model is fixed the pair should pass with room, since
+  it writes 3.4 MB of Markdown where the Word path writes and deflates
+  30 MB of XML.
