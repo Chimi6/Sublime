@@ -8,6 +8,7 @@ section under a version heading.
 
 ### Changed
 
+- Table spans in the Pages reader are 16 bytes; the Snappy decoder copies overlapping runs in doubling chunks instead of a byte at a time.
 - Benchmark standard: a path whose output is a compressed package (Word) measures throughput over the bytes it handles, input plus uncompressed output, since the compressor's work is proportional to what it must compress; the Word pair passes every goal under it (150 MB/s), and its rate per input byte stays as an extra row.
 - The Pages reader reads its attribute tables with forward cursors instead of a binary search per run, copies a storage's text into the arena once, and splits ASCII paragraphs by byte scan; the Markdown projection caches resolved style chains. Dense-shape text paths 32 -> 40 MB/s. Size budget 1.42 -> 1.43 MB.
 - On the document paths the attribute tables of a text storage stay encoded in the tree (`Tree::deferred`, `Node::Deferred`) and the reader parses them straight into vectors; dense-shape peak memory fell from 70 to 48 MB and every Pages document row now passes the memory goal. The Word writer interns repeated run formatting into character styles (`w:rStyle`), keeping the toggle properties inline; the dense-shape XML shrank from 19.3 to 15.6 MB. Size budget raised from 1.41 MB to 1.42 MB for the typed decode (binary 1,414,792 bytes).
