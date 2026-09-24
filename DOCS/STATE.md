@@ -6,14 +6,12 @@ describes.
 
 ## Now
 
-- 2026-09-23: Apple Pages, the flagship. The package reader and the lossless `pages-json` form are in; next is the document reader over it (text, paragraph and character styles, lists, tables, images, footnotes, links) feeding the Markdown event stream, so Pages reaches Markdown, HTML, text, and Markdown JSON. Map in `DOCS/formats/pages.md`, fixtures in `tests/fixtures/pages/`.
+- 2026-09-24: Apple Pages, the flagship. The package reader, the lossless `pages-json` form, the document reader into the document model (`src/document`), and the Word writer are in: `pages -> docx` matches Apple's own export paragraph for paragraph on 22 of 27 fixtures. Next is the projection of the document model into the Markdown event stream, so Pages reaches Markdown, HTML, and text, then the 0.6.0 release. Map in `DOCS/formats/pages.md`, fixtures in `tests/fixtures/pages/`.
 - 2026-09-23: Format roadmap in `DOCS/ROADMAP.md`: every tentative format by category with a status and a priority tier (S to D, mixing value, difficulty, and novelty), plus the keystones (inflate, XML, ZIP, PNG, protobuf) that unlock whole categories.
-
-- 2026-09-23: Apple Pages -> DOCX native converter (flagship). Reverse-engineering notes will live in `DOCS/formats/pages.md`.
 
 ## Next
 
-- 2026-09-23: Pages document reader (see Now), then formatting-faithful output, which needs a richer document model than Markdown events and a DOCX writer.
+- 2026-09-24: Document model -> Markdown events, then `pages -> markdown`, `html`, `text` through it; benchmarks note for `pages -> docx`; 0.6.0.
 - 2026-09-23: HTML input, deferred behind Pages. Choose between HTML input (an HTML parser, unlocking HTML -> Markdown, text, and later DOCX and PDF) and Apple Pages (the flagship). See `ROADMAP.md`.
 
 ## Future
@@ -33,6 +31,15 @@ describes.
 
 ## Tech Debt
 
+- 2026-09-24: Pages document reader and Word writer leftovers:
+  - Equations are written as MathML text; Office Math (OMML) from MathML is the proper output.
+  - Floating objects anchor to the first paragraph on their page by counting explicit page breaks; pages that begin by overflow are not known without layout.
+  - PDF and other non-picture media are left out of the Word file; converting PDF vector images to PNG needs a rasterizer.
+  - Text box fills are solid colors only; gradients, image fills, strokes, and shape geometry other than rectangles are dropped. Lines and charts are dropped.
+  - Comments (`table_highlight`) are not read.
+  - Drop caps come out as an ordinary first letter (Apple splits them into a framed paragraph).
+  - Header and footer areas (left, center, right) are joined as paragraphs; Word has no three-area header.
+  - The release binary grew to 1.36 MB with the document pipeline (budget raised to 1.4 MB); std's backtrace symbolizer (gimli, addr2line, about 100 KB) is the largest non-feature cost and the lever if size matters.
 - 2026-09-23: Pages leftovers from the package reader:
   - Deflate has no lazy matching; it is 7% larger than zlib level 9 on mixed data and level-6 class overall. Add lazy matching if a writer path needs the last percent.
   - 31 registry types without a schema; they decode raw. Resolve as the document reader needs them.

@@ -1,25 +1,30 @@
 //! Renders the document model as a `.docx` package: `document.xml`,
-//! `styles.xml`, `numbering.xml`, `footnotes.xml`, their relationships,
-//! and the content types. Style names are kept, so a reader on the other
-//! side (Word, Google Docs) sees the document's own style names.
+//! `styles.xml`, `numbering.xml`, `footnotes.xml`, `settings.xml`, the
+//! header and footer parts, the media files, their relationships, and the
+//! content types. Style names are kept, so a reader on the other side
+//! (Word, Google Docs) sees the document's own style names.
 //!
 //! Units: the model's points become twentieths of a point for spacing and
-//! indents, and half-points for font sizes.
+//! indents, half-points for font sizes, and EMUs for drawings.
 
 use std::fmt::Write as _;
 use std::io;
 
 use crate::document::{
-    Alignment, Baseline, Block, Caps, Document, Inline, LineSpacing, ListLabel, NumberKind,
-    Paragraph, ParagraphProperties, Run, RunProperties, Section,
+    Alignment, Anchor, AnchorBase, Baseline, Block, Caps, Document, FloatingContent, Inline,
+    InlineImage, LineSpacing, ListLabel, Merge, NumberKind, Paragraph, ParagraphProperties,
+    Placement, RevisionKind, Run, RunProperties, Section, SectionStart, Table, mathml_text,
 };
 use crate::io::xml::{escape_attribute, escape_text};
 use crate::io::zip::ZipWriter;
 
 const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
 const R: &str = r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships""#;
+const DRAWING: &str = r#"xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape""#;
+const SHAPE: &str = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape";
 const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const PACKAGE_REL: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
+const PICTURE: &str = "http://schemas.openxmlformats.org/drawingml/2006/picture";
 
 /// Writes `document` as a `.docx` to `sink`.
 pub fn write_docx<W: io::Write>(document: &Document, sink: W) -> io::Result<W> {
@@ -28,22 +33,62 @@ pub fn write_docx<W: io::Write>(document: &Document, sink: W) -> io::Result<W> {
         body: String::new(),
         relationships: Vec::new(),
         numbering: Numbering::default(),
+        page_parts: Vec::new(),
+        media_targets: vec![None; document.media.len()],
+        drawings: 0,
+        even_pages: false,
+        floating_done: vec![false; document.floating.len()],
+        revisions: 0,
     };
     writer.render_body();
+    let footnotes = if document.footnotes.is_empty() {
+        None
+    } else {
+        Some(writer.footnotes_part())
+    };
     let mut zip = ZipWriter::new(sink);
     zip.add_deflated("[Content_Types].xml", writer.content_types().as_bytes())?;
     zip.add_deflated("_rels/.rels", root_relationships().as_bytes())?;
     zip.add_deflated("word/document.xml", writer.document_xml().as_bytes())?;
     zip.add_deflated(
         "word/_rels/document.xml.rels",
-        writer.document_relationships().as_bytes(),
+        writer
+            .relationships_xml(&writer.relationships, true)
+            .as_bytes(),
     )?;
     zip.add_deflated("word/styles.xml", writer.styles_xml().as_bytes())?;
     if !writer.numbering.instances.is_empty() {
         zip.add_deflated("word/numbering.xml", writer.numbering_xml().as_bytes())?;
     }
-    if !document.footnotes.is_empty() {
-        zip.add_deflated("word/footnotes.xml", writer.footnotes_xml().as_bytes())?;
+    if let Some(footnotes) = &footnotes {
+        zip.add_deflated("word/footnotes.xml", footnotes.xml.as_bytes())?;
+        if !footnotes.relationships.is_empty() {
+            zip.add_deflated(
+                "word/_rels/footnotes.xml.rels",
+                writer
+                    .relationships_xml(&footnotes.relationships, false)
+                    .as_bytes(),
+            )?;
+        }
+    }
+    if writer.even_pages {
+        zip.add_deflated("word/settings.xml", settings_xml().as_bytes())?;
+    }
+    for part in &writer.page_parts {
+        zip.add_deflated(&format!("word/{}", part.name), part.xml.as_bytes())?;
+        if !part.relationships.is_empty() {
+            zip.add_deflated(
+                &format!("word/_rels/{}.rels", part.name),
+                writer
+                    .relationships_xml(&part.relationships, false)
+                    .as_bytes(),
+            )?;
+        }
+    }
+    for (index, target) in writer.media_targets.iter().enumerate() {
+        if let Some(target) = target {
+            zip.add_deflated(&format!("word/{target}"), &document.media[index].bytes)?;
+        }
     }
     zip.finish()
 }
@@ -51,9 +96,43 @@ pub fn write_docx<W: io::Write>(document: &Document, sink: W) -> io::Result<W> {
 struct DocxWriter<'d> {
     document: &'d Document,
     body: String,
-    /// External hyperlink targets, one relationship each: `rId<n+10>`.
-    relationships: Vec<String>,
+    /// The document part's relationships: `rId<n+10>`.
+    relationships: Vec<Relationship>,
     numbering: Numbering,
+    /// Header and footer parts, in order of creation.
+    page_parts: Vec<Part>,
+    /// The package path under `word/` of each media file that is used.
+    media_targets: Vec<Option<String>>,
+    /// Drawings written so far, for unique ids.
+    drawings: u32,
+    /// Some section has an even-page header or footer.
+    even_pages: bool,
+    /// Which floating objects have been anchored to a paragraph.
+    floating_done: Vec<bool>,
+    /// Tracked changes written so far, for unique ids.
+    revisions: u32,
+}
+
+/// A relationship of a part: what it links to and how.
+#[derive(PartialEq)]
+struct Relationship {
+    kind: RelationshipKind,
+    target: String,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum RelationshipKind {
+    Hyperlink,
+    Image,
+    Header,
+    Footer,
+}
+
+/// A part rendered on its own, with its own relationships.
+struct Part {
+    name: String,
+    xml: String,
+    relationships: Vec<Relationship>,
 }
 
 /// One `w:num` per list start: which list style it uses.
@@ -67,69 +146,162 @@ struct Numbering {
 impl DocxWriter<'_> {
     fn render_body(&mut self) {
         let mut body = String::new();
+        // Floating objects are anchored to the first paragraph on their
+        // page, counting the page breaks the document spells out.
+        let mut page = 0u32;
         for (index, section) in self.document.sections.iter().enumerate() {
             let last = index + 1 == self.document.sections.len();
-            self.render_blocks(&section.blocks, &mut body);
-            if last {
-                body.push_str(&section_properties(section));
-            } else {
-                body.push_str("<w:p><w:pPr>");
-                body.push_str(&section_properties(section));
-                body.push_str("</w:pPr></w:p>");
+            if index > 0 && section.start == SectionStart::NewPage {
+                page += 1;
+            }
+            let properties = self.section_properties(section);
+            for (position, block) in section.blocks.iter().enumerate() {
+                let is_last_block = position + 1 == section.blocks.len();
+                match block {
+                    Block::Paragraph(paragraph) => {
+                        let breaks = paragraph
+                            .runs
+                            .iter()
+                            .filter(|run| run.content == Inline::PageBreak)
+                            .count();
+                        page += breaks as u32;
+                        let anchors = self.floating_due(page, last && is_last_block);
+                        let trailer = if is_last_block && !last {
+                            properties.as_str()
+                        } else {
+                            ""
+                        };
+                        self.render_paragraph(paragraph, &mut body, trailer, &anchors);
+                    }
+                    Block::Table(table) => self.render_table(table, &mut body),
+                }
+            }
+            // A section's properties ride in its last paragraph, as Word
+            // and Pages both write them; a section ending otherwise gets
+            // an empty one.
+            let ends_with_paragraph = matches!(section.blocks.last(), Some(Block::Paragraph(_)));
+            if !ends_with_paragraph {
+                let anchors = self.floating_due(page, last);
+                self.render_paragraph(&Paragraph::default(), &mut body, &properties, &anchors);
+            } else if last {
+                body.push_str(&properties);
             }
         }
         self.body = body;
     }
 
+    /// The floating objects to anchor now: those on `page` or before it
+    /// that have no anchor yet, and every remaining one at the very end.
+    fn floating_due(&mut self, page: u32, all: bool) -> Vec<usize> {
+        let mut due = Vec::new();
+        for (index, object) in self.document.floating.iter().enumerate() {
+            if self.floating_done[index] {
+                continue;
+            }
+            if all || object.page <= page {
+                self.floating_done[index] = true;
+                due.push(index);
+            }
+        }
+        due
+    }
+
     fn render_blocks(&mut self, blocks: &[Block], out: &mut String) {
         for block in blocks {
             match block {
-                Block::Paragraph(paragraph) => self.render_paragraph(paragraph, out),
-                Block::Table(table) => {
-                    out.push_str("<w:tbl><w:tblPr><w:tblStyle w:val=\"TableGrid\"/><w:tblW w:w=\"0\" w:type=\"auto\"/></w:tblPr>");
-                    for row in &table.rows {
-                        out.push_str("<w:tr>");
-                        for cell in &row.cells {
-                            out.push_str("<w:tc><w:tcPr>");
-                            if cell.column_span > 1 {
-                                let _ = write!(out, "<w:gridSpan w:val=\"{}\"/>", cell.column_span);
-                            }
-                            if let Some(background) = cell.background {
-                                let _ = write!(
-                                    out,
-                                    "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{}\"/>",
-                                    background.hex()
-                                );
-                            }
-                            out.push_str("</w:tcPr>");
-                            if cell.blocks.is_empty() {
-                                out.push_str("<w:p/>");
-                            } else {
-                                self.render_blocks(&cell.blocks, out);
-                            }
-                            out.push_str("</w:tc>");
-                        }
-                        out.push_str("</w:tr>");
-                    }
-                    out.push_str("</w:tbl>");
-                }
+                Block::Paragraph(paragraph) => self.render_paragraph(paragraph, out, "", &[]),
+                Block::Table(table) => self.render_table(table, out),
             }
         }
     }
 
-    fn render_paragraph(&mut self, paragraph: &Paragraph, out: &mut String) {
-        // A page break is its own paragraph, as Word and Pages both write it.
-        if paragraph.page_break_before {
-            out.push_str("<w:p>");
-            if let Some(style) = paragraph.style {
+    #[inline(never)]
+    fn render_table(&mut self, table: &Table, out: &mut String) {
+        let column_width =
+            |column: usize| twips(table.columns.get(column).copied().unwrap_or(100.0));
+        let column_count = table
+            .rows
+            .iter()
+            .map(|row| row.cells.len())
+            .max()
+            .unwrap_or(0)
+            .max(table.columns.len());
+        let total: i64 = (0..column_count).map(column_width).sum();
+        let _ = write!(
+            out,
+            "<w:tbl><w:tblPr><w:tblStyle w:val=\"TableGrid\"/><w:tblW w:w=\"{total}\" w:type=\"dxa\"/><w:tblLayout w:type=\"fixed\"/></w:tblPr><w:tblGrid>"
+        );
+        for column in 0..column_count {
+            let _ = write!(out, "<w:gridCol w:w=\"{}\"/>", column_width(column));
+        }
+        out.push_str("</w:tblGrid>");
+        for (row_index, row) in table.rows.iter().enumerate() {
+            out.push_str("<w:tr>");
+            let mut row_properties = String::new();
+            if let Some(height) = row.height {
                 let _ = write!(
-                    out,
-                    "<w:pPr><w:pStyle w:val=\"{}\"/></w:pPr>",
-                    style_id(&self.document.styles.paragraph[style].name)
+                    row_properties,
+                    "<w:trHeight w:val=\"{}\" w:hRule=\"atLeast\"/>",
+                    twips(height)
                 );
             }
-            out.push_str("<w:r><w:br w:type=\"page\"/></w:r></w:p>");
+            if (row_index as u32) < table.header_rows {
+                row_properties.push_str("<w:tblHeader/>");
+            }
+            if !row_properties.is_empty() {
+                let _ = write!(out, "<w:trPr>{row_properties}</w:trPr>");
+            }
+            for (column, cell) in row.cells.iter().enumerate() {
+                if cell.merge == Merge::Left {
+                    continue;
+                }
+                let span = cell.column_span.max(1) as usize;
+                let width: i64 = (column..column + span).map(column_width).sum();
+                let _ = write!(out, "<w:tc><w:tcPr><w:tcW w:w=\"{width}\" w:type=\"dxa\"/>");
+                if span > 1 {
+                    let _ = write!(out, "<w:gridSpan w:val=\"{span}\"/>");
+                }
+                match cell.merge {
+                    Merge::Origin if cell.row_span > 1 => {
+                        out.push_str("<w:vMerge w:val=\"restart\"/>");
+                    }
+                    Merge::Above => out.push_str("<w:vMerge/>"),
+                    _ => {}
+                }
+                if let Some(background) = cell.background {
+                    let _ = write!(
+                        out,
+                        "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{}\"/>",
+                        background.hex()
+                    );
+                }
+                out.push_str("</w:tcPr>");
+                // A cell holds at least one paragraph, and ends with one.
+                let ends_with_paragraph = matches!(cell.blocks.last(), Some(Block::Paragraph(_)));
+                if cell.blocks.is_empty() {
+                    out.push_str("<w:p/>");
+                } else {
+                    self.render_blocks(&cell.blocks, out);
+                    if !ends_with_paragraph {
+                        out.push_str("<w:p/>");
+                    }
+                }
+                out.push_str("</w:tc>");
+            }
+            out.push_str("</w:tr>");
         }
+        out.push_str("</w:tbl>");
+    }
+
+    /// `trailer` is extra paragraph-property XML, for a section's
+    /// properties; `anchors` are the floating objects anchored here.
+    fn render_paragraph(
+        &mut self,
+        paragraph: &Paragraph,
+        out: &mut String,
+        trailer: &str,
+        anchors: &[usize],
+    ) {
         out.push_str("<w:p>");
         let mut properties = String::new();
         if let Some(style) = paragraph.style {
@@ -154,10 +326,14 @@ impl DocxWriter<'_> {
         if !mark.is_empty() {
             let _ = write!(properties, "<w:rPr>{mark}</w:rPr>");
         }
+        properties.push_str(trailer);
         if !properties.is_empty() {
             out.push_str("<w:pPr>");
             out.push_str(&properties);
             out.push_str("</w:pPr>");
+        }
+        for anchor in anchors {
+            self.render_floating(*anchor, out);
         }
         let mut open_link: Option<&str> = None;
         for run in &paragraph.runs {
@@ -167,11 +343,36 @@ impl DocxWriter<'_> {
                 }
                 open_link = run.link.as_deref();
                 if let Some(target) = open_link {
-                    let id = self.relationship_for(target);
+                    let id = self.relationship_for(RelationshipKind::Hyperlink, target);
                     let _ = write!(out, "<w:hyperlink r:id=\"rId{id}\">");
                 }
             }
+            // A tracked change wraps its run.
+            let change = run.revision.as_ref().map(|revision| {
+                self.revisions += 1;
+                let element = match revision.kind {
+                    RevisionKind::Insertion => "w:ins",
+                    RevisionKind::Deletion => "w:del",
+                };
+                let mut author = String::new();
+                escape_attribute(&mut author, revision.author.as_deref().unwrap_or("Unknown"));
+                let mut date = String::new();
+                if let Some(when) = &revision.date {
+                    date.push_str(" w:date=\"");
+                    escape_attribute(&mut date, when);
+                    date.push('"');
+                }
+                let _ = write!(
+                    out,
+                    "<{element} w:id=\"{}\" w:author=\"{author}\"{date}>",
+                    self.revisions
+                );
+                element
+            });
             self.render_run(paragraph, run, out);
+            if let Some(element) = change {
+                let _ = write!(out, "</{element}>");
+            }
         }
         if open_link.is_some() {
             out.push_str("</w:hyperlink>");
@@ -180,7 +381,6 @@ impl DocxWriter<'_> {
     }
 
     fn render_run(&mut self, paragraph: &Paragraph, run: &Run, out: &mut String) {
-        out.push_str("<w:r>");
         let mut properties = String::new();
         if let Some(style) = run.style {
             let _ = write!(
@@ -192,15 +392,42 @@ impl DocxWriter<'_> {
         let mut merged = paragraph.run_properties.clone();
         merged.overlay(&run.properties);
         run_properties_xml(&merged, &mut properties);
-        if !properties.is_empty() {
-            out.push_str("<w:rPr>");
-            out.push_str(&properties);
-            out.push_str("</w:rPr>");
+        let properties = if properties.is_empty() {
+            String::new()
+        } else {
+            format!("<w:rPr>{properties}</w:rPr>")
+        };
+        // Page fields wrap their run.
+        if let Inline::PageNumber | Inline::PageCount = run.content {
+            let instruction = match run.content {
+                Inline::PageCount => "NUMPAGES",
+                _ => "PAGE",
+            };
+            let _ = write!(
+                out,
+                "<w:fldSimple w:instr=\" {instruction} \"><w:r>{properties}<w:t>1</w:t></w:r></w:fldSimple>"
+            );
+            return;
         }
+        out.push_str("<w:r>");
+        out.push_str(&properties);
+        let deleted = run
+            .revision
+            .as_ref()
+            .is_some_and(|revision| revision.kind == RevisionKind::Deletion);
         match &run.content {
             Inline::Text(text) => {
-                out.push_str("<w:t xml:space=\"preserve\">");
+                let element = if deleted { "w:delText" } else { "w:t" };
+                let _ = write!(out, "<{element} xml:space=\"preserve\">");
                 escape_text(out, text);
+                let _ = write!(out, "</{element}>");
+            }
+            Inline::PageBreak => out.push_str("<w:br w:type=\"page\"/>"),
+            // Equations are written as their text until Office Math is
+            // supported.
+            Inline::Math(mathml) => {
+                out.push_str("<w:t xml:space=\"preserve\">");
+                escape_text(out, &mathml_text(mathml));
                 out.push_str("</w:t>");
             }
             Inline::LineBreak => out.push_str("<w:br/>"),
@@ -208,60 +435,322 @@ impl DocxWriter<'_> {
             Inline::Footnote(note) => {
                 let _ = write!(out, "<w:footnoteReference w:id=\"{}\"/>", note + 1);
             }
-            Inline::Image(_) => {}
+            Inline::Image(image) => self.render_image(image, out),
+            Inline::PageNumber | Inline::PageCount => {}
         }
         out.push_str("</w:r>");
     }
 
-    fn relationship_for(&mut self, target: &str) -> usize {
+    /// A picture, inline or anchored beside the text. Media Word cannot
+    /// show as a picture (such as PDF) is left out.
+    #[inline(never)]
+    fn render_image(&mut self, image: &InlineImage, out: &mut String) {
+        let Some(target) = self.media_target(image.media) else {
+            return;
+        };
+        let file_name = target.rsplit('/').next().unwrap_or("image").to_string();
+        let id = self.relationship_for(RelationshipKind::Image, &target);
+        self.drawings += 1;
+        let number = self.drawings;
+        let width = emu(image.width);
+        let height = emu(image.height);
+        let mut description = String::new();
+        escape_attribute(&mut description, image.description.as_deref().unwrap_or(""));
+        let mut name = String::new();
+        escape_attribute(&mut name, &file_name);
+        let extent = format!(
+            "<wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>"
+        );
+        let graphic = format!(
+            "<wp:docPr id=\"{number}\" name=\"{name}\" descr=\"{description}\"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri=\"{PICTURE}\"><pic:pic><pic:nvPicPr><pic:cNvPr id=\"{number}\" name=\"{name}\"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed=\"rId{id}\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>"
+        );
+        out.push_str("<w:drawing>");
+        match image.placement {
+            Placement::Inline => {
+                let _ = write!(
+                    out,
+                    "<wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\">{extent}{graphic}</wp:inline>"
+                );
+            }
+            Placement::Floating {
+                horizontal,
+                vertical,
+            } => {
+                let relative = |base: AnchorBase| match base {
+                    AnchorBase::Page => "page",
+                    AnchorBase::Margin => "margin",
+                    AnchorBase::Line => "line",
+                };
+                let _ = write!(
+                    out,
+                    "<wp:anchor distT=\"0\" distB=\"0\" distL=\"114300\" distR=\"114300\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"{}\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"{}\"><wp:posOffset>{}</wp:posOffset></wp:positionV>{extent}<wp:wrapSquare wrapText=\"bothSides\"/>{graphic}</wp:anchor>",
+                    251_658_240 + number,
+                    relative(horizontal.from),
+                    emu(horizontal.offset),
+                    relative(vertical.from),
+                    emu(vertical.offset),
+                );
+            }
+        }
+        out.push_str("</w:drawing>");
+    }
+
+    /// A floating object as a run holding a page-anchored drawing: an
+    /// image, or a text box shape with the blocks inside.
+    #[inline(never)]
+    fn render_floating(&mut self, index: usize, out: &mut String) {
+        let object = &self.document.floating[index];
+        let horizontal = Anchor {
+            from: AnchorBase::Page,
+            offset: object.x,
+        };
+        let vertical = Anchor {
+            from: AnchorBase::Page,
+            offset: object.y,
+        };
+        match &object.content {
+            FloatingContent::Image(media) => {
+                let image = InlineImage {
+                    media: *media,
+                    width: object.width,
+                    height: object.height,
+                    description: None,
+                    placement: Placement::Floating {
+                        horizontal,
+                        vertical,
+                    },
+                };
+                out.push_str("<w:r>");
+                self.render_image(&image, out);
+                out.push_str("</w:r>");
+            }
+            FloatingContent::TextBox { blocks, fill } => {
+                let mut content = String::new();
+                self.render_blocks(blocks, &mut content);
+                if content.is_empty() {
+                    content.push_str("<w:p/>");
+                }
+                self.drawings += 1;
+                let number = self.drawings;
+                let width = emu(object.width);
+                let height = emu(object.height);
+                let fill_xml = match fill {
+                    Some(color) => format!(
+                        "<a:solidFill><a:srgbClr val=\"{}\"/></a:solidFill>",
+                        color.hex()
+                    ),
+                    None => "<a:noFill/>".to_string(),
+                };
+                let _ = write!(
+                    out,
+                    "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/><wp:wrapSquare wrapText=\"bothSides\"/><wp:docPr id=\"{number}\" name=\"Text Box {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{SHAPE}\"><wps:wsp><wps:cNvSpPr txBox=\"1\"/><wps:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>{fill_xml}<a:ln><a:noFill/></a:ln></wps:spPr><wps:txbx><w:txbxContent>{content}</w:txbxContent></wps:txbx><wps:bodyPr wrap=\"square\" lIns=\"50800\" tIns=\"50800\" rIns=\"50800\" bIns=\"50800\" anchor=\"t\"><a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
+                    251_658_240 + number,
+                    emu(object.x),
+                    emu(object.y),
+                );
+            }
+        }
+    }
+
+    /// The package path of a media file under `word/`, when Word can show
+    /// it as a picture.
+    #[inline(never)]
+    fn media_target(&mut self, media: usize) -> Option<String> {
+        if let Some(Some(target)) = self.media_targets.get(media) {
+            return Some(target.clone());
+        }
+        let file = self.document.media.get(media)?;
+        let extension = file
+            .name
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        image_content_type(&extension)?;
+        let target = format!("media/image{}.{extension}", media + 1);
+        self.media_targets[media] = Some(target.clone());
+        Some(target)
+    }
+
+    fn relationship_for(&mut self, kind: RelationshipKind, target: &str) -> usize {
+        let wanted = Relationship {
+            kind,
+            target: target.to_string(),
+        };
         if let Some(index) = self
             .relationships
             .iter()
-            .position(|existing| existing == target)
+            .position(|existing| *existing == wanted)
         {
             return index + 10;
         }
-        self.relationships.push(target.to_string());
+        self.relationships.push(wanted);
         self.relationships.len() - 1 + 10
+    }
+
+    /// Renders blocks as a part of their own, with their own relationships.
+    fn render_part(&mut self, blocks: &[Block]) -> (String, Vec<Relationship>) {
+        let outer = std::mem::take(&mut self.relationships);
+        let mut xml = String::new();
+        self.render_blocks(blocks, &mut xml);
+        let relationships = std::mem::replace(&mut self.relationships, outer);
+        (xml, relationships)
+    }
+
+    /// A header or footer part; the relationship id the section refers
+    /// to it by.
+    #[inline(never)]
+    fn page_part(&mut self, blocks: &[Block], kind: RelationshipKind) -> usize {
+        let (inner, relationships) = self.render_part(blocks);
+        let (element, prefix) = match kind {
+            RelationshipKind::Header => ("w:hdr", "header"),
+            _ => ("w:ftr", "footer"),
+        };
+        let name = format!("{prefix}{}.xml", self.page_parts.len() + 1);
+        let mut xml = String::with_capacity(inner.len() + 512);
+        xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
+        let _ = write!(xml, "<{element} {W} {R} {DRAWING}>");
+        if inner.is_empty() {
+            xml.push_str("<w:p/>");
+        } else {
+            xml.push_str(&inner);
+        }
+        let _ = write!(xml, "</{element}>");
+        self.page_parts.push(Part {
+            name: name.clone(),
+            xml,
+            relationships,
+        });
+        self.relationship_for(kind, &name)
+    }
+
+    #[inline(never)]
+    fn section_properties(&mut self, section: &Section) -> String {
+        let page = &section.page;
+        let mut xml = String::new();
+        xml.push_str("<w:sectPr>");
+        let variants = [
+            (
+                &section.headers,
+                RelationshipKind::Header,
+                "headerReference",
+            ),
+            (
+                &section.footers,
+                RelationshipKind::Footer,
+                "footerReference",
+            ),
+        ];
+        for (variant, kind, element) in variants {
+            let pages = [
+                ("default", &variant.default),
+                ("first", &variant.first),
+                ("even", &variant.even),
+            ];
+            for (page_kind, blocks) in pages {
+                let Some(blocks) = blocks else {
+                    continue;
+                };
+                let id = self.page_part(blocks, kind);
+                let _ = write!(
+                    xml,
+                    "<w:{element} w:type=\"{page_kind}\" r:id=\"rId{id}\"/>"
+                );
+            }
+        }
+        if section.start == SectionStart::Continuous {
+            xml.push_str("<w:type w:val=\"continuous\"/>");
+        }
+        let _ = write!(
+            xml,
+            "<w:pgSz w:w=\"{}\" w:h=\"{}\"/>",
+            twips(page.width),
+            twips(page.height)
+        );
+        let _ = write!(
+            xml,
+            "<w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"{}\" w:footer=\"{}\" w:gutter=\"0\"/>",
+            twips(page.margin_top),
+            twips(page.margin_right),
+            twips(page.margin_bottom),
+            twips(page.margin_left),
+            twips(page.header_distance),
+            twips(page.footer_distance),
+        );
+        if section.columns > 1 {
+            let _ = write!(
+                xml,
+                "<w:cols w:num=\"{}\" w:space=\"708\"/>",
+                section.columns
+            );
+        }
+        if section.headers.first.is_some() || section.footers.first.is_some() {
+            xml.push_str("<w:titlePg/>");
+        }
+        if section.headers.even.is_some() || section.footers.even.is_some() {
+            self.even_pages = true;
+        }
+        xml.push_str("</w:sectPr>");
+        xml
     }
 
     fn document_xml(&self) -> String {
         let mut xml = String::with_capacity(self.body.len() + 512);
         xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
-        let _ = write!(xml, "<w:document {W} {R}><w:body>");
+        let _ = write!(xml, "<w:document {W} {R} {DRAWING}><w:body>");
         xml.push_str(&self.body);
         xml.push_str("</w:body></w:document>");
         xml
     }
 
-    fn document_relationships(&self) -> String {
+    /// The relationships of a part; the document part also links the
+    /// styles, numbering, footnotes, and settings parts.
+    fn relationships_xml(&self, relationships: &[Relationship], document: bool) -> String {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
         let _ = write!(xml, "<Relationships xmlns=\"{PACKAGE_REL}\">");
-        let _ = write!(
-            xml,
-            "<Relationship Id=\"rId1\" Type=\"{REL}/styles\" Target=\"styles.xml\"/>"
-        );
-        if !self.numbering.instances.is_empty() {
+        if document {
             let _ = write!(
                 xml,
-                "<Relationship Id=\"rId2\" Type=\"{REL}/numbering\" Target=\"numbering.xml\"/>"
+                "<Relationship Id=\"rId1\" Type=\"{REL}/styles\" Target=\"styles.xml\"/>"
             );
+            if !self.numbering.instances.is_empty() {
+                let _ = write!(
+                    xml,
+                    "<Relationship Id=\"rId2\" Type=\"{REL}/numbering\" Target=\"numbering.xml\"/>"
+                );
+            }
+            if !self.document.footnotes.is_empty() {
+                let _ = write!(
+                    xml,
+                    "<Relationship Id=\"rId3\" Type=\"{REL}/footnotes\" Target=\"footnotes.xml\"/>"
+                );
+            }
+            if self.even_pages {
+                let _ = write!(
+                    xml,
+                    "<Relationship Id=\"rId4\" Type=\"{REL}/settings\" Target=\"settings.xml\"/>"
+                );
+            }
         }
-        if !self.document.footnotes.is_empty() {
+        for (index, relationship) in relationships.iter().enumerate() {
+            let kind = match relationship.kind {
+                RelationshipKind::Hyperlink => "hyperlink",
+                RelationshipKind::Image => "image",
+                RelationshipKind::Header => "header",
+                RelationshipKind::Footer => "footer",
+            };
             let _ = write!(
                 xml,
-                "<Relationship Id=\"rId3\" Type=\"{REL}/footnotes\" Target=\"footnotes.xml\"/>"
-            );
-        }
-        for (index, target) in self.relationships.iter().enumerate() {
-            let _ = write!(
-                xml,
-                "<Relationship Id=\"rId{}\" Type=\"{REL}/hyperlink\" Target=\"",
+                "<Relationship Id=\"rId{}\" Type=\"{REL}/{kind}\" Target=\"",
                 index + 10
             );
-            escape_attribute(&mut xml, target);
-            xml.push_str("\" TargetMode=\"External\"/>");
+            escape_attribute(&mut xml, &relationship.target);
+            xml.push('"');
+            if relationship.kind == RelationshipKind::Hyperlink {
+                xml.push_str(" TargetMode=\"External\"");
+            }
+            xml.push_str("/>");
         }
         xml.push_str("</Relationships>");
         xml
@@ -275,6 +764,21 @@ impl DocxWriter<'_> {
         );
         xml.push_str("<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>");
         xml.push_str("<Default Extension=\"xml\" ContentType=\"application/xml\"/>");
+        let mut extensions: Vec<&str> = Vec::new();
+        for target in self.media_targets.iter().flatten() {
+            let extension = target.rsplit('.').next().unwrap_or("");
+            if !extensions.contains(&extension) {
+                extensions.push(extension);
+            }
+        }
+        for extension in extensions {
+            if let Some(content_type) = image_content_type(extension) {
+                let _ = write!(
+                    xml,
+                    "<Default Extension=\"{extension}\" ContentType=\"{content_type}\"/>"
+                );
+            }
+        }
         xml.push_str("<Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>");
         xml.push_str("<Override PartName=\"/word/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml\"/>");
         if !self.numbering.instances.is_empty() {
@@ -282,6 +786,21 @@ impl DocxWriter<'_> {
         }
         if !self.document.footnotes.is_empty() {
             xml.push_str("<Override PartName=\"/word/footnotes.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml\"/>");
+        }
+        if self.even_pages {
+            xml.push_str("<Override PartName=\"/word/settings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml\"/>");
+        }
+        for part in &self.page_parts {
+            let kind = if part.name.starts_with("header") {
+                "header"
+            } else {
+                "footer"
+            };
+            let _ = write!(
+                xml,
+                "<Override PartName=\"/word/{}\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.{kind}+xml\"/>",
+                part.name
+            );
         }
         xml.push_str("</Types>");
         xml
@@ -296,7 +815,7 @@ impl DocxWriter<'_> {
         xml.push_str("<w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/></w:style>");
         xml.push_str("<w:style w:type=\"character\" w:default=\"1\" w:styleId=\"DefaultParagraphFont\"><w:name w:val=\"Default Paragraph Font\"/></w:style>");
         xml.push_str("<w:style w:type=\"character\" w:styleId=\"Hyperlink\"><w:name w:val=\"Hyperlink\"/><w:rPr><w:color w:val=\"0563C1\"/><w:u w:val=\"single\"/></w:rPr></w:style>");
-        xml.push_str("<w:style w:type=\"table\" w:styleId=\"TableGrid\"><w:name w:val=\"Table Grid\"/><w:tblPr><w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:left w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:right w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/></w:tblBorders></w:tblPr></w:style>");
+        xml.push_str("<w:style w:type=\"table\" w:styleId=\"TableGrid\"><w:name w:val=\"Table Grid\"/><w:tblPr><w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:left w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:right w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/></w:tblBorders><w:tblCellMar><w:top w:w=\"80\" w:type=\"dxa\"/><w:left w:w=\"80\" w:type=\"dxa\"/><w:bottom w:w=\"80\" w:type=\"dxa\"/><w:right w:w=\"80\" w:type=\"dxa\"/></w:tblCellMar></w:tblPr></w:style>");
         for style in &styles.paragraph {
             let _ = write!(
                 xml,
@@ -400,14 +919,14 @@ impl DocxWriter<'_> {
         xml
     }
 
-    fn footnotes_xml(&mut self) -> String {
+    fn footnotes_part(&mut self) -> Part {
         let mut xml = String::new();
         xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
-        let _ = write!(xml, "<w:footnotes {W} {R}>");
+        let _ = write!(xml, "<w:footnotes {W} {R} {DRAWING}>");
         xml.push_str("<w:footnote w:type=\"separator\" w:id=\"-1\"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>");
         xml.push_str("<w:footnote w:type=\"continuationSeparator\" w:id=\"0\"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>");
-        let notes = self.document.footnotes.clone();
-        for (index, note) in notes.iter().enumerate() {
+        let outer = std::mem::take(&mut self.relationships);
+        for (index, note) in self.document.footnotes.iter().enumerate() {
             let _ = write!(xml, "<w:footnote w:id=\"{}\">", index + 1);
             let mut body = String::new();
             self.render_blocks(&note.blocks, &mut body);
@@ -424,7 +943,12 @@ impl DocxWriter<'_> {
             xml.push_str("</w:footnote>");
         }
         xml.push_str("</w:footnotes>");
-        xml
+        let relationships = std::mem::replace(&mut self.relationships, outer);
+        Part {
+            name: "footnotes.xml".to_string(),
+            xml,
+            relationships,
+        }
     }
 }
 
@@ -452,32 +976,22 @@ fn root_relationships() -> String {
     )
 }
 
-fn section_properties(section: &Section) -> String {
-    let page = &section.page;
-    let mut xml = String::new();
-    let _ = write!(
-        xml,
-        "<w:sectPr><w:pgSz w:w=\"{}\" w:h=\"{}\"/>",
-        twips(page.width),
-        twips(page.height)
-    );
-    let _ = write!(
-        xml,
-        "<w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\" w:header=\"708\" w:footer=\"708\" w:gutter=\"0\"/>",
-        twips(page.margin_top),
-        twips(page.margin_right),
-        twips(page.margin_bottom),
-        twips(page.margin_left)
-    );
-    if section.columns > 1 {
-        let _ = write!(
-            xml,
-            "<w:cols w:num=\"{}\" w:space=\"708\"/>",
-            section.columns
-        );
+fn settings_xml() -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:settings {W}><w:evenAndOddHeaders/></w:settings>"
+    )
+}
+
+/// The content type of an image file Word can show, by extension.
+fn image_content_type(extension: &str) -> Option<&'static str> {
+    match extension {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "bmp" => Some("image/bmp"),
+        "tif" | "tiff" => Some("image/tiff"),
+        _ => None,
     }
-    xml.push_str("</w:sectPr>");
-    xml
 }
 
 fn paragraph_properties_xml(properties: &ParagraphProperties, out: &mut String) {
@@ -666,4 +1180,9 @@ fn style_id(name: &str) -> String {
 
 fn twips(points: f32) -> i64 {
     (points * 20.0).round() as i64
+}
+
+/// English metric units, as drawings are measured.
+fn emu(points: f32) -> i64 {
+    (points * 12_700.0).round() as i64
 }

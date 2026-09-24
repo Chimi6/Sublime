@@ -6,6 +6,17 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- The document model (`src/document`): the hub between document formats, holding styles, sections with page setup, headers and footers, columns, paragraphs, runs, lists, tables, images, floating objects, footnotes, fields, tracked changes, and equations.
+- Pages document reader: body text with paragraph and character styles resolved through the stylesheet, direct formatting from variation styles, lists, links, footnotes, page and section breaks, tables (cell storage, merged regions from the calculation engine, fills, header rows, column widths and row heights), inline and anchored images from the package's data files, floating text boxes and images (groups flattened), headers and footers for first, even, and odd pages, page setup, column layouts, tables of contents with page numbers, page-number and page-count fields, tracked insertions and deletions with their authors, and equations as MathML.
+- Word writer and `pages -> docx` (and `pages-json -> docx`): styles by their Pages names, numbering, footnotes, headers and footers with their own parts, media parts with content types, tables with grid spans and vertical merges, inline and anchored pictures, text box shapes, page fields, section breaks (continuous for column changes), tracked changes as `w:ins` and `w:del`. Matches Apple's own export paragraph for paragraph on 22 of 27 fixtures (CI).
+- XML reader (`io::xml`) for the tests and future HTML and Word input.
+
+### Changed
+
+- Size budget raised from 1.2 MB to 1.4 MB for the document pipeline (release binary 1.36 MB).
+
 ## [0.5.1] - 2026-09-24
 
 ### Changed

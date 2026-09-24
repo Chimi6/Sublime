@@ -4,7 +4,10 @@
 
 use std::path::PathBuf;
 
-use sublime::document::{Alignment, Baseline, Block, Document, Inline, ListLabel, NumberKind};
+use sublime::document::{
+    Alignment, AnchorBase, Baseline, Block, Document, FloatingContent, Inline, ListLabel, Merge,
+    NumberKind, Placement, RevisionKind, SectionStart,
+};
 use sublime::io::pages::{Package, read_document};
 
 fn read(name: &str) -> Document {
@@ -164,7 +167,14 @@ fn paragraph_formatting_and_breaks() {
             .any(|run| run.content == Inline::LineBreak)
     );
     assert_eq!(broken.text(), "A line break inside\nthe same paragraph.");
-    assert!(by_prefix("Text after the page break").page_break_before);
+    // The page break is a paragraph of its own before the text it leads.
+    let after_break = paragraphs
+        .iter()
+        .position(|paragraph| paragraph.text().starts_with("Text after the page break"))
+        .expect("paragraph after the page break");
+    let break_paragraph = paragraphs[after_break - 1];
+    assert_eq!(break_paragraph.runs.len(), 1);
+    assert_eq!(break_paragraph.runs[0].content, Inline::PageBreak);
 }
 
 #[test]
@@ -225,4 +235,240 @@ fn footnotes_are_collected() {
         _ => String::new(),
     };
     assert_eq!(text, "The first footnote.");
+}
+
+fn tables(document: &Document) -> Vec<&sublime::document::Table> {
+    document.sections[0]
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Table(table) => Some(table),
+            Block::Paragraph(_) => None,
+        })
+        .collect()
+}
+
+fn cell_text(cell: &sublime::document::Cell) -> String {
+    cell.blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Paragraph(paragraph) => Some(paragraph.text()),
+            Block::Table(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn tables_come_out_as_grids_with_merges() {
+    let document = read("table");
+    let tables = tables(&document);
+    assert_eq!(tables.len(), 2);
+    let simple = tables[0];
+    assert_eq!(simple.rows.len(), 3);
+    assert_eq!(simple.header_rows, 1);
+    assert_eq!(simple.columns, vec![150.0, 150.0, 150.0]);
+    let texts: Vec<String> = simple.rows[0].cells.iter().map(cell_text).collect();
+    assert_eq!(texts, ["Name", "Kind", "Amount"]);
+    assert_eq!(cell_text(&simple.rows[1].cells[2]), "42.50");
+    assert!(simple.rows[0].cells[0].background.is_some());
+    let merged = tables[1];
+    assert_eq!(merged.rows.len(), 4);
+    let wide = &merged.rows[0].cells[0];
+    assert_eq!(cell_text(wide), "Spans two columns");
+    assert_eq!(wide.column_span, 2);
+    assert_eq!(merged.rows[0].cells[1].merge, Merge::Left);
+    let tall = &merged.rows[1].cells[0];
+    assert_eq!(cell_text(tall), "Spans two rows");
+    assert_eq!(tall.row_span, 2);
+    assert_eq!(merged.rows[2].cells[0].merge, Merge::Above);
+    assert_eq!(
+        cell_text(&merged.rows[3].cells[0]),
+        "Multi-line cell\nsecond paragraph"
+    );
+    // The shaded cell has its own fill, unlike its neighbours.
+    assert_ne!(wide.background, merged.rows[0].cells[2].background);
+    // The table sits before the paragraph that held it.
+    let texts = document.paragraph_texts();
+    assert_eq!(
+        texts[1],
+        "A simple table with a header row and a numeric column:"
+    );
+    assert_eq!(texts[2], "Name");
+}
+
+#[test]
+fn images_carry_media_size_and_placement() {
+    let document = read("images");
+    assert_eq!(document.media.len(), 2);
+    assert!(document.media[0].bytes.starts_with(b"\x89PNG"));
+    let images: Vec<&sublime::document::InlineImage> = paragraphs(&document)
+        .iter()
+        .flat_map(|paragraph| paragraph.runs.iter())
+        .filter_map(|run| match &run.content {
+            Inline::Image(image) => Some(image),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(images.len(), 3);
+    assert_eq!((images[0].width, images[0].height), (72.0, 48.0));
+    assert_eq!(images[0].description.as_deref(), Some("inline.png"));
+    assert_eq!(images[0].placement, Placement::Inline);
+    match images[1].placement {
+        Placement::Floating { horizontal, .. } => {
+            assert_eq!(horizontal.from, AnchorBase::Page);
+            assert_eq!(horizontal.offset, 492.5);
+        }
+        Placement::Inline => panic!("second image floats"),
+    }
+    // The scaled copy reuses the first image's media.
+    assert_eq!(images[2].media, images[0].media);
+    assert_eq!((images[2].width, images[2].height), (144.0, 96.0));
+}
+
+fn area_text(blocks: &Option<Vec<Block>>) -> String {
+    blocks
+        .as_ref()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| match block {
+                    Block::Paragraph(paragraph) => Some(paragraph.text()),
+                    Block::Table(_) => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn headers_footers_and_page_setup() {
+    let document = read("headers");
+    let section = &document.sections[0];
+    assert_eq!((section.page.width, section.page.height), (612.0, 792.0));
+    assert_eq!(section.page.margin_left, 72.0);
+    assert_eq!(section.page.header_distance, 35.4);
+    assert_eq!(
+        area_text(&section.headers.default),
+        "Odd-page header, shown on pages one and three"
+    );
+    assert_eq!(
+        area_text(&section.headers.first),
+        "First-page header, shown only on page one"
+    );
+    assert_eq!(
+        area_text(&section.headers.even),
+        "Even-page header, shown on page two"
+    );
+    let footer = section.footers.default.as_ref().expect("footer");
+    let Block::Paragraph(paragraph) = &footer[0] else {
+        panic!("footer paragraph");
+    };
+    assert_eq!(paragraph.text(), "Page ");
+    assert!(
+        paragraph
+            .runs
+            .iter()
+            .any(|run| run.content == Inline::PageNumber)
+    );
+}
+
+#[test]
+fn sections_split_at_section_and_layout_breaks() {
+    let document = read("layout");
+    assert_eq!(document.sections.len(), 2);
+    assert_eq!(document.sections[0].columns, 1);
+    assert_eq!(document.sections[1].columns, 2);
+    assert_eq!(document.sections[1].start, SectionStart::NewPage);
+    assert_eq!(
+        area_text(&document.sections[1].headers.default),
+        "Section two header, two columns"
+    );
+    let document = read("page-layout");
+    assert_eq!(document.sections.len(), 2);
+    assert_eq!(document.sections[0].columns, 2);
+}
+
+#[test]
+fn floating_text_boxes_and_images_are_collected() {
+    let document = read("native-objects");
+    assert_eq!(document.floating.len(), 3);
+    let lone = &document.floating[2];
+    assert_eq!(
+        (lone.x, lone.y, lone.width, lone.height),
+        (72.0, 260.0, 220.0, 90.0)
+    );
+    match &lone.content {
+        FloatingContent::TextBox { blocks, .. } => {
+            assert_eq!(area_text(&Some(blocks.clone())), "A lone shape with text.");
+        }
+        FloatingContent::Image(_) => panic!("a text box"),
+    }
+    // Grouped shapes are placed relative to their group.
+    assert_eq!(
+        (document.floating[1].x, document.floating[1].y),
+        (220.0, 130.0)
+    );
+    let document = read("native-scripted");
+    assert_eq!(document.floating.len(), 2);
+    assert!(matches!(
+        document.floating[0].content,
+        FloatingContent::Image(_)
+    ));
+}
+
+#[test]
+fn table_of_contents_entries_follow_their_paragraph() {
+    let document = read("toc");
+    let paragraphs = paragraphs(&document);
+    assert_eq!(style_name(&document, paragraphs[3]), "TOC 1");
+    assert_eq!(paragraphs[3].text(), "Contents\t1");
+    assert_eq!(style_name(&document, paragraphs[6]), "TOC 2");
+    assert_eq!(paragraphs[6].text(), "A subsection\t3");
+    assert_eq!(style_name(&document, paragraphs[9]), "Heading");
+}
+
+#[test]
+fn tracked_changes_are_revisions() {
+    let document = read("notes");
+    let changed = paragraphs(&document)
+        .into_iter()
+        .find(|paragraph| paragraph.text().starts_with("Tracked changes"))
+        .expect("tracked paragraph");
+    assert_eq!(
+        changed.text(),
+        "Tracked changes: inserted words and unchanged words."
+    );
+    let revisions: Vec<(RevisionKind, &str)> = changed
+        .runs
+        .iter()
+        .filter_map(|run| {
+            let revision = run.revision.as_ref()?;
+            Some((revision.kind, revision.author.as_deref().unwrap_or("")))
+        })
+        .collect();
+    assert_eq!(
+        revisions,
+        [
+            (RevisionKind::Insertion, "Editor"),
+            (RevisionKind::Deletion, "Editor")
+        ]
+    );
+}
+
+#[test]
+fn equations_keep_their_mathml() {
+    let document = read("equations");
+    let math: Vec<&String> = paragraphs(&document)
+        .iter()
+        .flat_map(|paragraph| paragraph.runs.iter())
+        .filter_map(|run| match &run.content {
+            Inline::Math(mathml) => Some(mathml),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(math.len(), 4);
+    assert!(math[0].starts_with("<math"));
+    assert_eq!(sublime::document::mathml_text(math[0]), "E=mc2");
 }
