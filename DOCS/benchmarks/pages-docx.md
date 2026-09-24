@@ -1,6 +1,6 @@
 # Pages -> Word
 
-**Latest** (2026-09-24, streamed body: pages -> docx 15.6 MB/s of input on the dense shape and 18.5 on prose, at 74.8 and 45.3 MB peak; the prose memory goal passes, the rest FAIL, see Conclusions and `STATE.md`)
+**Latest** (2026-09-24, phase 3: pages -> docx 16.9 MB/s of input on the dense shape and 21.3 on prose, at 70.0 and 41.6 MB peak; styled throughput FAIL, styled memory FAIL, prose throughput FAIL, prose memory PASS; see Conclusions and `STATE.md`)
 
 ## Purpose
 
@@ -68,6 +68,20 @@ in-process runs; inputs come from the `pages-json` pair's generator.
 
 ## Results
 
+### 2026-09-24, reachable decode and fast deflate
+
+commit: b6dfbef
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Phase 3: the document paths decode only the objects reached from the document root (the stylesheet, theme, and view-state hubs are not expanded), the fast deflate level walks one candidate and skips indexing inside long matches, the Word XML drops `w:szCs` and the preserve attribute where nothing needs it, and the paragraph splitter reuses its scratch and no longer recounts UTF-16 units per run. Same inputs as the blocks below.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> docx, styled (2.5 MB): throughput (MB/s of input) | 16.9 | goal: 50 | FAIL |
+| pages -> docx, styled: peak memory (MB) | 70.0 | goal: <= 64.0 | FAIL |
+| pages -> docx, prose (1.5 MB): throughput (MB/s of input) | 21.3 | goal: 50 | FAIL |
+| pages -> docx, prose: peak memory (MB) | 41.6 | goal: <= 64.0 | PASS |
+
 ### 2026-09-24, streamed Word body
 
 commit: 9dcba8e
@@ -110,19 +124,21 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 
 ## Conclusions
 
-- Both goals fail on both shapes: a fifth of the throughput goal on the
-  dense shape, and 3.6x the memory goal. In-process on `styled`
-  (symbolized samples): package decode 26 ms, document read 60 ms, Word
-  write 100 ms, most of it deflating the 30 MB `document.xml`. Peak memory
-  is the object trees (44 MB), the document model (48 MB of structs for
-  170,000 runs at 224 bytes each, plus their strings), and the rendered
-  XML held whole before compression.
-- Before this block the reader was quadratic in the paragraph count (16.9 s
-  on this input); binary searches over the sorted attribute tables and a
-  cursor for UTF-16 offsets brought it to 0.25 s. That is in this commit;
-  the goals still fail.
-- Levers, in order: a slimmer run (a style index and only its own
-  overrides, fonts and languages interned in the style table); the Word
-  body streamed through the compressor as it is rendered; objects decoded
-  on first lookup instead of all 570 up front. Recorded as a blocker in
-  `STATE.md` for 0.6.1.
+- After the three phases the dense shape stands at 17 MB/s and 70 MB
+  (from 10 MB/s and 232 MB) and the prose shape at 21 MB/s and 42 MB (from
+  13 and 113); prose passes memory, nothing passes throughput. A real
+  resume converts in 3 ms at 4.8 MB peak, which is what the phases were
+  for.
+- What is left on the dense shape, in-process: package decode 26 ms (the
+  body's 300,000 attribute entries, not presets), document build 30 ms,
+  Word render and deflate 60 ms for 19 MB of XML. The 50 MB/s goal is
+  50 ms for all of it. Reaching it means not building the model at all
+  for this path (rendering Word straight from the storage tables) and a
+  still faster deflate; both are larger designs than a phase, and neither
+  helps a real document, which is already inside the goal.
+- The dense memory miss is 6 MB over: 25 MB of object trees plus the
+  model (10 MB of runs, 3.4 MB of text) plus the 256 KiB output part and
+  the reader's copies of the storage text. Dropping the tree after the
+  model is built is the next lever; it needs the media bytes moved out
+  first.
+- Recorded in `STATE.md` as the open blocker with these numbers.

@@ -81,6 +81,24 @@ and `ours` / `ours-back` modes for in-process runs.
 
 ## Results
 
+### 2026-09-24, reachable decode and fast deflate
+
+commit: b6dfbef
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Unchanged by phase 3 (the lossless path still decodes everything); recorded for the date trail.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> pages-json, styled (2.5 MB): throughput (MB/s of input) | 28.5 | goal: 50 | FAIL |
+| pages -> pages-json, styled: peak memory (MB) | 48.6 | goal: <= 64.0 | PASS |
+| pages-json -> pages, styled (33.7 MB): throughput (MB/s of input) | 330.0 | goal: 50 | PASS |
+| pages-json -> pages, styled: peak memory (MB) | 46.0 | goal: <= 64.0 | PASS |
+| pages -> pages-json, prose (1.5 MB): throughput (MB/s of input) | 40.4 | goal: 50 | FAIL |
+| pages -> pages-json, prose: peak memory (MB) | 28.1 | goal: <= 64.0 | PASS |
+| pages-json -> pages, prose (16.1 MB): throughput (MB/s of input) | 323.8 | goal: 50 | PASS |
+| pages-json -> pages, prose: peak memory (MB) | 30.6 | goal: <= 64.0 | PASS |
+
 ### 2026-09-24, slim document model
 
 commit: b8c1a66
