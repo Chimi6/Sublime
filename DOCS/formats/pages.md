@@ -10,7 +10,8 @@ the reader; `STATE.md` records what is being built now.
 - `pages` <-> `pages-json`: shipped, lossless at the object level. Every
   stream of every fixture decodes into schema-named trees and re-encodes to
   its exact bytes; the JSON reads back to the same trees (CI,
-  `tests/pages_fixtures.rs`).
+  `tests/pages_fixtures.rs`). Rebuilt packages are Snappy-compressed and
+  come out slightly smaller than Pages' own.
 - Reading the document as a document (text, styles, lists, tables, images,
   footnotes) into the event stream: next. The map below is what that reader
   is built from.
@@ -64,11 +65,11 @@ Message type ids are the apps' registries, which overlap between Pages,
 Numbers, and Keynote in the 10000 range; Sublime's table is the Pages one.
 The fixtures contain 96 distinct types. Schemas are the community's
 reverse-engineered protobuf definitions (see `scripts/gen-pages-schema.py`
-for sources); 658 messages reachable from the registry are compiled in as a
+for sources); 670 messages reachable from the registry are compiled in as a
 packed table, 31 registry names have no schema and decode raw, and any
-field a schema does not know is kept by number with its wire type. Object
-10016 (one per section, referring to the guide storage) is not in any
-registry and stays unnamed.
+field a schema does not know is kept by number with its wire type. Type
+10016 is in no registry; its payload (a repeated pair of page index and
+guide storage reference) identifies it as `TP.UserDefinedGuideMapArchive`.
 
 ## The JSON form
 
@@ -78,8 +79,8 @@ base64. Details and the field encoding rules are in
 `src/io/pages/json.rs`. It is the form the map is read from and the form
 other tools can consume; `jq` over it answers most questions about a
 document. Reading it back rebuilds the package; the ZIP is stored and the
-streams are chunked as literal Snappy blocks, so a rebuilt file is larger
-than Pages' own but identical in content.
+streams are Snappy-compressed in 64 KiB chunks, so a rebuilt file matches
+Pages' own in size and is identical in content.
 
 ## What the objects mean
 
@@ -118,10 +119,8 @@ Established from the fixtures with `sublime inspect` (a `dev-tools` build).
 
 ## Known deviations
 
-- Rebuilt packages use stored ZIP entries and uncompressed Snappy blocks:
-  bigger files, same content. A Snappy compressor is on the tech debt list.
-- 31 registry types have no schema and one type has no name; both decode
-  raw and survive a round trip.
+- 31 registry types have no schema; they decode raw and survive a round
+  trip.
 
 ## Sources
 
