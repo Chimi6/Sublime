@@ -35,6 +35,12 @@ on run argv
 		on error message
 			set end of report to "native-scripted: FAILED " & message
 		end try
+		try
+			my buildNativeObjects(sourcesDir, fixturesDir, referenceDir)
+			set end of report to "native-objects: ok"
+		on error message
+			set end of report to "native-objects: FAILED " & message
+		end try
 	end tell
 	set AppleScript's text item delimiters to linefeed
 	return report as text
@@ -131,3 +137,33 @@ on buildNative(sourcesDir, fixturesDir, referenceDir)
 		my saveAndExport(theDocument, fixturesDir, referenceDir, "native-scripted")
 	end tell
 end buildNative
+
+-- A second scripted document holding drawn objects Pages creates natively:
+-- a shape with text, a straight line, and a chart with data. Grouping is not
+-- in Pages' scripting dictionary (there is no `group` command), so a group is
+-- not included; add one by hand if the map needs it.
+on buildNativeObjects(sourcesDir, fixturesDir, referenceDir)
+	tell application "Pages"
+		set theDocument to make new document with properties {document template:template "Blank"}
+		delay 1
+		tell theDocument
+			set body text to "Native Drawn Objects" & return & "Shapes, a line, and a chart, each authored by AppleScript."
+		end tell
+		try
+			tell page 1 of theDocument
+				make new shape with properties {object text:"A shape with text.", position:{72, 140}, width:220, height:110}
+			end tell
+		end try
+		try
+			tell page 1 of theDocument
+				make new line with properties {start point:{72, 300}, end point:{400, 300}}
+			end tell
+		end try
+		try
+			tell page 1 of theDocument
+				make new chart with data {{10, 20, 30}, {15, 25, 35}} with properties {position:{72, 360}}
+			end tell
+		end try
+		my saveAndExport(theDocument, fixturesDir, referenceDir, "native-objects")
+	end tell
+end buildNativeObjects
