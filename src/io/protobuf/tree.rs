@@ -5,7 +5,7 @@
 use std::fmt;
 
 use super::reader::{FieldReader, ProtobufError, Value, packed_varints, read_varint};
-use super::schema::{Field, Kind, Message};
+use super::schema::{Field, Kind, MessageRef, Schema};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
@@ -32,7 +32,7 @@ pub enum Node {
 pub struct Entry {
     pub number: u32,
     /// The schema field, when known.
-    pub field: Option<&'static Field>,
+    pub field: Option<Field>,
     pub value: Node,
 }
 
@@ -74,15 +74,15 @@ impl From<ProtobufError> for TreeError {
 /// Decodes `bytes` as `message`; `table` resolves nested message kinds.
 pub fn decode(
     bytes: &[u8],
-    message: Option<&'static Message>,
-    table: &'static [Message],
+    message: Option<MessageRef>,
+    schema: &'static Schema,
 ) -> Result<Fields, TreeError> {
     let mut entries = Vec::new();
     for field in FieldReader::new(bytes) {
         let field = field?;
-        let schema = message.and_then(|message| message.field(field.number));
-        match schema {
-            Some(schema) => decode_known(field.number, schema, field.value, table, &mut entries),
+        let known = message.and_then(|message| message.field(field.number));
+        match known {
+            Some(known) => decode_known(field.number, known, field.value, schema, &mut entries),
             None => entries.push(Entry {
                 number: field.number,
                 field: None,
@@ -106,9 +106,9 @@ fn raw(value: Value<'_>) -> Node {
 
 fn decode_known(
     number: u32,
-    schema: &'static Field,
+    schema: Field,
     value: Value<'_>,
-    table: &'static [Message],
+    table: &'static Schema,
     entries: &mut Vec<Entry>,
 ) {
     let push = |entries: &mut Vec<Entry>, node: Node| {
@@ -137,7 +137,7 @@ fn decode_known(
             None => push(entries, Node::RawBytes(bytes.to_vec())),
         },
         (Kind::Message(index), Value::Bytes(bytes)) => {
-            let nested = table.get(usize::from(index));
+            let nested = table.message_at(index);
             match decode(bytes, nested, table) {
                 Ok(fields) => push(entries, Node::Message(fields)),
                 Err(_) => push(entries, Node::RawBytes(bytes.to_vec())),
@@ -347,66 +347,81 @@ fn encode_scalar_payload(entry: &Entry, out: &mut Vec<u8>) -> Result<(), TreeErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::protobuf::schema::{FieldRecord, MessageRecord};
 
-    static TABLE: [Message; 2] = [
-        Message {
-            name: "Inner",
-            fields: &[Field {
+    // Inner { 1 count: repeated packed uint }, Outer { 1 name: string,
+    // 2 inner: Inner, 3 target: reference, 4 delta: sint, 5 ratio: float }.
+    static SCHEMA: Schema = Schema {
+        names: "countnameinnertargetdeltaratioInnerOuter",
+        messages: &[
+            MessageRecord {
+                name_offset: 30,
+                name_length: 5,
+                fields_start: 0,
+                fields_length: 1,
+            },
+            MessageRecord {
+                name_offset: 35,
+                name_length: 5,
+                fields_start: 1,
+                fields_length: 5,
+            },
+        ],
+        fields: &[
+            FieldRecord {
                 number: 1,
-                name: "count",
-                kind: Kind::Uint,
-                repeated: true,
-                packed: true,
-            }],
-        },
-        Message {
-            name: "Outer",
-            fields: &[
-                Field {
-                    number: 1,
-                    name: "name",
-                    kind: Kind::String,
-                    repeated: false,
-                    packed: false,
-                },
-                Field {
-                    number: 2,
-                    name: "inner",
-                    kind: Kind::Message(0),
-                    repeated: false,
-                    packed: false,
-                },
-                Field {
-                    number: 3,
-                    name: "target",
-                    kind: Kind::Reference,
-                    repeated: false,
-                    packed: false,
-                },
-                Field {
-                    number: 4,
-                    name: "delta",
-                    kind: Kind::Sint,
-                    repeated: false,
-                    packed: false,
-                },
-                Field {
-                    number: 5,
-                    name: "ratio",
-                    kind: Kind::Float,
-                    repeated: false,
-                    packed: false,
-                },
-            ],
-        },
-    ];
+                name_offset: 0,
+                name_length: 5,
+                kind: 1,
+                flags: 3,
+                message_index: 0,
+            },
+            FieldRecord {
+                number: 1,
+                name_offset: 5,
+                name_length: 4,
+                kind: 9,
+                flags: 0,
+                message_index: 0,
+            },
+            FieldRecord {
+                number: 2,
+                name_offset: 9,
+                name_length: 5,
+                kind: 12,
+                flags: 0,
+                message_index: 0,
+            },
+            FieldRecord {
+                number: 3,
+                name_offset: 14,
+                name_length: 6,
+                kind: 11,
+                flags: 0,
+                message_index: 0,
+            },
+            FieldRecord {
+                number: 4,
+                name_offset: 20,
+                name_length: 5,
+                kind: 2,
+                flags: 0,
+                message_index: 0,
+            },
+            FieldRecord {
+                number: 5,
+                name_offset: 25,
+                name_length: 5,
+                kind: 7,
+                flags: 0,
+                message_index: 0,
+            },
+        ],
+    };
 
     fn sample() -> Vec<u8> {
-        let mut bytes = vec![0x0A, 0x02, b'h', b'i'];
-        bytes.extend_from_slice(&[0x12, 0x04, 0x0A, 0x02, 0x03, 0x80]); // inner { count packed [3, 128?] } -> 0x03, 0x80 0x01
-        bytes[5] = 0x05;
-        bytes.truncate(4);
-        bytes.extend_from_slice(&[0x12, 0x05, 0x0A, 0x03, 0x03, 0x80, 0x01]);
+        let mut bytes = vec![0x0A, 0x02, b'h', b'i']; // name "hi"
+        bytes.extend_from_slice(&[0x12, 0x05, 0x0A, 0x03, 0x03, 0x80, 0x01]); // inner { count packed [3, 128] }
         bytes.extend_from_slice(&[0x1A, 0x02, 0x08, 0x2A]); // target ref 42
         bytes.extend_from_slice(&[0x20, 0x03]); // delta sint -2
         bytes.extend_from_slice(&[0x2D, 0x00, 0x00, 0x80, 0x3F]); // ratio 1.0
@@ -416,7 +431,9 @@ mod tests {
 
     #[test]
     fn decodes_named_and_unknown_fields() {
-        let tree = decode(&sample(), Some(&TABLE[1]), &TABLE).unwrap();
+        let outer = SCHEMA.message("Outer");
+        assert!(outer.is_some());
+        let tree = decode(&sample(), outer, &SCHEMA).unwrap();
         let names: Vec<Option<&str>> = tree
             .entries
             .iter()
@@ -450,7 +467,7 @@ mod tests {
     #[test]
     fn re_encodes_to_the_same_bytes() {
         let bytes = sample();
-        let tree = decode(&bytes, Some(&TABLE[1]), &TABLE).unwrap();
+        let tree = decode(&bytes, SCHEMA.message("Outer"), &SCHEMA).unwrap();
         let mut out = Vec::new();
         encode(&tree, &mut out).unwrap();
         assert_eq!(out, bytes);
@@ -459,7 +476,7 @@ mod tests {
     #[test]
     fn schemaless_decode_keeps_everything_raw() {
         let bytes = sample();
-        let tree = decode(&bytes, None, &TABLE).unwrap();
+        let tree = decode(&bytes, None, &SCHEMA).unwrap();
         assert!(tree.entries.iter().all(|entry| entry.field.is_none()));
         let mut out = Vec::new();
         encode(&tree, &mut out).unwrap();

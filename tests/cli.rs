@@ -334,7 +334,7 @@ fn formats_and_paths_list_the_registry() {
     assert_eq!(code(&paths), 0);
     assert_eq!(
         stdout(&paths),
-        "csv -> json: lossless via csv-to-json\njson -> csv: conditional via json-to-csv\nmarkdown -> html: lossless via markdown-to-html\nmarkdown -> markdown-json: lossless via markdown-to-json\nmarkdown -> text: lossy via markdown-to-text\nmarkdown-json -> html: lossless via markdown-json-to-markdown -> markdown-to-html\nmarkdown-json -> markdown: lossless via markdown-json-to-markdown\nmarkdown-json -> text: lossy via markdown-json-to-markdown -> markdown-to-text\n"
+        "csv -> json: lossless via csv-to-json\njson -> csv: conditional via json-to-csv\nmarkdown -> html: lossless via markdown-to-html\nmarkdown -> markdown-json: lossless via markdown-to-json\nmarkdown -> text: lossy via markdown-to-text\nmarkdown-json -> html: lossless via markdown-json-to-markdown -> markdown-to-html\nmarkdown-json -> markdown: lossless via markdown-json-to-markdown\nmarkdown-json -> text: lossy via markdown-json-to-markdown -> markdown-to-text\npages -> pages-json: lossless via pages-to-json\npages-json -> pages: lossless via json-to-pages\n"
     );
 
     let markdown = run(&["paths", "--markdown"]);
@@ -426,4 +426,41 @@ fn markdown_round_trips_through_json() {
     assert_eq!(code(&check), 0);
     assert!(stdout(&check).contains("markdown-json-to-markdown"));
     std::fs::remove_file(json_path).ok();
+}
+
+#[test]
+fn pages_round_trips_through_json_on_the_command_line() {
+    let input = fixture("pages/text-styles.pages");
+    let json_path = temp_path("text-styles.pages.json");
+    let pages_path = temp_path("text-styles-again.pages");
+    let to_json = run(&[
+        "convert",
+        input.to_str().unwrap(),
+        json_path.to_str().unwrap(),
+        "--to",
+        "pages-json",
+    ]);
+    assert_eq!(code(&to_json), 0, "stderr: {}", stderr(&to_json));
+    let json = std::fs::read_to_string(&json_path).unwrap();
+    assert!(json.starts_with("{\"format\":\"pages-json\""));
+    assert!(json.contains("\"@type\":\"TSWP.StorageArchive\""));
+    assert!(json.contains("Heading One"));
+    let back = run(&[
+        "convert",
+        json_path.to_str().unwrap(),
+        pages_path.to_str().unwrap(),
+        "--from",
+        "pages-json",
+    ]);
+    assert_eq!(code(&back), 0, "stderr: {}", stderr(&back));
+    let again = run(&[
+        "convert",
+        pages_path.to_str().unwrap(),
+        "--to",
+        "pages-json",
+    ]);
+    assert_eq!(code(&again), 0, "stderr: {}", stderr(&again));
+    assert_eq!(stdout(&again), json);
+    std::fs::remove_file(json_path).ok();
+    std::fs::remove_file(pages_path).ok();
 }
