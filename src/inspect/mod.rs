@@ -120,6 +120,7 @@ fn describe(tree: &Tree, node: Node) -> String {
         Node::RawVarint(value) => format!("raw varint {value}"),
         Node::RawFixed32(value) => format!("raw fixed32 {value}"),
         Node::RawFixed64(value) => format!("raw fixed64 {value}"),
+        Node::Deferred(span) => format!("deferred, {} bytes", span.length),
         Node::RawBytes(span) => {
             let bytes = tree.bytes(span);
             let shown: String = bytes

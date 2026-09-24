@@ -1,6 +1,6 @@
 # Pages -> Word
 
-**Latest** (2026-09-24, phase 3: pages -> docx 16.9 MB/s of input on the dense shape and 21.3 on prose, at 70.0 and 41.6 MB peak; styled throughput FAIL, styled memory FAIL, prose throughput FAIL, prose memory PASS; see Conclusions and `STATE.md`)
+**Latest** (2026-09-24, styles interned: pages -> docx 20.0 MB/s of input on the dense shape and 22.1 on prose, at 48.2 and 35.2 MB peak; memory PASSES on both shapes, throughput FAILS on both, see Conclusions and `STATE.md`)
 
 ## Purpose
 
@@ -68,6 +68,34 @@ in-process runs; inputs come from the `pages-json` pair's generator.
 
 ## Results
 
+### 2026-09-24, run formatting interned into character styles
+
+commit: 3ed21c5
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Write-time interning: fonts, sizes, colors, underline, baseline, and language of a run go into one character style per (named style, paragraph formatting, run formatting) triple, based on the named style when there is one, and the run carries `w:rStyle`; the toggle properties Word applies relatively (bold, italic, strike, caps) stay inline. Dense-shape XML 19.3 -> 15.6 MB; the rest of the XML is the run and text elements themselves.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> docx, styled (2.5 MB): throughput (MB/s of input) | 20.0 | goal: 50 | FAIL |
+| pages -> docx, styled: peak memory (MB) | 48.2 | goal: <= 64.0 | PASS |
+| pages -> docx, prose (1.5 MB): throughput (MB/s of input) | 22.1 | goal: 50 | FAIL |
+| pages -> docx, prose: peak memory (MB) | 35.2 | goal: <= 64.0 | PASS |
+
+### 2026-09-24, typed decode of the attribute tables
+
+commit: 08c4de5
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Typed decode: on the document paths the twelve attribute tables of a text storage are kept as their encoded bytes in the tree (`Tree::deferred`) and parsed straight into vectors by the reader, twelve bytes an entry instead of three tree entries. Same inputs as the blocks below.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> docx, styled (2.5 MB): throughput (MB/s of input) | 18.8 | goal: 50 | FAIL |
+| pages -> docx, styled: peak memory (MB) | 48.2 | goal: <= 64.0 | PASS |
+| pages -> docx, prose (1.5 MB): throughput (MB/s of input) | 22.6 | goal: 50 | FAIL |
+| pages -> docx, prose: peak memory (MB) | 34.8 | goal: <= 64.0 | PASS |
+
 ### 2026-09-24, reachable decode and fast deflate
 
 commit: b6dfbef
@@ -124,23 +152,16 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 
 ## Conclusions
 
-- After the three phases the dense shape stands at 17 MB/s and 70 MB
-  (from 10 MB/s and 232 MB) and the prose shape at 21 MB/s and 42 MB (from
-  13 and 113); prose passes memory, nothing passes throughput. A real
-  resume converts in 3 ms at 4.8 MB peak, which is what the phases were
-  for.
-- What is left on the dense shape, in-process: package decode 26 ms (the
-  body's 300,000 attribute entries, not presets), document build 30 ms,
-  Word render and deflate 60 ms for 19 MB of XML. The 50 MB/s goal is
-  50 ms for all of it.
-- Two levers cover most of that gap and are worth a phase each, recorded
-  under Spikes in `STATE.md`: a typed decode of the attribute tables
-  straight into vectors (about 12 ms off decode, 15 ms off the build, and
-  25 MB of trees, which passes the memory goal), and interning run
-  formatting into named character styles at write time so a run carries a
-  30-byte `w:rStyle` instead of a 100-byte block (about half the XML and
-  its deflate). Rendering without a model was considered and set aside:
-  it would trade the hub architecture for 30 ms.
-- The goals stand: with those two levers the text paths project to the
-  line and Word to within a third of it, and a real document is already
-  well inside both.
+- Standing after the typed decode and the interned styles: memory passes
+  on both shapes (48.2 and 35.2 MB against 64, from 232 and 113 at the
+  start); throughput fails on both (20.0 and 22.1 MB/s against 50, from
+  10 and 13). A real resume converts in 3 ms at 4.8 MB.
+- Where the dense shape's time goes now, in-process: package decode about
+  16 ms, document build about 25 ms, Word render and deflate about
+  50 ms for 15.6 MB of XML, against a 50 ms line. The XML is now mostly
+  the run and text elements themselves (92 bytes a run on average), so
+  the next lever on this path is merging adjacent runs of equal effective
+  formatting, which cuts elements as well as bytes; behind it, the deflate
+  itself and the reader's levers shared with the text paths (Spikes in
+  `STATE.md`). The goal stands: within a factor of two and a half on the
+  synthetic dense shape, met on any real document.

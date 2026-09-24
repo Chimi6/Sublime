@@ -1,6 +1,6 @@
 # Pages -> HTML
 
-**Latest** (2026-09-24, phase 3: pages -> html 28.6 MB/s of input on the dense shape and 28.2 on prose, at 70.4 and 41.3 MB peak; styled throughput FAIL, styled memory FAIL, prose throughput FAIL, prose memory PASS; see Conclusions and `STATE.md`)
+**Latest** (2026-09-24, typed decode: pages -> html 31.6 MB/s of input on the dense shape and 30.9 on prose, at 48.2 and 34.9 MB peak; memory PASSES on both shapes, throughput FAILS on both, see Conclusions and `STATE.md`)
 
 ## Purpose
 
@@ -65,6 +65,20 @@ in-process runs; inputs come from the `pages-json` pair's generator.
 
 ## Results
 
+### 2026-09-24, typed decode of the attribute tables
+
+commit: 08c4de5
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Typed decode: on the document paths the twelve attribute tables of a text storage are kept as their encoded bytes in the tree (`Tree::deferred`) and parsed straight into vectors by the reader, twelve bytes an entry instead of three tree entries. Same inputs as the blocks below.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> html, styled (2.5 MB): throughput (MB/s of input) | 31.6 | goal: 50 | FAIL |
+| pages -> html, styled: peak memory (MB) | 48.2 | goal: <= 64.0 | PASS |
+| pages -> html, prose (1.5 MB): throughput (MB/s of input) | 30.9 | goal: 50 | FAIL |
+| pages -> html, prose: peak memory (MB) | 34.9 | goal: <= 64.0 | PASS |
+
 ### 2026-09-24, reachable decode and fast deflate
 
 commit: b6dfbef
@@ -107,17 +121,13 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 
 ## Conclusions
 
-- Failing rows after the three phases: throughput on both shapes (about
-  27 MB/s dense, 25 to 30 MB/s prose, against 50) and memory on the dense
-  shape (70 MB against 64). Prose memory passes. A real resume converts in
-  3 ms at 4.8 MB, inside both goals.
-- Where the dense shape's time goes, in-process: package decode 26 ms
-  (the body's 300,000 attribute entries), document build 30 ms, the HTML
-  writer about 18 ms, process and I/O the rest. The goal is 50 ms
-  for all of it, so the writer is not the problem; the reader is.
-- Levers, recorded under Spikes in `STATE.md`: a typed decode of the
-  attribute tables straight into vectors (about 12 ms off decode, 15 ms
-  off the build, and 25 MB of trees, which passes the memory goal), then
-  merging adjacent runs of equal formatting and dropping the source trees
-  once the model is built. With the first, this path projects to about
-  45 ms on the dense shape, on the goal line. The goals stand.
+- Standing after the typed decode: memory passes on both shapes (48.2 and
+  34.9 MB against 64); throughput fails on both (31.6 and 30.9 MB/s
+  against 50). A real resume converts in 3 ms at 4.5 MB.
+- Where the dense shape's time goes now, in-process: package decode about
+  16 ms, document build about 25 ms, the html writer 12 to 18 ms, process
+  and I/O the rest, against a 50 ms line. The reader is still the larger
+  half; its remaining levers (merging adjacent runs of equal formatting,
+  dropping the source trees, the generic tree decode of the rest of the
+  body) are under Spikes in `STATE.md`. The goal stands: it is within a
+  third on the dense shape and met on any real document.

@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 
 use sublime::io::docx::write_docx;
-use sublime::io::pages::{Package, read_document};
+use sublime::io::pages::{Package, Scope, read_document};
 use sublime::io::xml::{XmlEvent, XmlReader};
 use sublime::io::zip::ZipArchive;
 
@@ -87,7 +87,9 @@ fn paragraphs(docx: &[u8]) -> Vec<(String, String)> {
 
 fn ours(name: &str) -> Vec<u8> {
     let bytes = std::fs::read(fixture(&format!("{name}.pages"))).expect("fixture readable");
-    let package = Package::read(&bytes).expect("package reads");
+    // The document scope, as the converter reads: only reachable objects,
+    // attribute tables parsed directly.
+    let package = Package::read_scope(&bytes, Scope::Document).expect("package reads");
     let document = read_document(&package);
     write_docx(&document, Vec::new()).expect("docx writes")
 }

@@ -167,6 +167,10 @@ impl Package {
             Scope::Everything => None,
             Scope::Document => Some(reachable_objects(&parsed)),
         };
+        let deferred = match scope {
+            Scope::Everything => Vec::new(),
+            Scope::Document => deferred_fields(),
+        };
         let mut entries = Vec::with_capacity(raw.len());
         for ((name, bytes, _), objects) in raw.iter().zip(parsed) {
             match objects {
@@ -176,7 +180,9 @@ impl Package {
                             .as_ref()
                             .is_none_or(|set| set.contains_key(&identifier))
                     };
-                    entries.push(Entry::Stream(decode_objects(name, bytes, objects, keep)?));
+                    entries.push(Entry::Stream(decode_objects(
+                        name, bytes, objects, keep, &deferred,
+                    )?));
                 }
                 None => entries.push(Entry::File {
                     name: name.clone(),
@@ -257,7 +263,35 @@ pub fn decode_stream(name: &str, compressed: &[u8]) -> Result<Stream, PackageErr
         stream: name.to_string(),
         error,
     })?;
-    decode_objects(name, &bytes, raw_objects, |_| true)
+    decode_objects(name, &bytes, raw_objects, |_| true, &[])
+}
+
+/// The attribute tables of `TSWP.StorageArchive`: the bulk of a text
+/// stream, which the document reader parses itself (see
+/// `Tree::deferred`).
+#[inline(never)]
+fn deferred_fields() -> Vec<(u16, u32)> {
+    let Some(storage) = SCHEMA.message("TSWP.StorageArchive") else {
+        return Vec::new();
+    };
+    [
+        "table_para_style",
+        "table_char_style",
+        "table_list_style",
+        "table_smartfield",
+        "table_attachment",
+        "table_footnote",
+        "table_insertion",
+        "table_deletion",
+        "table_section",
+        "table_layout_style",
+        "table_para_data",
+        "table_para_starts",
+    ]
+    .iter()
+    .filter_map(|name| storage.slot_named(name))
+    .map(|(_, field)| (storage.index(), field.number))
+    .collect()
 }
 
 /// Decodes the objects `keep` selects into a stream; the others keep
@@ -268,9 +302,11 @@ fn decode_objects(
     bytes: &[u8],
     raw_objects: Vec<IwaObject<'_>>,
     keep: impl Fn(u64) -> bool,
+    deferred: &[(u16, u32)],
 ) -> Result<Stream, PackageError> {
     let info_schema = SCHEMA.message("TSP.ArchiveInfo");
     let mut tree = Tree::new(&SCHEMA);
+    tree.deferred = deferred.to_vec();
     tree.entries.reserve(bytes.len() / 8);
     tree.text.reserve(bytes.len() / 2);
     let mut objects = Vec::with_capacity(raw_objects.len());
@@ -420,6 +456,11 @@ fn copy_chain_at(
                     .map_err(|_| "too large")?,
             ),
             Node::RawBytes(span) => Node::RawBytes(
+                scratch
+                    .push_bytes(tree.bytes(span))
+                    .map_err(|_| "too large")?,
+            ),
+            Node::Deferred(span) => Node::Deferred(
                 scratch
                     .push_bytes(tree.bytes(span))
                     .map_err(|_| "too large")?,
