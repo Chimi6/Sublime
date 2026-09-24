@@ -6,12 +6,16 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-24
+
 ### Added
 
 - The document model (`src/document`): the hub between document formats, holding styles, sections with page setup, headers and footers, columns, paragraphs, runs, lists, tables, images, floating objects, footnotes, fields, tracked changes, and equations.
 - Pages document reader: body text with paragraph and character styles resolved through the stylesheet, direct formatting from variation styles, lists, links, footnotes, page and section breaks, tables (cell storage, merged regions from the calculation engine, fills, header rows, column widths and row heights), inline and anchored images from the package's data files, floating text boxes and images (groups flattened), headers and footers for first, even, and odd pages, page setup, column layouts, tables of contents with page numbers, page-number and page-count fields, tracked insertions and deletions with their authors, and equations as MathML.
-- Word writer and `pages -> docx` (and `pages-json -> docx`): styles by their Pages names, numbering, footnotes, headers and footers with their own parts, media parts with content types, tables with grid spans and vertical merges, inline and anchored pictures, text box shapes, page fields, section breaks (continuous for column changes), tracked changes as `w:ins` and `w:del`. Matches Apple's own export paragraph for paragraph on 22 of 27 fixtures (CI).
+- Word writer and `pages -> docx` (and `pages-json -> docx`): styles by their Pages names, numbering, footnotes, headers and footers with their own parts, media parts with content types, tables with grid spans and vertical merges, inline and anchored pictures, text box shapes, page fields, section breaks (continuous for column changes), tracked changes as `w:ins` and `w:del`. Matches Apple's own export paragraph for paragraph on 23 of 28 fixtures (CI).
 - XML reader (`io::xml`) for the tests and future HTML and Word input.
+- Benchmark note for the Pages document paths (`DOCS/benchmarks/pages-docx.md`): every path a few milliseconds on a real resume, under 9 MB peak.
+- The Markdown writer emits autolinks (`<https://…>`, `<user@host>`) for links whose text is their own address.
 - The document model as a Markdown event stream (`document::markdown`), and with it `pages -> markdown`, `pages -> html`, `pages -> text`, and `pages -> markdown-json`: headings by outline level, bullet and numbered lists by level, bold, italic, and strikethrough, links, images by their package file name, tables as Markdown tables (merged cells as empty cells), footnotes as definitions, tracked changes accepted, equations as their text, text boxes after the body in page order. Headers, footers, and page layout are dropped, as Markdown has none.
 
 ### Changed
