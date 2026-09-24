@@ -6,7 +6,7 @@ section under a version heading.
 
 ## [Unreleased]
 
-## [0.6.2] - 2026-09-24
+## [0.7.0] - 2026-09-24
 
 Sublime in the browser: the converter ships as a WebAssembly module with every
 release, built and smoke-tested from the same commit as the binaries.
