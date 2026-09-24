@@ -20,7 +20,7 @@ the reader; `STATE.md` records what is being built now.
 
 ## Fixtures
 
-`tests/fixtures/pages/`: seventeen documents, one per feature area, saved
+`tests/fixtures/pages/`: twenty-seven documents, one per feature area, saved
 by Pages 12 on macOS from generated Word sources (plus one authored through
 the scripting dictionary), each with Apple's own Word, PDF, and text
 exports as references. The fixture README lists what each contains and what
