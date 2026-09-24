@@ -65,6 +65,14 @@ describes.
 
 ## Spikes
 
+- 2026-09-24: Pages performance levers past the three phases, in order of expected return (numbers are the dense benchmark shape, in-process, from `DOCS/benchmarks/pages-docx.md`):
+  - **Typed decode for hot repeated messages.** The body's attribute tables (300,000 `ObjectAttributeTable` entries) decode into the generic tree at three entries of 32 bytes each; a schema-directed decode straight into `Vec<Span>` (start, object) is 12 bytes an entry and skips the tree walk the reader does afterwards. Expected: package decode 26 -> about 12 ms, document build 30 -> about 15 ms, peak memory 70 -> about 45 MB, which passes the memory goal on the dense shape. Generalizes to any format whose bulk is a few repeated message types.
+  - **Interning formatting into named styles at write time.** The Word body is 19 MB because every run repeats its `w:rPr`; the model already interns run properties, so each interned entry can become a character style and a run carry a 30-byte `w:rStyle` instead of a 100-byte block. Expected: XML 19 -> about 10 MB, render and deflate 60 -> about 30 ms. Generalizes to HTML classes and PDF resources.
+  - **Merging adjacent runs with equal effective formatting.** Pages splits runs at style-object boundaries that often resolve to the same look; fewer runs means less of everything downstream.
+  - **Dropping the object trees once the model is built**, for the document paths only; the media bytes are already copied out.
+  - **Rendering Word straight from the storage tables without a model** was considered and set aside: it saves the model build (30 ms) at the cost of a second reader inside the writer and the loss of the hub architecture every other output depends on. Revisit only if the levers above leave the goal out of reach.
+  - With the first two levers the text paths project to about 45 ms on the dense shape (the 50 MB/s goal is 50 ms) and Word to about 65 ms; the goals stay as they are.
+
 - 2026-09-24: Lazy object decoding for the document paths (now part of the blocker above). In-process, the resume's `pages -> docx` is 2.0 ms of package decode (zip, Snappy, and protobuf trees for every object) against 0.06 ms of document reading and 0.26 ms of Word writing; 500 of the 570 objects are stylesheet presets the document never references. Decoding an object's tree only when the graph looks it up would take the document paths near 1 ms; the lossless `pages-json` path still decodes everything.
 - 2026-09-23: Smaller Markdown arenas (`u32` offsets in `Line`, boxed fence data in `Kind`) to cut first-touch page faults, which are now the largest single cost in the block parser on large inputs.
 - 2026-09-23: Word-at-a-time scanning for the inline parser's special characters; the byte loop with a lookup table is its largest remaining cost.

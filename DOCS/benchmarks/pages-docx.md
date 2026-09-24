@@ -132,13 +132,15 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 - What is left on the dense shape, in-process: package decode 26 ms (the
   body's 300,000 attribute entries, not presets), document build 30 ms,
   Word render and deflate 60 ms for 19 MB of XML. The 50 MB/s goal is
-  50 ms for all of it. Reaching it means not building the model at all
-  for this path (rendering Word straight from the storage tables) and a
-  still faster deflate; both are larger designs than a phase, and neither
-  helps a real document, which is already inside the goal.
-- The dense memory miss is 6 MB over: 25 MB of object trees plus the
-  model (10 MB of runs, 3.4 MB of text) plus the 256 KiB output part and
-  the reader's copies of the storage text. Dropping the tree after the
-  model is built is the next lever; it needs the media bytes moved out
-  first.
-- Recorded in `STATE.md` as the open blocker with these numbers.
+  50 ms for all of it.
+- Two levers cover most of that gap and are worth a phase each, recorded
+  under Spikes in `STATE.md`: a typed decode of the attribute tables
+  straight into vectors (about 12 ms off decode, 15 ms off the build, and
+  25 MB of trees, which passes the memory goal), and interning run
+  formatting into named character styles at write time so a run carries a
+  30-byte `w:rStyle` instead of a 100-byte block (about half the XML and
+  its deflate). Rendering without a model was considered and set aside:
+  it would trade the hub architecture for 30 ms.
+- The goals stand: with those two levers the text paths project to the
+  line and Word to within a third of it, and a real document is already
+  well inside both.
