@@ -330,10 +330,6 @@ pub struct Reader<'p> {
     list_styles: HashMap<u64, Option<StyleId>>,
     /// The last paragraph style object seen, for entries without one.
     last_paragraph_style: Option<u64>,
-    /// Resolved style chains by object, since a document reuses a few
-    /// dozen style objects across thousands of paragraphs and runs.
-    resolved_paragraph_styles: HashMap<u64, (Option<StyleId>, ParagraphProperties, RunProperties)>,
-    resolved_character_styles: HashMap<u64, (Option<StyleId>, RunProperties)>,
     /// Tables met inside the paragraph being read; they go before it.
     pending_blocks: Vec<Block>,
     /// Table of contents entries met inside the paragraph; they follow it.
@@ -367,8 +363,6 @@ pub fn read_document(package: &Package) -> Document {
         character_styles: HashMap::new(),
         list_styles: HashMap::new(),
         last_paragraph_style: None,
-        resolved_paragraph_styles: HashMap::new(),
-        resolved_character_styles: HashMap::new(),
         pending_blocks: Vec::new(),
         following_blocks: Vec::new(),
         media: HashMap::new(),
@@ -1670,19 +1664,6 @@ impl Reader<'_> {
         &mut self,
         object: u64,
     ) -> (Option<StyleId>, ParagraphProperties, RunProperties) {
-        if let Some(resolved) = self.resolved_paragraph_styles.get(&object) {
-            return resolved.clone();
-        }
-        let resolved = self.resolve_paragraph_style_chain(object);
-        self.resolved_paragraph_styles
-            .insert(object, resolved.clone());
-        resolved
-    }
-
-    fn resolve_paragraph_style_chain(
-        &mut self,
-        object: u64,
-    ) -> (Option<StyleId>, ParagraphProperties, RunProperties) {
         let mut properties = ParagraphProperties::default();
         let mut run = RunProperties::default();
         let mut current = Some(object);
@@ -1722,16 +1703,6 @@ impl Reader<'_> {
     }
 
     fn resolve_character_style(&mut self, object: u64) -> (Option<StyleId>, RunProperties) {
-        if let Some(resolved) = self.resolved_character_styles.get(&object) {
-            return resolved.clone();
-        }
-        let resolved = self.resolve_character_style_chain(object);
-        self.resolved_character_styles
-            .insert(object, resolved.clone());
-        resolved
-    }
-
-    fn resolve_character_style_chain(&mut self, object: u64) -> (Option<StyleId>, RunProperties) {
         let mut run = RunProperties::default();
         let mut current = Some(object);
         let mut overrides: Vec<RunProperties> = Vec::new();
