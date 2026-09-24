@@ -6,6 +6,11 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-24
+
+Sublime in the browser: the converter ships as a WebAssembly module with every
+release, built and smoke-tested from the same commit as the binaries.
+
 ### Added
 
 - Sublime in the browser: `wasm/` builds the whole converter as a WebAssembly module (`sublime.wasm`, 681 KB, 282 KB gzipped) with a small ES module (`sublime.js`) that loads it and exposes `convert`, `formats`, `paths`, and `formatFor`, plus a working page (`index.html`). Every format and path the command line has runs on the visitor's machine. CI builds the module, runs its smoke test under node, and checks it against `wasm/size-budget`; every release publishes `sublime-<version>-wasm.zip` beside the binaries from the same commit, and the release workflow refuses a tag whose two crate versions differ.
