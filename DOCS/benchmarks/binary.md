@@ -20,6 +20,23 @@ less the spawn floor of `/bin/true`, median of runs from
 
 ## Results
 
+### 2026-09-24, 0.10.0 with the HTML and text readers
+
+commit: 34a9e90 (the working tree, before its commit)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 1592688 | <= 1600000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 1696384 | recorded | n/a |
+| WebAssembly module (bytes) | 767166 | <= 800000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 314842 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | -0.015 (spawn 0.497, floor 0.512) | < 1 | PASS |
+
+The HTML reader, the text reader, six converters, and the streaming
+Word writer added 49 KB to the binary and 24 KB to the module; both
+budgets were raised (changelog).
+
 ### 2026-09-24, 0.9.0 with the events bridge
 
 commit: e25c786 (the bridge's working tree, before its commit)
@@ -93,3 +110,4 @@ read as "under a millisecond", not as a trend.
 | 0.7.0 | 1,420,416 | 1,520,256 | 1,430,000 | 681,266 | 700,000 |
 | 0.8.0 | 1,515,672 | 1,618,560 | 1,530,000 | 728,388 | 750,000 |
 | 0.9.0 | 1,544,072 | 1,643,136 | 1,560,000 | 743,164 | 750,000 |
+| 0.10.0 | 1,592,688 | 1,696,384 | 1,600,000 | 767,166 | 800,000 |

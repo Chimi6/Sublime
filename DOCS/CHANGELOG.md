@@ -6,6 +6,23 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-24
+
+HTML and plain text input, closing the document category's one-way
+streets: every document format Sublime knows now reads and writes
+through the hubs (Word, Markdown, HTML, text, Markdown JSON, with Pages
+feeding them all).
+
+### Added
+
+- HTML input: `src/io/html/reader.rs` reads HTML into the Markdown event stream with a tokenizer and an element stack (no DOM): paragraphs, headings, quotes, code blocks with languages, lists (loose when the first item holds a paragraph), tables with alignment, links, images, emphasis, code spans, hard breaks, rules, cmark-gfm footnotes and task lists, full entity decoding, browser-style whitespace collapsing, and tag soup taken in stride (unclosed `p` and `li`, stray end tags, uppercase names, unquoted attributes); scripts, styles, and the head are skipped. Paths `html -> markdown`, `text`, `markdown-json`, `docx`. Oracles in `tests/html_document.rs`: the writer's HTML for 580 CommonMark and every GFM example reads back to itself, and a page of tag soup reads to the expected Markdown. Map in `DOCS/formats/html.md`.
+- Plain text input: `src/io/text/reader.rs` reads paragraphs from runs of lines; `text -> markdown`, `html`, `docx`, `markdown-json`, declared conditional.
+- Benchmark pairs `html-markdown` (against `htmd`), `html-text`, `html-docx`, and `text-markdown`. Size budgets raised for the two readers: binary 1.56 -> 1.6 MB, wasm 750,000 -> 800,000.
+
+### Changed
+
+- Word output from the events bridge streams: `DocxStream` writes the body one top-level block at a time as the builder closes it (`DocumentBuilder::streaming`), and the parts that depend on the whole (styles, numbering, footnotes, media) follow at the end. `markdown -> docx`, `html -> docx`, and `text -> docx` no longer hold the whole model; the Word writer's methods take the document as a parameter instead of holding it. Links are written as `HYPERLINK` fields, as Pages writes them, so a document of a hundred thousand links carries no relationship table (80 MB less on the dense benchmark shape); `numbering.xml` streams into the package in parts; and a ZIP entry over 1 MB is compressed in parts, since the compressor's chain table is four bytes per input byte. Dense `html -> docx` fell from 365 to 59 MB peak.
+
 ## [0.9.0] - 2026-09-24
 
 Markdown into Word. The events bridge builds the document model from the
