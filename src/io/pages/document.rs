@@ -12,7 +12,7 @@ use crate::document::{
     Merge, Note, NumberFormat, NumberKind, PageSetup, PageVariants, Paragraph, ParagraphProperties,
     ParagraphStyle, Placement, Row, Run, RunProperties, Section, SectionStart, StyleId, Table,
 };
-use crate::document::{FloatingContent, FloatingObject, Revision, RevisionKind};
+use crate::document::{FloatingContent, FloatingObject, Id, Revision, RevisionKind};
 use crate::io::protobuf::tree::{Node, Tree};
 
 /// Pages marks a line break, a page break, and an attachment with these.
@@ -330,6 +330,16 @@ pub struct Reader<'p> {
     list_styles: HashMap<u64, Option<StyleId>>,
     /// The last paragraph style object seen, for entries without one.
     last_paragraph_style: Option<u64>,
+    /// Style objects resolved before: the named style and the interned
+    /// direct formatting of the variation chain.
+    /// The maps share one key and value type so the binary carries one
+    /// hash map instantiation for them all.
+    resolved_paragraph: HashMap<u64, usize>,
+    resolved_paragraphs: Vec<ResolvedParagraph>,
+    resolved_character: HashMap<u64, usize>,
+    resolved_characters: Vec<(Option<StyleId>, Option<Id>)>,
+    /// Change objects -> interned revisions.
+    revision_ids: HashMap<u64, usize>,
     /// Tables met inside the paragraph being read; they go before it.
     pending_blocks: Vec<Block>,
     /// Table of contents entries met inside the paragraph; they follow it.
@@ -343,6 +353,10 @@ pub struct Reader<'p> {
     /// built on first use.
     merges: Option<HashMap<[u64; 4], Vec<Region>>>,
 }
+
+/// A paragraph style object resolved: the named style, the interned
+/// paragraph properties, and the interned run properties of its chain.
+type ResolvedParagraph = (Option<StyleId>, Option<Id>, Option<Id>);
 
 /// A merged cell region: origin and size.
 #[derive(Clone, Copy)]
@@ -363,6 +377,11 @@ pub fn read_document(package: &Package) -> Document {
         character_styles: HashMap::new(),
         list_styles: HashMap::new(),
         last_paragraph_style: None,
+        resolved_paragraph: HashMap::new(),
+        resolved_paragraphs: Vec::new(),
+        resolved_character: HashMap::new(),
+        resolved_characters: Vec::new(),
+        revision_ids: HashMap::new(),
         pending_blocks: Vec::new(),
         following_blocks: Vec::new(),
         media: HashMap::new(),
@@ -743,10 +762,13 @@ impl Reader<'_> {
             };
             if let Some(alignment) = alignment {
                 for block in &mut area {
-                    if let Block::Paragraph(paragraph) = block
-                        && paragraph.properties.alignment.is_none()
-                    {
-                        paragraph.properties.alignment = Some(alignment);
+                    if let Block::Paragraph(paragraph) = block {
+                        let mut properties = self.document.paragraph_properties(paragraph);
+                        if properties.alignment.is_none() {
+                            properties.alignment = Some(alignment);
+                            paragraph.properties =
+                                self.document.intern_paragraph_properties(properties);
+                        }
                     }
                 }
             }
@@ -853,7 +875,7 @@ impl Reader<'_> {
                 if leading == PAGE_BREAK {
                     marker.runs.push(Run {
                         style: None,
-                        properties: RunProperties::default(),
+                        properties: None,
                         link: None,
                         revision: None,
                         content: Inline::PageBreak,
@@ -1044,7 +1066,7 @@ impl Reader<'_> {
     /// insertion or deletion table covers it.
     #[inline(never)]
     fn mark_revision(
-        &self,
+        &mut self,
         paragraph: &mut Paragraph,
         unit: usize,
         insertions: &[Span],
@@ -1056,9 +1078,15 @@ impl Reader<'_> {
         let Some((kind, object)) = change else {
             return;
         };
-        let Some(run) = paragraph.runs.last_mut() else {
+        if paragraph.runs.is_empty() {
             return;
-        };
+        }
+        if let Some(id) = self.revision_ids.get(&object) {
+            if let Some(run) = paragraph.runs.last_mut() {
+                run.revision = Some(*id as Id);
+            }
+            return;
+        }
         let change = self.graph.object(object).map(View::of);
         let author = change
             .and_then(|change| change.reference("session"))
@@ -1071,7 +1099,11 @@ impl Reader<'_> {
             .and_then(|change| change.message("date"))
             .and_then(|date| date.float("seconds"))
             .map(|seconds| format_timestamp(f64::from(seconds)));
-        run.revision = Some(Revision { kind, author, date });
+        let id = self.document.push_revision(Revision { kind, author, date });
+        self.revision_ids.insert(object, id as usize);
+        if let Some(run) = paragraph.runs.last_mut() {
+            run.revision = Some(id);
+        }
     }
 
     fn push_text_run(
@@ -1083,12 +1115,14 @@ impl Reader<'_> {
         smart_fields: &[Span],
     ) {
         let (style, properties) = self.run_formatting(unit, character_styles);
+        let link = self.link_id(unit, smart_fields);
+        let span = self.document.push_text(text);
         paragraph.runs.push(Run {
             style,
             properties,
-            link: self.link_at(unit, smart_fields),
+            link,
             revision: None,
-            content: Inline::Text(text.to_string()),
+            content: Inline::Text(span),
         });
     }
 
@@ -1115,13 +1149,19 @@ impl Reader<'_> {
             }
             _ => return None,
         };
+        let link = self.link_id(unit, smart_fields);
         Some(Run {
             style,
             properties,
-            link: self.link_at(unit, smart_fields),
+            link,
             revision: None,
             content,
         })
+    }
+
+    fn link_id(&mut self, unit: usize, smart_fields: &[Span]) -> Option<Id> {
+        let target = self.link_at(unit, smart_fields)?;
+        Some(self.document.intern_link(&target))
     }
 
     fn link_at(&self, unit: usize, smart_fields: &[Span]) -> Option<String> {
@@ -1152,7 +1192,7 @@ impl Reader<'_> {
         }
         // A table of contents entry's page number is stored as text.
         if let Some(number) = view.string("page_number") {
-            return Some(Inline::Text(number.to_string()));
+            return Some(Inline::Text(self.document.push_text(number)));
         }
         if view.string("number_format_name").is_some() {
             let kind = view
@@ -1180,10 +1220,11 @@ impl Reader<'_> {
         }
         // An equation is an image object carrying its MathML source.
         if let Some(mathml) = view.string("equation_source_text") {
-            return Some(Inline::Math(mathml.to_string()));
+            return Some(Inline::Math(self.document.push_text(mathml)));
         }
         if view.message("data").is_some() {
-            return self.image(view, attachment).map(Inline::Image);
+            let image = self.image(view, attachment)?;
+            return Some(Inline::Image(self.document.push_image(image)));
         }
         // A table of contents keeps its rendered entries in the storage
         // its shape owns; they follow the paragraph as text, as Pages
@@ -1481,12 +1522,13 @@ impl Reader<'_> {
             paragraph.properties = properties;
             paragraph.run_properties = run;
         }
+        let span = self.document.push_text(&text);
         paragraph.runs.push(Run {
             style: None,
-            properties: RunProperties::default(),
+            properties: None,
             link: None,
             revision: None,
-            content: Inline::Text(text),
+            content: Inline::Text(span),
         });
         cell.blocks = vec![Block::Paragraph(paragraph)];
     }
@@ -1636,10 +1678,11 @@ impl Reader<'_> {
         // The note's text starts with the mark placeholder; drop it.
         if let Some(Block::Paragraph(first)) = blocks.first_mut()
             && let Some(run) = first.runs.first_mut()
-            && let Inline::Text(text) = &mut run.content
+            && let Inline::Text(span) = &mut run.content
         {
-            let trimmed = text.trim_start_matches(ATTACHMENT).trim_start().to_string();
-            *text = trimmed;
+            let text = self.document.text(*span);
+            let kept = text.trim_start_matches(ATTACHMENT).trim_start().len();
+            span.start = span.end - kept as u32;
         }
         self.document.footnotes.push(Note { blocks });
         Some(self.document.footnotes.len() - 1)
@@ -1649,10 +1692,10 @@ impl Reader<'_> {
         &mut self,
         unit: usize,
         character_styles: &[Span],
-    ) -> (Option<StyleId>, RunProperties) {
+    ) -> (Option<StyleId>, Option<Id>) {
         match covering(character_styles, unit) {
             Some(object) => self.resolve_character_style(object),
-            None => (None, RunProperties::default()),
+            None => (None, None),
         }
     }
 
@@ -1660,7 +1703,28 @@ impl Reader<'_> {
 
     /// Walks the variation chain of a paragraph style object: unnamed
     /// styles become direct properties, the first named one is the style.
+    #[inline(never)]
     fn resolve_paragraph_style(
+        &mut self,
+        object: u64,
+    ) -> (Option<StyleId>, Option<Id>, Option<Id>) {
+        if let Some(index) = self.resolved_paragraph.get(&object) {
+            return self.resolved_paragraphs[*index];
+        }
+        let (style, properties, run) = self.resolve_paragraph_chain(object);
+        let resolved = (
+            style,
+            self.document.intern_paragraph_properties(properties),
+            self.document.intern_run_properties(run),
+        );
+        self.resolved_paragraph
+            .insert(object, self.resolved_paragraphs.len());
+        self.resolved_paragraphs.push(resolved);
+        resolved
+    }
+
+    #[inline(never)]
+    fn resolve_paragraph_chain(
         &mut self,
         object: u64,
     ) -> (Option<StyleId>, ParagraphProperties, RunProperties) {
@@ -1689,7 +1753,7 @@ impl Reader<'_> {
                 .unwrap_or_default();
             let characters = view
                 .message("char_properties")
-                .map(run_properties)
+                .map(|properties| self.run_properties(properties))
                 .unwrap_or_default();
             overrides.push((paragraph, characters));
             current = view.message("super").and_then(|s| s.reference("parent"));
@@ -1702,7 +1766,21 @@ impl Reader<'_> {
         (named, properties, run)
     }
 
-    fn resolve_character_style(&mut self, object: u64) -> (Option<StyleId>, RunProperties) {
+    #[inline(never)]
+    fn resolve_character_style(&mut self, object: u64) -> (Option<StyleId>, Option<Id>) {
+        if let Some(index) = self.resolved_character.get(&object) {
+            return self.resolved_characters[*index];
+        }
+        let (style, run) = self.resolve_character_chain(object);
+        let resolved = (style, self.document.intern_run_properties(run));
+        self.resolved_character
+            .insert(object, self.resolved_characters.len());
+        self.resolved_characters.push(resolved);
+        resolved
+    }
+
+    #[inline(never)]
+    fn resolve_character_chain(&mut self, object: u64) -> (Option<StyleId>, RunProperties) {
         let mut run = RunProperties::default();
         let mut current = Some(object);
         let mut overrides: Vec<RunProperties> = Vec::new();
@@ -1724,7 +1802,7 @@ impl Reader<'_> {
             }
             overrides.push(
                 view.message("char_properties")
-                    .map(run_properties)
+                    .map(|properties| self.run_properties(properties))
                     .unwrap_or_default(),
             );
             current = view.message("super").and_then(|s| s.reference("parent"));
@@ -1762,7 +1840,7 @@ impl Reader<'_> {
                 .unwrap_or_default();
             style.run = view
                 .message("char_properties")
-                .map(run_properties)
+                .map(|properties| self.run_properties(properties))
                 .unwrap_or_default();
             if let Some(parent) = meta.and_then(|m| m.reference("parent")) {
                 style.parent = Some(self.paragraph_style_id(parent));
@@ -1793,7 +1871,7 @@ impl Reader<'_> {
                 .to_string();
             style.run = view
                 .message("char_properties")
-                .map(run_properties)
+                .map(|properties| self.run_properties(properties))
                 .unwrap_or_default();
             if let Some(parent) = meta.and_then(|m| m.reference("parent")) {
                 style.parent = Some(self.character_style_id(parent));
@@ -1884,35 +1962,41 @@ fn paragraph_properties(view: View<'_>) -> ParagraphProperties {
     }
 }
 
-/// Converts `TSWP.CharacterStylePropertiesArchive`.
-fn run_properties(view: View<'_>) -> RunProperties {
-    RunProperties {
-        // A font the document asked for but the Mac lacked is kept beside
-        // the substitute; the request is what the document means.
-        font: view
-            .string("compatibility_font_name")
-            .or_else(|| view.string("font_name"))
-            .map(str::to_string),
-        size: view.float("font_size"),
-        bold: view.boolean("bold"),
-        italic: view.boolean("italic"),
-        underline: view.integer("underline").map(|value| value != 0),
-        strike: view.integer("strikethru").map(|value| value != 0),
-        color: view.message("font_color").and_then(color),
-        highlight: view.message("background_color").and_then(color),
-        baseline: view.integer("superscript").and_then(|value| match value {
-            1 => Some(Baseline::Superscript),
-            2 => Some(Baseline::Subscript),
-            _ => None,
-        }),
-        caps: view
-            .integer("capitalization")
-            .and_then(|value| match value {
-                1 => Some(Caps::All),
-                2 => Some(Caps::Small),
+impl Reader<'_> {
+    /// Converts `TSWP.CharacterStylePropertiesArchive`, interning the font
+    /// and language names.
+    #[inline(never)]
+    fn run_properties(&mut self, view: View<'_>) -> RunProperties {
+        RunProperties {
+            // A font the document asked for but the Mac lacked is kept
+            // beside the substitute; the request is what the document means.
+            font: view
+                .string("compatibility_font_name")
+                .or_else(|| view.string("font_name"))
+                .map(|name| self.document.intern_string(name)),
+            size: view.float("font_size"),
+            bold: view.boolean("bold"),
+            italic: view.boolean("italic"),
+            underline: view.integer("underline").map(|value| value != 0),
+            strike: view.integer("strikethru").map(|value| value != 0),
+            color: view.message("font_color").and_then(color),
+            highlight: view.message("background_color").and_then(color),
+            baseline: view.integer("superscript").and_then(|value| match value {
+                1 => Some(Baseline::Superscript),
+                2 => Some(Baseline::Subscript),
                 _ => None,
             }),
-        language: view.string("language").map(str::to_string),
+            caps: view
+                .integer("capitalization")
+                .and_then(|value| match value {
+                    1 => Some(Caps::All),
+                    2 => Some(Caps::Small),
+                    _ => None,
+                }),
+            language: view
+                .string("language")
+                .map(|language| self.document.intern_string(language)),
+        }
     }
 }
 

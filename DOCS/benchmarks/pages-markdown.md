@@ -1,6 +1,6 @@
 # Pages -> Markdown
 
-**Latest** (2026-09-24: pages -> markdown 15.3 MB/s of input on the dense shape and 18.1 on prose, at 142.0 and 64.8 MB peak; both goals (50 MB/s, 64 MB) FAIL, see Conclusions and `STATE.md`)
+**Latest** (2026-09-24, slim model: pages -> markdown 24.9 MB/s of input on the dense shape and 22.1 on prose, at 75.0 and 45.1 MB peak; the prose memory goal passes; the rest FAIL, see Conclusions and `STATE.md`)
 
 ## Purpose
 
@@ -67,6 +67,20 @@ in-process runs; inputs come from the `pages-json` pair's generator.
   package decode more than the writer.
 
 ## Results
+
+### 2026-09-24, slim document model
+
+commit: b8c1a66
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Phase 1 of the performance plan: the document model became a text arena with interned properties, links, revisions, and strings (a run is 64 bytes and owns no heap). Same inputs as the block below.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> markdown, styled (2.5 MB): throughput (MB/s of input) | 24.9 | goal: 50 | FAIL |
+| pages -> markdown, styled: peak memory (MB) | 75.0 | goal: <= 64.0 | FAIL |
+| pages -> markdown, prose (1.5 MB): throughput (MB/s of input) | 22.1 | goal: 50 | FAIL |
+| pages -> markdown, prose: peak memory (MB) | 45.1 | goal: <= 64.0 | PASS |
 
 ### 2026-09-24
 

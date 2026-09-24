@@ -81,6 +81,24 @@ and `ours` / `ours-back` modes for in-process runs.
 
 ## Results
 
+### 2026-09-24, slim document model
+
+commit: b8c1a66
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
+
+Unchanged by the model work (this pair does not build the model); recorded for the date trail.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> pages-json, styled (2.5 MB): throughput (MB/s of input) | 26.7 | goal: 50 | FAIL |
+| pages -> pages-json, styled: peak memory (MB) | 44.6 | goal: <= 64.0 | PASS |
+| pages-json -> pages, styled (33.7 MB): throughput (MB/s of input) | 324.7 | goal: 50 | PASS |
+| pages-json -> pages, styled: peak memory (MB) | 45.9 | goal: <= 64.0 | PASS |
+| pages -> pages-json, prose (1.5 MB): throughput (MB/s of input) | 33.6 | goal: 50 | FAIL |
+| pages -> pages-json, prose: peak memory (MB) | 27.1 | goal: <= 64.0 | PASS |
+| pages-json -> pages, prose (16.1 MB): throughput (MB/s of input) | 322.0 | goal: 50 | PASS |
+| pages-json -> pages, prose: peak memory (MB) | 30.9 | goal: <= 64.0 | PASS |
+
 ### 2026-09-24
 
 commit: 8dbe707
