@@ -18,10 +18,19 @@ const LITERALS: usize = 286;
 const DISTANCES: usize = 30;
 const END_OF_BLOCK: u16 = 256;
 
+/// How hard the matcher looks: `Default` walks 48 chain positions for a
+/// zlib level-6 ratio; `Fast` walks 4, for output nobody keeps compressed
+/// long (a Word body a reader re-saves), at two to three times the speed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Fast,
+    Default,
+}
+
 /// Compresses `input` as a raw deflate stream, appending to `out`.
 pub fn deflate(input: &[u8], out: &mut Vec<u8>) {
-    let mut writer = BitWriter::new(out);
     if input.is_empty() {
+        let mut writer = BitWriter::new(out);
         // One empty fixed block: final, type 1, end-of-block (7 zero bits).
         writer.bits(1, 1);
         writer.bits(1, 2);
@@ -29,7 +38,27 @@ pub fn deflate(input: &[u8], out: &mut Vec<u8>) {
         writer.finish();
         return;
     }
-    let mut matcher = Matcher::new(input.len());
+    deflate_part(input, out, Level::Default, true);
+}
+
+/// Compresses one part of a stream that arrives in pieces. Matches never
+/// reach into an earlier part, and a part that is not final ends on a
+/// byte boundary with an empty stored block (a sync flush), so parts can
+/// be concatenated; the final part ends the stream. An empty non-final
+/// part writes nothing.
+pub fn deflate_part(input: &[u8], out: &mut Vec<u8>, level: Level, is_final: bool) {
+    if input.is_empty() {
+        if is_final {
+            deflate(input, out);
+        }
+        return;
+    }
+    let chain_limit = match level {
+        Level::Fast => 4,
+        Level::Default => MAX_CHAIN,
+    };
+    let mut writer = BitWriter::new(out);
+    let mut matcher = Matcher::new(input.len(), chain_limit);
     let mut symbols: Vec<Symbol> = Vec::with_capacity(BLOCK_SYMBOLS);
     let mut position = 0usize;
     let mut block_start = 0usize;
@@ -47,19 +76,22 @@ pub fn deflate(input: &[u8], out: &mut Vec<u8>) {
             position += 1;
         }
         if symbols.len() >= BLOCK_SYMBOLS {
-            let is_final = position >= input.len();
+            let ends_stream = is_final && position >= input.len();
             write_block(
                 &mut writer,
                 &input[block_start..position],
                 &symbols,
-                is_final,
+                ends_stream,
             );
             symbols.clear();
             block_start = position;
         }
     }
     if !symbols.is_empty() || block_start < input.len() {
-        write_block(&mut writer, &input[block_start..], &symbols, true);
+        write_block(&mut writer, &input[block_start..], &symbols, is_final);
+    }
+    if !is_final {
+        write_stored(&mut writer, &[], false);
     }
     writer.finish();
 }
@@ -73,13 +105,15 @@ enum Symbol {
 struct Matcher {
     head: Vec<u32>,
     prev: Vec<u32>,
+    chain_limit: usize,
 }
 
 impl Matcher {
-    fn new(length: usize) -> Matcher {
+    fn new(length: usize, chain_limit: usize) -> Matcher {
         Matcher {
             head: vec![u32::MAX; HASH_SIZE],
             prev: vec![u32::MAX; length],
+            chain_limit,
         }
     }
 
@@ -119,7 +153,7 @@ impl Matcher {
         let mut best_length = 0usize;
         let mut best_distance = 0usize;
         let mut chain = 0usize;
-        while candidate != u32::MAX && chain < MAX_CHAIN {
+        while candidate != u32::MAX && chain < self.chain_limit {
             let start = candidate as usize;
             let distance = position - start;
             if distance > WINDOW {
@@ -572,6 +606,26 @@ mod tests {
             elapsed.as_secs_f64() * 1000.0,
             data.len() as f64 / 1_048_576.0 / elapsed.as_secs_f64()
         );
+    }
+
+    #[test]
+    fn parts_concatenate_into_one_stream() {
+        let text = b"parts of a stream, each compressed on its own. ".repeat(3000);
+        let mut out = Vec::new();
+        for (index, part) in text.chunks(50_000).enumerate() {
+            let last = index == text.chunks(50_000).count() - 1;
+            deflate_part(part, &mut out, Level::Fast, last);
+        }
+        let mut back = Vec::new();
+        inflate(&out, &mut back, 1 << 26).unwrap();
+        assert_eq!(back, text);
+        // An empty final part after non-final ones still ends the stream.
+        let mut out = Vec::new();
+        deflate_part(b"abc", &mut out, Level::Default, false);
+        deflate_part(&[], &mut out, Level::Default, true);
+        let mut back = Vec::new();
+        inflate(&out, &mut back, 1 << 26).unwrap();
+        assert_eq!(back, b"abc");
     }
 
     #[test]
