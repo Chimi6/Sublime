@@ -60,7 +60,7 @@ prints one line per fixture. Commit `*.pages` and `reference/`.
 | outline-numbering | a legal-style multilevel list numbering as 1, 1.1, 1.1.1 |
 | ruby | Japanese kanji with ruby (furigana) readings |
 | native-scripted | built by AppleScript from the Blank template: paragraphs with fonts, sizes, and colors, a table with a live `=SUM` formula cell, a placed image, a floating text box |
-| native-objects | built by AppleScript: a shape with text, a straight line, and a chart with data |
+| native-objects | built by AppleScript: a grouped pair of shapes, a shape with text, a straight line, and a chart with data |
 
 ### What Pages drops on import
 
@@ -107,12 +107,17 @@ and should carry them:
    a bullet character;
 2. a table with **cell data formats**: one currency column, one percentage
    column, one date column, and a cell with **conditional highlighting**
-   (Organize > a rule that colours cells over a threshold);
-3. a **group of objects** — draw two shapes, select both, Arrange > Group.
+   (Organize > a rule that colours cells over a threshold).
 
-These are real constructs that belong in a real document, so build them into
-`native-authored.pages` rather than as separate one-feature files. Do not add
-extra chart or shape *types* (pie vs. bar, arrow vs. rectangle): those are the
+Only these two need you: everything else is now generated. Pages' Format
+sidebar is not exposed to macOS accessibility, so the checklist style and the
+cell data formats cannot be driven by UI automation the way the object group
+in `native-objects` was (that used a plain keyboard shortcut). They are the
+one genuinely manual part of the corpus.
+
+Build them into `native-authored.pages` rather than as separate one-feature
+files. Do not add extra chart or shape *types* (pie vs. bar, arrow vs.
+rectangle): those are the
 same chart and shape objects with different geometry, already covered by
 `native-objects`, not new constructs to map.
 
