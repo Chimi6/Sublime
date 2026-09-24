@@ -1,5 +1,7 @@
 # CSV <-> JSON
 
+**Latest** (2026-09-23, 0.3.0: csv -> json 333 MB/s of input, 2.4 MB peak; json -> csv 191 MB/s, 2.4 MB peak; all lines PASS against the csv and serde_json crates)
+
 ## Purpose
 
 The first native pair and the hello world of the framework. CSV to JSON is

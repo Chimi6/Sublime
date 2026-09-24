@@ -1,5 +1,7 @@
 # Markdown -> plain text
 
+**Latest** (2026-09-23, 0.3.0: markdown -> text 109 MB/s of input on the markup-dense shape and 334 MB/s on prose, at 304 and 83 MB peak; all lines PASS against a pulldown-cmark text dump)
+
 ## Purpose
 
 The first lossy document path and the first renderer added on top of the

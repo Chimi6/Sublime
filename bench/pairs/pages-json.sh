@@ -29,12 +29,15 @@ run_pair() {
     local raw_bytes fs bs fl
     raw_bytes="$(wc -c < "$data/$name.raw" | tr -d ' ')"
     fs="$(seconds_of "$forward")"; bs="$(seconds_of "$backward")"; fl="$(seconds_of "$floor")"
-    # No peer reads the modern Pages format. The floor (unzip and Snappy
-    # only) bounds what any reader could gain; ours must stay within four
-    # times it while decoding every object and writing the JSON.
-    row "pages -> pages-json, ${name}: MB/s of the package (decompressed streams)" "$(mbps "$pages_bytes" "$fs") ($(mbps "$raw_bytes" "$fs"))" "$(mbps "$pages_bytes" "$fl") ($(mbps "$raw_bytes" "$fl")) floor" "$(pass "$(echo "$fs <= 4 * $fl" | bc -l)")"
-    row "pages-json -> pages, ${name}: MB/s of the JSON" "$(mbps "$json_bytes" "$bs")" "$(mbps "$json_bytes" "$fs") (pages -> pages-json, same bytes)" "$(pass "$(echo "$bs <= $fs" | bc -l)")"
-    row "Peak RSS pages -> pages-json, ${name} (MB)" "$(rss_mb "$(rss_of "$forward")")" "$(rss_mb "$(rss_of "$floor")") floor; <= 64" "$(pass "$(echo "$(rss_of "$forward") <= 65536" | bc -l)")"
-    row "Peak RSS pages-json -> pages, ${name} (MB)" "$(rss_mb "$(rss_of "$backward")")" "<= 64" "$(pass "$(echo "$(rss_of "$backward") <= 65536" | bc -l)")"
+    # No peer reads the modern Pages format. The forward reference is the
+    # floor (unzip and Snappy only): ours must stay within four times it
+    # while decoding every object and writing the JSON. The reverse
+    # direction's reference is our own forward direction over the same
+    # bytes: rebuilding the package must not be slower than dumping it.
+    row "pages -> pages-json, ${name} ($(mb "$pages_bytes") MB): throughput (MB/s of input)" "$(mbps "$pages_bytes" "$fs")" "$(mbps "$pages_bytes" "$fl") floor (unzip + Snappy only); line: ours >= floor / 4" "$(pass "$(echo "$fs <= 4 * $fl" | bc -l)")"
+    row "pages -> pages-json, ${name}: throughput (MB/s of decompressed streams, $(mb "$raw_bytes") MB) [extra]" "$(mbps "$raw_bytes" "$fs")" "$(mbps "$raw_bytes" "$fl") floor" "n/a"
+    row "pages -> pages-json, ${name}: peak memory (MB)" "$(rss_mb "$(rss_of "$forward")")" "$(rss_mb "$(rss_of "$floor")") floor; line: <= 64" "$(pass "$(echo "$(rss_of "$forward") <= 65536" | bc -l)")"
+    row "pages-json -> pages, ${name} ($(mb "$json_bytes") MB): throughput (MB/s of input)" "$(mbps "$json_bytes" "$bs")" "$(mbps "$json_bytes" "$fs") our pages -> pages-json over the same bytes; line: not slower" "$(pass "$(echo "$bs <= $fs" | bc -l)")"
+    row "pages-json -> pages, ${name}: peak memory (MB)" "$(rss_mb "$(rss_of "$backward")")" "line: <= 64" "$(pass "$(echo "$(rss_of "$backward") <= 65536" | bc -l)")"
   done
 }
