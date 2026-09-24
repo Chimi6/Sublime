@@ -106,7 +106,7 @@ formats.
 | Markdown as JSON | markdown-json | [x] | — | — | Shipped both ways: the event stream as JSON, lossless round trip. |
 | Apple Pages | pages | [~] | S | XL | Package reader, lossless `pages-json`, document reader, Word writer, and Markdown, HTML, and text paths shipped (0.6.0); performance to the benchmark pass lines next. The flagship. ZIP of Snappy-framed protobuf (IWA); schemas are reverse-engineered and published. Pages -> DOCX and Pages -> Markdown/HTML. Nobody outside Apple does this well, and Pages files are shared constantly. Notes will live in `formats/pages.md`. |
 | Apple Keynote | key | [ ] | B | L | Same keystone as Pages; to PPTX or a Markdown outline. |
-| Word | docx | [ ] | S | L | ZIP plus XML (WordprocessingML). Both directions with Markdown/HTML; the target for Pages. Styles, lists, tables, images. |
+| Word | docx | [~] | S | L | ZIP plus XML (WordprocessingML). Written from the model (Pages -> Word, 0.6.0) and read into it (Word -> Markdown, HTML, text, 0.8.0); Markdown and HTML into Word next through the events-to-model bridge. Notes in `formats/docx.md`. |
 | Word legacy | doc | [ ] | C | L | Word 97 binary over OLE2; text and basic formatting extraction only. |
 | Rich Text Format | rtf | [ ] | A | M | Text format with a documented grammar; RTF <-> Markdown/HTML/DOCX. Still emitted by many systems. |
 | OpenDocument text | odt | [ ] | A | M | ZIP plus XML; close to DOCX in shape. |
