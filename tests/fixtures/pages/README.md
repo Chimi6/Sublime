@@ -49,7 +49,11 @@ prints one line per fixture. Commit `*.pages` and `reference/`.
 | headers | different headers for the first page, even pages, and odd pages in one section, with a page-number footer |
 | toc | a table-of-contents field over Heading 1 and 2, then those sections each on their own page |
 | revisions | a two-message comment thread (a comment and its reply), a tracked formatting change, and a tracked insertion |
-| native-scripted | built by AppleScript from the Blank template: paragraphs with fonts, sizes, and colors, a table, a placed image, a floating text box |
+| fields | date, file-name, and page-count fields, and REF and PAGEREF cross-references to a bookmark |
+| metadata | title, subject, author, keywords, and description in the document properties |
+| alt-text | an image carrying an accessibility description (alt text) |
+| dropcap | a paragraph opening with a dropped capital set into the first three lines |
+| native-scripted | built by AppleScript from the Blank template: paragraphs with fonts, sizes, and colors, a table with a live `=SUM` formula cell, a placed image, a floating text box |
 | native-objects | built by AppleScript: a shape with text, a straight line, and a chart with data |
 
 ### What Pages drops on import
@@ -62,31 +66,42 @@ a Word file can carry. Observed with the sources here on Pages 12.0:
   *paragraph* styles survive (`custom-styles`);
 - tracked *formatting* changes are dropped, though tracked insertions and
   deletions survive (`revisions`, `notes`);
+- document metadata (title, author, keywords, description) is dropped: Pages
+  writes an empty `core.xml` on export (`metadata`);
 - hyperlinks are re-exported as Word `HYPERLINK` field codes rather than
   `w:hyperlink` elements (`links`).
 
+Kept, for the record: fields (date, file name, page count, cross-references),
+image alt text, drop caps, and table cell formulas all survive.
+
 ## Add by hand
 
-These documents are wanted and cannot be generated:
+These documents are wanted and cannot be generated — neither a Word source nor
+the scripting dictionary can reach them. Author them by hand in Pages on a Mac,
+then save each as a single file (File > Advanced > Change File Type > Single
+File) into this directory.
 
-- `messy-*.pages`: any real documents you have, as they are. Real files
-  carry the accumulated state (view settings, revision data, collaboration
-  objects) that generated files do not.
-- `native-authored.pages`: optional, made by hand in Pages using the same
-  feature list as `everything`, so the map can compare objects Pages writes
-  for its own styles against imported ones.
+**`native-authored.pages`** — a new blank document built by hand with Pages'
+own styles, mirroring the `everything` feature list (title, headings, a mixed
+paragraph, a nested list, a table, a captioned image, a quote) so the map can
+compare objects Pages writes for itself against imported ones. While you are in
+there, add the features nothing else can produce, since JSON output is lossless
+and should carry them:
 
-A few features cannot be reached either through a Word source or through the
-scripting dictionary, so add them by hand to `native-authored.pages` (or a
-dedicated file) if the map needs them:
+1. a **checklist (to-do) list** — Format > Bullets & Lists > checklist;
+2. a table with **cell data formats**: one currency column, one percentage
+   column, one date column, and a cell with **conditional highlighting**
+   (Organize > a rule that colours cells over a threshold);
+3. an **equation** — Insert > Equation (type any LaTeX, e.g. `E = mc^2`);
+4. a **group of objects** — draw two shapes, select both, Arrange > Group;
+5. a couple of **other chart types** (a pie and a line chart) and **other shape
+   types** (an arrow, a star) beyond the single bar chart and generic shape the
+   scripted fixtures already have.
 
-- checklist (to-do) lists: a Pages list style with no Word equivalent, and the
-  dictionary cannot apply list styles;
-- table cell data formats (currency, percentage, date) and conditional
-  highlighting: Word tables do not carry them, and `cell` has no writable
-  format in the dictionary;
-- equations: Pages has no scripting term for them;
-- a group of objects: Pages has no `group` command.
+**`messy-1.pages`, `messy-2.pages`** — one or two of your own real documents,
+copied in as they are. Real files carry accumulated state (view settings,
+revision data, collaboration objects) that generated files never have. Do not
+add anything personal; anything here is committed to the repository.
 
 ## Public samples
 
