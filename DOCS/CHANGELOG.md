@@ -6,6 +6,18 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-23
+
+### Added
+
+- Snappy compressor (greedy hash matcher). Rebuilt Pages packages are now Snappy-compressed in 64 KiB chunks and come out slightly smaller than Pages' own files (2,154,070 vs 2,164,388 bytes of streams across the fixtures; a real document rebuilt 702 bytes smaller than its original).
+- Deflate compressor (32 KiB window, hash chains, dynamic Huffman blocks with a stored fallback) and `ZipWriter::add_deflated`. Ratio and speed are in zlib level 6's class.
+- Type 10016 named `TP.UserDefinedGuideMapArchive`, settled from its payload shape against the Pages proto.
+
+### Changed
+
+- Base64 decodes through a lookup table and encodes four bytes at a time; schema field slots are found by a scan for small messages.
+
 ## [0.4.1] - 2026-09-23
 
 ### Changed

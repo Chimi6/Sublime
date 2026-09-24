@@ -37,7 +37,7 @@ REGISTRIES = {
     "registry-numbers.py": "https://raw.githubusercontent.com/masaccio/numbers-parser/main/src/numbers_parser/generated/mapping.py",
 }
 # Ids the registries name wrongly or not at all, settled against the fixtures.
-REGISTRY_OVERRIDES = {10143: "TP.SectionTemplateArchive"}
+REGISTRY_OVERRIDES = {10143: "TP.SectionTemplateArchive", 10016: "TP.UserDefinedGuideMapArchive"}
 
 SCALARS = {
     "int32": "Int", "int64": "Int", "sint32": "Sint", "sint64": "Sint",

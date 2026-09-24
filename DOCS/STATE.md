@@ -34,9 +34,8 @@ describes.
 ## Tech Debt
 
 - 2026-09-23: Pages leftovers from the package reader:
-  - No Snappy compressor: rebuilt packages use literal blocks and stored ZIP entries, so `pages-json -> pages` output is larger than Pages' own. Write the LZ77 matcher when a writer path ships.
-  - Inflate only; no deflate compressor yet (needed for writing DOCX, PNG, ZIP with compression).
-  - 31 registry types without a schema and type 10016 without a name; they decode raw. Resolve as the document reader needs them.
+  - Deflate has no lazy matching; it is 7% larger than zlib level 9 on mixed data and level-6 class overall. Add lazy matching if a writer path needs the last percent.
+  - 31 registry types without a schema; they decode raw. Resolve as the document reader needs them.
   - The schema comes from community protos of two vintages; fields Pages 12 added since decode raw. Coverage is measured by the round-trip test, not by name.
   - No benchmark reference for `pages-json`: there is no Rust reader of the modern format to compare against, and the fixtures are small. Record throughput once a large real document is in hand.
 - 2026-09-23: Markdown leftovers, deliberately deferred in favor of the next flagship:
