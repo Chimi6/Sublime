@@ -137,13 +137,20 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 
 ## Conclusions
 
-- Standing after the typed decode: memory passes on both shapes (48.2 and
-  34.9 MB against 64); throughput fails on both (31.8 and 31.1 MB/s
-  against 50). A real resume converts in 3 ms at 4.5 MB.
-- Where the dense shape's time goes now, in-process: package decode about
-  16 ms, document build about 25 ms, the text writer 12 to 18 ms, process
-  and I/O the rest, against a 50 ms line. The reader is still the larger
-  half; its remaining levers (merging adjacent runs of equal formatting,
-  dropping the source trees, the generic tree decode of the rest of the
-  body) are under Spikes in `STATE.md`. The goal stands: it is within a
-  third on the dense shape and met on any real document.
+- Standing: memory passes on both shapes (45 and 28 MB against 64);
+  throughput fails on both (40 and 32 MB/s against 50), a fifth to a
+  third short. A real resume converts in 3 ms at 4.5 MB.
+- The cheap levers are spent. After cursors, one arena copy, the ASCII
+  fast path, cached style chains, 16-byte spans, and a bulk-copy Snappy
+  decoder, the dense shape's wall clock is 58 ms against a 50 ms line and
+  splits into package decode 10 ms (7.5 of it Snappy), document build
+  25 ms, the text writer 11 ms, and about 10 ms of process start, file
+  I/O, and first-touch page faults; the last round of micro-changes moved
+  none of them.
+- What would close the gap is structural, not tuning: a Snappy decoder
+  inner loop at 1.5 GB/s instead of 1 (about 3 ms), a document built
+  without per-paragraph vectors (fewer pages touched, cheaper drop), and
+  ultimately a text path that streams from the storage tables without
+  building the model, which trades the hub architecture for the last
+  10 ms and is not worth it for this shape. Recorded under Spikes in
+  `STATE.md`; the goal stands as a target, met on any real document.
