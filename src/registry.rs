@@ -9,6 +9,7 @@ use crate::converters::docx_to_text::DocxToText;
 use crate::converters::json_to_csv::JsonToCsv;
 use crate::converters::json_to_pages::JsonToPages;
 use crate::converters::markdown_json_to_markdown::MarkdownJsonToMarkdown;
+use crate::converters::markdown_to_docx::MarkdownToDocx;
 use crate::converters::markdown_to_html::MarkdownToHtml;
 use crate::converters::markdown_to_json::MarkdownToJson;
 use crate::converters::markdown_to_text::MarkdownToText;
@@ -19,7 +20,7 @@ use crate::converters::pages_to_markdown::PagesToMarkdown;
 use crate::converters::pages_to_text::PagesToText;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 15] = [
+static CONVERTERS: [&dyn Converter; 16] = [
     &CsvToJson,
     &JsonToCsv,
     &MarkdownToHtml,
@@ -35,6 +36,7 @@ static CONVERTERS: [&dyn Converter; 15] = [
     &DocxToMarkdown,
     &DocxToHtml,
     &DocxToText,
+    &MarkdownToDocx,
 ];
 
 pub fn all_converters() -> &'static [&'static dyn Converter] {

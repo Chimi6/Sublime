@@ -12,8 +12,19 @@ what the reader and writer handle, tied to the tests that prove it.
   fills the document model and the Markdown projection renders it
   (`src/document/markdown.rs`).
 - `pages -> docx`: shipped (see `pages.md`).
-- Into Word from Markdown and HTML: next, through an events-to-model
-  bridge (`STATE.md`).
+- `markdown -> docx` and `markdown-json -> docx`: shipped (0.9.0). The
+  events bridge (`src/document/from_events.rs`) builds the model from the
+  Markdown event stream with named styles Word users know (`Heading 1` to
+  `Heading 6`, `Quote`, `Source Code`, `Source Text`, `Horizontal Line`,
+  two list styles), and the Markdown projection recognizes the same names
+  (and Word's and LibreOffice's: `Code`, `HTML Preformatted`, `Block Text`,
+  `Intense Quote`, `HTML Code`, `Verbatim Char`), so Word documents that
+  use them read back as code blocks, quotes, and rules. Oracles in
+  `tests/markdown_docx.rs`: 472 CommonMark and 21 GFM examples survive the
+  bridge (compared as HTML without what Word has no form for: paragraph
+  tags, link titles, code languages, soft breaks), and a document with
+  every construct survives the whole trip through a Word file.
+- HTML and plain text into Word: next, through the same bridge.
 
 Oracles (`tests/docx_document.rs`): Apple's own Word exports of the 28
 Pages fixtures (`tests/fixtures/pages/reference/*.docx`) read to the same
@@ -61,6 +72,22 @@ Units: twentieths of a point to points, half points to points, EMU to
 points, hex colors.
 
 ## Known deviations
+
+Into Word from Markdown (`markdown -> docx`, declared conditional):
+
+- Raw HTML is dropped. Images given as `data:` URIs are embedded; any
+  other image becomes a link named by its alt text.
+- Loose lists come out tight; a list item's later paragraphs sit under
+  the item as indented paragraphs and read back outside the list.
+- Blocks other than paragraphs and lists inside a list item, and blocks
+  other than paragraphs inside a block quote, lose their container.
+- Link titles, code block languages, empty headings, empty items, empty
+  links, and the difference between a soft break and a space are not
+  carried. Two block quotes that touch merge. Task list markers become
+  the box characters.
+- Emphasis nested in itself flattens; Word has one italic.
+
+Out of Word:
 
 - Comments are not read (Apple exports mark their ranges with an empty
   line break at the paragraph end, which the projection drops).
