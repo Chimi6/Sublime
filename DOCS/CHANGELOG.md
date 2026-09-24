@@ -6,6 +6,17 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- Benchmark pairs for Pages (`pages-json`, `pages-docx`, `pages-markdown`, `pages-html`, `pages-text`): a generator that scales a fixture into a large package through the lossless JSON form, a decompression floor for the package layer, one script and one document per pair, and a first results block each. The document paths fail their lines; the causes and the 0.6.1 plan are in `STATE.md`.
+
+### Changed
+
+- The Pages reader is no longer quadratic in the paragraph count: the attribute tables are binary-searched and UTF-16 offsets come from a cursor. A 55,000-paragraph document went from 16.9 s to 0.26 s. The Word writer no longer copies its body before compressing it.
+- `bench/run.sh` compares the gnu binary against `size-budget` (what CI checks) and records the musl release asset's size beside it.
+
+- Fonts a document asked for but the Mac lacked are written by their requested name (`compatibility_font_name`), as Pages exports them; PostScript font names are split into families generally (`ComicSansMS` -> `Comic Sans MS`, `AvenirNext-DemiBold` -> `Avenir Next`) instead of by a short list. The `fonts` fixture joins the Word comparison suite.
+
 ## [0.6.0] - 2026-09-24
 
 ### Added

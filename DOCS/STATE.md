@@ -27,7 +27,8 @@ describes.
 
 ## Blockers
 
-- (none)
+- 2026-09-24: The Pages document paths fail their benchmark pass lines (`DOCS/benchmarks/pages-docx.md`, `pages-markdown.md`, `pages-html.md`, `pages-text.md`): throughput a third to a half of the package round trip on the same input, peak memory 2.3x to 5.2x. Causes measured: a 224-byte run struct with cloned font and language strings (48 MB of model for 170,000 runs), the Word body held whole before Deflate (30 MB), and the package decoding 570 objects to use 70. Fix for 0.6.1: intern strings in the style table and slim the run, stream the Word body through the compressor, decode objects on lookup.
+- 2026-09-24: `pages-json -> pages` misses its line by 21 percent (`DOCS/benchmarks/pages-json.md`): the Snappy compressor tuned for ratio and the JSON tokenizer. Candidate: a faster match mode for the rebuild.
 
 ## Tech Debt
 
@@ -44,7 +45,7 @@ describes.
   - Deflate has no lazy matching; it is 7% larger than zlib level 9 on mixed data and level-6 class overall. Add lazy matching if a writer path needs the last percent.
   - 31 registry types without a schema; they decode raw. Resolve as the document reader needs them.
   - The schema comes from community protos of two vintages; fields Pages 12 added since decode raw. Coverage is measured by the round-trip test, not by name.
-  - No benchmark reference for `pages-json`: there is no Rust reader of the modern format to compare against, and the fixtures are small. Record throughput once a large real document is in hand.
+  - No peer reference for the Pages pairs: the harness scales fixtures into large documents and measures against the decompression floor and our own package round trip (`DOCS/benchmarks/pages-json.md`).
 - 2026-09-23: Markdown leftovers, deliberately deferred in favor of the next flagship:
   - Text -> Markdown (paragraphs only, conditional). Do it when a second text-shaped input can share it.
   - Unicode general-category tables for exact delimiter-run classification; today an approximation that no corpus example reaches (`DOCS/formats/markdown.md`, known deviations). Costs binary size; do it when a real document hits it.
@@ -64,6 +65,7 @@ describes.
 
 ## Spikes
 
+- 2026-09-24: Lazy object decoding for the document paths (now part of the blocker above). In-process, the resume's `pages -> docx` is 2.0 ms of package decode (zip, Snappy, and protobuf trees for every object) against 0.06 ms of document reading and 0.26 ms of Word writing; 500 of the 570 objects are stylesheet presets the document never references. Decoding an object's tree only when the graph looks it up would take the document paths near 1 ms; the lossless `pages-json` path still decodes everything.
 - 2026-09-23: Smaller Markdown arenas (`u32` offsets in `Line`, boxed fence data in `Kind`) to cut first-touch page faults, which are now the largest single cost in the block parser on large inputs.
 - 2026-09-23: Word-at-a-time scanning for the inline parser's special characters; the byte loop with a lookup table is its largest remaining cost.
 - 2026-09-23: Unicode general-category tables for exact delimiter-run classification (see `DOCS/formats/markdown.md`, known deviations).

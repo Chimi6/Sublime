@@ -104,7 +104,7 @@ formats.
 | HTML | html, htm | [~] | S | L | Shipped as output only. An HTML parser (tag soup, WHATWG tokenizer subset) unlocks HTML -> Markdown, HTML -> text, HTML -> DOCX/PDF. On pause. |
 | Plain text | txt | [~] | B | S | Shipped as output (Markdown -> text). Text -> Markdown as paragraphs is the remaining direction. |
 | Markdown as JSON | markdown-json | [x] | — | — | Shipped both ways: the event stream as JSON, lossless round trip. |
-| Apple Pages | pages | [~] | S | XL | Package reader and lossless `pages-json` shipped; document reader next. The flagship. ZIP of Snappy-framed protobuf (IWA); schemas are reverse-engineered and published. Pages -> DOCX and Pages -> Markdown/HTML. Nobody outside Apple does this well, and Pages files are shared constantly. Notes will live in `formats/pages.md`. |
+| Apple Pages | pages | [~] | S | XL | Package reader, lossless `pages-json`, document reader, Word writer, and Markdown, HTML, and text paths shipped (0.6.0); performance to the benchmark pass lines next. The flagship. ZIP of Snappy-framed protobuf (IWA); schemas are reverse-engineered and published. Pages -> DOCX and Pages -> Markdown/HTML. Nobody outside Apple does this well, and Pages files are shared constantly. Notes will live in `formats/pages.md`. |
 | Apple Keynote | key | [ ] | B | L | Same keystone as Pages; to PPTX or a Markdown outline. |
 | Word | docx | [ ] | S | L | ZIP plus XML (WordprocessingML). Both directions with Markdown/HTML; the target for Pages. Styles, lists, tables, images. |
 | Word legacy | doc | [ ] | C | L | Word 97 binary over OLE2; text and basic formatting extraction only. |

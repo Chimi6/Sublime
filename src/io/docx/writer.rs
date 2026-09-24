@@ -7,6 +7,7 @@
 //! Units: the model's points become twentieths of a point for spacing and
 //! indents, half-points for font sizes, and EMUs for drawings.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io;
 
@@ -32,6 +33,7 @@ pub fn write_docx<W: io::Write>(document: &Document, sink: W) -> io::Result<W> {
         document,
         body: String::new(),
         relationships: Vec::new(),
+        hyperlink_ids: HashMap::new(),
         numbering: Numbering::default(),
         page_parts: Vec::new(),
         media_targets: vec![None; document.media.len()],
@@ -49,7 +51,7 @@ pub fn write_docx<W: io::Write>(document: &Document, sink: W) -> io::Result<W> {
     let mut zip = ZipWriter::new(sink);
     zip.add_deflated("[Content_Types].xml", writer.content_types().as_bytes())?;
     zip.add_deflated("_rels/.rels", root_relationships().as_bytes())?;
-    zip.add_deflated("word/document.xml", writer.document_xml().as_bytes())?;
+    zip.add_deflated("word/document.xml", writer.body.as_bytes())?;
     zip.add_deflated(
         "word/_rels/document.xml.rels",
         writer
@@ -98,6 +100,8 @@ struct DocxWriter<'d> {
     body: String,
     /// The document part's relationships: `rId<n+10>`.
     relationships: Vec<Relationship>,
+    /// Hyperlink target -> its index in `relationships`.
+    hyperlink_ids: HashMap<String, usize>,
     numbering: Numbering,
     /// Header and footer parts, in order of creation.
     page_parts: Vec<Part>,
@@ -145,8 +149,12 @@ struct Numbering {
 }
 
 impl DocxWriter<'_> {
+    /// Renders the whole document part into `self.body`, header and
+    /// footer included, so the largest part is never copied.
     fn render_body(&mut self) {
         let mut body = String::new();
+        body.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
+        let _ = write!(body, "<w:document {W} {R} {DRAWING}><w:body>");
         // Floating objects are anchored to the first paragraph on their
         // page, counting the page breaks the document spells out.
         let mut page = 0u32;
@@ -188,6 +196,7 @@ impl DocxWriter<'_> {
                 body.push_str(&properties);
             }
         }
+        body.push_str("</w:body></w:document>");
         self.body = body;
     }
 
@@ -576,27 +585,31 @@ impl DocxWriter<'_> {
     }
 
     fn relationship_for(&mut self, kind: RelationshipKind, target: &str) -> usize {
-        let wanted = Relationship {
+        // Hyperlinks repeat across a document; the others are few.
+        if kind == RelationshipKind::Hyperlink
+            && let Some(index) = self.hyperlink_ids.get(target)
+        {
+            return *index + 10;
+        }
+        self.relationships.push(Relationship {
             kind,
             target: target.to_string(),
-        };
-        if let Some(index) = self
-            .relationships
-            .iter()
-            .position(|existing| *existing == wanted)
-        {
-            return index + 10;
+        });
+        let index = self.relationships.len() - 1;
+        if kind == RelationshipKind::Hyperlink {
+            self.hyperlink_ids.insert(target.to_string(), index);
         }
-        self.relationships.push(wanted);
-        self.relationships.len() - 1 + 10
+        index + 10
     }
 
     /// Renders blocks as a part of their own, with their own relationships.
     fn render_part(&mut self, blocks: &[Block]) -> (String, Vec<Relationship>) {
         let outer = std::mem::take(&mut self.relationships);
+        let outer_ids = std::mem::take(&mut self.hyperlink_ids);
         let mut xml = String::new();
         self.render_blocks(blocks, &mut xml);
         let relationships = std::mem::replace(&mut self.relationships, outer);
+        self.hyperlink_ids = outer_ids;
         (xml, relationships)
     }
 
@@ -694,15 +707,6 @@ impl DocxWriter<'_> {
             self.even_pages = true;
         }
         xml.push_str("</w:sectPr>");
-        xml
-    }
-
-    fn document_xml(&self) -> String {
-        let mut xml = String::with_capacity(self.body.len() + 512);
-        xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
-        let _ = write!(xml, "<w:document {W} {R} {DRAWING}><w:body>");
-        xml.push_str(&self.body);
-        xml.push_str("</w:body></w:document>");
         xml
     }
 
@@ -929,6 +933,7 @@ impl DocxWriter<'_> {
         xml.push_str("<w:footnote w:type=\"separator\" w:id=\"-1\"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>");
         xml.push_str("<w:footnote w:type=\"continuationSeparator\" w:id=\"0\"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>");
         let outer = std::mem::take(&mut self.relationships);
+        let outer_ids = std::mem::take(&mut self.hyperlink_ids);
         for (index, note) in self.document.footnotes.iter().enumerate() {
             let _ = write!(xml, "<w:footnote w:id=\"{}\">", index + 1);
             let mut body = String::new();
@@ -947,6 +952,7 @@ impl DocxWriter<'_> {
         }
         xml.push_str("</w:footnotes>");
         let relationships = std::mem::replace(&mut self.relationships, outer);
+        self.hyperlink_ids = outer_ids;
         Part {
             name: "footnotes.xml".to_string(),
             xml,
@@ -1088,11 +1094,11 @@ fn run_properties_xml(properties: &RunProperties, out: &mut String) {
     if let Some(font) = &properties.font {
         let family = font_family(font);
         out.push_str("<w:rFonts w:ascii=\"");
-        escape_attribute(out, family);
+        escape_attribute(out, &family);
         out.push_str("\" w:hAnsi=\"");
-        escape_attribute(out, family);
+        escape_attribute(out, &family);
         out.push_str("\" w:cs=\"");
-        escape_attribute(out, family);
+        escape_attribute(out, &family);
         out.push_str("\"/>");
     }
     if let Some(bold) = properties.bold {
@@ -1153,18 +1159,36 @@ fn run_properties_xml(properties: &RunProperties, out: &mut String) {
     }
 }
 
-/// Pages names fonts by PostScript name (`HelveticaNeue-Bold`); Word wants
-/// the family. The style suffix after the hyphen is dropped, and a few
-/// common PostScript families are spelled the way Word knows them.
-fn font_family(postscript_name: &str) -> &str {
-    let family = postscript_name.split('-').next().unwrap_or(postscript_name);
-    match family {
-        "HelveticaNeue" => "Helvetica Neue",
-        "TimesNewRomanPSMT" | "TimesNewRoman" => "Times New Roman",
-        "CourierNewPSMT" | "CourierNew" => "Courier New",
-        "ArialMT" => "Arial",
-        other => other,
+/// Pages names fonts by PostScript name (`HelveticaNeue-Bold`,
+/// `ComicSansMS`, `TimesNewRomanPSMT`); Word wants the family as the
+/// user knows it. The style after the hyphen and the `PSMT`/`MT` tails are
+/// dropped, and words run together are split at their capitals.
+fn font_family(postscript_name: &str) -> String {
+    if postscript_name.contains(' ') {
+        return postscript_name.to_string();
     }
+    let base = postscript_name.split('-').next().unwrap_or(postscript_name);
+    let base = base
+        .strip_suffix("PSMT")
+        .or_else(|| base.strip_suffix("MT"))
+        .unwrap_or(base);
+    let mut family = String::with_capacity(base.len() + 4);
+    let mut previous: Option<char> = None;
+    let characters: Vec<char> = base.chars().collect();
+    for (index, ch) in characters.iter().enumerate() {
+        if let Some(before) = previous {
+            let next_is_lower = characters.get(index + 1).is_some_and(|c| c.is_lowercase());
+            let starts_word = ch.is_uppercase()
+                && (before.is_lowercase() || (before.is_uppercase() && next_is_lower));
+            let starts_number = ch.is_ascii_digit() && !before.is_ascii_digit();
+            if starts_word || starts_number {
+                family.push(' ');
+            }
+        }
+        family.push(*ch);
+        previous = Some(*ch);
+    }
+    family
 }
 
 /// The style identifier: the name itself, as Pages exports it (Word
@@ -1188,4 +1212,23 @@ fn twips(points: f32) -> i64 {
 /// English metric units, as drawings are measured.
 fn emu(points: f32) -> i64 {
     (points * 12_700.0).round() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::font_family;
+
+    #[test]
+    fn postscript_names_become_families() {
+        assert_eq!(font_family("HelveticaNeue-Bold"), "Helvetica Neue");
+        assert_eq!(font_family("ComicSansMS"), "Comic Sans MS");
+        assert_eq!(font_family("TimesNewRomanPSMT"), "Times New Roman");
+        assert_eq!(font_family("ArialMT"), "Arial");
+        assert_eq!(font_family("Menlo-Regular"), "Menlo");
+        assert_eq!(font_family("CourierNewPSMT"), "Courier New");
+        assert_eq!(font_family("Georgia"), "Georgia");
+        assert_eq!(font_family("Nonexistent Sans"), "Nonexistent Sans");
+        assert_eq!(font_family("AvenirNext-DemiBold"), "Avenir Next");
+        assert_eq!(font_family("STHeitiSC-Light"), "ST Heiti SC");
+    }
 }

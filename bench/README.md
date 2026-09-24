@@ -20,6 +20,8 @@ The `sublime-bench` binary exposes each pair's modes directly:
     bench/target/release/sublime-bench csv-json gen-csv 1000000 data.csv
     bench/target/release/sublime-bench csv-json ours-csv-read data.csv
     bench/target/release/sublime-bench startup target/release/sublime tiny.csv
+    bench/target/release/sublime-bench pages-json gen tests/fixtures/pages/text-styles.pages 5000 big.pages
+    bench/target/release/sublime-bench pages-json floor big.pages big.raw
 
 ## Layout
 
