@@ -134,6 +134,9 @@ pub struct Paragraph {
     pub style: Option<StyleId>,
     /// Direct formatting on top of the style.
     pub properties: ParagraphProperties,
+    /// Direct character formatting set on the whole paragraph, under
+    /// each run's own.
+    pub run_properties: RunProperties,
     pub list: Option<ListItem>,
     /// A page break before this paragraph.
     pub page_break_before: bool,
@@ -433,6 +436,7 @@ impl Document {
             Some(style) => self.paragraph_style_run(style),
             None => RunProperties::default(),
         };
+        properties.overlay(&paragraph.run_properties);
         if let Some(style) = run.style {
             properties.overlay(&self.character_style_run(style));
         }

@@ -149,6 +149,11 @@ impl DocxWriter<'_> {
             );
         }
         paragraph_properties_xml(&paragraph.properties, &mut properties);
+        let mut mark = String::new();
+        run_properties_xml(&paragraph.run_properties, &mut mark);
+        if !mark.is_empty() {
+            let _ = write!(properties, "<w:rPr>{mark}</w:rPr>");
+        }
         if !properties.is_empty() {
             out.push_str("<w:pPr>");
             out.push_str(&properties);
@@ -174,7 +179,7 @@ impl DocxWriter<'_> {
         out.push_str("</w:p>");
     }
 
-    fn render_run(&mut self, _paragraph: &Paragraph, run: &Run, out: &mut String) {
+    fn render_run(&mut self, paragraph: &Paragraph, run: &Run, out: &mut String) {
         out.push_str("<w:r>");
         let mut properties = String::new();
         if let Some(style) = run.style {
@@ -184,7 +189,9 @@ impl DocxWriter<'_> {
                 style_id(&self.document.styles.character[style].name)
             );
         }
-        run_properties_xml(&run.properties, &mut properties);
+        let mut merged = paragraph.run_properties.clone();
+        merged.overlay(&run.properties);
+        run_properties_xml(&merged, &mut properties);
         if !properties.is_empty() {
             out.push_str("<w:rPr>");
             out.push_str(&properties);
