@@ -1,0 +1,4 @@
+Ruby Text
+Japanese with ruby (furigana) above the kanji:
+漢字 is written with ruby readings.
+日本語 means the Japanese language.

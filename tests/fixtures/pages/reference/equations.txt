@@ -1,0 +1,8 @@
+Equations
+A display equation:
+
+The quadratic formula, with a fraction and a square root:
+
+A summation with limits:
+
+An inline equation  set within a sentence.

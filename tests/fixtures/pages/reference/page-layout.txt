@@ -1,0 +1,6 @@
+Page Layout
+Section one is portrait, has a page border, uses lower-case roman page numbers, and flows in two columns. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.
+
+This paragraph follows a column break, so it opens the second column. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.
+Landscape
+Section two is landscape and single column. Sublime converts files. This paragraph exists so that the paragraph has more than one line when laid out on a page, which matters for line spacing, indents, and column tests. It says nothing else of interest.

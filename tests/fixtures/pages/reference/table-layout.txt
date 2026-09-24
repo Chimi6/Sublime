@@ -1,0 +1,4 @@
+Table Layout
+A centered table showing per-cell vertical alignment, a cell with rotated text direction, a cell with a diagonal border, and a shaded cell:
+
+Text after the table.
