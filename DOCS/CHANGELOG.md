@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Changed
+
+- Fonts a document asked for but the Mac lacked are written by their requested name (`compatibility_font_name`), as Pages exports them; PostScript font names are split into families generally (`ComicSansMS` -> `Comic Sans MS`, `AvenirNext-DemiBold` -> `Avenir Next`) instead of by a short list. The `fonts` fixture joins the Word comparison suite.
+
 ## [0.6.0] - 2026-09-24
 
 ### Added

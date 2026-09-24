@@ -1088,11 +1088,11 @@ fn run_properties_xml(properties: &RunProperties, out: &mut String) {
     if let Some(font) = &properties.font {
         let family = font_family(font);
         out.push_str("<w:rFonts w:ascii=\"");
-        escape_attribute(out, family);
+        escape_attribute(out, &family);
         out.push_str("\" w:hAnsi=\"");
-        escape_attribute(out, family);
+        escape_attribute(out, &family);
         out.push_str("\" w:cs=\"");
-        escape_attribute(out, family);
+        escape_attribute(out, &family);
         out.push_str("\"/>");
     }
     if let Some(bold) = properties.bold {
@@ -1153,18 +1153,36 @@ fn run_properties_xml(properties: &RunProperties, out: &mut String) {
     }
 }
 
-/// Pages names fonts by PostScript name (`HelveticaNeue-Bold`); Word wants
-/// the family. The style suffix after the hyphen is dropped, and a few
-/// common PostScript families are spelled the way Word knows them.
-fn font_family(postscript_name: &str) -> &str {
-    let family = postscript_name.split('-').next().unwrap_or(postscript_name);
-    match family {
-        "HelveticaNeue" => "Helvetica Neue",
-        "TimesNewRomanPSMT" | "TimesNewRoman" => "Times New Roman",
-        "CourierNewPSMT" | "CourierNew" => "Courier New",
-        "ArialMT" => "Arial",
-        other => other,
+/// Pages names fonts by PostScript name (`HelveticaNeue-Bold`,
+/// `ComicSansMS`, `TimesNewRomanPSMT`); Word wants the family as the
+/// user knows it. The style after the hyphen and the `PSMT`/`MT` tails are
+/// dropped, and words run together are split at their capitals.
+fn font_family(postscript_name: &str) -> String {
+    if postscript_name.contains(' ') {
+        return postscript_name.to_string();
     }
+    let base = postscript_name.split('-').next().unwrap_or(postscript_name);
+    let base = base
+        .strip_suffix("PSMT")
+        .or_else(|| base.strip_suffix("MT"))
+        .unwrap_or(base);
+    let mut family = String::with_capacity(base.len() + 4);
+    let mut previous: Option<char> = None;
+    let characters: Vec<char> = base.chars().collect();
+    for (index, ch) in characters.iter().enumerate() {
+        if let Some(before) = previous {
+            let next_is_lower = characters.get(index + 1).is_some_and(|c| c.is_lowercase());
+            let starts_word = ch.is_uppercase()
+                && (before.is_lowercase() || (before.is_uppercase() && next_is_lower));
+            let starts_number = ch.is_ascii_digit() && !before.is_ascii_digit();
+            if starts_word || starts_number {
+                family.push(' ');
+            }
+        }
+        family.push(*ch);
+        previous = Some(*ch);
+    }
+    family
 }
 
 /// The style identifier: the name itself, as Pages exports it (Word
@@ -1188,4 +1206,23 @@ fn twips(points: f32) -> i64 {
 /// English metric units, as drawings are measured.
 fn emu(points: f32) -> i64 {
     (points * 12_700.0).round() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::font_family;
+
+    #[test]
+    fn postscript_names_become_families() {
+        assert_eq!(font_family("HelveticaNeue-Bold"), "Helvetica Neue");
+        assert_eq!(font_family("ComicSansMS"), "Comic Sans MS");
+        assert_eq!(font_family("TimesNewRomanPSMT"), "Times New Roman");
+        assert_eq!(font_family("ArialMT"), "Arial");
+        assert_eq!(font_family("Menlo-Regular"), "Menlo");
+        assert_eq!(font_family("CourierNewPSMT"), "Courier New");
+        assert_eq!(font_family("Georgia"), "Georgia");
+        assert_eq!(font_family("Nonexistent Sans"), "Nonexistent Sans");
+        assert_eq!(font_family("AvenirNext-DemiBold"), "Avenir Next");
+        assert_eq!(font_family("STHeitiSC-Light"), "ST Heiti SC");
+    }
 }

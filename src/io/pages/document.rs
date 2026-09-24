@@ -1880,7 +1880,12 @@ fn paragraph_properties(view: View<'_>) -> ParagraphProperties {
 /// Converts `TSWP.CharacterStylePropertiesArchive`.
 fn run_properties(view: View<'_>) -> RunProperties {
     RunProperties {
-        font: view.string("font_name").map(str::to_string),
+        // A font the document asked for but the Mac lacked is kept beside
+        // the substitute; the request is what the document means.
+        font: view
+            .string("compatibility_font_name")
+            .or_else(|| view.string("font_name"))
+            .map(str::to_string),
         size: view.float("font_size"),
         bold: view.boolean("bold"),
         italic: view.boolean("italic"),
