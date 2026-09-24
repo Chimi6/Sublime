@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use sublime::document::markdown::emit_events;
 use sublime::io::html::HtmlWriter;
 use sublime::io::markdown::MarkdownWriter;
-use sublime::io::pages::{Package, read_document};
+use sublime::io::pages::{Package, Scope, read_document};
 use sublime::io::text::TextWriter;
 
 fn document(name: &str) -> sublime::document::Document {
@@ -15,7 +15,7 @@ fn document(name: &str) -> sublime::document::Document {
     path.push("tests/fixtures/pages");
     path.push(format!("{name}.pages"));
     let bytes = std::fs::read(&path).expect("fixture readable");
-    let package = Package::read(&bytes).expect("package reads");
+    let package = Package::read_scope(&bytes, Scope::Document).expect("package reads");
     read_document(&package)
 }
 

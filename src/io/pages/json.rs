@@ -186,6 +186,14 @@ fn write_node<W: Write>(
             json.base64_string(tree.bytes(span))?;
             json.end_object()
         }
+        // Only a document-scope package holds deferred fields; the JSON
+        // form decodes everything, so this is the raw form for completeness.
+        Node::Deferred(span) => {
+            json.begin_object()?;
+            json.key("deferred")?;
+            json.base64_string(tree.bytes(span))?;
+            json.end_object()
+        }
     }
 }
 
