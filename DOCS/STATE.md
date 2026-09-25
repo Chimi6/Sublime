@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-09-25: Direct pairs between TOML, YAML, and XML (`src/converters/hub.rs`), so the planner no longer routes them through JSON; infinities and NaN survive as floats. Oracle in `tests/hub_pairs.rs`.
 - 2026-09-25: The value hub is an arena tree (`src/value/tree.rs`): the three hub formats cost about two to three bytes of memory per input byte where they cost ten, and read 1.2 to 1.9 times faster. Every pair document carries the new block.
 - 2026-09-24: XML both ways through the value hub under the xmltodict mapping: a strict reader with located errors and a pretty-printing writer. Map in `DOCS/formats/xml.md`, oracles in `tests/xml_json.rs`, pair `xml-json` against `quick-xml`.
 - 2026-09-24: YAML both ways through the value hub: a YAML 1.2 core-schema reader (block and flow, all scalar styles, anchors, merge keys, tags, multi-document) and a block-style writer. Map in `DOCS/formats/yaml.md`, oracles in `tests/yaml_json.rs`, pair `yaml-json` against `serde_yaml`.
@@ -19,7 +20,7 @@ describes.
 
 ## Next
 
-The document category's one-way streets are closed (phases 1 to 4 below, released as 0.8.0 to 0.10.0). The data category is being filled out next, one format per branch, each reading into and writing from the value hub: TOML (done), YAML (done; it builds the tree, since aliases and merge keys need whole subtrees), XML (done, the xmltodict mapping), then JSON Lines and TSV as one small branch. The Pages writer decision stays open in parallel (a separate branch on the Mac).
+The document category's one-way streets are closed (phases 1 to 4 below, released as 0.8.0 to 0.10.0). The data category is being filled out next, one format per branch, each reading into and writing from the value hub: TOML (done), YAML (done; it builds the tree, since aliases and merge keys need whole subtrees), XML (done, the xmltodict mapping), the direct pairs between them (done), then JSON Lines and TSV as one small branch. The Pages writer decision stays open in parallel (a separate branch on the Mac).
 
 - 2026-09-24, phase 1 (0.8.0, done): Word reader into the document model (`src/io/docx/reader.rs`: styles, numbering, sections, headers and footers, footnotes, tables, images, fields, revisions, links, text boxes), giving `docx -> markdown`, `html`, `text`, `markdown-json`. Oracles: the 28 Apple Word exports against their text exports, and `pages -> docx -> markdown` equal to `pages -> markdown` on every fixture. Pairs: `docx-markdown`, `docx-html`, `docx-text`.
 - 2026-09-24, phase 2 (0.9.0, done): events-to-model bridge (`src/document/from_events.rs`) with built-in named styles, giving `markdown -> docx` and `markdown-json -> docx`, and later HTML and text to Word through the same bridge. Oracle: `markdown -> docx -> markdown` on the CommonMark and GFM corpus for the represented subset. Pair: `markdown-docx`.
@@ -104,6 +105,7 @@ The document category's one-way streets are closed (phases 1 to 4 below, release
 
 ## Done
 
+- 2026-09-25: Direct TOML, YAML, and XML pairs (unreleased, branch `hub-direct-pairs`).
 - 2026-09-25: Value hub as an arena tree released as 0.13.1: memory 2.7 to 3.4 times lower and throughput 1.2 to 1.9 times higher on every hub pair.
 - 2026-09-24: XML both ways released as 0.13.0: `xml -> json`, `json -> xml`, the `xml-json` pair passing every line against `quick-xml`; the reader streams its input.
 - 2026-09-24: YAML both ways released as 0.12.0: `yaml -> json`, `json -> yaml`, the `yaml-json` pair passing every line against `serde_yaml`; the TOML and YAML writers stream.

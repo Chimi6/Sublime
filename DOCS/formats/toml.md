@@ -13,7 +13,7 @@ reader and writer handle, tied to the tests that prove it.
   NaN become strings, reported once per key path).
 - `json -> toml`: shipped, conditional (the root must be an object,
   nulls are dropped and reported, integers beyond 64 bits become floats).
-- `toml -> csv` and `csv -> toml` reach through JSON.
+- `toml -> yaml`, `toml -> xml`, and back: shipped directly (0.14.0), conditional; `toml -> csv` and `csv -> toml` reach through JSON.
 
 Oracles (`tests/toml_json.rs`, fixtures in `tests/fixtures/toml`): every
 valid fixture reads to the JSON beside it byte for byte; every fixture
