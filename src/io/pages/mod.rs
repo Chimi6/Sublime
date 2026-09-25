@@ -8,10 +8,12 @@ pub mod json;
 pub mod package;
 pub mod schema;
 pub mod types;
+pub mod writer;
 
 pub use document::read_document;
 pub use package::{Entry, Object, ObjectMessage, Package, PackageError, Scope, Stream};
 pub use types::type_name;
+pub use writer::write as write_package;
 
 /// Schema of a message type, when the registry and the schema both know it.
 pub fn message_schema(message_type: u32) -> Option<crate::io::protobuf::schema::MessageRef> {

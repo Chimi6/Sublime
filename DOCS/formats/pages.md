@@ -32,9 +32,28 @@ the reader; `STATE.md` records what is being built now.
   level, inline formatting, links, images, tables, footnotes; page layout,
   headers, and footers have no Markdown form and are dropped; text boxes
   follow the body in page order.
-- Writing Pages from other formats: later, by rewriting a real Pages
-  document's storage objects rather than generating Apple's object graph
-  from nothing.
+- Writing Pages from other formats: a writer (`src/io/pages/writer.rs`)
+  rewrites a template's body storage — the endorsed approach, a real
+  document as scaffolding rather than a graph generated from nothing —
+  setting the text and one paragraph-style run per paragraph, mapped to
+  Pages' own named styles (Title, Heading, Body). Bold and italic runs are
+  pointed at the template's own character styles (the toggle alone does not
+  render in Pages; its bold/italic styles carry the weighted font), and the
+  character-style table must start at offset 0 with the template's base
+  style or Pages drops it whole. Bulleted and numbered lists reuse the
+  theme's live list styles. Tables reuse the template's own tables — Pages
+  refuses a table that is not registered in the document's calculation
+  engine, and that registration cannot be synthesized, so the writer
+  rewrites a template table's tile, string table, header buckets, and
+  column/row UID map with the model table's cells and grid, then anchors it
+  inline with a `U+FFFC` and a `table_attachment` entry; a document with
+  more tables than the template holds flattens the extras. `markdown`,
+  `text`, `html`, `docx` -> `pages`, lossy: paragraphs, headings,
+  bold/italic, lists, and tables reach Pages; links and images are not yet
+  written. Output opens in Pages 12. The template is a Pages 12 document
+  carrying those named styles, list styles, and a reference table with its
+  calculation-engine registration, with the preview thumbnails stripped,
+  compiled in (`style_template.pages`).
 
 On the largest fixture (733 KB, 87 KB of object streams, the rest images)
 the package reads to JSON in about 11 ms and rebuilds from JSON in 18 ms,
