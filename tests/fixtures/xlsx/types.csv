@@ -1,0 +1,9 @@
+name,count,rich text,  padded  ,漢字,a & b <c>
+"line1
+line2",42,2024-01-05,2024-01-05T12:00:00,3.5,TRUE
+fx,42,#DIV/0!,,,FALSE
+,,,,,
+,1E-05,,18:00:00,,
+,,,,,
+-7,,"line1
+line2",,,

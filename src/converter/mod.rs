@@ -241,6 +241,9 @@ impl std::error::Error for ConvertError {}
 #[derive(Debug, Clone, Default)]
 pub struct ConvertOptions {
     pub strict: bool,
+    /// The worksheet to read or the name to give the one written: a sheet
+    /// name or a 1-based number; the first sheet when absent.
+    pub sheet: Option<String>,
 }
 
 /// One edge in the format graph. Implement this and add one line to

@@ -26,6 +26,14 @@ pub static JSONL: Format = Format {
     category: Category::Data,
 };
 
+pub static XLSX: Format = Format {
+    id: "xlsx",
+    display_name: "Excel Workbook",
+    extensions: &["xlsx"],
+    magic: None,
+    category: Category::Data,
+};
+
 pub static JSON: Format = Format {
     id: "json",
     display_name: "JSON",
