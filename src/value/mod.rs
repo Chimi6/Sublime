@@ -3,6 +3,7 @@
 //! streams into when its format allows it. JSON reads into it through the
 //! sink; a converter walks the tree to write.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::mem;
@@ -186,6 +187,40 @@ pub fn push_double_quoted(out: &mut String, text: &str) {
         }
     }
     out.push('"');
+}
+
+/// Members beyond this count get a hash index.
+const INDEX_THRESHOLD: usize = 16;
+
+/// Finds a member by key in a table under construction: a linear scan
+/// while the table is small, a lazily built map once it grows, so a
+/// document of many small tables allocates no maps and one huge table
+/// stays linear. The caller keeps the members; this keeps the index.
+#[derive(Default)]
+pub struct MemberIndex {
+    index: Option<HashMap<String, usize>>,
+}
+
+impl MemberIndex {
+    pub fn find(&self, members: &[(String, Value)], key: &str) -> Option<usize> {
+        match &self.index {
+            Some(index) => index.get(key).copied(),
+            None => members.iter().position(|(existing, _)| existing == key),
+        }
+    }
+
+    /// Call after pushing `key` at `position` onto the members.
+    pub fn record(&mut self, members: &[(String, Value)], key: &str, position: usize) {
+        if let Some(index) = &mut self.index {
+            index.insert(key.to_string(), position);
+        } else if position >= INDEX_THRESHOLD {
+            let mut index: HashMap<String, usize> = HashMap::with_capacity(position * 2);
+            for (existing_position, (existing, _)) in members.iter().enumerate() {
+                index.insert(existing.clone(), existing_position);
+            }
+            self.index = Some(index);
+        }
+    }
 }
 
 /// Text output handed to a sink in 64 KiB chunks, so a writer never

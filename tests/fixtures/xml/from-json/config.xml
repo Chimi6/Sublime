@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config version="2">
+  hello
+  <name>demo</name>
+  <count>3</count>
+  <ratio>1.5</ratio>
+  <on>true</on>
+  <none/>
+  <list>a</list>
+  <list>b</list>
+  <objs>
+    <id>1</id>
+  </objs>
+  <objs>
+    <id>2</id>
+  </objs>
+  <nested>
+    <deep>
+      <x>y</x>
+    </deep>
+  </nested>
+  <text_only>a &amp; b &lt;c&gt; "q"</text_only>
+</config>
