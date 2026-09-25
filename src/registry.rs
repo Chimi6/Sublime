@@ -3,6 +3,7 @@
 
 use crate::converter::Converter;
 use crate::converters::csv_to_json;
+use crate::converters::csv_to_xlsx;
 use crate::converters::docx_to_html::DocxToHtml;
 use crate::converters::docx_to_markdown::DocxToMarkdown;
 use crate::converters::docx_to_text::DocxToText;
@@ -30,11 +31,12 @@ use crate::converters::text_to_docx::TextToDocx;
 use crate::converters::text_to_html::TextToHtml;
 use crate::converters::text_to_markdown::TextToMarkdown;
 use crate::converters::toml_to_json::TomlToJson;
+use crate::converters::xlsx_to_csv;
 use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 44] = [
+static CONVERTERS: [&dyn Converter; 48] = [
     &csv_to_json::CSV_TO_JSON,
     &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
@@ -79,6 +81,10 @@ static CONVERTERS: [&dyn Converter; 44] = [
     &rows::TSV_TO_CSV,
     &rows::JsonlToJson,
     &rows::JsonToJsonl,
+    &xlsx_to_csv::XLSX_TO_CSV,
+    &xlsx_to_csv::XLSX_TO_TSV,
+    &csv_to_xlsx::CSV_TO_XLSX,
+    &csv_to_xlsx::TSV_TO_XLSX,
 ];
 
 pub fn all_converters() -> &'static [&'static dyn Converter] {
@@ -162,6 +168,7 @@ mod tests {
                 "text",
                 "toml",
                 "tsv",
+                "xlsx",
                 "xml",
                 "yaml"
             ]

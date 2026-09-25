@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-09-25: Excel workbooks, one sheet at a time: a reader that turns a chosen sheet into rows (shared strings, styles for dates, the 1904 epoch, gaps and dimension) and a writer that streams rows into a one-sheet workbook; `--sheet` on `convert`. Map in `DOCS/formats/xlsx.md`, oracles in `tests/xlsx_rows.rs`, pair `xlsx-csv` against `calamine` and `rust_xlsxwriter`.
 - 2026-09-25: TSV and JSON Lines, and every row path among CSV, TSV, JSON, and JSON Lines, all streamed in constant memory. Oracles in `tests/rows.rs`, pairs `tsv-json` and `jsonl-json`.
 - 2026-09-25: Direct pairs between TOML, YAML, and XML (`src/converters/hub.rs`), so the planner no longer routes them through JSON; infinities and NaN survive as floats. Oracle in `tests/hub_pairs.rs`.
 - 2026-09-25: The value hub is an arena tree (`src/value/tree.rs`): the three hub formats cost about two to three bytes of memory per input byte where they cost ten, and read 1.2 to 1.9 times faster. Every pair document carries the new block.
@@ -21,7 +22,7 @@ describes.
 
 ## Next
 
-The document category's one-way streets are closed (phases 1 to 4 below, released as 0.8.0 to 0.10.0). The data category is being filled out next, one format per branch, each reading into and writing from the value hub: TOML (done), YAML (done; it builds the tree, since aliases and merge keys need whole subtrees), XML (done, the xmltodict mapping), the direct pairs between them (done), and JSON Lines and TSV (done). The planned data set is complete; XLSX is the recommended next format (every keystone it needs exists), with INI, MessagePack, CBOR, and plist as the cheap follow-ons. The Pages writer decision stays open in parallel (a separate branch on the Mac).
+The document category's one-way streets are closed (phases 1 to 4 below, released as 0.8.0 to 0.10.0). The data category is being filled out next, one format per branch, each reading into and writing from the value hub: TOML (done), YAML (done; it builds the tree, since aliases and merge keys need whole subtrees), XML (done, the xmltodict mapping), the direct pairs between them (done), and JSON Lines and TSV (done). The planned data set is complete and XLSX (one sheet at a time) is in. Next: the cheap hub batch (INI, plist, MessagePack, CBOR), then every-sheet XLSX output as a JSON object of sheets, then the document category (ODT, EPUB). The Pages writer decision stays open in parallel (a separate branch on the Mac).
 
 - 2026-09-24, phase 1 (0.8.0, done): Word reader into the document model (`src/io/docx/reader.rs`: styles, numbering, sections, headers and footers, footnotes, tables, images, fields, revisions, links, text boxes), giving `docx -> markdown`, `html`, `text`, `markdown-json`. Oracles: the 28 Apple Word exports against their text exports, and `pages -> docx -> markdown` equal to `pages -> markdown` on every fixture. Pairs: `docx-markdown`, `docx-html`, `docx-text`.
 - 2026-09-24, phase 2 (0.9.0, done): events-to-model bridge (`src/document/from_events.rs`) with built-in named styles, giving `markdown -> docx` and `markdown-json -> docx`, and later HTML and text to Word through the same bridge. Oracle: `markdown -> docx -> markdown` on the CommonMark and GFM corpus for the represented subset. Pair: `markdown-docx`.
@@ -47,6 +48,11 @@ The document category's one-way streets are closed (phases 1 to 4 below, release
 
 ## Tech Debt
 
+- 2026-09-25: Excel leftovers:
+  - The reader inflates the sheet part whole before parsing (415 MB peak on a 39 MB workbook whose sheet inflates to 326 MB); a windowed inflate feeding the XML reader would make it constant. The writer already streams.
+  - One sheet per run; a whole-workbook form (a JSON object of sheets, or one CSV per sheet) is not offered.
+  - Number formats other than dates are dropped; merged cells read as their top-left value.
+  - No Excel-made fixtures yet; the set is hand-built from the specification.
 - 2026-09-25: Value hub leftovers:
   - The TOML and YAML readers hold the input text whole beside the tree (60 to 190 MB of their peaks on the benchmark shapes); the XML reader's sliding window is the shape to port if a large config case ever matters.
   - `ValueSink` has one implementor (`TreeSink`) until a format streams.
@@ -106,6 +112,7 @@ The document category's one-way streets are closed (phases 1 to 4 below, release
 
 ## Done
 
+- 2026-09-25: Excel workbooks one sheet at a time (unreleased, branch `xlsx`).
 - 2026-09-25: TSV and JSON Lines with every row path released as 0.15.0.
 - 2026-09-25: Direct TOML, YAML, and XML pairs released as 0.14.0.
 - 2026-09-25: Value hub as an arena tree released as 0.13.1: memory 2.7 to 3.4 times lower and throughput 1.2 to 1.9 times higher on every hub pair.

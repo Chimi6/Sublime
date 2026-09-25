@@ -73,7 +73,7 @@ formats.
 | Apple plist | plist (XML and binary) | [ ] | A | S | macOS everywhere; binary bplist <-> XML plist <-> JSON is a real daily need. |
 | SQLite | sqlite, db | [ ] | S | L | Read the database file format directly: tables to CSV/JSON, one file per table or a chosen table. Enormous value; nobody expects a converter to do it. Writing SQLite from CSV is a second, harder step. |
 | dBase | dbf | [ ] | B | S | Ancient, still everywhere (shapefiles, legacy exports). DBF <-> CSV. |
-| Excel workbook | xlsx | [ ] | S | M | Needs ZIP, inflate, XML. Sheets to CSV/JSON; CSV to XLSX. Shared strings, dates as serials, formulas as values. |
+| Excel workbook | xlsx | [~] | S | M | One sheet at a time shipped (0.16.0): a chosen sheet to CSV, TSV, JSON, and JSON Lines; CSV and TSV to a workbook. Every sheet at once, and number formats beyond dates, remain. Notes in `formats/xlsx.md`. |
 | Excel legacy | xls | [ ] | C | L | BIFF8 over OLE2. Read only. |
 | OpenDocument spreadsheet | ods | [ ] | A | M | Same keystones as XLSX. |
 | Apple Numbers | numbers | [ ] | A | L | Shares the IWA keystone with Pages. Tables to CSV. |
@@ -313,7 +313,7 @@ listed.
 
 | Tier | Formats |
 |---|---|
-| **S** | Apple Pages (flagship) · SQLite read · XLSX · DOCX · PDF write · PNG (keystone) · JPEG · WAV · ZIP and gzip (keystones) · HTML read (on pause) |
+| **S** | Apple Pages (flagship) · SQLite read · DOCX · PDF write · PNG (keystone) · JPEG · WAV · ZIP and gzip (keystones) · HTML read (on pause) |
 | **A** | Semicolon and pipe CSV · INI · MessagePack and CBOR · plist · ODS and ODT · Numbers · Parquet read · NumPy · PEM/DER · vCard and iCalendar · RTF · EPUB · reStructuredText · AsciiDoc · Jupyter · Email (EML, MBOX) · Subtitles (SRT, VTT, ASS, TTML) · GIF · BMP · TIFF · Netpbm · ICO/ICNS · Exif and XMP · AIFF · FLAC · MP3 decode · MIDI · TAR · TrueType/OpenType · WOFF · STL · OBJ · glTF · GeoJSON · GPX · KML · FASTA/FASTQ · DICOM · Intel HEX and S-record · N64 ROM byte order · N64 saves · SNES headers · Genesis SMD/BIN · Minecraft NBT · Spreadsheet to Markdown table |
 | **B** | Java properties · .env · JSON5 · BSON · dBase · Arrow · Avro · MATLAB · R data · JWK/JWT · BibTeX/RIS · PGN · Keynote · MOBI/AZW3 · FictionBook · Org-mode · LaTeX · man pages · R Markdown · Outlook MSG · WebP decode · farbfeld and QOI · TGA · SVG subset rasterizer · PSD · Aseprite · DDS/KTX · Ogg Vorbis decode · Tracker modules · N64 audio · Video remuxing · Transcoding via External · bzip2 · XZ · Zstandard · ISO 9660 · WOFF2 · Glyphs to SVG · PLY · 3MF/AMF · Quake models · Minecraft schematics · Shapefile · WKT/WKB · GenBank/GFF/BED/VCF · PDB · FITS · NES headers · Game Boy saves · PlayStation images · Doom WAD · Quake PAK · PICO-8 · Base64 and hex · Feeds |
 | **C** | XLS · HDF5 · NetCDF · SPSS/Stata/SAS · Protobuf generic · Word `.doc` · Textile/MediaWiki · RTFD · PCX · XCF · ORA/Krita · Camera raw · IFF ILBM · legacy rasters · AU/VOC/CAF · Opus, AAC, ALAC · Chiptune (SID, NSF, SPC, GBS, VGM) · Animated GIF via External · 7z · cpio/ar/deb · CAB · Type 1 fonts · Bitmap fonts · OFF/X3D/VRML · COLLADA · Source SMD · TopoJSON · OSM · GeoTIFF · SAM/BAM · NIfTI · EDF · N64 textures · Retro disk images · Hex dumps · OPML · Log formats · Diagram text-to-text |
