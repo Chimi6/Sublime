@@ -30,6 +30,24 @@ a comparison. Startup is implemented in `bench/src/startup.rs`.
 
 ## Results
 
+### 2026-09-24, 0.12.0 with YAML
+
+commit: 7dc62b1 (the merge of the YAML branch, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 1688424 | <= 1700000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 1790624 | recorded | n/a |
+| WebAssembly module (bytes) | 817872 | <= 850000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 333317 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.231 (spawn 0.511, floor 0.280) | < 1 | PASS |
+
+The YAML reader and writer and two converters added 68 KB to the binary
+and 37 KB to the module (the reader is the largest grammar in the data
+category); both budgets were raised (changelog). The startup row moved
+with the spawn floor, not the binary: spawn stayed at 0.51 ms.
+
 ### 2026-09-24, 0.11.0 with TOML and the value hub
 
 commit: b2e466d (the merge of the TOML branch, before the version bump)
@@ -139,3 +157,4 @@ read as "under a millisecond", not as a trend.
 | 0.9.0 | 1,544,072 | 1,643,136 | 1,560,000 | 743,164 | 750,000 |
 | 0.10.0 | 1,592,688 | 1,696,384 | 1,600,000 | 767,166 | 800,000 |
 | 0.11.0 | 1,620,152 | 1,720,992 | 1,650,000 | 780,979 | 800,000 |
+| 0.12.0 | 1,688,424 | 1,790,624 | 1,700,000 | 817,872 | 850,000 |

@@ -6,6 +6,13 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-24
+
+YAML both ways: a YAML 1.2 core-schema reader and a block-style writer on
+the value hub, so YAML, TOML, JSON, and CSV all reach each other;
+benchmarked ahead of serde_yaml on every line, and both hub writers now
+stream.
+
 ### Added
 
 - YAML: `src/io/yaml/reader.rs` reads YAML 1.2 with the core schema (block and flow collections, the five scalar styles with folding and chomping, anchors and aliases, merge keys, tags, directives, multi-document streams, errors located by line and column) and `src/io/yaml/writer.rs` writes block-style YAML (strings plain when they read back unchanged, quoted otherwise, multi-line strings as literal blocks). Paths `yaml -> json` (conditional) and `json -> yaml` (lossless); TOML and CSV reach YAML through JSON. Oracles in `tests/yaml_json.rs` over the fixtures in `tests/fixtures/yaml`, plus every JSON fixture in the repository through YAML and back. Map in `DOCS/formats/yaml.md`.
