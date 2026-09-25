@@ -163,6 +163,30 @@ pub fn push_float(out: &mut String, number: f64) {
     }
 }
 
+/// Appends `text` as a double-quoted string with the C-style escapes TOML,
+/// YAML, and JSON share (`\"`, `\\`, `\b`, `\t`, `\n`, `\f`, `\r`) and
+/// `\uXXXX` for the other control characters.
+pub fn push_double_quoted(out: &mut String, text: &str) {
+    use std::fmt::Write;
+    out.push('"');
+    for character in text.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{8}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{c}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            control if (control as u32) < 0x20 || control == '\u{7f}' => {
+                let _ = write!(out, "\\u{:04X}", control as u32);
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+}
+
 /// Takes the members out of a table value, leaving it empty.
 pub fn take_members(value: &mut Value) -> Vec<(String, Value)> {
     match value {

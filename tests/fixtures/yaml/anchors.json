@@ -1,0 +1,1 @@
+{"base":{"a":1,"b":2},"child":{"a":1,"b":3,"c":4},"list":[1,2],"copy":[1,2],"multi":{"b":2,"z":9,"a":0},"scalar_anchor":"hello","alias_scalar":"hello"}

@@ -1,0 +1,1 @@
+{"name":"demo","n":3,"f":1.0,"big":1e21,"t":true,"z":null,"list":[1,"two",{"a":1},[2,3],[]],"map":{"k":"v","nested":{"deep":true}},"empty":{},"needs quotes":"yes","num_str":"42","colon":"a: b","hash":"a #b","multi":"line1\nline2\n","lead":" x","dash":"-1","empty_str":"","key: c":1,"":"blank","tab":"a\tb","unicode":"café"}
