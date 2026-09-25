@@ -10,6 +10,22 @@ pub static CSV: Format = Format {
     category: Category::Data,
 };
 
+pub static TSV: Format = Format {
+    id: "tsv",
+    display_name: "Tab-Separated Values",
+    extensions: &["tsv", "tab"],
+    magic: None,
+    category: Category::Data,
+};
+
+pub static JSONL: Format = Format {
+    id: "jsonl",
+    display_name: "JSON Lines",
+    extensions: &["jsonl", "ndjson"],
+    magic: None,
+    category: Category::Data,
+};
+
 pub static JSON: Format = Format {
     id: "json",
     display_name: "JSON",

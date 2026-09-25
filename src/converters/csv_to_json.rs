@@ -1,4 +1,6 @@
-//! CSV -> JSON. Header row becomes keys; every value is a string.
+//! Delimited rows -> JSON. The header row becomes the keys and every value
+//! is a string. One converter covers CSV and TSV in, and a JSON array or
+//! JSON Lines out.
 
 use std::io::Write;
 
@@ -9,22 +11,61 @@ use crate::format::formats;
 use crate::io::csv::{CsvReader, Record};
 use crate::io::json::{JsonWriter, PreparedKey};
 
-const NAME: &str = "csv-to-json";
 const PROGRESS_INTERVAL: u64 = 4096;
 
-pub struct CsvToJson;
+pub struct CsvToJson {
+    pub name: &'static str,
+    pub from: &'static Format,
+    pub to: &'static Format,
+    /// `,` or `\t`.
+    pub delimiter: u8,
+    /// One object per line instead of one array.
+    pub lines: bool,
+}
+
+pub static CSV_TO_JSON: CsvToJson = CsvToJson {
+    name: "csv-to-json",
+    from: &formats::CSV,
+    to: &formats::JSON,
+    delimiter: b',',
+    lines: false,
+};
+
+pub static TSV_TO_JSON: CsvToJson = CsvToJson {
+    name: "tsv-to-json",
+    from: &formats::TSV,
+    to: &formats::JSON,
+    delimiter: b'\t',
+    lines: false,
+};
+
+pub static CSV_TO_JSONL: CsvToJson = CsvToJson {
+    name: "csv-to-jsonl",
+    from: &formats::CSV,
+    to: &formats::JSONL,
+    delimiter: b',',
+    lines: true,
+};
+
+pub static TSV_TO_JSONL: CsvToJson = CsvToJson {
+    name: "tsv-to-jsonl",
+    from: &formats::TSV,
+    to: &formats::JSONL,
+    delimiter: b'\t',
+    lines: true,
+};
 
 impl Converter for CsvToJson {
     fn name(&self) -> &'static str {
-        NAME
+        self.name
     }
 
     fn from(&self) -> &'static Format {
-        &formats::CSV
+        self.from
     }
 
     fn to(&self) -> &'static Format {
-        &formats::JSON
+        self.to
     }
 
     fn fidelity(&self) -> Fidelity {
@@ -41,14 +82,18 @@ impl Converter for CsvToJson {
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
-        let mut reader = CsvReader::new(input);
+        let mut reader = CsvReader::with_delimiter(input, self.delimiter);
         let mut writer = JsonWriter::new(output);
         let mut record = Record::new();
 
-        writer.begin_array()?;
+        if !self.lines {
+            writer.begin_array()?;
+        }
         let has_header = reader.read_record(&mut record)?;
         if !has_header {
-            writer.end_array()?;
+            if !self.lines {
+                writer.end_array()?;
+            }
             writer.flush()?;
             return Ok(());
         }
@@ -64,18 +109,24 @@ impl Converter for CsvToJson {
                 break;
             }
             record_count += 1;
-            write_object(&keys, &record, &mut writer, context)?;
+            write_object(self.name, &keys, &record, &mut writer, context)?;
+            if self.lines {
+                writer.raw("\n")?;
+            }
             if record_count % PROGRESS_INTERVAL == 0 {
-                context.progress(NAME, reader.bytes_consumed());
+                context.progress(self.name, reader.bytes_consumed());
             }
         }
-        writer.end_array()?;
+        if !self.lines {
+            writer.end_array()?;
+        }
         writer.flush()?;
         Ok(())
     }
 }
 
 fn write_object<W: Write>(
+    name: &'static str,
     keys: &[PreparedKey],
     record: &Record,
     writer: &mut JsonWriter<W>,
@@ -109,7 +160,7 @@ fn write_object<W: Write>(
         };
         let description =
             format!("row has {extra} more field(s) than the header; extra fields dropped");
-        context.loss(NAME, location, description);
+        context.loss(name, location, description);
     }
     Ok(())
 }
@@ -127,7 +178,7 @@ mod tests {
         {
             let mut context = Context::new(&mut sink, &options);
             let mut source: &[u8] = input;
-            let converter = CsvToJson;
+            let converter = &CSV_TO_JSON;
             converter
                 .convert(Input::Stream(&mut source), &mut output, &mut context)
                 .unwrap();
@@ -187,7 +238,7 @@ mod tests {
 
     #[test]
     fn declares_contract() {
-        let converter = CsvToJson;
+        let converter = &CSV_TO_JSON;
         assert_eq!(converter.name(), "csv-to-json");
         assert_eq!(converter.from().id, "csv");
         assert_eq!(converter.to().id, "json");

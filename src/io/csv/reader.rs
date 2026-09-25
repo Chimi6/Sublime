@@ -4,7 +4,7 @@
 use std::fmt;
 use std::io::{self, Read};
 
-use crate::io::scan::find_csv_delimiter;
+use crate::io::scan::{find_csv_delimiter, find_tsv_delimiter};
 
 const BUFFER_SIZE: usize = 64 * 1024;
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
@@ -86,6 +86,8 @@ enum State {
 
 pub struct CsvReader<R: Read> {
     source: R,
+    /// The field separator: `,` for CSV, `\t` for TSV.
+    delimiter: u8,
     buffer: Vec<u8>,
     position: usize,
     filled: usize,
@@ -97,8 +99,13 @@ pub struct CsvReader<R: Read> {
 
 impl<R: Read> CsvReader<R> {
     pub fn new(source: R) -> Self {
+        CsvReader::with_delimiter(source, b',')
+    }
+
+    pub fn with_delimiter(source: R, delimiter: u8) -> Self {
         CsvReader {
             source,
+            delimiter,
             buffer: vec![0; BUFFER_SIZE],
             position: 0,
             filled: 0,
@@ -136,7 +143,7 @@ impl<R: Read> CsvReader<R> {
                 State::FieldStart => {
                     if byte == b'"' {
                         state = State::Quoted;
-                    } else if byte == b',' {
+                    } else if byte == self.delimiter {
                         record.bounds.push((field_start, data.len()));
                         field_start = data.len();
                     } else if byte == b'\n' || byte == b'\r' {
@@ -154,7 +161,7 @@ impl<R: Read> CsvReader<R> {
                     }
                 }
                 State::Unquoted => {
-                    if byte == b',' {
+                    if byte == self.delimiter {
                         record.bounds.push((field_start, data.len()));
                         field_start = data.len();
                         state = State::FieldStart;
@@ -182,7 +189,7 @@ impl<R: Read> CsvReader<R> {
                     if byte == b'"' {
                         data.push(b'"');
                         state = State::Quoted;
-                    } else if byte == b',' {
+                    } else if byte == self.delimiter {
                         record.bounds.push((field_start, data.len()));
                         field_start = data.len();
                         state = State::FieldStart;
@@ -256,7 +263,12 @@ impl<R: Read> CsvReader<R> {
                 }
             }
             let available = &self.buffer[self.position..self.filled];
-            let run_length = match find_csv_delimiter(available) {
+            let found = if self.delimiter == b'\t' {
+                find_tsv_delimiter(available)
+            } else {
+                find_csv_delimiter(available)
+            };
+            let run_length = match found {
                 Some(index) => index,
                 None => available.len(),
             };

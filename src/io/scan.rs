@@ -17,6 +17,13 @@ pub fn find_csv_delimiter(bytes: &[u8]) -> Option<usize> {
 }
 
 /// Index of the first `"`, `\`, or control byte below 0x20 in `bytes`.
+/// The next tab, quote, or line ending: the TSV reader's stops.
+pub fn find_tsv_delimiter(bytes: &[u8]) -> Option<usize> {
+    scan(bytes, |word| {
+        has_byte(word, b'\t') | has_byte(word, b'"') | has_byte(word, b'\n') | has_byte(word, b'\r')
+    })
+}
+
 pub fn find_json_escape(bytes: &[u8]) -> Option<usize> {
     scan(bytes, |word| {
         has_byte(word, b'"') | has_byte(word, b'\\') | has_byte_below(word, 0x20)
