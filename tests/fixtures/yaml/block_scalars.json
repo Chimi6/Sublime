@@ -1,0 +1,1 @@
+{"literal":"line one\n  indented\nline three\n","folded":"folded text continues here\nnew paragraph\n  more indented\nback\n","strip":"no trailing newline","keep":"two trailing newlines\n\n\n","clip_folded":"a b","indicator":"  two extra\nbase\n","empty_literal":"","next":"value"}

@@ -1,0 +1,26 @@
+literal: |
+  line one
+    indented
+  line three
+
+folded: >
+  folded text
+  continues here
+
+  new paragraph
+    more indented
+  back
+strip: |-
+  no trailing newline
+keep: |+
+  two trailing newlines
+
+
+clip_folded: >-
+  a
+  b
+indicator: |2
+    two extra
+  base
+empty_literal: |
+next: value

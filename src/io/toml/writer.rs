@@ -6,7 +6,7 @@
 
 use std::fmt::Write;
 
-use crate::value::{Value, push_float};
+use crate::value::{Value, push_double_quoted, push_float};
 
 /// Writes `members` as a TOML document.
 pub fn write_document(members: &[(String, Value)], out: &mut String, losses: &mut Vec<String>) {
@@ -184,25 +184,8 @@ fn write_float(out: &mut String, number: f64) {
     }
 }
 
-#[inline(never)]
 fn write_string(out: &mut String, text: &str) {
-    out.push('"');
-    for character in text.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{8}' => out.push_str("\\b"),
-            '\t' => out.push_str("\\t"),
-            '\n' => out.push_str("\\n"),
-            '\u{c}' => out.push_str("\\f"),
-            '\r' => out.push_str("\\r"),
-            control if (control as u32) < 0x20 || control == '\u{7f}' => {
-                let _ = write!(out, "\\u{:04X}", control as u32);
-            }
-            other => out.push(other),
-        }
-    }
-    out.push('"');
+    push_double_quoted(out, text);
 }
 
 #[cfg(test)]

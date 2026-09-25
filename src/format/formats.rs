@@ -26,6 +26,14 @@ pub static TOML: Format = Format {
     category: Category::Data,
 };
 
+pub static YAML: Format = Format {
+    id: "yaml",
+    display_name: "YAML",
+    extensions: &["yaml", "yml"],
+    magic: None,
+    category: Category::Data,
+};
+
 pub static MARKDOWN: Format = Format {
     id: "markdown",
     display_name: "Markdown",

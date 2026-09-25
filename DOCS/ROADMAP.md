@@ -59,7 +59,7 @@ formats.
 | JSON | json | [x] | — | — | Shipped. Hub for all data formats. |
 | TSV and delimited variants | tsv, psv | [ ] | A | S | Same reader with a delimiter option; also semicolon CSV (European Excel). |
 | JSON Lines | jsonl, ndjson | [ ] | A | S | Streaming rows; natural partner for CSV. |
-| YAML | yaml, yml | [ ] | S | M | Config lingua franca. YAML 1.2 core schema; anchors, multi-document. YAML <-> JSON <-> TOML is the most requested config trio. |
+| YAML | yaml, yml | [x] | — | — | Shipped both ways (0.12.0): YAML 1.2 core schema, anchors, merge keys, multi-document, through the value hub. Notes in `formats/yaml.md`. |
 | TOML | toml | [x] | — | — | Shipped both ways (0.11.0): TOML <-> JSON through the value hub. Notes in `formats/toml.md`. |
 | XML | xml | [ ] | S | M | Keystone. XML <-> JSON is lossy in both directions (attributes, order), declared conditional with a documented mapping. |
 | INI | ini, cfg | [ ] | A | S | Trivial reader; INI <-> JSON/TOML. |
@@ -313,7 +313,7 @@ listed.
 
 | Tier | Formats |
 |---|---|
-| **S** | Apple Pages (flagship) · YAML · XML (keystone) · SQLite read · XLSX · DOCX · PDF write · PNG (keystone) · JPEG · WAV · ZIP and gzip (keystones) · HTML read (on pause) |
+| **S** | Apple Pages (flagship) · XML (keystone) · SQLite read · XLSX · DOCX · PDF write · PNG (keystone) · JPEG · WAV · ZIP and gzip (keystones) · HTML read (on pause) |
 | **A** | TSV and JSON Lines · INI · MessagePack and CBOR · plist · ODS and ODT · Numbers · Parquet read · NumPy · PEM/DER · vCard and iCalendar · RTF · EPUB · reStructuredText · AsciiDoc · Jupyter · Email (EML, MBOX) · Subtitles (SRT, VTT, ASS, TTML) · GIF · BMP · TIFF · Netpbm · ICO/ICNS · Exif and XMP · AIFF · FLAC · MP3 decode · MIDI · TAR · TrueType/OpenType · WOFF · STL · OBJ · glTF · GeoJSON · GPX · KML · FASTA/FASTQ · DICOM · Intel HEX and S-record · N64 ROM byte order · N64 saves · SNES headers · Genesis SMD/BIN · Minecraft NBT · Spreadsheet to Markdown table |
 | **B** | Java properties · .env · JSON5 · BSON · dBase · Arrow · Avro · MATLAB · R data · JWK/JWT · BibTeX/RIS · PGN · Keynote · MOBI/AZW3 · FictionBook · Org-mode · LaTeX · man pages · R Markdown · Outlook MSG · WebP decode · farbfeld and QOI · TGA · SVG subset rasterizer · PSD · Aseprite · DDS/KTX · Ogg Vorbis decode · Tracker modules · N64 audio · Video remuxing · Transcoding via External · bzip2 · XZ · Zstandard · ISO 9660 · WOFF2 · Glyphs to SVG · PLY · 3MF/AMF · Quake models · Minecraft schematics · Shapefile · WKT/WKB · GenBank/GFF/BED/VCF · PDB · FITS · NES headers · Game Boy saves · PlayStation images · Doom WAD · Quake PAK · PICO-8 · Base64 and hex · Feeds |
 | **C** | XLS · HDF5 · NetCDF · SPSS/Stata/SAS · Protobuf generic · Word `.doc` · Textile/MediaWiki · RTFD · PCX · XCF · ORA/Krita · Camera raw · IFF ILBM · legacy rasters · AU/VOC/CAF · Opus, AAC, ALAC · Chiptune (SID, NSF, SPC, GBS, VGM) · Animated GIF via External · 7z · cpio/ar/deb · CAB · Type 1 fonts · Bitmap fonts · OFF/X3D/VRML · COLLADA · Source SMD · TopoJSON · OSM · GeoTIFF · SAM/BAM · NIfTI · EDF · N64 textures · Retro disk images · Hex dumps · OPML · Log formats · Diagram text-to-text |
