@@ -71,7 +71,7 @@ and reported by path (`list[1]`, `sub.gone`).
 
 ## Performance
 
-`DOCS/benchmarks/toml-json.md`. The value tree holds the whole document,
-about ten times the input's bytes on the dense shape; the lever is an
-arena-backed tree with spans into one text buffer, the shape that cut
-the Pages document model from 48 to 10 MB.
+`DOCS/benchmarks/toml-json.md`. The value tree is an arena (32-byte
+nodes, strings as spans into one text buffer), about three bytes per
+input byte on the dense shape; the reader holds the input text beside
+it, which a sliding window like XML's would remove.

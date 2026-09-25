@@ -1,6 +1,6 @@
 # XML <-> JSON
 
-**Latest** (2026-09-24, first release of XML: xml -> json 103.8 MB/s of input on the dense shape and 402.0 on prose, at 570 and 310 MB peak; json -> xml 84.6 and 345.8 MB/s at 588 and 310 MB peak; every line PASSES against quick-xml with serde_json, at 1.1 to 1.6 times its throughput and 73 to 95 percent of its memory)
+**Latest** (2026-09-25, arena tree: xml -> json 145.4 MB/s of input on the dense shape and 443.3 on prose, at 171 and 223 MB peak; json -> xml 140.4 and 373.9 MB/s at 168 and 222 MB peak; every line PASSES against quick-xml with serde_json, at 1.3 to 2 times its throughput and 27 to 52 percent of its memory)
 
 ## Purpose
 
@@ -66,6 +66,27 @@ throughput in MB/s over the input file's bytes. Rows and units follow
 
 ## Results
 
+### 2026-09-25, the value hub as an arena tree
+
+commit: bd7a134 (the working tree of this commit)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| xml -> json, dense (80.0 MB): throughput (MB/s of input) | 145.4 | 92.1 (quick-xml + serde_json) | PASS |
+| xml -> json, dense: peak memory (MB) | 171.4 | 604.2 (quick-xml + serde_json) | PASS |
+| xml -> json, prose (194.4 MB): throughput (MB/s of input) | 443.3 | 330.9 (quick-xml + serde_json) | PASS |
+| xml -> json, prose: peak memory (MB) | 223.3 | 427.0 (quick-xml + serde_json) | PASS |
+| json -> xml, dense (58.2 MB): throughput (MB/s of input) | 140.4 | 74.6 (serde_json + quick-xml) | PASS |
+| json -> xml, dense: peak memory (MB) | 168.4 | 622.0 (serde_json + quick-xml) | PASS |
+| json -> xml, prose (180.6 MB): throughput (MB/s of input) | 373.9 | 190.6 (serde_json + quick-xml) | PASS |
+| json -> xml, prose: peak memory (MB) | 221.5 | 427.1 (serde_json + quick-xml) | PASS |
+
+The arena tree (`value::Tree`) replaced the owned tree: dense memory
+570 -> 171 MB and 588 -> 168 MB, dense throughput 104 -> 145 and
+85 -> 140 MB/s. Since the reader streams its input, these rows are the
+tree and the output buffers alone: about two bytes per input byte.
+
 ### 2026-09-24, first release of XML
 
 commit: 47d4304
@@ -93,11 +114,12 @@ above measures.
 
 ## Conclusions
 
-The reader streams, so what a document costs is its tree: 570 MB for
-80 MB of dense records, seven bytes per input byte, and the arena-backed
-tree in `STATE.md` Tech Debt is the lever shared with TOML and YAML. The
-narrowest margin is json -> xml dense (84.6 against 76.5 MB/s), where
-the writer builds a scratch string per attribute and per text node
-before escaping; escaping straight into the chunked sink would take
-that back. The numbers do not justify claims about namespace-heavy,
-mixed-content, or deeply nested documents.
+The reader streams and the tree is an arena, so a document costs about
+two bytes of memory per input byte and reads at 1.3 to 1.6 times the
+reference. The narrowest margin left is xml -> json prose (443 against
+331 MB/s), which is the text scan and the JSON writer's escaping, both
+already word-at-a-time. The json -> xml writer still builds a scratch
+string per attribute and per text node before escaping; escaping
+straight into the chunked sink is the next small lever. The numbers do
+not justify claims about namespace-heavy, mixed-content, or deeply
+nested documents.
