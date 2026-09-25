@@ -30,6 +30,23 @@ a comparison. Startup is implemented in `bench/src/startup.rs`.
 
 ## Results
 
+### 2026-09-25, 0.14.0 with the direct hub pairs
+
+commit: b2304d4 (the merge of the direct-pairs branch, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 1743184 | <= 1750000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 1843872 | recorded | n/a |
+| WebAssembly module (bytes) | 839320 | <= 850000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 340833 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.141 (spawn 0.527, floor 0.386) | < 1 | PASS |
+
+Six direct pairs through one generic converter cost 8 KB of binary and
+4 KB of module; the budgets are unchanged, with 7 KB of headroom left
+on the binary before the next format needs a raise.
+
 ### 2026-09-25, 0.13.1 with the arena tree
 
 commit: 7daf756 (the merge of the arena branch, before the version bump)
@@ -193,3 +210,4 @@ read as "under a millisecond", not as a trend.
 | 0.12.0 | 1,688,424 | 1,790,624 | 1,700,000 | 817,872 | 850,000 |
 | 0.13.0 | 1,731,320 | 1,831,584 | 1,750,000 | 836,184 | 850,000 |
 | 0.13.1 | 1,735,176 | 1,835,680 | 1,750,000 | 834,992 | 850,000 |
+| 0.14.0 | 1,743,184 | 1,843,872 | 1,750,000 | 839,320 | 850,000 |
