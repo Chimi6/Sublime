@@ -6,6 +6,12 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-24
+
+XML both ways under the xmltodict mapping, with a strict streaming
+reader; the data category now joins CSV, JSON, TOML, YAML, and XML, every
+pair benchmarked ahead of its reference crate.
+
 ### Added
 
 - XML as a data format: `src/io/xml/tree.rs` reads a document into the value hub under the mapping xmltodict and quick-xml share (elements as objects, attributes as `@name`, text as `#text`, repeated elements as arrays, every value a string), with a strict tokenizer that refuses what `xmllint` refuses and says where; `src/io/xml/writer.rs` writes the mapping back, pretty printed. Paths `xml -> json` and `json -> xml`, both conditional; TOML, YAML, and CSV reach XML through JSON. Oracles in `tests/xml_json.rs` over the fixtures in `tests/fixtures/xml`. Map in `DOCS/formats/xml.md`.
