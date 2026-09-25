@@ -1,20 +1,19 @@
 //! YAML 1.2 reader, core schema. A recursive descent over the text with
 //! indentation as the block structure: block sequences and mappings,
-//! flow collections, the five scalar styles, anchors and aliases (expanded
-//! by copy), merge keys, tags (the core ones resolve, the rest are noted
-//! and dropped), directives, and multi-document streams. The whole
-//! document is built as a `Value` tree: aliases and merge keys need the
-//! anchored subtrees in hand, so the reader does not stream.
+//! flow collections, the five scalar styles, anchors and aliases (copied
+//! by node, the text shared), merge keys, tags (the core ones resolve, the
+//! rest are noted and dropped), directives, and multi-document streams.
+//! The stream is built straight into the value tree: aliases and merge
+//! keys need the anchored subtrees in hand, so the reader does not
+//! stream.
 //!
 //! Every node parser leaves the position at the end of its content on its
 //! last line, never past the newline, so the caller decides whether the
 //! next line is its own by looking ahead at the line's indentation.
 
-use std::collections::HashMap;
-
 use crate::converter::Location;
-use crate::io::json::from_value::compact_text;
-use crate::value::Value;
+use crate::io::json::from_tree::compact_text;
+use crate::value::{Data, MemberIndex, Span, Tree, push_float};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct YamlError {
@@ -22,11 +21,13 @@ pub struct YamlError {
     pub message: String,
 }
 
-/// The documents of a stream and what the reader could not keep (tags it
-/// dropped, keys it wrote as text), one note per distinct fact.
-#[derive(Debug, Default)]
+/// The documents of a stream (nodes of `tree`) and what the reader could
+/// not keep (tags it dropped, keys it wrote as text), one note per
+/// distinct fact.
+#[derive(Debug)]
 pub struct Parsed {
-    pub documents: Vec<Value>,
+    pub tree: Tree,
+    pub documents: Vec<u32>,
     pub notes: Vec<String>,
 }
 
@@ -35,16 +36,24 @@ pub fn parse(text: &str) -> Result<Parsed, YamlError> {
     let mut parser = Parser::new(text);
     let documents = parser.stream()?;
     Ok(Parsed {
+        tree: parser.tree,
         documents,
         notes: parser.notes,
     })
 }
 
+/// What a plain scalar's text resolves to under the core schema.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Plain {
+    Null,
+    Bool(bool),
+    Integer(i64),
+    Float(f64),
+    Str,
+}
+
 /// No indentation: the parent of a top-level node.
 const ROOT_INDENT: i64 = -1;
-
-/// Members beyond this count get a hash index for the duplicate check.
-const INDEX_THRESHOLD: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum After {
@@ -75,18 +84,15 @@ struct Lookahead {
     is_comment: bool,
 }
 
-enum Entry {
-    Pair(String, Value),
-    Merge(Value),
-}
-
 struct Parser<'a> {
     text: &'a str,
     bytes: &'a [u8],
     pos: usize,
     line: u64,
     line_start: usize,
-    anchors: Vec<(String, Value)>,
+    tree: Tree,
+    index: MemberIndex,
+    anchors: Vec<(String, u32)>,
     notes: Vec<String>,
     flow_depth: u32,
 }
@@ -100,10 +106,34 @@ impl<'a> Parser<'a> {
             pos: 0,
             line: 1,
             line_start: 0,
+            tree: Tree::with_capacity(text.len()),
+            index: MemberIndex::default(),
             anchors: Vec::new(),
             notes: Vec::new(),
             flow_depth: 0,
         }
+    }
+
+    // ---- nodes ----
+
+    fn null(&mut self) -> u32 {
+        self.tree.push(Span::default(), Data::Null)
+    }
+
+    fn leaf(&mut self, data: Data) -> u32 {
+        self.tree.push(Span::default(), data)
+    }
+
+    fn text_leaf(&mut self, text: &str) -> u32 {
+        let span = self.tree.intern(text);
+        self.tree.push(Span::default(), Data::Text(span))
+    }
+
+    /// Keys the unlinked `node` and appends it to `table`.
+    fn add_member(&mut self, table: u32, key: &str, node: u32) {
+        self.tree.nodes[node as usize].key = self.tree.intern(key);
+        self.tree.append(table, node);
+        self.index.record(&self.tree, table, node);
     }
 
     // ---- errors and position ----
@@ -301,14 +331,7 @@ impl<'a> Parser<'a> {
     fn jump(&mut self, look: &Lookahead) -> Result<(), YamlError> {
         self.line += look.lines;
         self.pos = look.content_pos;
-        self.line_start = look.content_pos
-            - if look.indent == usize::MAX {
-                0
-            } else {
-                look.indent
-            };
         if look.indent == usize::MAX {
-            // Recompute the real line start to point at the tab.
             let mut start = look.content_pos;
             while start > 0 && !matches!(self.bytes[start - 1], b'\n' | b'\r') {
                 start -= 1;
@@ -316,6 +339,7 @@ impl<'a> Parser<'a> {
             self.line_start = start;
             return self.error("tabs are not allowed for indentation");
         }
+        self.line_start = look.content_pos - look.indent;
         Ok(())
     }
 
@@ -335,10 +359,9 @@ impl<'a> Parser<'a> {
 
     // ---- stream and documents ----
 
-    fn stream(&mut self) -> Result<Vec<Value>, YamlError> {
+    fn stream(&mut self) -> Result<Vec<u32>, YamlError> {
         let mut documents = Vec::new();
         let mut saw_directive = false;
-        // Position at the first content line.
         if !self.at_first_content()? {
             return Ok(documents);
         }
@@ -389,10 +412,6 @@ impl<'a> Parser<'a> {
 
     /// Moves to the first content line of the stream. False when empty.
     fn at_first_content(&mut self) -> Result<bool, YamlError> {
-        // Treat the start as the end of a virtual previous line.
-        let mut probe = Parser::new(self.text);
-        probe.pos = 0;
-        // Scan the first line itself.
         let mut at = 0;
         let mut has_tab = false;
         loop {
@@ -452,17 +471,13 @@ impl<'a> Parser<'a> {
     // ---- block nodes ----
 
     /// The node after `key:`, `- `, or `---`: inline on the same line, or
-    /// on the following lines, or empty.
-    fn node_after_indicator(
-        &mut self,
-        parent_indent: i64,
-        after: After,
-    ) -> Result<Value, YamlError> {
+    /// on the following lines, or empty. Returned unlinked and unkeyed.
+    fn node_after_indicator(&mut self, parent_indent: i64, after: After) -> Result<u32, YamlError> {
         self.skip_spaces();
         let props = self.properties()?;
         self.skip_spaces();
         if self.at_line_end() {
-            let value = match self.next_content() {
+            let node = match self.next_content() {
                 Some(look) if !look.is_marker && look.indent != usize::MAX => {
                     let indent = look.indent as i64;
                     let dash_may_share =
@@ -471,34 +486,34 @@ impl<'a> Parser<'a> {
                         self.jump(&look)?;
                         self.block_node(indent, parent_indent)?
                     } else {
-                        Value::Null
+                        self.null()
                     }
                 }
                 Some(look) if look.indent == usize::MAX => {
                     self.jump(&look)?;
-                    Value::Null
+                    self.null()
                 }
-                _ => Value::Null,
+                _ => self.null(),
             };
-            return self.finish_properties(props, value, true);
+            return self.finish_properties(props, node);
         }
         let column = self.column() as i64;
         let compact_sequence = after != After::MapValue && self.dash_entry_at(self.pos);
         if compact_sequence {
-            let value = self.block_sequence(column)?;
-            return self.finish_properties(props, value, false);
+            let node = self.block_sequence(column)?;
+            return self.finish_properties(props, node);
         }
         let compact_mapping = after != After::MapValue && self.block_mapping_starts_here();
         if compact_mapping {
-            let value = self.block_mapping(column)?;
-            return self.finish_properties(props, value, false);
+            let node = self.block_mapping(column)?;
+            return self.finish_properties(props, node);
         }
         self.inline_node(parent_indent, props)
     }
 
     /// A node whose first content byte is at the current position, at
     /// column `indent`.
-    fn block_node(&mut self, indent: i64, parent_indent: i64) -> Result<Value, YamlError> {
+    fn block_node(&mut self, indent: i64, parent_indent: i64) -> Result<u32, YamlError> {
         if self.dash_entry_at(self.pos) {
             return self.block_sequence(indent);
         }
@@ -508,7 +523,7 @@ impl<'a> Parser<'a> {
         let props = self.properties()?;
         self.skip_spaces();
         if self.at_line_end() && (props.anchor.is_some() || props.tag.is_some()) {
-            let value = match self.next_content() {
+            let node = match self.next_content() {
                 Some(look)
                     if !look.is_marker
                         && look.indent != usize::MAX
@@ -518,9 +533,9 @@ impl<'a> Parser<'a> {
                     let inner = look.indent as i64;
                     self.block_node(inner, parent_indent)?
                 }
-                _ => Value::Null,
+                _ => self.null(),
             };
-            return self.finish_properties(props, value, true);
+            return self.finish_properties(props, node);
         }
         self.inline_node(parent_indent, props)
     }
@@ -550,7 +565,6 @@ impl<'a> Parser<'a> {
     /// starts with one. Properties before the key are looked past.
     fn implicit_key_end(&self) -> Option<usize> {
         let mut at = self.pos;
-        // Properties.
         while matches!(self.bytes.get(at), Some(b'&') | Some(b'!')) {
             while let Some(byte) = self.bytes.get(at) {
                 if matches!(byte, b' ' | b'\t' | b'\n' | b'\r') {
@@ -644,12 +658,12 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn block_sequence(&mut self, indent: i64) -> Result<Value, YamlError> {
-        let mut items = Vec::new();
+    fn block_sequence(&mut self, indent: i64) -> Result<u32, YamlError> {
+        let array = self.tree.push_array(Span::default());
         loop {
             self.pos += 1;
-            let value = self.node_after_indicator(indent, After::SeqEntry)?;
-            items.push(value);
+            let item = self.node_after_indicator(indent, After::SeqEntry)?;
+            self.tree.append(array, item);
             self.end_of_inline()?;
             match self.next_content() {
                 Some(look) if look.indent == usize::MAX => {
@@ -666,14 +680,14 @@ impl<'a> Parser<'a> {
                     self.jump(&look)?;
                     return self.error("bad indentation: this line belongs to no node");
                 }
-                _ => return Ok(Value::Array(items)),
+                _ => return Ok(array),
             }
         }
     }
 
-    fn block_mapping(&mut self, indent: i64) -> Result<Value, YamlError> {
-        let mut entries: Vec<Entry> = Vec::new();
-        let mut keys = KeySet::default();
+    fn block_mapping(&mut self, indent: i64) -> Result<u32, YamlError> {
+        let table = self.tree.push_table(Span::default());
+        let mut merges: Vec<(u32, u32)> = Vec::new();
         loop {
             let entry_start = self.pos;
             let explicit = self.peek() == Some(b'?')
@@ -700,7 +714,7 @@ impl<'a> Parser<'a> {
                         self.pos += 1;
                         self.node_after_indicator(indent, After::MapValue)?
                     }
-                    _ => Value::Null,
+                    _ => self.null(),
                 };
                 (key, value)
             } else {
@@ -708,7 +722,8 @@ impl<'a> Parser<'a> {
                 self.skip_spaces();
                 let key = self.implicit_key()?;
                 if let Some(anchor) = props.anchor {
-                    self.anchors.push((anchor, Value::String(key.clone())));
+                    let node = self.text_leaf(&key);
+                    self.anchors.push((anchor, node));
                 }
                 self.skip_spaces();
                 if self.peek() != Some(b':') {
@@ -718,14 +733,7 @@ impl<'a> Parser<'a> {
                 let value = self.node_after_indicator(indent, After::MapValue)?;
                 (key, value)
             };
-            if key == "<<" {
-                entries.push(Entry::Merge(value));
-            } else {
-                if !keys.insert(&key, entries.len()) {
-                    return Err(self.error_at(entry_start, "duplicate key"));
-                }
-                entries.push(Entry::Pair(key, value));
-            }
+            self.add_entry(table, &key, value, &mut merges, entry_start)?;
             self.end_of_inline()?;
             match self.next_content() {
                 Some(look) if look.indent == usize::MAX => {
@@ -745,7 +753,60 @@ impl<'a> Parser<'a> {
                 _ => break,
             }
         }
-        Ok(Value::Table(resolve_merges(entries)))
+        self.resolve_merges(table, merges);
+        Ok(table)
+    }
+
+    /// Appends a mapping entry, or a placeholder for a `<<` merge; a real
+    /// key given twice is an error.
+    fn add_entry(
+        &mut self,
+        table: u32,
+        key: &str,
+        value: u32,
+        merges: &mut Vec<(u32, u32)>,
+        entry_start: usize,
+    ) -> Result<(), YamlError> {
+        if key == "<<" {
+            let placeholder = self.null();
+            self.tree.nodes[placeholder as usize].key = self.tree.intern("<<");
+            self.tree.append(table, placeholder);
+            merges.push((placeholder, value));
+            return Ok(());
+        }
+        if self.index.find(&self.tree, table, key).is_some() {
+            return Err(self.error_at(entry_start, "duplicate key"));
+        }
+        self.add_member(table, key, value);
+        Ok(())
+    }
+
+    /// Applies `<<` merges: a mapping's own keys win wherever they sit;
+    /// merged keys take the merge's position, earlier sources first.
+    fn resolve_merges(&mut self, table: u32, merges: Vec<(u32, u32)>) {
+        for (placeholder, source) in merges {
+            let sources: Vec<u32> = match self.tree.data(source) {
+                Data::Array(_) => self.tree.children(source).collect(),
+                _ => vec![source],
+            };
+            let mut tail = placeholder;
+            for source in sources {
+                if !self.tree.data(source).is_table() {
+                    continue;
+                }
+                let members: Vec<u32> = self.tree.children(source).collect();
+                for member in members {
+                    let key = self.tree.key(member);
+                    if self.tree.find_member(table, key).is_some() {
+                        continue;
+                    }
+                    let copy = self.tree.copy_subtree(member);
+                    self.tree.insert_after(table, tail, copy);
+                    tail = copy;
+                }
+            }
+            self.tree.unlink(table, placeholder);
+        }
     }
 
     /// A single-line key: plain (as written), quoted, or an alias.
@@ -753,15 +814,15 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(b'"') => {
                 self.pos += 1;
-                self.double_quoted(ROOT_INDENT)
+                self.double_quoted()
             }
             Some(b'\'') => {
                 self.pos += 1;
-                self.single_quoted(ROOT_INDENT)
+                self.single_quoted()
             }
             Some(b'*') => {
-                let value = self.alias()?;
-                Ok(self.key_text(value))
+                let node = self.alias()?;
+                Ok(self.key_text(node))
             }
             Some(b'[') | Some(b'{') => self.error("flow collections as keys are not supported"),
             Some(_) => {
@@ -782,43 +843,42 @@ impl<'a> Parser<'a> {
 
     /// A key node written as text: scalars by their text, collections as
     /// compact JSON (noted as a loss).
-    fn key_text(&mut self, key: Value) -> String {
-        match key {
-            Value::String(text) => text,
-            Value::Null => "null".to_string(),
-            Value::Bool(flag) => flag.to_string(),
-            Value::Integer(number) => number.to_string(),
-            Value::Float(number) => {
+    fn key_text(&mut self, key: u32) -> String {
+        match self.tree.data(key) {
+            Data::Text(span) | Data::Datetime(span) => self.tree.str(span).to_string(),
+            Data::Null => "null".to_string(),
+            Data::Bool(flag) => flag.to_string(),
+            Data::Integer(number) => number.to_string(),
+            Data::Float(number) => {
                 let mut out = String::new();
-                crate::value::push_float(&mut out, number);
+                push_float(&mut out, number);
                 out
             }
-            Value::Datetime(text) => text,
-            other => {
+            Data::Array(_) | Data::Table(_) => {
                 self.note("a collection used as a key is written as its JSON text".to_string());
-                compact_text(&other)
+                compact_text(&self.tree, key)
             }
         }
     }
 
     // ---- inline nodes ----
 
-    fn inline_node(&mut self, parent_indent: i64, props: Properties) -> Result<Value, YamlError> {
-        let value = match self.peek() {
+    fn inline_node(&mut self, parent_indent: i64, props: Properties) -> Result<u32, YamlError> {
+        let node = match self.peek() {
             Some(b'*') => {
-                let value = self.alias()?;
-                return self.finish_properties(props, value, false);
+                let node = self.alias()?;
+                return self.finish_properties(props, node);
             }
             Some(b'[') => self.flow_sequence()?,
             Some(b'{') => self.flow_mapping()?,
             Some(b'"') => {
                 self.pos += 1;
-                let text = self.double_quoted(parent_indent)?;
+                let text = self.double_quoted()?;
                 return self.tagged_scalar(props, text, false);
             }
             Some(b'\'') => {
                 self.pos += 1;
-                let text = self.single_quoted(parent_indent)?;
+                let text = self.single_quoted()?;
                 return self.tagged_scalar(props, text, false);
             }
             Some(b'|') | Some(b'>') if self.flow_depth == 0 => {
@@ -828,15 +888,16 @@ impl<'a> Parser<'a> {
                 return self.tagged_scalar(props, text, false);
             }
             Some(b'#') => {
-                return self.finish_properties(props, Value::Null, false);
+                let node = self.null();
+                return self.finish_properties(props, node);
             }
             Some(_) => {
                 let text = self.plain_scalar(parent_indent)?;
                 return self.tagged_scalar(props, text, true);
             }
-            None => Value::Null,
+            None => self.null(),
         };
-        self.finish_properties(props, value, false)
+        self.finish_properties(props, node)
     }
 
     fn properties(&mut self) -> Result<Properties, YamlError> {
@@ -889,28 +950,24 @@ impl<'a> Parser<'a> {
     }
 
     /// Registers the anchor and applies a collection tag.
-    fn finish_properties(
-        &mut self,
-        props: Properties,
-        value: Value,
-        _block: bool,
-    ) -> Result<Value, YamlError> {
+    fn finish_properties(&mut self, props: Properties, node: u32) -> Result<u32, YamlError> {
+        let mut node = node;
         if let Some(tag) = props.tag {
             match tag.as_str() {
                 "!!map" | "!!seq" | "!!set" | "!!omap" | "!!pairs" | "!" => {}
                 "!!str" | "!!int" | "!!float" | "!!bool" | "!!null" => {
-                    if !matches!(value, Value::Table(_) | Value::Array(_)) {
-                        return self.tagged_value(&tag, value);
+                    if self.tree.data(node).is_container() {
+                        return self.error("a scalar tag on a collection");
                     }
-                    return self.error("a scalar tag on a collection");
+                    node = self.tagged_node(&tag, node)?;
                 }
                 other => self.note(format!("tag {other} dropped")),
             }
         }
         if let Some(anchor) = props.anchor {
-            self.anchors.push((anchor, value.clone()));
+            self.anchors.push((anchor, node));
         }
-        Ok(value)
+        Ok(node)
     }
 
     /// A scalar's text with its tag applied: plain text resolves by the
@@ -920,52 +977,67 @@ impl<'a> Parser<'a> {
         props: Properties,
         text: String,
         plain: bool,
-    ) -> Result<Value, YamlError> {
-        let value = match &props.tag {
+    ) -> Result<u32, YamlError> {
+        let node = match &props.tag {
             None => {
                 if plain {
-                    resolve_plain(&text)
+                    self.resolved_leaf(&text)
                 } else {
-                    Value::String(text)
+                    self.text_leaf(&text)
                 }
             }
-            Some(tag) => self.tagged_value(tag, Value::String(text))?,
+            Some(tag) => {
+                let raw = self.text_leaf(&text);
+                self.tagged_node(tag, raw)?
+            }
         };
         if let Some(anchor) = props.anchor {
-            self.anchors.push((anchor, value.clone()));
+            self.anchors.push((anchor, node));
         }
-        Ok(value)
+        Ok(node)
     }
 
-    fn tagged_value(&mut self, tag: &str, value: Value) -> Result<Value, YamlError> {
-        let text = match &value {
-            Value::String(text) => text.clone(),
-            other => compact_text(other),
+    /// A plain scalar's text as the node the core schema makes of it.
+    fn resolved_leaf(&mut self, text: &str) -> u32 {
+        match resolve_plain(text) {
+            Plain::Null => self.null(),
+            Plain::Bool(flag) => self.leaf(Data::Bool(flag)),
+            Plain::Integer(number) => self.leaf(Data::Integer(number)),
+            Plain::Float(number) => self.leaf(Data::Float(number)),
+            Plain::Str => self.text_leaf(text),
+        }
+    }
+
+    /// The scalar `node` re-read under `tag`.
+    fn tagged_node(&mut self, tag: &str, node: u32) -> Result<u32, YamlError> {
+        let text = match self.tree.data(node) {
+            Data::Text(span) | Data::Datetime(span) => self.tree.str(span).to_string(),
+            _ => compact_text(&self.tree, node),
         };
         match tag {
-            "!!str" | "!" => Ok(Value::String(text)),
-            "!!null" => Ok(Value::Null),
+            "!!str" | "!" => Ok(self.text_leaf(&text)),
+            "!!null" => Ok(self.null()),
             "!!int" => match resolve_plain(&text) {
-                Value::Integer(number) => Ok(Value::Integer(number)),
+                Plain::Integer(number) => Ok(self.leaf(Data::Integer(number))),
                 _ => self.error("tagged !!int is not an integer"),
             },
             "!!float" => match resolve_plain(&text) {
-                Value::Integer(number) => Ok(Value::Float(number as f64)),
-                Value::Float(number) => Ok(Value::Float(number)),
+                Plain::Integer(number) => Ok(self.leaf(Data::Float(number as f64))),
+                Plain::Float(number) => Ok(self.leaf(Data::Float(number))),
                 _ => self.error("tagged !!float is not a float"),
             },
             "!!bool" => match resolve_plain(&text) {
-                Value::Bool(flag) => Ok(Value::Bool(flag)),
+                Plain::Bool(flag) => Ok(self.leaf(Data::Bool(flag))),
                 _ => self.error("tagged !!bool is not a boolean"),
             },
             other => {
                 self.note(format!("tag {other} dropped"));
-                Ok(Value::String(text))
+                Ok(self.text_leaf(&text))
             }
         }
     }
 
-    fn alias(&mut self) -> Result<Value, YamlError> {
+    fn alias(&mut self) -> Result<u32, YamlError> {
         let start = self.pos;
         self.pos += 1;
         let name_start = self.pos;
@@ -979,8 +1051,14 @@ impl<'a> Parser<'a> {
             self.pos += 1;
         }
         let name = &self.text[name_start..self.pos];
-        match self.anchors.iter().rev().find(|(anchor, _)| anchor == name) {
-            Some((_, value)) => Ok(value.clone()),
+        let anchored = self
+            .anchors
+            .iter()
+            .rev()
+            .find(|(anchor, _)| anchor == name)
+            .map(|(_, node)| *node);
+        match anchored {
+            Some(node) => Ok(self.tree.copy_subtree(node)),
             None => Err(self.error_at(start, "unknown anchor")),
         }
     }
@@ -1050,7 +1128,7 @@ impl<'a> Parser<'a> {
     }
 
     /// After the opening `"`.
-    fn double_quoted(&mut self, _parent_indent: i64) -> Result<String, YamlError> {
+    fn double_quoted(&mut self) -> Result<String, YamlError> {
         let mut out = String::new();
         loop {
             let run_start = self.pos;
@@ -1069,7 +1147,6 @@ impl<'a> Parser<'a> {
                 Some(b'\\') => {
                     self.pos += 1;
                     if self.at_eol() {
-                        // Escaped line break: join with nothing.
                         self.fold_quoted(&mut out, false)?;
                     } else {
                         self.escape(&mut out)?;
@@ -1082,7 +1159,7 @@ impl<'a> Parser<'a> {
     }
 
     /// After the opening `'`.
-    fn single_quoted(&mut self, _parent_indent: i64) -> Result<String, YamlError> {
+    fn single_quoted(&mut self) -> Result<String, YamlError> {
         let mut out = String::new();
         loop {
             let run_start = self.pos;
@@ -1118,7 +1195,6 @@ impl<'a> Parser<'a> {
         }
         let mut empty_lines = 0;
         loop {
-            // Consume the line break.
             match self.peek() {
                 Some(b'\n') => self.pos += 1,
                 Some(b'\r') => {
@@ -1221,7 +1297,6 @@ impl<'a> Parser<'a> {
         let mut lines: Vec<&'a str> = Vec::new();
         let mut trailing_empty = 0usize;
         loop {
-            // Look at the next raw line.
             let mut at = self.pos;
             match self.bytes.get(at) {
                 None => break,
@@ -1253,7 +1328,6 @@ impl<'a> Parser<'a> {
                 Some(indent) => indent,
                 None => {
                     if is_empty {
-                        // Leading empty lines count as newlines.
                         lines.push("");
                         trailing_empty += 1;
                         self.consume_line(line_end, line_start);
@@ -1382,11 +1456,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn flow_sequence(&mut self) -> Result<Value, YamlError> {
+    fn flow_sequence(&mut self) -> Result<u32, YamlError> {
         let start = self.pos;
         self.pos += 1;
         self.flow_depth += 1;
-        let mut items = Vec::new();
+        let array = self.tree.push_array(Span::default());
         loop {
             self.skip_flow_space()?;
             match self.peek() {
@@ -1410,11 +1484,13 @@ impl<'a> Parser<'a> {
                 self.skip_flow_space()?;
                 let value = self.flow_node()?;
                 let key = self.key_text(item);
-                Value::Table(vec![(key, value)])
+                let pair = self.tree.push_table(Span::default());
+                self.add_member(pair, &key, value);
+                pair
             } else {
                 item
             };
-            items.push(item);
+            self.tree.append(array, item);
             self.skip_flow_space()?;
             match self.peek() {
                 Some(b',') => self.pos += 1,
@@ -1424,15 +1500,15 @@ impl<'a> Parser<'a> {
         }
         self.pos += 1;
         self.flow_depth -= 1;
-        Ok(Value::Array(items))
+        Ok(array)
     }
 
-    fn flow_mapping(&mut self) -> Result<Value, YamlError> {
+    fn flow_mapping(&mut self) -> Result<u32, YamlError> {
         let start = self.pos;
         self.pos += 1;
         self.flow_depth += 1;
-        let mut entries: Vec<Entry> = Vec::new();
-        let mut keys = KeySet::default();
+        let table = self.tree.push_table(Span::default());
+        let mut merges: Vec<(u32, u32)> = Vec::new();
         loop {
             self.skip_flow_space()?;
             match self.peek() {
@@ -1458,16 +1534,9 @@ impl<'a> Parser<'a> {
                 self.skip_flow_space()?;
                 self.flow_node()?
             } else {
-                Value::Null
+                self.null()
             };
-            if key == "<<" {
-                entries.push(Entry::Merge(value));
-            } else {
-                if !keys.insert(&key, entries.len()) {
-                    return Err(self.error_at(entry_start, "duplicate key"));
-                }
-                entries.push(Entry::Pair(key, value));
-            }
+            self.add_entry(table, &key, value, &mut merges, entry_start)?;
             self.skip_flow_space()?;
             match self.peek() {
                 Some(b',') => self.pos += 1,
@@ -1477,19 +1546,22 @@ impl<'a> Parser<'a> {
         }
         self.pos += 1;
         self.flow_depth -= 1;
-        Ok(Value::Table(resolve_merges(entries)))
+        self.resolve_merges(table, merges);
+        Ok(table)
     }
 
     /// A node inside a flow collection; empty before `,`, `]`, `}`, or `:`.
-    fn flow_node(&mut self) -> Result<Value, YamlError> {
+    fn flow_node(&mut self) -> Result<u32, YamlError> {
         let props = self.properties()?;
         self.skip_flow_space()?;
         match self.peek() {
             Some(b',') | Some(b']') | Some(b'}') | None => {
-                self.finish_properties(props, Value::Null, false)
+                let node = self.null();
+                self.finish_properties(props, node)
             }
             Some(b':') if self.value_indicator_at(self.pos) => {
-                self.finish_properties(props, Value::Null, false)
+                let node = self.null();
+                self.finish_properties(props, node)
             }
             _ => self.inline_node(ROOT_INDENT, props),
         }
@@ -1503,114 +1575,35 @@ enum Chomp {
     Keep,
 }
 
-/// Duplicate-key check: a scan while small, a map once large.
-#[derive(Default)]
-struct KeySet {
-    keys: Vec<String>,
-    index: Option<HashMap<String, usize>>,
-}
-
-impl KeySet {
-    /// False when the key was already present.
-    fn insert(&mut self, key: &str, _position: usize) -> bool {
-        let present = match &self.index {
-            Some(index) => index.contains_key(key),
-            None => self.keys.iter().any(|existing| existing == key),
-        };
-        if present {
-            return false;
-        }
-        let position = self.keys.len();
-        if let Some(index) = &mut self.index {
-            index.insert(key.to_string(), position);
-        } else if position >= INDEX_THRESHOLD {
-            let mut index: HashMap<String, usize> = HashMap::with_capacity(position * 2);
-            for (existing_position, existing) in self.keys.iter().enumerate() {
-                index.insert(existing.clone(), existing_position);
-            }
-            index.insert(key.to_string(), position);
-            self.index = Some(index);
-        }
-        self.keys.push(key.to_string());
-        true
-    }
-}
-
-/// Applies `<<` merges: a mapping's own keys win wherever they sit; merged
-/// keys take the merge's position, earlier sources first.
-fn resolve_merges(entries: Vec<Entry>) -> Vec<(String, Value)> {
-    let has_merge = entries.iter().any(|entry| matches!(entry, Entry::Merge(_)));
-    if !has_merge {
-        return entries
-            .into_iter()
-            .filter_map(|entry| match entry {
-                Entry::Pair(key, value) => Some((key, value)),
-                Entry::Merge(_) => None,
-            })
-            .collect();
-    }
-    let own: Vec<String> = entries
-        .iter()
-        .filter_map(|entry| match entry {
-            Entry::Pair(key, _) => Some(key.clone()),
-            Entry::Merge(_) => None,
-        })
-        .collect();
-    let mut out: Vec<(String, Value)> = Vec::new();
-    for entry in entries {
-        match entry {
-            Entry::Pair(key, value) => out.push((key, value)),
-            Entry::Merge(source) => {
-                let sources = match source {
-                    Value::Array(items) => items,
-                    other => vec![other],
-                };
-                for source in sources {
-                    if let Value::Table(members) = source {
-                        for (key, value) in members {
-                            let taken = own.contains(&key)
-                                || out.iter().any(|(existing, _)| *existing == key);
-                            if !taken {
-                                out.push((key, value));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
 /// Core schema resolution of a plain scalar.
-pub fn resolve_plain(text: &str) -> Value {
+pub fn resolve_plain(text: &str) -> Plain {
     match text {
-        "" | "~" | "null" | "Null" | "NULL" => return Value::Null,
-        "true" | "True" | "TRUE" => return Value::Bool(true),
-        "false" | "False" | "FALSE" => return Value::Bool(false),
+        "" | "~" | "null" | "Null" | "NULL" => return Plain::Null,
+        "true" | "True" | "TRUE" => return Plain::Bool(true),
+        "false" | "False" | "FALSE" => return Plain::Bool(false),
         ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" => {
-            return Value::Float(f64::INFINITY);
+            return Plain::Float(f64::INFINITY);
         }
-        "-.inf" | "-.Inf" | "-.INF" => return Value::Float(f64::NEG_INFINITY),
-        ".nan" | ".NaN" | ".NAN" => return Value::Float(f64::NAN),
+        "-.inf" | "-.Inf" | "-.INF" => return Plain::Float(f64::NEG_INFINITY),
+        ".nan" | ".NaN" | ".NAN" => return Plain::Float(f64::NAN),
         _ => {}
     }
     let bytes = text.as_bytes();
     if let Some(rest) = text.strip_prefix("0x") {
         if !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             if let Ok(number) = i64::from_str_radix(rest, 16) {
-                return Value::Integer(number);
+                return Plain::Integer(number);
             }
         }
-        return Value::String(text.to_string());
+        return Plain::Str;
     }
     if let Some(rest) = text.strip_prefix("0o") {
         if !rest.is_empty() && rest.bytes().all(|byte| (b'0'..=b'7').contains(&byte)) {
             if let Ok(number) = i64::from_str_radix(rest, 8) {
-                return Value::Integer(number);
+                return Plain::Integer(number);
             }
         }
-        return Value::String(text.to_string());
+        return Plain::Str;
     }
     let unsigned = match bytes.first() {
         Some(b'+') | Some(b'-') => &text[1..],
@@ -1619,20 +1612,20 @@ pub fn resolve_plain(text: &str) -> Value {
     if !unsigned.is_empty() && unsigned.bytes().all(|byte| byte.is_ascii_digit()) {
         let digits = text.strip_prefix('+').unwrap_or(text);
         if let Ok(number) = digits.parse::<i64>() {
-            return Value::Integer(number);
+            return Plain::Integer(number);
         }
         if let Ok(number) = digits.parse::<f64>() {
-            return Value::Float(number);
+            return Plain::Float(number);
         }
-        return Value::String(text.to_string());
+        return Plain::Str;
     }
     if looks_like_float(unsigned) {
         let digits = text.strip_prefix('+').unwrap_or(text);
         if let Ok(number) = digits.parse::<f64>() {
-            return Value::Float(number);
+            return Plain::Float(number);
         }
     }
-    Value::String(text.to_string())
+    Plain::Str
 }
 
 /// `[0-9]+(\.[0-9]*)?([eE][-+]?[0-9]+)?` or `\.[0-9]+([eE][-+]?[0-9]+)?`.
@@ -1679,54 +1672,40 @@ fn looks_like_float(text: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn one(text: &str) -> Value {
+    fn one(text: &str) -> String {
         let parsed = parse(text).unwrap();
         assert_eq!(parsed.documents.len(), 1, "{text}");
-        parsed.documents.into_iter().next().unwrap()
-    }
-
-    fn member<'v>(value: &'v Value, key: &str) -> &'v Value {
-        match value {
-            Value::Table(members) => &members.iter().find(|(k, _)| k == key).unwrap().1,
-            _ => panic!("not a table"),
-        }
+        compact_text(&parsed.tree, parsed.documents[0])
     }
 
     #[test]
     fn core_schema_resolves_plain_scalars() {
-        assert_eq!(resolve_plain("12"), Value::Integer(12));
-        assert_eq!(resolve_plain("-0x1f"), Value::String("-0x1f".to_string()));
-        assert_eq!(resolve_plain("1e3"), Value::Float(1000.0));
-        assert_eq!(resolve_plain("1."), Value::Float(1.0));
-        assert_eq!(resolve_plain(".5e1"), Value::Float(5.0));
-        assert_eq!(resolve_plain("e5"), Value::String("e5".to_string()));
-        assert_eq!(resolve_plain("1.2.3"), Value::String("1.2.3".to_string()));
-        assert_eq!(resolve_plain("NULL"), Value::Null);
-        assert_eq!(resolve_plain("yes"), Value::String("yes".to_string()));
+        assert_eq!(resolve_plain("12"), Plain::Integer(12));
+        assert_eq!(resolve_plain("-0x1f"), Plain::Str);
+        assert_eq!(resolve_plain("1e3"), Plain::Float(1000.0));
+        assert_eq!(resolve_plain("1."), Plain::Float(1.0));
+        assert_eq!(resolve_plain(".5e1"), Plain::Float(5.0));
+        assert_eq!(resolve_plain("e5"), Plain::Str);
+        assert_eq!(resolve_plain("1.2.3"), Plain::Str);
+        assert_eq!(resolve_plain("NULL"), Plain::Null);
+        assert_eq!(resolve_plain("yes"), Plain::Str);
     }
 
     #[test]
     fn sequence_under_key_may_share_its_indent() {
-        let value = one("a:\n- 1\n- 2\nb: 3\n");
-        assert_eq!(
-            member(&value, "a"),
-            &Value::Array(vec![Value::Integer(1), Value::Integer(2)])
-        );
-        assert_eq!(member(&value, "b"), &Value::Integer(3));
+        assert_eq!(one("a:\n- 1\n- 2\nb: 3\n"), r#"{"a":[1,2],"b":3}"#);
     }
 
     #[test]
     fn compact_mapping_in_sequence_entry() {
-        let value = one("- a: 1\n  b: 2\n- c\n");
+        assert_eq!(one("- a: 1\n  b: 2\n- c\n"), r#"[{"a":1,"b":2},"c"]"#);
+    }
+
+    #[test]
+    fn merges_take_their_position_and_own_keys_win() {
         assert_eq!(
-            value,
-            Value::Array(vec![
-                Value::Table(vec![
-                    ("a".to_string(), Value::Integer(1)),
-                    ("b".to_string(), Value::Integer(2))
-                ]),
-                Value::String("c".to_string()),
-            ])
+            one("b: &b {x: 1, y: 2}\nm:\n  <<: *b\n  y: 3\n  z: 4\n"),
+            r#"{"b":{"x":1,"y":2},"m":{"x":1,"y":3,"z":4}}"#
         );
     }
 

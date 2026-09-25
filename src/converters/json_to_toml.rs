@@ -10,7 +10,7 @@ use crate::format::Format;
 use crate::format::formats;
 use crate::io::json;
 use crate::io::toml;
-use crate::value::{ChunkedText, Value};
+use crate::value::{ChunkedText, Data};
 
 const NAME: &str = "json-to-toml";
 const FIDELITY_NOTE: &str =
@@ -45,15 +45,15 @@ impl Converter for JsonToToml {
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
-        let document = json::parse(input)?;
-        let members = match document {
-            Value::Table(members) => members,
-            Value::Array(_) => return Err(not_a_table("an array")),
+        let tree = json::parse(input)?;
+        match tree.data(tree.root) {
+            Data::Table(_) => {}
+            Data::Array(_) => return Err(not_a_table("an array")),
             _ => return Err(not_a_table("a scalar")),
-        };
+        }
         let mut losses = Vec::new();
         let mut text = ChunkedText::new(output);
-        toml::write_document(&members, &mut text, &mut losses);
+        toml::write_document(&tree, tree.root, &mut text, &mut losses);
         text.finish()?;
         for path in losses {
             context.loss(

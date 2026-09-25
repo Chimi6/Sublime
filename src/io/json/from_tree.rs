@@ -1,4 +1,4 @@
-//! The value hub written as JSON. Integers and floats stay numbers; dates,
+//! The value tree written as JSON. Integers and floats stay numbers; dates,
 //! times, infinities, and NaN become strings and are reported once per key
 //! path with array indices elided (`record[].created`), so a column of
 //! dates is one loss, not one per row.
@@ -8,11 +8,12 @@ use std::io::Write;
 use crate::converter::{ConvertError, Location};
 use crate::event::Context;
 use crate::io::json::JsonWriter;
-use crate::value::{Value, push_float};
+use crate::value::{Data, Tree, push_float};
 
-/// Writes `value` and reports its losses under `converter`'s name.
-pub fn write_value(
-    value: &Value,
+/// Writes the subtree at `node` and reports its losses under `converter`'s name.
+pub fn write_tree(
+    tree: &Tree,
+    node: u32,
     writer: &mut JsonWriter<&mut dyn Write>,
     converter: &'static str,
     context: &mut Context<'_>,
@@ -23,12 +24,12 @@ pub fn write_value(
         scratch: String::new(),
         reported: Vec::new(),
     };
-    walk(value, writer, &mut state, Some(context))
+    walk(tree, node, writer, &mut state, Some(context))
 }
 
-/// The value as compact JSON text, nothing reported (for keys that are
-/// collections, and tagged values that must become text).
-pub fn compact_text(value: &Value) -> String {
+/// The subtree as compact JSON text, nothing reported (for keys that are
+/// collections, tagged values that must become text, and tests).
+pub fn compact_text(tree: &Tree, node: u32) -> String {
     let mut bytes: Vec<u8> = Vec::new();
     {
         let sink: &mut dyn Write = &mut bytes;
@@ -39,7 +40,7 @@ pub fn compact_text(value: &Value) -> String {
             scratch: String::new(),
             reported: Vec::new(),
         };
-        let _ = walk(value, &mut writer, &mut state, None);
+        let _ = walk(tree, node, &mut writer, &mut state, None);
         let _ = writer.flush();
     }
     String::from_utf8(bytes).unwrap_or_default()
@@ -53,29 +54,30 @@ struct State {
 }
 
 fn walk(
-    value: &Value,
+    tree: &Tree,
+    node: u32,
     writer: &mut JsonWriter<&mut dyn Write>,
     state: &mut State,
     mut context: Option<&mut Context<'_>>,
 ) -> Result<(), ConvertError> {
-    match value {
-        Value::Null => writer.null()?,
-        Value::Bool(flag) => writer.raw(if *flag { "true" } else { "false" })?,
-        Value::Integer(number) => {
+    match tree.data(node) {
+        Data::Null => writer.null()?,
+        Data::Bool(flag) => writer.raw(if flag { "true" } else { "false" })?,
+        Data::Integer(number) => {
             state.scratch.clear();
             use std::fmt::Write as _;
             let _ = write!(state.scratch, "{number}");
             writer.raw(&state.scratch)?;
         }
-        Value::Float(number) => {
+        Data::Float(number) => {
             if number.is_finite() {
                 state.scratch.clear();
-                push_float(&mut state.scratch, *number);
+                push_float(&mut state.scratch, number);
                 writer.raw(&state.scratch)?;
             } else {
                 let text = if number.is_nan() {
                     "nan"
-                } else if *number > 0.0 {
+                } else if number > 0.0 {
                     "inf"
                 } else {
                     "-inf"
@@ -83,40 +85,41 @@ fn walk(
                 writer.string(text)?;
                 report(
                     state,
-                    context,
+                    context.as_deref_mut(),
                     format!("{text} has no JSON form, written as a string"),
                 );
             }
         }
-        Value::String(text) => writer.string(text)?,
-        Value::Datetime(text) => {
-            writer.string(text)?;
+        Data::Text(span) => writer.string(tree.str(span))?,
+        Data::Datetime(span) => {
+            writer.string(tree.str(span))?;
             report(
                 state,
-                context,
+                context.as_deref_mut(),
                 "dates and times written as strings".to_string(),
             );
         }
-        Value::Array(items) => {
+        Data::Array(_) => {
             writer.begin_array()?;
             let path_length = state.path.len();
-            for item in items {
+            for item in tree.children(node) {
                 state.path.push_str("[]");
-                walk(item, writer, state, context.as_deref_mut())?;
+                walk(tree, item, writer, state, context.as_deref_mut())?;
                 state.path.truncate(path_length);
             }
             writer.end_array()?;
         }
-        Value::Table(members) => {
+        Data::Table(_) => {
             writer.begin_object()?;
             let path_length = state.path.len();
-            for (key, member) in members {
+            for member in tree.children(node) {
+                let key = tree.key(member);
                 writer.key(key)?;
                 if !state.path.is_empty() {
                     state.path.push('.');
                 }
                 state.path.push_str(key);
-                walk(member, writer, state, context.as_deref_mut())?;
+                walk(tree, member, writer, state, context.as_deref_mut())?;
                 state.path.truncate(path_length);
             }
             writer.end_object()?;
@@ -131,8 +134,7 @@ fn report(state: &mut State, context: Option<&mut Context<'_>>, what: String) {
     let Some(context) = context else {
         return;
     };
-    let already = state.reported.contains(&state.path);
-    if already {
+    if state.reported.contains(&state.path) {
         return;
     }
     state.reported.push(state.path.clone());

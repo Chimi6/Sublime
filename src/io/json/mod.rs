@@ -1,6 +1,6 @@
 //! Streaming JSON tokenizing and writing.
 
-pub mod from_value;
+pub mod from_tree;
 pub mod tokenizer;
 pub mod value;
 pub mod writer;

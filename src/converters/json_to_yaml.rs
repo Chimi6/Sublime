@@ -42,9 +42,9 @@ impl Converter for JsonToYaml {
         output: &mut dyn Write,
         _context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
-        let document = json::parse(input)?;
+        let tree = json::parse(input)?;
         let mut text = ChunkedText::new(output);
-        yaml::write_document(&document, &mut text);
+        yaml::write_document(&tree, tree.root, &mut text);
         text.finish()?;
         Ok(())
     }

@@ -75,7 +75,7 @@ as such.
 
 ## Performance
 
-`DOCS/benchmarks/yaml-json.md`. The value tree holds the whole document
-(the reader cannot stream: aliases and merge keys need the anchored
-subtrees in hand); the arena-backed tree noted in `STATE.md` Tech Debt
-is the lever for both YAML and TOML.
+`DOCS/benchmarks/yaml-json.md`. The reader cannot stream (aliases and
+merge keys need the anchored subtrees in hand), but the tree is an arena
+at about three bytes per input byte and aliases copy nodes only; the
+input text held beside it is what a sliding window would remove.

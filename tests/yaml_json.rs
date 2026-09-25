@@ -134,8 +134,8 @@ fn json_survives_yaml_and_back_byte_for_byte() {
         let original = sublime::io::json::parse(&json[..]).expect("fixture JSON parses");
         let returned = sublime::io::json::parse(&json_again[..]).expect("our JSON parses");
         assert_eq!(
-            returned,
-            original,
+            sublime::io::json::from_tree::compact_text(&returned, returned.root),
+            sublime::io::json::from_tree::compact_text(&original, original.root),
             "{name}\n{}",
             String::from_utf8_lossy(&yaml)
         );
