@@ -1,55 +1,26 @@
-//! A JSON document as a tree, for formats whose structure is JSON. Numbers
-//! keep their text so callers parse them into exactly the type they need.
+//! JSON into the value hub: a token walk that pushes into a `ValueSink`,
+//! and `parse`, which builds the whole tree. For converters that can stream
+//! (JSON -> CSV), the tokenizer is used directly instead.
 
 use std::io::Read;
 
-use super::tokenizer::{JsonError, JsonTokenizer, Token};
+use crate::io::json::tokenizer::{JsonError, JsonTokenizer, Token};
+use crate::value::{Scalar, TreeBuilder, Value, ValueSink};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum JsonValue {
-    Null,
-    Bool(bool),
-    /// The number as written.
-    Number(String),
-    String(String),
-    Array(Vec<JsonValue>),
-    /// Members in document order.
-    Object(Vec<(String, JsonValue)>),
+/// Parses one JSON document from `source` into a tree.
+pub fn parse<R: Read>(source: R) -> Result<Value, JsonError> {
+    let mut builder = TreeBuilder::new();
+    parse_into(source, &mut builder)?;
+    Ok(builder.finish().unwrap_or(Value::Null))
 }
 
-impl JsonValue {
-    pub fn get(&self, key: &str) -> Option<&JsonValue> {
-        match self {
-            JsonValue::Object(members) => members
-                .iter()
-                .find(|(name, _)| name == key)
-                .map(|(_, value)| value),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            JsonValue::String(text) => Some(text),
-            _ => None,
-        }
-    }
-
-    pub fn as_array(&self) -> Option<&[JsonValue]> {
-        match self {
-            JsonValue::Array(items) => Some(items),
-            _ => None,
-        }
-    }
-}
-
-/// Parses one JSON document from `source`.
-pub fn parse<R: Read>(source: R) -> Result<JsonValue, JsonError> {
+/// Pushes one JSON document from `source` into `sink`.
+pub fn parse_into<R: Read>(source: R, sink: &mut dyn ValueSink) -> Result<(), JsonError> {
     let mut tokens = JsonTokenizer::new(source);
     let first = tokens.next_token()?;
-    let value = parse_value(&mut tokens, first)?;
+    push_value(&mut tokens, first, sink)?;
     match tokens.next_token()? {
-        Token::End => Ok(value),
+        Token::End => Ok(()),
         other => Err(JsonError::Unexpected {
             location: tokens.location(),
             message: format!("unexpected {} after the document", other.describe()),
@@ -57,57 +28,89 @@ pub fn parse<R: Read>(source: R) -> Result<JsonValue, JsonError> {
     }
 }
 
-fn parse_value<R: Read>(
+fn push_value<R: Read>(
     tokens: &mut JsonTokenizer<R>,
     first: Token,
-) -> Result<JsonValue, JsonError> {
+    sink: &mut dyn ValueSink,
+) -> Result<(), JsonError> {
     match first {
-        Token::Null => Ok(JsonValue::Null),
-        Token::True => Ok(JsonValue::Bool(true)),
-        Token::False => Ok(JsonValue::Bool(false)),
-        Token::Number => Ok(JsonValue::Number(tokens.text().to_string())),
-        Token::String => Ok(JsonValue::String(tokens.text().to_string())),
-        Token::BeginArray => {
-            let mut items = Vec::new();
-            let mut expect_value = true;
-            loop {
-                let token = tokens.next_token()?;
-                match token {
-                    Token::EndArray if !expect_value || items.is_empty() => {
-                        return Ok(JsonValue::Array(items));
-                    }
-                    Token::Comma if !expect_value => expect_value = true,
-                    other if expect_value => {
-                        items.push(parse_value(tokens, other)?);
-                        expect_value = false;
-                    }
-                    other => return Err(unexpected(tokens, other)),
-                }
+        Token::Null => sink.scalar(Scalar::Null)?,
+        Token::True => sink.scalar(Scalar::Bool(true))?,
+        Token::False => sink.scalar(Scalar::Bool(false))?,
+        Token::Number => sink.scalar(number_scalar(tokens.text()))?,
+        Token::String => sink.scalar(Scalar::String(tokens.text()))?,
+        Token::BeginArray => push_array(tokens, sink)?,
+        Token::BeginObject => push_object(tokens, sink)?,
+        other => return Err(unexpected(tokens, other)),
+    }
+    Ok(())
+}
+
+fn push_array<R: Read>(
+    tokens: &mut JsonTokenizer<R>,
+    sink: &mut dyn ValueSink,
+) -> Result<(), JsonError> {
+    sink.begin_array()?;
+    let mut expect_value = true;
+    let mut is_empty = true;
+    loop {
+        let token = tokens.next_token()?;
+        match token {
+            Token::EndArray if !expect_value || is_empty => {
+                sink.end_array()?;
+                return Ok(());
             }
-        }
-        Token::BeginObject => {
-            let mut members = Vec::new();
-            let mut expect_key = true;
-            loop {
-                let token = tokens.next_token()?;
-                match token {
-                    Token::EndObject if !expect_key || members.is_empty() => {
-                        return Ok(JsonValue::Object(members));
-                    }
-                    Token::Comma if !expect_key => expect_key = true,
-                    Token::String if expect_key => {
-                        let key = tokens.text().to_string();
-                        tokens.expect(Token::Colon)?;
-                        let first = tokens.next_token()?;
-                        let value = parse_value(tokens, first)?;
-                        members.push((key, value));
-                        expect_key = false;
-                    }
-                    other => return Err(unexpected(tokens, other)),
-                }
+            Token::Comma if !expect_value => expect_value = true,
+            other if expect_value => {
+                push_value(tokens, other, sink)?;
+                expect_value = false;
+                is_empty = false;
             }
+            other => return Err(unexpected(tokens, other)),
         }
-        other => Err(unexpected(tokens, other)),
+    }
+}
+
+fn push_object<R: Read>(
+    tokens: &mut JsonTokenizer<R>,
+    sink: &mut dyn ValueSink,
+) -> Result<(), JsonError> {
+    sink.begin_table()?;
+    let mut expect_key = true;
+    let mut is_empty = true;
+    loop {
+        let token = tokens.next_token()?;
+        match token {
+            Token::EndObject if !expect_key || is_empty => {
+                sink.end_table()?;
+                return Ok(());
+            }
+            Token::Comma if !expect_key => expect_key = true,
+            Token::String if expect_key => {
+                sink.key(tokens.text())?;
+                tokens.expect(Token::Colon)?;
+                let first = tokens.next_token()?;
+                push_value(tokens, first, sink)?;
+                expect_key = false;
+                is_empty = false;
+            }
+            other => return Err(unexpected(tokens, other)),
+        }
+    }
+}
+
+/// A JSON number as written becomes an integer when it has no fraction or
+/// exponent and fits in 64 bits, otherwise a float.
+fn number_scalar(text: &str) -> Scalar<'_> {
+    let has_fraction_or_exponent = text.contains(['.', 'e', 'E']);
+    if !has_fraction_or_exponent {
+        if let Ok(integer) = text.parse::<i64>() {
+            return Scalar::Integer(integer);
+        }
+    }
+    match text.parse::<f64>() {
+        Ok(float) => Scalar::Float(float),
+        Err(_) => Scalar::String(text),
     }
 }
 
@@ -122,24 +125,44 @@ fn unexpected<R: Read>(tokens: &JsonTokenizer<R>, token: Token) -> JsonError {
 mod tests {
     use super::*;
 
+    fn parse_text(text: &str) -> Value {
+        parse(text.as_bytes()).unwrap()
+    }
+
     #[test]
-    fn parses_nested_documents() {
-        let value = parse(&br#"{"a": [1, 2.5e3, "x", null, true], "b": {"c": -7}}"#[..]).unwrap();
-        assert_eq!(value.get("a").unwrap().as_array().unwrap().len(), 5);
+    fn numbers_split_into_integers_and_floats() {
+        let value = parse_text(r#"[1, -2, 1.5, 1e3, 99999999999999999999]"#);
         assert_eq!(
-            value.get("a").unwrap().as_array().unwrap()[1],
-            JsonValue::Number("2.5e3".to_string())
-        );
-        assert_eq!(
-            value.get("b").unwrap().get("c"),
-            Some(&JsonValue::Number("-7".to_string()))
+            value,
+            Value::Array(vec![
+                Value::Integer(1),
+                Value::Integer(-2),
+                Value::Float(1.5),
+                Value::Float(1000.0),
+                Value::Float(1e20),
+            ])
         );
     }
 
     #[test]
-    fn rejects_malformed_documents() {
-        assert!(parse(&b"[1,]"[..]).is_err());
-        assert!(parse(&b"{\"a\" 1}"[..]).is_err());
-        assert!(parse(&b"{} x"[..]).is_err());
+    fn objects_keep_member_order() {
+        let value = parse_text(r#"{"z": null, "a": {"b": true}}"#);
+        assert_eq!(
+            value,
+            Value::Table(vec![
+                ("z".to_string(), Value::Null),
+                (
+                    "a".to_string(),
+                    Value::Table(vec![("b".to_string(), Value::Bool(true))])
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn trailing_tokens_are_an_error() {
+        assert!(parse("{} 1".as_bytes()).is_err());
+        assert!(parse("[1,]".as_bytes()).is_err());
+        assert!(parse(r#"{"a":1,}"#.as_bytes()).is_err());
     }
 }

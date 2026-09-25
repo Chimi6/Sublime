@@ -1,0 +1,28 @@
+basic = "I'm a string. \"You can quote me\". Name\tJos\u00E9\nLocation\tSF."
+multi = """
+Roses are red
+Violets are blue"""
+folded = """
+The quick brown \
+
+
+  fox jumps over \
+    the lazy dog."""
+literal = 'C:\Users\nodejs\templates'
+winpath = '\\ServerX\admin$\system32\'
+regex = '<\i\c*\s*>'
+multiliteral = '''
+The first newline is
+trimmed in raw strings.
+   All other whitespace
+   is preserved.
+'''
+quot15 = '''Here are fifteen quotation marks: """""""""""""""'''
+apos15 = "Here are fifteen apostrophes: '''''''''''''''"
+str7 = """"This," she said, "is just a pointless statement.""""
+unicode = "\U0001F600 \u00e9 \\ \b\f\r"
+"quoted key" = 1
+'literal key' = 2
+"" = "empty key"
+"ʎǝʞ" = "unicode key"
+bare-key_9 = "bare"

@@ -11,6 +11,7 @@ use crate::converters::html_to_markdown::HtmlToMarkdown;
 use crate::converters::html_to_text::HtmlToText;
 use crate::converters::json_to_csv::JsonToCsv;
 use crate::converters::json_to_pages::JsonToPages;
+use crate::converters::json_to_toml::JsonToToml;
 use crate::converters::markdown_json_to_markdown::MarkdownJsonToMarkdown;
 use crate::converters::markdown_to_docx::MarkdownToDocx;
 use crate::converters::markdown_to_html::MarkdownToHtml;
@@ -24,9 +25,10 @@ use crate::converters::pages_to_text::PagesToText;
 use crate::converters::text_to_docx::TextToDocx;
 use crate::converters::text_to_html::TextToHtml;
 use crate::converters::text_to_markdown::TextToMarkdown;
+use crate::converters::toml_to_json::TomlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 22] = [
+static CONVERTERS: [&dyn Converter; 24] = [
     &CsvToJson,
     &JsonToCsv,
     &MarkdownToHtml,
@@ -49,6 +51,8 @@ static CONVERTERS: [&dyn Converter; 22] = [
     &TextToMarkdown,
     &TextToHtml,
     &TextToDocx,
+    &TomlToJson,
+    &JsonToToml,
 ];
 
 pub fn all_converters() -> &'static [&'static dyn Converter] {
@@ -128,7 +132,8 @@ mod tests {
                 "markdown-json",
                 "pages",
                 "pages-json",
-                "text"
+                "text",
+                "toml"
             ]
         );
     }

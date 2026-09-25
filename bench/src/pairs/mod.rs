@@ -18,6 +18,7 @@ pub mod pages_json;
 pub mod pages_markdown;
 pub mod pages_text;
 pub mod text_markdown;
+pub mod toml_json;
 
 pub const NAMES: &[&str] = &[
     "csv-json",
@@ -37,6 +38,7 @@ pub const NAMES: &[&str] = &[
     "pages-html",
     "pages-text",
     "text-markdown",
+    "toml-json",
 ];
 
 pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
@@ -58,6 +60,7 @@ pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
         "pages-html" => pages_html::run(mode, args),
         "pages-text" => pages_text::run(mode, args),
         "text-markdown" => text_markdown::run(mode, args),
+        "toml-json" => toml_json::run(mode, args),
         other => Err(format!(
             "unknown pair '{other}'; known: {}",
             NAMES.join(", ")

@@ -1,0 +1,35 @@
+title = "x"
+count = 3
+ratio = 1.0
+big = 1e21
+ok = true
+list = [1, "two", 2.5]
+empty_list = []
+"key with space" = "q"
+"dotted.key" = "d"
+"" = "blank"
+tab = "a\tb\"c\\d\u0001"
+mixed = [{ a = 1 }, 2]
+nested_lists = [[1, 2], [3]]
+
+[empty]
+
+[sub]
+a = 1
+
+[sub.deep]
+
+[[sub.deep.b]]
+c = 1
+
+[[sub.deep.b]]
+c = 2
+
+[[objects]]
+n = 1
+
+[objects.inner]
+z = true
+
+[[objects]]
+n = 2
