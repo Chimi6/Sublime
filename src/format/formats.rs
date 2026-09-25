@@ -18,6 +18,14 @@ pub static JSON: Format = Format {
     category: Category::Data,
 };
 
+pub static TOML: Format = Format {
+    id: "toml",
+    display_name: "TOML",
+    extensions: &["toml"],
+    magic: None,
+    category: Category::Data,
+};
+
 pub static MARKDOWN: Format = Format {
     id: "markdown",
     display_name: "Markdown",

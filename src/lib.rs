@@ -14,3 +14,4 @@ pub mod inspect;
 pub mod io;
 pub mod planner;
 pub mod registry;
+pub mod value;

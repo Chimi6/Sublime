@@ -6,6 +6,17 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- TOML: `src/io/toml/reader.rs` reads TOML 1.0 (every key, table, array-of-tables, inline table, string, number, and datetime form, with the definition rules enforced and errors located by line and column) and `src/io/toml/writer.rs` writes it (plain members before headers, inline arrays and tables, floats that read back as floats). Paths `toml -> json` and `json -> toml`, both conditional; CSV reaches TOML through JSON. Oracles in `tests/toml_json.rs` over the fixtures in `tests/fixtures/toml`. Map in `DOCS/formats/toml.md`.
+- The value hub (`src/value`): the tree the tree-shaped data formats share, with a push-mode `ValueSink` for readers that can stream and a `TreeBuilder` for those that cannot. JSON reads into it (`io::json::parse_into`); the old `JsonValue` is gone.
+- Benchmark pair `toml-json` against the `toml` crate with `serde_json`, dense and prose shapes, every line passing. Size budget raised 1.6 -> 1.65 MB for the reader, the writer, and the hub (27 KB).
+
+### Changed
+
+- TOML -> JSON reports a loss once per key path with array indices elided (`record[].created`), not once per row.
+- `bench/run.sh` reads the peak-memory number from the last line GNU time writes, so a conversion that exits 2 (completed with loss) is measured instead of failing the row.
+
 ## [0.10.0] - 2026-09-24
 
 HTML and plain text input, closing the document category's one-way

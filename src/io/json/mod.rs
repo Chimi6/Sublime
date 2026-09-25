@@ -5,5 +5,5 @@ pub mod value;
 pub mod writer;
 
 pub use tokenizer::{JsonError, JsonTokenizer, Token};
-pub use value::JsonValue;
+pub use value::{parse, parse_into};
 pub use writer::{JsonWriter, PreparedKey};
