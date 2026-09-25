@@ -4,6 +4,7 @@ use crate::converter::{ConvertError, Location};
 use crate::io::csv::CsvError;
 use crate::io::json::JsonError;
 use crate::io::toml::TomlError;
+use crate::io::yaml::YamlError;
 
 impl From<CsvError> for ConvertError {
     fn from(error: CsvError) -> Self {
@@ -38,6 +39,15 @@ impl From<JsonError> for ConvertError {
 
 impl From<TomlError> for ConvertError {
     fn from(error: TomlError) -> Self {
+        ConvertError::Malformed {
+            location: error.location,
+            message: error.message,
+        }
+    }
+}
+
+impl From<YamlError> for ConvertError {
+    fn from(error: YamlError) -> Self {
         ConvertError::Malformed {
             location: error.location,
             message: error.message,

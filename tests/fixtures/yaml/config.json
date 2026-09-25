@@ -1,0 +1,1 @@
+{"name":"demo","version":1.2,"debug":false,"port":8080,"tags":["web","api"],"database":{"host":"localhost","port":5432,"options":{"ssl":true,"timeout":30}},"empty_map":{},"empty_list":[],"nothing":null,"also_nothing":null,"quoted":"with \"escapes\"\tand\n newline","single":"it's literal \\n"}

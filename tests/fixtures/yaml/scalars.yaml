@@ -1,0 +1,33 @@
+int: 42
+neg: -7
+plus: +3
+octal: 0o17
+hex: 0x1F
+float: 3.5
+exp: 1e3
+dotfloat: .5
+trail: 5.
+inf: .inf
+ninf: -.inf
+nan: .NaN
+t1: true
+t2: True
+f1: FALSE
+n1: null
+n2: Null
+n3: ~
+str1: yes
+leading_zero: 010
+str3: 1_000
+str4: "42"
+str5: '3.5'
+str6: 2001-12-14
+str7: !!str 42
+forced_int: !!int "7"
+forced_float: !!float 1
+forced_bool: !!bool "true"
+plain with spaces: a b  c
+url: http://example.com/x?y=1#z
+colon: a:b
+dash: -foo
+question: ?x

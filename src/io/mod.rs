@@ -15,4 +15,5 @@ pub mod snappy;
 pub mod text;
 pub mod toml;
 pub mod xml;
+pub mod yaml;
 pub mod zip;

@@ -6,6 +6,16 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- YAML: `src/io/yaml/reader.rs` reads YAML 1.2 with the core schema (block and flow collections, the five scalar styles with folding and chomping, anchors and aliases, merge keys, tags, directives, multi-document streams, errors located by line and column) and `src/io/yaml/writer.rs` writes block-style YAML (strings plain when they read back unchanged, quoted otherwise, multi-line strings as literal blocks). Paths `yaml -> json` (conditional) and `json -> yaml` (lossless); TOML and CSV reach YAML through JSON. Oracles in `tests/yaml_json.rs` over the fixtures in `tests/fixtures/yaml`, plus every JSON fixture in the repository through YAML and back. Map in `DOCS/formats/yaml.md`.
+- Benchmark pair `yaml-json` against `serde_yaml` with `serde_json`, dense and prose shapes. Size budgets raised for the reader and writer: binary 1.65 -> 1.7 MB, wasm 800,000 -> 850,000.
+
+### Changed
+
+- The tree-to-JSON walk with its loss reporting moved from the TOML converter into `io::json::from_value`, shared by every hub format; the TOML and YAML writers share one double-quoted string escaper in the hub.
+- The TOML and YAML writers hand the sink 64 KiB chunks as they go (`value::ChunkedText`) instead of holding the whole document as one string: json -> yaml peak memory on 180 MB of prose 489 -> 299 MB.
+
 ## [0.11.0] - 2026-09-24
 
 TOML, the first tree-shaped data format, both ways through a new value

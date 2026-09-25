@@ -1,6 +1,6 @@
 # TOML <-> JSON
 
-**Latest** (2026-09-24, first release of TOML: toml -> json 78.4 MB/s of input on the dense shape and 265.3 on prose, at 654 and 550 MB peak; json -> toml 92.7 and 256.4 MB/s at 613 and 480 MB peak; every line PASSES against the `toml` crate with `serde_json`, at 1.5 to 2 times its throughput and a third to two thirds of its memory)
+**Latest** (2026-09-24, streaming writer: toml -> json 78.8 MB/s of input on the dense shape and 265.3 on prose, at 654 and 550 MB peak; json -> toml 94.6 and 246.3 MB/s at 552 and 299 MB peak; every line PASSES against the `toml` crate with `serde_json`, at 1.5 to 2 times its throughput and a third to two thirds of its memory)
 
 ## Purpose
 
@@ -66,6 +66,26 @@ throughput in MB/s over the input file's bytes. Rows and units follow
   the write (JSON to TOML) and the input held whole (TOML to JSON).
 
 ## Results
+
+### 2026-09-24, the writer streams to the sink
+
+commit: dff37d4
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| toml -> json, dense (59.9 MB): throughput (MB/s of input) | 78.8 | 40.5 (toml + serde_json) | PASS |
+| toml -> json, dense: peak memory (MB) | 654.0 | 1926.6 (toml + serde_json) | PASS |
+| toml -> json, prose (182.0 MB): throughput (MB/s of input) | 265.3 | 169.4 (toml + serde_json) | PASS |
+| toml -> json, prose: peak memory (MB) | 550.4 | 888.9 (toml + serde_json) | PASS |
+| json -> toml, dense (56.2 MB): throughput (MB/s of input) | 94.6 | 55.1 (serde_json + toml) | PASS |
+| json -> toml, dense: peak memory (MB) | 552.4 | 867.6 (serde_json + toml) | PASS |
+| json -> toml, prose (178.9 MB): throughput (MB/s of input) | 246.3 | 135.4 (serde_json + toml) | PASS |
+| json -> toml, prose: peak memory (MB) | 299.3 | 1012.6 (serde_json + toml) | PASS |
+
+The writer no longer holds the document's text: json -> toml peak
+memory 613 -> 552 MB dense and 480 -> 299 MB prose, throughput unchanged
+within noise.
 
 ### 2026-09-24, first release of TOML
 

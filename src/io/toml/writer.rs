@@ -6,10 +6,14 @@
 
 use std::fmt::Write;
 
-use crate::value::{Value, push_float};
+use crate::value::{ChunkedText, Value, push_double_quoted, push_float};
 
 /// Writes `members` as a TOML document.
-pub fn write_document(members: &[(String, Value)], out: &mut String, losses: &mut Vec<String>) {
+pub fn write_document(
+    members: &[(String, Value)],
+    out: &mut ChunkedText<'_>,
+    losses: &mut Vec<String>,
+) {
     let mut path: Vec<&str> = Vec::new();
     write_table(members, &mut path, out, losses);
 }
@@ -17,7 +21,7 @@ pub fn write_document(members: &[(String, Value)], out: &mut String, losses: &mu
 fn write_table<'v>(
     members: &'v [(String, Value)],
     path: &mut Vec<&'v str>,
-    out: &mut String,
+    out: &mut ChunkedText<'_>,
     losses: &mut Vec<String>,
 ) {
     for (key, value) in members {
@@ -72,14 +76,14 @@ fn is_deferred(value: &Value) -> bool {
     }
 }
 
-fn separate(out: &mut String) {
+fn separate(out: &mut ChunkedText<'_>) {
     if !out.is_empty() {
         out.push('\n');
     }
 }
 
 #[inline(never)]
-fn write_header(out: &mut String, path: &[&str], open: &str, close: &str) {
+fn write_header(out: &mut ChunkedText<'_>, path: &[&str], open: &str, close: &str) {
     out.push_str(open);
     for (index, key) in path.iter().enumerate() {
         if index > 0 {
@@ -91,7 +95,7 @@ fn write_header(out: &mut String, path: &[&str], open: &str, close: &str) {
     out.push('\n');
 }
 
-fn write_key(out: &mut String, key: &str) {
+fn write_key(out: &mut ChunkedText<'_>, key: &str) {
     let is_bare = !key.is_empty()
         && key
             .bytes()
@@ -107,7 +111,7 @@ fn write_key(out: &mut String, key: &str) {
 fn write_inline<'v>(
     value: &'v Value,
     path: &mut Vec<&'v str>,
-    out: &mut String,
+    out: &mut ChunkedText<'_>,
     losses: &mut Vec<String>,
 ) {
     match value {
@@ -141,11 +145,18 @@ fn write_inline<'v>(
             out.push(']');
         }
         Value::Table(members) => {
-            if members.is_empty() {
+            let nothing_to_write = members
+                .iter()
+                .all(|(_, member)| matches!(member, Value::Null));
+            if nothing_to_write {
+                for (key, _) in members {
+                    path.push(key);
+                    losses.push(path.join("."));
+                    path.pop();
+                }
                 out.push_str("{}");
                 return;
             }
-            let open_at = out.len();
             out.push_str("{ ");
             let mut written = 0;
             for (key, member) in members {
@@ -164,45 +175,27 @@ fn write_inline<'v>(
                 path.pop();
                 written += 1;
             }
-            if written == 0 {
-                out.truncate(open_at);
-                out.push_str("{}");
-            } else {
-                out.push_str(" }");
-            }
+            out.push_str(" }");
         }
     }
 }
 
-fn write_float(out: &mut String, number: f64) {
+fn write_float(out: &mut ChunkedText<'_>, number: f64) {
     if number.is_nan() {
         out.push_str("nan");
     } else if number.is_infinite() {
         out.push_str(if number > 0.0 { "inf" } else { "-inf" });
     } else {
-        push_float(out, number);
+        let mut text = String::new();
+        push_float(&mut text, number);
+        out.push_str(&text);
     }
 }
 
-#[inline(never)]
-fn write_string(out: &mut String, text: &str) {
-    out.push('"');
-    for character in text.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{8}' => out.push_str("\\b"),
-            '\t' => out.push_str("\\t"),
-            '\n' => out.push_str("\\n"),
-            '\u{c}' => out.push_str("\\f"),
-            '\r' => out.push_str("\\r"),
-            control if (control as u32) < 0x20 || control == '\u{7f}' => {
-                let _ = write!(out, "\\u{:04X}", control as u32);
-            }
-            other => out.push(other),
-        }
-    }
-    out.push('"');
+fn write_string(out: &mut ChunkedText<'_>, text: &str) {
+    let mut quoted = String::with_capacity(text.len() + 2);
+    push_double_quoted(&mut quoted, text);
+    out.push_str(&quoted);
 }
 
 #[cfg(test)]
@@ -214,10 +207,14 @@ mod tests {
             .into_iter()
             .map(|(key, value)| (key.to_string(), value))
             .collect();
-        let mut out = String::new();
+        let mut bytes = Vec::new();
         let mut losses = Vec::new();
-        write_document(&owned, &mut out, &mut losses);
-        (out, losses)
+        {
+            let mut out = ChunkedText::new(&mut bytes);
+            write_document(&owned, &mut out, &mut losses);
+            out.finish().unwrap();
+        }
+        (String::from_utf8(bytes).unwrap(), losses)
     }
 
     #[test]

@@ -10,7 +10,7 @@ use crate::format::Format;
 use crate::format::formats;
 use crate::io::json;
 use crate::io::toml;
-use crate::value::Value;
+use crate::value::{ChunkedText, Value};
 
 const NAME: &str = "json-to-toml";
 const FIDELITY_NOTE: &str =
@@ -51,9 +51,10 @@ impl Converter for JsonToToml {
             Value::Array(_) => return Err(not_a_table("an array")),
             _ => return Err(not_a_table("a scalar")),
         };
-        let mut text = String::new();
         let mut losses = Vec::new();
+        let mut text = ChunkedText::new(output);
         toml::write_document(&members, &mut text, &mut losses);
+        text.finish()?;
         for path in losses {
             context.loss(
                 NAME,
@@ -61,8 +62,6 @@ impl Converter for JsonToToml {
                 format!("{path}: null has no TOML form, dropped"),
             );
         }
-        output.write_all(text.as_bytes())?;
-        output.flush()?;
         Ok(())
     }
 }

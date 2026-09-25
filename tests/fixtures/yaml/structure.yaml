@@ -1,0 +1,25 @@
+- name: first
+  items:
+    - a
+    - b
+- name: second
+  nested:
+  - x: 1
+    y: 2
+  - [1, 2, [3, 4]]
+- - deep
+  - deeper
+-
+  key: after empty dash
+- {a: 1, b: [2, 3], c: {d: e}}
+- ? explicit key
+  : explicit value
+- "quoted key": 1
+  'single': 2
+  ? complex
+  : 3
+- plain multi
+  line scalar
+
+  with paragraph
+- 
