@@ -6,6 +6,12 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-24
+
+TOML, the first tree-shaped data format, both ways through a new value
+hub that YAML and XML will share; benchmarked ahead of the `toml` crate
+on every line.
+
 ### Added
 
 - TOML: `src/io/toml/reader.rs` reads TOML 1.0 (every key, table, array-of-tables, inline table, string, number, and datetime form, with the definition rules enforced and errors located by line and column) and `src/io/toml/writer.rs` writes it (plain members before headers, inline arrays and tables, floats that read back as floats). Paths `toml -> json` and `json -> toml`, both conditional; CSV reaches TOML through JSON. Oracles in `tests/toml_json.rs` over the fixtures in `tests/fixtures/toml`. Map in `DOCS/formats/toml.md`.
