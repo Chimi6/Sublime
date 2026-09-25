@@ -112,7 +112,7 @@ The document category's one-way streets are closed (phases 1 to 4 below, release
 
 ## Done
 
-- 2026-09-25: Excel workbooks one sheet at a time (unreleased, branch `xlsx`).
+- 2026-09-25: Excel workbooks one sheet at a time released as 0.16.0.
 - 2026-09-25: TSV and JSON Lines with every row path released as 0.15.0.
 - 2026-09-25: Direct TOML, YAML, and XML pairs released as 0.14.0.
 - 2026-09-25: Value hub as an arena tree released as 0.13.1: memory 2.7 to 3.4 times lower and throughput 1.2 to 1.9 times higher on every hub pair.
