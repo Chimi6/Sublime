@@ -6,6 +6,16 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- TSV: the CSV reader and writer take a separator (`CsvReader::with_delimiter`, `CsvWriter::with_delimiter`, a tab scanner in `io::scan`), and the row converters are parametrized by it: `tsv -> json`, `json -> tsv`, `csv <-> tsv` (lossless, quoting for the target's separator), and TSV to and from JSON Lines. Extensions `.tsv` and `.tab`.
+- JSON Lines: `jsonl -> json` (lossless) and `json -> jsonl` (an array becomes one line per element, any other root one line) through a token copier (`io::json::copy`) that never builds a tree; `csv -> jsonl`, `tsv -> jsonl`, `jsonl -> csv`, and `jsonl -> tsv` as the row converters' line mode. Extensions `.jsonl` and `.ndjson`. Errors carry the line.
+- Oracles in `tests/rows.rs`; benchmark pairs `tsv-json` (against the `csv` crate with a tab delimiter) and `jsonl-json` (against `serde_json`'s stream deserializer), every line passing. Size budget raised 1.75 -> 1.8 MB for the two formats and twelve paths.
+
+### Changed
+
+- `CsvToJson` and `JsonToCsv` are values (`CSV_TO_JSON`, `TSV_TO_JSON`, `CSV_TO_JSONL`, `TSV_TO_JSONL`, and the reverse four) carrying their separator and row shape, not unit structs.
+
 ## [0.14.0] - 2026-09-25
 
 Direct conversions between TOML, YAML, and XML, so the config trio and
