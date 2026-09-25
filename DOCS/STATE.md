@@ -44,7 +44,7 @@ The document category's one-way streets are closed (phases 1 to 4 below, release
 ## Tech Debt
 
 - 2026-09-24: Value hub leftovers:
-  - The tree holds the whole document at about ten times its bytes on the dense TOML shape (654 MB peak on 60 MB; the reference sits at 1.9 GB). An arena-backed tree (one text buffer, spans, `u32` links) is the lever, the shape the document model uses. Do it when YAML shares the hub, so both formats gain.
+  - The tree holds the whole document at about ten times its bytes on the dense shapes (654 MB peak on 60 MB of TOML, 615 MB on 62 MB of YAML; the references sit at 1.9 and 2.2 GB). An arena-backed tree (one text buffer, spans, `u32` links) is the lever, the shape the document model uses. Do it when YAML shares the hub, so both formats gain.
   - The tree-to-JSON walk lives in `io::json::from_value` and is shared; `ValueSink` has one implementor (`TreeBuilder`) until a format streams.
   - Datetimes are validated for shape and range, not the calendar.
 - 2026-09-24: Events bridge (Markdown, HTML, and text into Word) leftovers:
