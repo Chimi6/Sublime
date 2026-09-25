@@ -30,6 +30,23 @@ a comparison. Startup is implemented in `bench/src/startup.rs`.
 
 ## Results
 
+### 2026-09-25, 0.16.0 with Excel workbooks
+
+commit: 8381f93 (the merge of the xlsx branch, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 1786840 | <= 1800000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 1888928 | recorded | n/a |
+| WebAssembly module (bytes) | 863102 | <= 900000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 349257 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | -0.157 (spawn 0.525, floor 0.682) | < 1 | PASS |
+
+The workbook reader and writer and four converters cost 31 KB of binary
+and 17 KB of module; the module budget was raised to 900,000
+(changelog), the binary stayed inside its own with 13 KB to spare.
+
 ### 2026-09-25, 0.15.0 with TSV and JSON Lines
 
 commit: 4651490 (the merge of the rows branch, before the version bump)
@@ -228,3 +245,4 @@ read as "under a millisecond", not as a trend.
 | 0.13.1 | 1,735,176 | 1,835,680 | 1,750,000 | 834,992 | 850,000 |
 | 0.14.0 | 1,743,184 | 1,843,872 | 1,750,000 | 839,320 | 850,000 |
 | 0.15.0 | 1,755,616 | 1,856,160 | 1,800,000 | 845,902 | 850,000 |
+| 0.16.0 | 1,786,840 | 1,888,928 | 1,800,000 | 863,102 | 900,000 |
