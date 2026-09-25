@@ -13,6 +13,7 @@ writer handle, tied to the tests that prove it.
   the core schema dropped and reported, keys become strings, infinities
   and NaN become strings, a multi-document stream becomes an array).
 - `json -> yaml`: shipped, lossless (JSON is a subset of YAML).
+- `yaml -> toml`, `yaml -> xml`, and back: shipped directly (0.14.0), conditional.
 
 Oracles (`tests/yaml_json.rs`, fixtures in `tests/fixtures/yaml`): every
 valid fixture reads to the JSON beside it byte for byte; every file under

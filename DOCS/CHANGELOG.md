@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- Direct pairs between the hub formats: `toml <-> yaml`, `toml <-> xml`, and `yaml <-> xml` (`src/converters/hub.rs`, one reader and one writer with no JSON in between). The planner now takes them instead of the two hops through JSON; the output is the same document, and infinities and NaN stay floats where JSON turned them into strings. Oracle in `tests/hub_pairs.rs`: every fixture through the direct pair and through JSON reads back to the same JSON. The pairs are the measured readers and writers back to back, so they carry no benchmark document of their own.
+
 ## [0.13.1] - 2026-09-25
 
 The value hub as an arena tree: every TOML, YAML, and XML path uses a
