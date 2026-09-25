@@ -106,7 +106,7 @@ The document category's one-way streets are closed (phases 1 to 4 below, release
 
 ## Done
 
-- 2026-09-25: TSV and JSON Lines with every row path (unreleased, branch `rows-tsv-jsonl`).
+- 2026-09-25: TSV and JSON Lines with every row path released as 0.15.0.
 - 2026-09-25: Direct TOML, YAML, and XML pairs released as 0.14.0.
 - 2026-09-25: Value hub as an arena tree released as 0.13.1: memory 2.7 to 3.4 times lower and throughput 1.2 to 1.9 times higher on every hub pair.
 - 2026-09-24: XML both ways released as 0.13.0: `xml -> json`, `json -> xml`, the `xml-json` pair passing every line against `quick-xml`; the reader streams its input.
