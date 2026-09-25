@@ -30,6 +30,22 @@ a comparison. Startup is implemented in `bench/src/startup.rs`.
 
 ## Results
 
+### 2026-09-25, 0.15.0 with TSV and JSON Lines
+
+commit: 4651490 (the merge of the rows branch, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 1755616 | <= 1800000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 1856160 | recorded | n/a |
+| WebAssembly module (bytes) | 845902 | <= 850000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 342949 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.139 (spawn 0.510, floor 0.371) | < 1 | PASS |
+
+Two formats and twelve row paths cost 12 KB of binary and 7 KB of
+module; the binary budget was raised to 1.8 MB (changelog).
+
 ### 2026-09-25, 0.14.0 with the direct hub pairs
 
 commit: b2304d4 (the merge of the direct-pairs branch, before the version bump)
@@ -211,3 +227,4 @@ read as "under a millisecond", not as a trend.
 | 0.13.0 | 1,731,320 | 1,831,584 | 1,750,000 | 836,184 | 850,000 |
 | 0.13.1 | 1,735,176 | 1,835,680 | 1,750,000 | 834,992 | 850,000 |
 | 0.14.0 | 1,743,184 | 1,843,872 | 1,750,000 | 839,320 | 850,000 |
+| 0.15.0 | 1,755,616 | 1,856,160 | 1,800,000 | 845,902 | 850,000 |
