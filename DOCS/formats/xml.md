@@ -15,7 +15,7 @@ tests that prove it.
 - `json -> xml`: shipped, conditional (the inverse mapping; a root
   without exactly one member is wrapped in `<root>` with a warning;
   numbers, booleans, and nulls become text).
-- TOML, YAML, and CSV reach XML through JSON.
+- `xml -> toml`, `xml -> yaml`, and back: shipped directly (0.14.0), conditional; CSV reaches XML through JSON.
 
 Oracles (`tests/xml_json.rs`, fixtures in `tests/fixtures/xml`): every
 well-formed fixture reads to the JSON beside it byte for byte and
