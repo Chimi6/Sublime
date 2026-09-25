@@ -80,6 +80,8 @@ non-ASCII byte), not against the Unicode name tables.
 
 ## Performance
 
-`DOCS/benchmarks/xml-json.md`. The value tree holds the whole document;
-the arena-backed tree in `STATE.md` Tech Debt is the lever shared with
-TOML and YAML.
+`DOCS/benchmarks/xml-json.md`. The reader never holds the input: it
+pulls the file through a 256 KiB window and scans text, names, and
+whitespace a word at a time, so the value tree is the only cost per
+byte, and the arena-backed tree in `STATE.md` Tech Debt is the lever
+shared with TOML and YAML.
