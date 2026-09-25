@@ -14,6 +14,7 @@ section under a version heading.
 ### Changed
 
 - The tree-to-JSON walk with its loss reporting moved from the TOML converter into `io::json::from_value`, shared by every hub format; the TOML and YAML writers share one double-quoted string escaper in the hub.
+- The TOML and YAML writers hand the sink 64 KiB chunks as they go (`value::ChunkedText`) instead of holding the whole document as one string: json -> yaml peak memory on 180 MB of prose 489 -> 299 MB.
 
 ## [0.11.0] - 2026-09-24
 

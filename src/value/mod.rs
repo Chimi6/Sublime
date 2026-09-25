@@ -3,6 +3,7 @@
 //! streams into when its format allows it. JSON reads into it through the
 //! sink; a converter walks the tree to write.
 
+use std::fmt;
 use std::io;
 use std::mem;
 
@@ -185,6 +186,76 @@ pub fn push_double_quoted(out: &mut String, text: &str) {
         }
     }
     out.push('"');
+}
+
+/// Text output handed to a sink in 64 KiB chunks, so a writer never
+/// holds a whole document. Write failures are kept and returned by
+/// `finish`, so the writers stay plain string-building code.
+pub struct ChunkedText<'a> {
+    buffer: String,
+    sink: &'a mut dyn io::Write,
+    failure: Option<io::Error>,
+    total: usize,
+}
+
+const CHUNK: usize = 64 * 1024;
+
+impl<'a> ChunkedText<'a> {
+    pub fn new(sink: &'a mut dyn io::Write) -> ChunkedText<'a> {
+        ChunkedText {
+            buffer: String::with_capacity(CHUNK + 1024),
+            sink,
+            failure: None,
+            total: 0,
+        }
+    }
+
+    pub fn push(&mut self, character: char) {
+        self.buffer.push(character);
+        self.flush_if_full();
+    }
+
+    pub fn push_str(&mut self, text: &str) {
+        self.buffer.push_str(text);
+        self.flush_if_full();
+    }
+
+    /// True until anything has been pushed.
+    pub fn is_empty(&self) -> bool {
+        self.total == 0 && self.buffer.is_empty()
+    }
+
+    fn flush_if_full(&mut self) {
+        if self.buffer.len() >= CHUNK {
+            self.flush_buffer();
+        }
+    }
+
+    fn flush_buffer(&mut self) {
+        if self.failure.is_none() {
+            if let Err(error) = self.sink.write_all(self.buffer.as_bytes()) {
+                self.failure = Some(error);
+            }
+        }
+        self.total += self.buffer.len();
+        self.buffer.clear();
+    }
+
+    /// Writes what is left and reports the first failure.
+    pub fn finish(mut self) -> io::Result<()> {
+        self.flush_buffer();
+        match self.failure.take() {
+            Some(error) => Err(error),
+            None => self.sink.flush(),
+        }
+    }
+}
+
+impl fmt::Write for ChunkedText<'_> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        self.push_str(text);
+        Ok(())
+    }
 }
 
 /// Takes the members out of a table value, leaving it empty.
