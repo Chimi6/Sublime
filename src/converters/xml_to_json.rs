@@ -8,7 +8,7 @@ use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier}
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
-use crate::io::json::{JsonWriter, from_value};
+use crate::io::json::{JsonWriter, from_tree};
 use crate::io::xml::tree;
 
 const NAME: &str = "xml-to-json";
@@ -48,7 +48,7 @@ impl Converter for XmlToJson {
             context.loss(NAME, Location::default(), note);
         }
         let mut writer = JsonWriter::new(output);
-        from_value::write_value(&parsed.document, &mut writer, NAME, context)?;
+        from_tree::write_tree(&parsed.tree, parsed.tree.root, &mut writer, NAME, context)?;
         writer.flush()?;
         Ok(())
     }

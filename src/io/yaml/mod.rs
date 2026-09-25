@@ -3,5 +3,5 @@
 pub mod reader;
 pub mod writer;
 
-pub use reader::{Parsed, YamlError, parse, resolve_plain};
+pub use reader::{Parsed, Plain, YamlError, parse, resolve_plain};
 pub use writer::write_document;

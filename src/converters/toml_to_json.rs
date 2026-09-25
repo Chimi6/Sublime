@@ -9,7 +9,7 @@ use crate::converters::input::read_text_document;
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
-use crate::io::json::{JsonWriter, from_value};
+use crate::io::json::{JsonWriter, from_tree};
 use crate::io::toml;
 
 const NAME: &str = "toml-to-json";
@@ -45,9 +45,9 @@ impl Converter for TomlToJson {
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
         let text = read_text_document(&mut input)?;
-        let document = toml::parse(&text)?;
+        let tree = toml::parse(&text)?;
         let mut writer = JsonWriter::new(output);
-        from_value::write_value(&document, &mut writer, NAME, context)?;
+        from_tree::write_tree(&tree, tree.root, &mut writer, NAME, context)?;
         writer.flush()?;
         Ok(())
     }
