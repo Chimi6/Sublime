@@ -6,6 +6,12 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-25
+
+Excel workbooks: a chosen sheet to CSV, TSV, JSON, and JSON Lines, and
+CSV or TSV to a workbook, the first format built on the ZIP, XML, and
+row work together.
+
 ### Added
 
 - Excel workbooks: `src/io/xlsx/reader.rs` reads one sheet of a workbook into rows (the sheet list and relationships, shared strings with rich text, date detection from the cell styles, serial dates to ISO 8601, booleans, errors, formulas' cached values, gaps and the sheet dimension, the 1904 epoch) and `src/io/xlsx/writer.rs` writes rows into a one-sheet workbook streamed into the ZIP. Paths `xlsx -> csv`, `xlsx -> tsv`, `csv -> xlsx`, `tsv -> xlsx`, all conditional; JSON and JSON Lines reach through the row converters. `--sheet <name|number>` on `convert` picks the sheet read or names the sheet written. Oracles in `tests/xlsx_rows.rs` over hand-built fixtures in `tests/fixtures/xlsx`. Map in `DOCS/formats/xlsx.md`.
