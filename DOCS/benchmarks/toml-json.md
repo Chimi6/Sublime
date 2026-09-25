@@ -1,6 +1,6 @@
 # TOML <-> JSON
 
-**Latest** (2026-09-24, streaming writer: toml -> json 78.8 MB/s of input on the dense shape and 265.3 on prose, at 654 and 550 MB peak; json -> toml 94.6 and 246.3 MB/s at 552 and 299 MB peak; every line PASSES against the `toml` crate with `serde_json`, at 1.5 to 2 times its throughput and a third to two thirds of its memory)
+**Latest** (2026-09-25, arena tree: toml -> json 148.2 MB/s of input on the dense shape and 323.5 on prose, at 237 and 421 MB peak; json -> toml 156.7 and 309.2 MB/s at 172 and 212 MB peak; every line PASSES against the `toml` crate with `serde_json`, at 1.9 to 3.7 times its throughput and 12 to 47 percent of its memory)
 
 ## Purpose
 
@@ -67,6 +67,29 @@ throughput in MB/s over the input file's bytes. Rows and units follow
 
 ## Results
 
+### 2026-09-25, the value hub as an arena tree
+
+commit: bd7a134 (the working tree of this commit)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| toml -> json, dense (59.9 MB): throughput (MB/s of input) | 148.2 | 40.2 (toml + serde_json) | PASS |
+| toml -> json, dense: peak memory (MB) | 236.5 | 1926.9 (toml + serde_json) | PASS |
+| toml -> json, prose (182.0 MB): throughput (MB/s of input) | 323.5 | 173.2 (toml + serde_json) | PASS |
+| toml -> json, prose: peak memory (MB) | 420.7 | 889.1 (toml + serde_json) | PASS |
+| json -> toml, dense (56.2 MB): throughput (MB/s of input) | 156.7 | 56.3 (serde_json + toml) | PASS |
+| json -> toml, dense: peak memory (MB) | 172.4 | 867.3 (serde_json + toml) | PASS |
+| json -> toml, prose (178.9 MB): throughput (MB/s of input) | 309.2 | 135.1 (serde_json + toml) | PASS |
+| json -> toml, prose: peak memory (MB) | 211.5 | 1011.8 (serde_json + toml) | PASS |
+
+The tree is now an arena (`value::Tree`: 32-byte nodes chained by index,
+strings as spans into one text buffer) instead of owned `String`s and
+`Vec`s: dense memory 654 -> 237 MB and 552 -> 172 MB, dense throughput
+79 -> 148 and 95 -> 157 MB/s, the same on prose to a smaller degree. The
+prose toml -> json row still holds the input text (182 MB) beside the
+tree; the reader borrows it, so that is the floor for that row.
+
 ### 2026-09-24, the writer streams to the sink
 
 commit: dff37d4
@@ -105,14 +128,13 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(
 
 ## Conclusions
 
-The reader and writer are ahead of the reference on every row, and the
-prose numbers say the string paths (bulk copies between escapes, the
-multi-line scanner) are already fast. The dense rows say where the cost
-is: a tree of small values. Ours holds about ten bytes per input byte
-(a `Value` is 32 bytes, a member 56, every key and string its own
-allocation), the reference about thirty. The lever is an arena-backed
-tree, one text buffer with spans and `u32` links, the shape that cut the
-Pages document model from 48 to 10 MB; it is recorded in `STATE.md`
-Tech Debt to be done when YAML shares the hub, so both formats gain. The
-numbers do not justify claiming anything about deeply nested documents
-or pathological key sets, which the inputs do not have.
+The reader and writer are ahead of the reference on every row. With the
+arena the dense shape costs about three bytes of tree per input byte
+(a node is 32 bytes and a string its bytes), and the parse is faster
+because nothing is allocated per value. What remains on the dense rows
+is the input text held whole by the reader (60 MB of the 237) and the
+JSON writer's per-key escaping; on prose it is the input text (182 MB of
+the 421). A windowed reader like XML's would take the input out of the
+peak if a large TOML case ever matters. The numbers do not justify
+claiming anything about deeply nested documents or pathological key
+sets, which the inputs do not have.

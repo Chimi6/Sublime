@@ -1,6 +1,6 @@
 # YAML <-> JSON
 
-**Latest** (2026-09-24, first release of YAML: yaml -> json 81.5 MB/s of input on the dense shape and 274.2 on prose, at 615 and 608 MB peak; json -> yaml 64.8 and 320.2 MB/s at 553 and 299 MB peak; every line PASSES against serde_yaml with serde_json, at 1.5 to 3.3 times its throughput and between a quarter and 95 percent of its memory)
+**Latest** (2026-09-25, arena tree: yaml -> json 128.9 MB/s of input on the dense shape and 322.6 on prose, at 235 and 427 MB peak; json -> yaml 98.5 and 356.0 MB/s at 172 and 211 MB peak; every line PASSES against serde_yaml with serde_json, at 2.3 to 5 times its throughput and 11 to 49 percent of its memory)
 
 ## Purpose
 
@@ -66,6 +66,26 @@ throughput in MB/s over the input file's bytes. Rows and units follow
 
 ## Results
 
+### 2026-09-25, the value hub as an arena tree
+
+commit: bd7a134 (the working tree of this commit)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| yaml -> json, dense (62.3 MB): throughput (MB/s of input) | 128.9 | 25.6 (serde_yaml + serde_json) | PASS |
+| yaml -> json, dense: peak memory (MB) | 234.7 | 2161.2 (serde_yaml + serde_json) | PASS |
+| yaml -> json, prose (190.1 MB): throughput (MB/s of input) | 322.6 | 92.5 (serde_yaml + serde_json) | PASS |
+| yaml -> json, prose: peak memory (MB) | 427.2 | 1074.8 (serde_yaml + serde_json) | PASS |
+| json -> yaml, dense (56.2 MB): throughput (MB/s of input) | 98.5 | 42.8 (serde_json + serde_yaml) | PASS |
+| json -> yaml, dense: peak memory (MB) | 172.0 | 586.1 (serde_json + serde_yaml) | PASS |
+| json -> yaml, prose (180.0 MB): throughput (MB/s of input) | 356.0 | 95.5 (serde_json + serde_yaml) | PASS |
+| json -> yaml, prose: peak memory (MB) | 210.6 | 428.3 (serde_json + serde_yaml) | PASS |
+
+The arena tree (`value::Tree`) replaced the owned tree: dense memory
+615 -> 235 MB and 553 -> 172 MB, dense throughput 82 -> 129 and
+65 -> 99 MB/s. Aliases now copy nodes only, the text is shared.
+
 ### 2026-09-24, first release of YAML
 
 commit: 412e69a (the working tree with the streaming writers, before their commit)
@@ -89,12 +109,12 @@ is what the block above measures.
 
 ## Conclusions
 
-The reader is three times the reference on the dense shape and the
-writer holds nothing but the tree. What remains is the tree itself:
-615 MB for 62 MB of dense YAML, the same ten bytes per input byte the
-TOML pair measured, and the arena-backed tree in `STATE.md` Tech Debt is
-the lever for both. The json -> yaml dense throughput (64.8 MB/s, the
-lowest row) is the writer's plain-safety check, which resolves every
-string through the core schema before writing it plain; a byte-class
-prefilter would skip most of that. The numbers do not justify claims
-about alias-heavy or deeply nested documents.
+The reader is five times the reference on the dense shape and the tree
+costs about three bytes per input byte. The json -> yaml dense
+throughput (98.5 MB/s, the lowest row) is the writer's plain-safety
+check, which resolves every string through the core schema before
+writing it plain; a byte-class prefilter would skip most of that. The
+yaml -> json rows hold the input text beside the tree (62 and 190 MB of
+their peaks); a windowed reader like XML's is the lever if a large YAML
+case ever matters. The numbers do not justify claims about alias-heavy
+or deeply nested documents.
