@@ -7,10 +7,10 @@
 use std::fmt::Write;
 
 use crate::io::yaml::reader::resolve_plain;
-use crate::value::{Value, push_double_quoted, push_float};
+use crate::value::{ChunkedText, Value, push_double_quoted, push_float};
 
 /// Writes one document (no `---`).
-pub fn write_document(value: &Value, out: &mut String) {
+pub fn write_document(value: &Value, out: &mut ChunkedText<'_>) {
     match value {
         Value::Table(members) if !members.is_empty() => write_mapping(members, 0, out),
         Value::Array(items) if !items.is_empty() => write_sequence(items, 0, out),
@@ -24,7 +24,7 @@ pub fn write_document(value: &Value, out: &mut String) {
     }
 }
 
-fn write_mapping(members: &[(String, Value)], indent: usize, out: &mut String) {
+fn write_mapping(members: &[(String, Value)], indent: usize, out: &mut ChunkedText<'_>) {
     for (index, (key, value)) in members.iter().enumerate() {
         if index > 0 {
             push_indent(indent, out);
@@ -36,7 +36,7 @@ fn write_mapping(members: &[(String, Value)], indent: usize, out: &mut String) {
 }
 
 /// After `key:`: a scalar on the line, or a collection below.
-fn write_member_value(value: &Value, indent: usize, out: &mut String) {
+fn write_member_value(value: &Value, indent: usize, out: &mut ChunkedText<'_>) {
     match value {
         Value::Table(members) if !members.is_empty() => {
             out.push('\n');
@@ -60,7 +60,7 @@ fn write_member_value(value: &Value, indent: usize, out: &mut String) {
     }
 }
 
-fn write_sequence(items: &[Value], indent: usize, out: &mut String) {
+fn write_sequence(items: &[Value], indent: usize, out: &mut ChunkedText<'_>) {
     for (index, item) in items.iter().enumerate() {
         if index > 0 {
             push_indent(indent, out);
@@ -88,13 +88,13 @@ fn write_sequence(items: &[Value], indent: usize, out: &mut String) {
     }
 }
 
-fn push_indent(indent: usize, out: &mut String) {
+fn push_indent(indent: usize, out: &mut ChunkedText<'_>) {
     for _ in 0..indent {
         out.push(' ');
     }
 }
 
-fn write_key(key: &str, out: &mut String) {
+fn write_key(key: &str, out: &mut ChunkedText<'_>) {
     if is_plain_safe(key) {
         out.push_str(key);
     } else {
@@ -102,7 +102,7 @@ fn write_key(key: &str, out: &mut String) {
     }
 }
 
-fn write_scalar(value: &Value, out: &mut String) {
+fn write_scalar(value: &Value, out: &mut ChunkedText<'_>) {
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(flag) => out.push_str(if *flag { "true" } else { "false" }),
@@ -115,7 +115,9 @@ fn write_scalar(value: &Value, out: &mut String) {
             } else if number.is_infinite() {
                 out.push_str(if *number > 0.0 { ".inf" } else { "-.inf" });
             } else {
-                push_float(out, *number);
+                let mut text = String::new();
+                push_float(&mut text, *number);
+                out.push_str(&text);
             }
         }
         Value::String(text) => {
@@ -143,7 +145,7 @@ fn is_literal_block_candidate(text: &str) -> bool {
 }
 
 /// `|`, `|-`, or `|+` by the trailing newlines, then the lines indented.
-fn write_literal_block(text: &str, indent: usize, out: &mut String) {
+fn write_literal_block(text: &str, indent: usize, out: &mut ChunkedText<'_>) {
     let trailing = text.len() - text.trim_end_matches('\n').len();
     let body = &text[..text.len() - trailing];
     out.push('|');
@@ -197,8 +199,10 @@ fn is_plain_safe(text: &str) -> bool {
     matches!(resolve_plain(text), Value::String(_))
 }
 
-fn write_double_quoted(text: &str, out: &mut String) {
-    push_double_quoted(out, text);
+fn write_double_quoted(text: &str, out: &mut ChunkedText<'_>) {
+    let mut quoted = String::with_capacity(text.len() + 2);
+    push_double_quoted(&mut quoted, text);
+    out.push_str(&quoted);
 }
 
 #[cfg(test)]
@@ -206,9 +210,13 @@ mod tests {
     use super::*;
 
     fn render(value: Value) -> String {
-        let mut out = String::new();
-        write_document(&value, &mut out);
-        out
+        let mut bytes = Vec::new();
+        {
+            let mut out = ChunkedText::new(&mut bytes);
+            write_document(&value, &mut out);
+            out.finish().unwrap();
+        }
+        String::from_utf8(bytes).unwrap()
     }
 
     #[test]

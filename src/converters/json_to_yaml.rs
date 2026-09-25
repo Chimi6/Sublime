@@ -9,6 +9,7 @@ use crate::format::Format;
 use crate::format::formats;
 use crate::io::json;
 use crate::io::yaml;
+use crate::value::ChunkedText;
 
 const NAME: &str = "json-to-yaml";
 
@@ -42,10 +43,9 @@ impl Converter for JsonToYaml {
         _context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
         let document = json::parse(input)?;
-        let mut text = String::new();
+        let mut text = ChunkedText::new(output);
         yaml::write_document(&document, &mut text);
-        output.write_all(text.as_bytes())?;
-        output.flush()?;
+        text.finish()?;
         Ok(())
     }
 }
