@@ -1,0 +1,7 @@
+<catalog>
+  <book id="1"><title>A</title><price>10.5</price><tags><tag>x</tag><tag>y</tag></tags></book>
+  <book id="2"><title>B</title><price>7</price><tags/></book>
+  <book id="3"><title>C</title></book>
+  <count>3</count>
+  <book id="4">late</book>
+</catalog>

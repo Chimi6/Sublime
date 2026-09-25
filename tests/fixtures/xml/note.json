@@ -1,0 +1,1 @@
+{"note":{"@id":"1","@lang":"en","to":"Tove","from":"Jani","heading":null,"body":"Don't & <forget> © © \"me\"","items":{"item":["a","b"]},"single":{"item":"only"},"empty":{"@attr":"x"},"mixed":{"b":"bold","#text":"text tail"},"cdata":"<raw> & stuff","ns:tag":{"@xmlns:ns":"urn:x","@ns:attr":"single 'quoted'","#text":"n"},"padded":"spaced out"}}

@@ -6,6 +6,16 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- XML as a data format: `src/io/xml/tree.rs` reads a document into the value hub under the mapping xmltodict and quick-xml share (elements as objects, attributes as `@name`, text as `#text`, repeated elements as arrays, every value a string), with a strict tokenizer that refuses what `xmllint` refuses and says where; `src/io/xml/writer.rs` writes the mapping back, pretty printed. Paths `xml -> json` and `json -> xml`, both conditional; TOML, YAML, and CSV reach XML through JSON. Oracles in `tests/xml_json.rs` over the fixtures in `tests/fixtures/xml`. Map in `DOCS/formats/xml.md`.
+- Benchmark pair `xml-json` against `quick-xml` with `serde_json` doing the same mapping, dense and prose shapes. Size budget raised 1.7 -> 1.75 MB for the reader and writer.
+- `value::MemberIndex`, the lazy per-table member index (a scan under sixteen members, a map above), shared by hub readers.
+
+### Changed
+
+- The XML reader pulls its input through a 256 KiB sliding window instead of holding the file: xml -> json peak memory on 194 MB of prose 505 -> 310 MB, and text runs, names, and whitespace are scanned a word at a time over the window (dense 90 -> 103 MB/s).
+
 ## [0.12.0] - 2026-09-24
 
 YAML both ways: a YAML 1.2 core-schema reader and a block-style writer on
