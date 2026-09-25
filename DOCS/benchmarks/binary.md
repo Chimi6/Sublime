@@ -30,6 +30,23 @@ a comparison. Startup is implemented in `bench/src/startup.rs`.
 
 ## Results
 
+### 2026-09-24, 0.13.0 with XML
+
+commit: 65d2ceb (the merge of the XML branch, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 1731320 | <= 1750000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 1831584 | recorded | n/a |
+| WebAssembly module (bytes) | 836184 | <= 850000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 340248 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.265 (spawn 0.571, floor 0.306) | < 1 | PASS |
+
+The XML tree reader, writer, and two converters added 43 KB to the
+binary and 18 KB to the module; the binary budget was raised to 1.75 MB
+(changelog), the module stayed inside its own.
+
 ### 2026-09-24, 0.12.0 with YAML
 
 commit: 7dc62b1 (the merge of the YAML branch, before the version bump)
@@ -158,3 +175,4 @@ read as "under a millisecond", not as a trend.
 | 0.10.0 | 1,592,688 | 1,696,384 | 1,600,000 | 767,166 | 800,000 |
 | 0.11.0 | 1,620,152 | 1,720,992 | 1,650,000 | 780,979 | 800,000 |
 | 0.12.0 | 1,688,424 | 1,790,624 | 1,700,000 | 817,872 | 850,000 |
+| 0.13.0 | 1,731,320 | 1,831,584 | 1,750,000 | 836,184 | 850,000 |
