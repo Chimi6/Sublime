@@ -9,6 +9,7 @@ use crate::converters::docx_to_text::DocxToText;
 use crate::converters::html_to_docx::HtmlToDocx;
 use crate::converters::html_to_markdown::HtmlToMarkdown;
 use crate::converters::html_to_text::HtmlToText;
+use crate::converters::hub;
 use crate::converters::json_to_csv::JsonToCsv;
 use crate::converters::json_to_pages::JsonToPages;
 use crate::converters::json_to_toml::JsonToToml;
@@ -32,7 +33,7 @@ use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 28] = [
+static CONVERTERS: [&dyn Converter; 34] = [
     &CsvToJson,
     &JsonToCsv,
     &MarkdownToHtml,
@@ -61,6 +62,12 @@ static CONVERTERS: [&dyn Converter; 28] = [
     &JsonToYaml,
     &XmlToJson,
     &JsonToXml,
+    &hub::TOML_TO_YAML,
+    &hub::YAML_TO_TOML,
+    &hub::TOML_TO_XML,
+    &hub::XML_TO_TOML,
+    &hub::YAML_TO_XML,
+    &hub::XML_TO_YAML,
 ];
 
 pub fn all_converters() -> &'static [&'static dyn Converter] {

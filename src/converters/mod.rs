@@ -11,6 +11,7 @@ pub mod docx_to_text;
 pub mod html_to_docx;
 pub mod html_to_markdown;
 pub mod html_to_text;
+pub mod hub;
 pub mod json_to_csv;
 pub mod json_to_pages;
 pub mod json_to_toml;
