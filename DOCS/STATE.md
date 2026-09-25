@@ -106,7 +106,7 @@ The document category's one-way streets are closed (phases 1 to 4 below, release
 
 ## Done
 
-- 2026-09-24: YAML both ways (unreleased, branch `yaml`): `yaml -> json`, `json -> yaml`, the `yaml-json` pair.
+- 2026-09-24: YAML both ways released as 0.12.0: `yaml -> json`, `json -> yaml`, the `yaml-json` pair passing every line against `serde_yaml`; the TOML and YAML writers stream.
 - 2026-09-24: TOML both ways and the value hub released as 0.11.0: `toml -> json`, `json -> toml`, the `toml-json` pair passing every line against the `toml` crate.
 - 2026-09-24: HTML and plain text input released as 0.10.0 (document-category phases 3 and 4): the tag-soup HTML reader and the text reader into the event stream; `html -> markdown`, `text`, `markdown-json`, `docx` and `text -> markdown`, `html`, `docx`; four benchmark pairs.
 - 2026-09-24: Markdown into Word released as 0.9.0 (document-category phase 2): the events bridge with named styles, `markdown -> docx` and `markdown-json -> docx`, corpus oracles, the `markdown-docx` pair.
