@@ -17,6 +17,8 @@ html2text = "0.12"
 toml = "1"
 serde_yaml = "0.9"
 quick-xml = "0.37"
+calamine = { version = "0.26", features = ["dates"] }
+rust_xlsxwriter = "0.79"
 
 [profile.release]
 lto = "fat"

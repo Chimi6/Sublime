@@ -6,7 +6,7 @@ pub const HELP: &str = "\
 sublime: universal efficient file conversion
 
 USAGE
-  sublime convert <input> [output] [--to <format>] [--from <format>] [--strict] [--via <format>]
+  sublime convert <input> [output] [--to <format>] [--from <format>] [--strict] [--via <format>] [--sheet <name|number>]
   sublime check <from> <to> [--strict]
   sublime formats
   sublime paths [--markdown]
@@ -23,6 +23,7 @@ COMMANDS
 
 FLAGS
   --strict            Refuse any path that is lossy or conditional.
+  --sheet <name|n>    The worksheet to read from a workbook (a name or a 1-based number; the first when absent), or the name to give the sheet written.
   --via <format>      Force the path through a format.
   -q                  Errors only.
   -v                  Steps and timings.
@@ -80,6 +81,7 @@ pub struct ConvertArgs {
     pub to: Option<String>,
     pub from: Option<String>,
     pub strict: bool,
+    pub sheet: Option<String>,
     pub via: Option<String>,
 }
 
@@ -258,6 +260,7 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
     let mut to: Option<String> = None;
     let mut from: Option<String> = None;
     let mut via: Option<String> = None;
+    let mut sheet: Option<String> = None;
     let mut strict = false;
     let mut iterator = rest.into_iter();
     while let Some(arg) = iterator.next() {
@@ -265,6 +268,7 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
             "--to" => to = Some(take_value(&mut iterator, "--to")?),
             "--from" => from = Some(take_value(&mut iterator, "--from")?),
             "--via" => via = Some(take_value(&mut iterator, "--via")?),
+            "--sheet" => sheet = Some(take_value(&mut iterator, "--sheet")?),
             "--strict" => strict = true,
             other if is_flag(other) => return Err(ArgsError::UnknownFlag(other.to_string())),
             _ => positionals.push(arg),
@@ -286,6 +290,7 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
         from,
         strict,
         via,
+        sheet,
     })
 }
 
