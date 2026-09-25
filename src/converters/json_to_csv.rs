@@ -11,23 +11,77 @@ use crate::format::formats;
 use crate::io::csv::CsvWriter;
 use crate::io::json::{JsonTokenizer, JsonWriter, Token};
 
-const NAME: &str = "json-to-csv";
 const PROGRESS_INTERVAL: u64 = 4096;
 const FIDELITY_NOTE: &str = "nested values are written as JSON text, non-string scalars are written as their JSON text, null becomes an empty cell, and objects with differing key sets get empty cells for missing keys";
 
-pub struct JsonToCsv;
+pub struct JsonToCsv {
+    pub name: &'static str,
+    pub from: &'static Format,
+    pub to: &'static Format,
+    /// `,` or `\t`.
+    pub delimiter: u8,
+    /// The input is JSON Lines (one object per line) rather than an array.
+    pub lines: bool,
+}
+
+pub static JSON_TO_CSV: JsonToCsv = JsonToCsv {
+    name: "json-to-csv",
+    from: &formats::JSON,
+    to: &formats::CSV,
+    delimiter: b',',
+    lines: false,
+};
+
+pub static JSON_TO_TSV: JsonToCsv = JsonToCsv {
+    name: "json-to-tsv",
+    from: &formats::JSON,
+    to: &formats::TSV,
+    delimiter: b'\t',
+    lines: false,
+};
+
+pub static JSONL_TO_CSV: JsonToCsv = JsonToCsv {
+    name: "jsonl-to-csv",
+    from: &formats::JSONL,
+    to: &formats::CSV,
+    delimiter: b',',
+    lines: true,
+};
+
+pub static JSONL_TO_TSV: JsonToCsv = JsonToCsv {
+    name: "jsonl-to-tsv",
+    from: &formats::JSONL,
+    to: &formats::TSV,
+    delimiter: b'\t',
+    lines: true,
+};
+
+/// How the rows arrive: as the elements of one array, or one per line.
+#[derive(Clone, Copy)]
+struct Shape {
+    name: &'static str,
+    lines: bool,
+}
+
+/// Which columns have already reported a scalar or a null loss, so each
+/// column reports each once.
+struct ColumnReports {
+    name: &'static str,
+    scalar: Vec<bool>,
+    null: Vec<bool>,
+}
 
 impl Converter for JsonToCsv {
     fn name(&self) -> &'static str {
-        NAME
+        self.name
     }
 
     fn from(&self) -> &'static Format {
-        &formats::JSON
+        self.from
     }
 
     fn to(&self) -> &'static Format {
-        &formats::CSV
+        self.to
     }
 
     fn fidelity(&self) -> Fidelity {
@@ -44,24 +98,54 @@ impl Converter for JsonToCsv {
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
+        let shape = Shape {
+            name: self.name,
+            lines: self.lines,
+        };
         let mut rewound = input.into_rewindable()?;
-        let keys = collect_keys(&mut rewound, context)?;
+        let keys = collect_keys(&mut rewound, shape, context)?;
         rewound.rewind()?;
-        write_rows(&mut rewound, &keys, output, context)
+        write_rows(&mut rewound, shape, self.delimiter, &keys, output, context)
     }
 }
 
-fn unsupported_root(found: Token) -> ConvertError {
-    let message = format!(
-        "JSON root must be an array of objects, found {}",
-        found.describe()
-    );
+fn unsupported_root(shape: Shape, found: Token) -> ConvertError {
+    let message = if shape.lines {
+        format!(
+            "every JSON Lines value must be an object, found {}",
+            found.describe()
+        )
+    } else {
+        format!(
+            "JSON root must be an array of objects, found {}",
+            found.describe()
+        )
+    };
     ConvertError::Unsupported(message)
+}
+
+/// The next row's opening token, or `None` at the end of the rows: past
+/// the closing `]` of the array, or at the end of the lines.
+fn next_row<R: Read>(
+    tokenizer: &mut JsonTokenizer<R>,
+    shape: Shape,
+) -> Result<Option<Token>, ConvertError> {
+    loop {
+        let token = tokenizer.next_token()?;
+        match token {
+            Token::EndArray if !shape.lines => return Ok(None),
+            Token::Comma if !shape.lines => continue,
+            Token::End if shape.lines => return Ok(None),
+            Token::BeginObject => return Ok(Some(token)),
+            other => return Err(unsupported_root(shape, other)),
+        }
+    }
 }
 
 /// Pass one: the ordered union of keys across all objects.
 fn collect_keys(
     source: &mut dyn Read,
+    shape: Shape,
     context: &mut Context<'_>,
 ) -> Result<Vec<String>, ConvertError> {
     let mut tokenizer = JsonTokenizer::new(source);
@@ -70,16 +154,15 @@ fn collect_keys(
     let mut object_index: u64 = 0;
     let mut reported_differing_sets = false;
 
-    let root = tokenizer.next_token()?;
-    if root != Token::BeginArray {
-        return Err(unsupported_root(root));
+    if !shape.lines {
+        let root = tokenizer.next_token()?;
+        if root != Token::BeginArray {
+            return Err(unsupported_root(shape, root));
+        }
     }
-    loop {
-        let token = tokenizer.next_token()?;
-        match token {
-            Token::EndArray => break,
-            Token::Comma => continue,
-            Token::BeginObject => {
+    while next_row(&mut tokenizer, shape)?.is_some() {
+        {
+            {
                 let key_count_before = keys.len();
                 let object_key_count = collect_object_keys(&mut tokenizer, &mut keys, &mut seen)?;
                 let key_count_after = keys.len();
@@ -89,7 +172,7 @@ fn collect_keys(
                 if differs && !reported_differing_sets {
                     let location = tokenizer.location();
                     context.loss(
-                        NAME,
+                        shape.name,
                         location,
                         "objects have differing key sets; missing keys are written as empty cells",
                     );
@@ -97,7 +180,6 @@ fn collect_keys(
                 }
                 object_index += 1;
             }
-            other => return Err(unsupported_root(other)),
         }
     }
     Ok(keys)
@@ -142,49 +224,45 @@ fn collect_object_keys<R: Read>(
 /// Pass two: header and one row per object.
 fn write_rows(
     source: &mut dyn Read,
+    shape: Shape,
+    delimiter: u8,
     keys: &[String],
     output: &mut dyn Write,
     context: &mut Context<'_>,
 ) -> Result<(), ConvertError> {
     let mut tokenizer = JsonTokenizer::new(source);
-    let mut writer = CsvWriter::new(output);
+    let mut writer = CsvWriter::with_delimiter(output, delimiter);
     let mut column_of: HashMap<&str, usize> = HashMap::new();
     for (index, key) in keys.iter().enumerate() {
         column_of.insert(key.as_str(), index);
     }
     let mut row: Vec<String> = vec![String::new(); keys.len()];
-    let mut scalar_loss_reported: Vec<bool> = vec![false; keys.len()];
-    let mut null_loss_reported: Vec<bool> = vec![false; keys.len()];
+    let mut reports = ColumnReports {
+        name: shape.name,
+        scalar: vec![false; keys.len()],
+        null: vec![false; keys.len()],
+    };
 
-    tokenizer.expect(Token::BeginArray)?;
+    if !shape.lines {
+        tokenizer.expect(Token::BeginArray)?;
+    }
     let mut row_count: u64 = 0;
-    loop {
-        let token = tokenizer.next_token()?;
-        match token {
-            Token::EndArray => break,
-            Token::Comma => continue,
-            Token::BeginObject => {
+    while next_row(&mut tokenizer, shape)?.is_some() {
+        {
+            {
                 if row_count == 0 {
                     writer.write_record(keys.iter().map(String::as_str))?;
                 }
                 for cell in row.iter_mut() {
                     cell.clear();
                 }
-                fill_row(
-                    &mut tokenizer,
-                    &column_of,
-                    &mut row,
-                    &mut scalar_loss_reported,
-                    &mut null_loss_reported,
-                    context,
-                )?;
+                fill_row(&mut tokenizer, &column_of, &mut row, &mut reports, context)?;
                 writer.write_record(row.iter().map(String::as_str))?;
                 row_count += 1;
                 if row_count % PROGRESS_INTERVAL == 0 {
-                    context.progress(NAME, tokenizer.bytes_consumed());
+                    context.progress(shape.name, tokenizer.bytes_consumed());
                 }
             }
-            other => return Err(unsupported_root(other)),
         }
     }
     writer.flush()?;
@@ -195,8 +273,7 @@ fn fill_row<R: Read>(
     tokenizer: &mut JsonTokenizer<R>,
     column_of: &HashMap<&str, usize>,
     row: &mut [String],
-    scalar_loss_reported: &mut [bool],
-    null_loss_reported: &mut [bool],
+    reports: &mut ColumnReports,
     context: &mut Context<'_>,
 ) -> Result<(), ConvertError> {
     loop {
@@ -216,15 +293,7 @@ fn fill_row<R: Read>(
                     }
                 };
                 row[column].clear();
-                write_cell(
-                    tokenizer,
-                    value_token,
-                    row,
-                    column,
-                    scalar_loss_reported,
-                    null_loss_reported,
-                    context,
-                )?;
+                write_cell(tokenizer, value_token, row, column, reports, context)?;
             }
             other => {
                 let message = format!("expected a key, found {}", other.describe());
@@ -243,8 +312,7 @@ fn write_cell<R: Read>(
     token: Token,
     row: &mut [String],
     column: usize,
-    scalar_loss_reported: &mut [bool],
-    null_loss_reported: &mut [bool],
+    reports: &mut ColumnReports,
     context: &mut Context<'_>,
 ) -> Result<(), ConvertError> {
     match token {
@@ -254,18 +322,20 @@ fn write_cell<R: Read>(
         Token::Number | Token::True | Token::False => {
             row[column].push_str(tokenizer.text());
             report_column_once(
+                reports.name,
                 tokenizer,
                 column,
-                scalar_loss_reported,
+                &mut reports.scalar,
                 context,
                 "non-string scalar written as its JSON text",
             );
         }
         Token::Null => {
             report_column_once(
+                reports.name,
                 tokenizer,
                 column,
-                null_loss_reported,
+                &mut reports.null,
                 context,
                 "null written as an empty cell",
             );
@@ -273,7 +343,7 @@ fn write_cell<R: Read>(
         Token::BeginObject | Token::BeginArray => {
             render_value(tokenizer, token, &mut row[column])?;
             let location = tokenizer.location();
-            context.loss(NAME, location, "nested value written as JSON text");
+            context.loss(reports.name, location, "nested value written as JSON text");
         }
         other => {
             let message = format!("expected a value, found {}", other.describe());
@@ -287,6 +357,7 @@ fn write_cell<R: Read>(
 }
 
 fn report_column_once<R: Read>(
+    name: &'static str,
     tokenizer: &JsonTokenizer<R>,
     column: usize,
     column_loss_reported: &mut [bool],
@@ -299,7 +370,7 @@ fn report_column_once<R: Read>(
     column_loss_reported[column] = true;
     let location = tokenizer.location();
     let message = format!("column {}: {description}", column + 1);
-    context.loss(NAME, location, message);
+    context.loss(name, location, message);
 }
 
 /// One open container while re-serializing a nested value.
@@ -413,7 +484,7 @@ mod tests {
         {
             let mut context = Context::new(&mut sink, &options);
             let mut source: &[u8] = input;
-            let converter = JsonToCsv;
+            let converter = &JSON_TO_CSV;
             converter.convert(Input::Stream(&mut source), &mut output, &mut context)?;
         }
         Ok((String::from_utf8(output).unwrap(), sink))
@@ -494,7 +565,7 @@ mod tests {
         let mut sink = CollectingSink::new();
         let mut output = Vec::new();
         let mut context = Context::new(&mut sink, &options);
-        JsonToCsv
+        JSON_TO_CSV
             .convert(Input::Rewindable(&mut cursor), &mut output, &mut context)
             .unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), "a\n1\n");
@@ -502,7 +573,7 @@ mod tests {
 
     #[test]
     fn declares_contract() {
-        let converter = JsonToCsv;
+        let converter = &JSON_TO_CSV;
         assert_eq!(converter.name(), "json-to-csv");
         assert_eq!(converter.from().id, "json");
         assert_eq!(converter.to().id, "csv");

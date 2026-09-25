@@ -8,6 +8,7 @@ pub mod docx_text;
 pub mod html_docx;
 pub mod html_markdown;
 pub mod html_text;
+pub mod jsonl_json;
 pub mod markdown_docx;
 pub mod markdown_html;
 pub mod markdown_json;
@@ -24,6 +25,8 @@ pub mod yaml_json;
 
 pub const NAMES: &[&str] = &[
     "csv-json",
+    "tsv-json",
+    "jsonl-json",
     "docx-markdown",
     "docx-html",
     "docx-text",
@@ -48,6 +51,8 @@ pub const NAMES: &[&str] = &[
 pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
     match pair {
         "csv-json" => csv_json::run(mode, args),
+        "tsv-json" => csv_json::run(mode, args),
+        "jsonl-json" => jsonl_json::run(mode, args),
         "docx-markdown" => docx_markdown::run(mode, args),
         "docx-html" => docx_html::run(mode, args),
         "docx-text" => docx_text::run(mode, args),

@@ -4,11 +4,16 @@ use std::io::{self, Write};
 
 pub struct CsvWriter<W: Write> {
     sink: W,
+    delimiter: u8,
 }
 
 impl<W: Write> CsvWriter<W> {
     pub fn new(sink: W) -> Self {
-        CsvWriter { sink }
+        CsvWriter::with_delimiter(sink, b',')
+    }
+
+    pub fn with_delimiter(sink: W, delimiter: u8) -> Self {
+        CsvWriter { sink, delimiter }
     }
 
     pub fn write_record<'a, I>(&mut self, fields: I) -> io::Result<()>
@@ -19,7 +24,7 @@ impl<W: Write> CsvWriter<W> {
         let mut only_field_was_empty = false;
         for field in fields {
             if field_count > 0 {
-                self.sink.write_all(b",")?;
+                self.sink.write_all(&[self.delimiter])?;
             }
             self.write_field(field)?;
             only_field_was_empty = field.is_empty();
@@ -41,7 +46,7 @@ impl<W: Write> CsvWriter<W> {
     }
 
     fn write_field(&mut self, field: &str) -> io::Result<()> {
-        if !needs_quoting(field) {
+        if !needs_quoting(field, self.delimiter) {
             return self.sink.write_all(field.as_bytes());
         }
         self.sink.write_all(b"\"")?;
@@ -57,9 +62,9 @@ impl<W: Write> CsvWriter<W> {
     }
 }
 
-fn needs_quoting(field: &str) -> bool {
+fn needs_quoting(field: &str, delimiter: u8) -> bool {
     for byte in field.bytes() {
-        let is_special = matches!(byte, b',' | b'"' | b'\n' | b'\r');
+        let is_special = byte == delimiter || matches!(byte, b'"' | b'\n' | b'\r');
         if is_special {
             return true;
         }
