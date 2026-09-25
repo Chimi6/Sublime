@@ -1,8 +1,13 @@
-//! XML: escaping for writers and a small reader for the XML-based formats.
+//! XML: escaping for writers, a small pull reader for the XML-based
+//! formats (Word), and the strict reader and writer that map an XML
+//! document to and from the value hub.
 
 pub mod reader;
+pub mod tree;
+pub mod writer;
 
 pub use reader::{XmlEvent, XmlReader};
+pub use tree::XmlError;
 
 /// Appends `text` with `&`, `<`, and `>` escaped, for element content.
 pub fn escape_text(out: &mut String, text: &str) {
