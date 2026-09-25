@@ -2,7 +2,7 @@
 //! `pub mod` line in `src/converters/mod.rs`.
 
 use crate::converter::Converter;
-use crate::converters::csv_to_json::CsvToJson;
+use crate::converters::csv_to_json;
 use crate::converters::docx_to_html::DocxToHtml;
 use crate::converters::docx_to_markdown::DocxToMarkdown;
 use crate::converters::docx_to_text::DocxToText;
@@ -10,7 +10,7 @@ use crate::converters::html_to_docx::HtmlToDocx;
 use crate::converters::html_to_markdown::HtmlToMarkdown;
 use crate::converters::html_to_text::HtmlToText;
 use crate::converters::hub;
-use crate::converters::json_to_csv::JsonToCsv;
+use crate::converters::json_to_csv;
 use crate::converters::json_to_pages::JsonToPages;
 use crate::converters::json_to_toml::JsonToToml;
 use crate::converters::json_to_xml::JsonToXml;
@@ -25,6 +25,7 @@ use crate::converters::pages_to_html::PagesToHtml;
 use crate::converters::pages_to_json::PagesToJson;
 use crate::converters::pages_to_markdown::PagesToMarkdown;
 use crate::converters::pages_to_text::PagesToText;
+use crate::converters::rows;
 use crate::converters::text_to_docx::TextToDocx;
 use crate::converters::text_to_html::TextToHtml;
 use crate::converters::text_to_markdown::TextToMarkdown;
@@ -33,9 +34,9 @@ use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 34] = [
-    &CsvToJson,
-    &JsonToCsv,
+static CONVERTERS: [&dyn Converter; 44] = [
+    &csv_to_json::CSV_TO_JSON,
+    &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
     &MarkdownToText,
     &MarkdownToJson,
@@ -68,6 +69,16 @@ static CONVERTERS: [&dyn Converter; 34] = [
     &hub::XML_TO_TOML,
     &hub::YAML_TO_XML,
     &hub::XML_TO_YAML,
+    &csv_to_json::TSV_TO_JSON,
+    &csv_to_json::CSV_TO_JSONL,
+    &csv_to_json::TSV_TO_JSONL,
+    &json_to_csv::JSON_TO_TSV,
+    &json_to_csv::JSONL_TO_CSV,
+    &json_to_csv::JSONL_TO_TSV,
+    &rows::CSV_TO_TSV,
+    &rows::TSV_TO_CSV,
+    &rows::JsonlToJson,
+    &rows::JsonToJsonl,
 ];
 
 pub fn all_converters() -> &'static [&'static dyn Converter] {
@@ -143,12 +154,14 @@ mod tests {
                 "docx",
                 "html",
                 "json",
+                "jsonl",
                 "markdown",
                 "markdown-json",
                 "pages",
                 "pages-json",
                 "text",
                 "toml",
+                "tsv",
                 "xml",
                 "yaml"
             ]
