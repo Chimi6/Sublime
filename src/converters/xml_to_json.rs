@@ -5,7 +5,6 @@
 use std::io::Write;
 
 use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
-use crate::converters::input::read_text_document;
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
@@ -44,8 +43,7 @@ impl Converter for XmlToJson {
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
-        let text = read_text_document(&mut input)?;
-        let parsed = tree::parse(&text)?;
+        let parsed = tree::parse_reader(&mut input)?;
         for note in parsed.notes {
             context.loss(NAME, Location::default(), note);
         }

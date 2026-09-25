@@ -12,6 +12,10 @@ section under a version heading.
 - Benchmark pair `xml-json` against `quick-xml` with `serde_json` doing the same mapping, dense and prose shapes. Size budget raised 1.7 -> 1.75 MB for the reader and writer.
 - `value::MemberIndex`, the lazy per-table member index (a scan under sixteen members, a map above), shared by hub readers.
 
+### Changed
+
+- The XML reader pulls its input through a 256 KiB sliding window instead of holding the file: xml -> json peak memory on 194 MB of prose 505 -> 310 MB, and text runs, names, and whitespace are scanned a word at a time over the window (dense 90 -> 103 MB/s).
+
 ## [0.12.0] - 2026-09-24
 
 YAML both ways: a YAML 1.2 core-schema reader and a block-style writer on
