@@ -1,16 +1,13 @@
-//! TOML 1.0 reader. One forward pass over the text builds an arena of
-//! tables, enforcing the specification's definition rules as tables are
+//! TOML 1.0 reader. One forward pass over the text builds the value tree
+//! directly, enforcing the specification's definition rules as tables are
 //! created (a table defined twice, an inline table extended, a static
-//! array appended to); the arena is then turned into a `Value` tree.
-//!
-//! A table's members are found by a linear scan while it is small and by
-//! a lazily built index once it grows, so a document of many small tables
-//! and a document of one huge table both stay linear.
-
-use std::collections::HashMap;
+//! array appended to). Each node carries a kind beside the tree so those
+//! rules are one match at the point of use; members are found through
+//! the hub's lazy index, so a document of many small tables and a
+//! document of one huge table both stay linear.
 
 use crate::converter::Location;
-use crate::value::Value;
+use crate::value::{Data, MemberIndex, NONE, Span, Tree};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TomlError {
@@ -18,17 +15,14 @@ pub struct TomlError {
     pub message: String,
 }
 
-/// Parses one TOML document into a `Value::Table`.
-pub fn parse(text: &str) -> Result<Value, TomlError> {
+/// Parses one TOML document; the tree's root is its table.
+pub fn parse(text: &str) -> Result<Tree, TomlError> {
     let mut parser = Parser::new(text);
     parser.document()?;
-    Ok(parser.finish())
+    Ok(parser.tree)
 }
 
-/// Members beyond this count get a hash index.
-const INDEX_THRESHOLD: usize = 16;
-
-/// How a table came to exist; the rules for extending it depend on it.
+/// How a node came to exist; the rules for extending it depend on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     /// `[a.b]`: closed to another header, open to sub-tables.
@@ -39,55 +33,11 @@ enum Kind {
     Dotted,
     /// `{ ... }`: closed to everything after its closing brace.
     Inline,
-}
-
-enum Slot {
-    Value(Value),
-    Table(u32),
-    StaticArray(Vec<Slot>),
-    TableArray(Vec<u32>),
-}
-
-struct Node {
-    members: Vec<(String, Slot)>,
-    index: Option<HashMap<String, usize>>,
-    kind: Kind,
-}
-
-impl Node {
-    fn new(kind: Kind) -> Node {
-        Node {
-            members: Vec::new(),
-            index: None,
-            kind,
-        }
-    }
-
-    fn find(&self, key: &str) -> Option<usize> {
-        match &self.index {
-            Some(index) => index.get(key).copied(),
-            None => self
-                .members
-                .iter()
-                .position(|(existing, _)| existing == key),
-        }
-    }
-
-    fn push(&mut self, key: String, slot: Slot) -> usize {
-        let position = self.members.len();
-        if let Some(index) = &mut self.index {
-            index.insert(key.clone(), position);
-        } else if position >= INDEX_THRESHOLD {
-            let mut index: HashMap<String, usize> = HashMap::with_capacity(position * 2);
-            for (existing_position, (existing, _)) in self.members.iter().enumerate() {
-                index.insert(existing.clone(), existing_position);
-            }
-            index.insert(key.clone(), position);
-            self.index = Some(index);
-        }
-        self.members.push((key, slot));
-        position
-    }
+    /// `[[a]]`: open to more `[[a]]`.
+    TableArray,
+    /// `[ ... ]`: closed.
+    StaticArray,
+    Leaf,
 }
 
 struct Parser<'a> {
@@ -96,64 +46,68 @@ struct Parser<'a> {
     pos: usize,
     line: u64,
     line_start: usize,
-    nodes: Vec<Node>,
+    tree: Tree,
+    /// One kind per tree node.
+    kinds: Vec<Kind>,
+    index: MemberIndex,
     current: u32,
 }
-
-const ROOT: u32 = 0;
 
 impl<'a> Parser<'a> {
     fn new(text: &'a str) -> Parser<'a> {
         let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+        let mut tree = Tree::with_capacity(text.len());
+        let root = tree.push_table(Span::default());
+        tree.root = root;
         Parser {
             text,
             bytes: text.as_bytes(),
             pos: 0,
             line: 1,
             line_start: 0,
-            nodes: vec![Node::new(Kind::Header)],
-            current: ROOT,
+            tree,
+            kinds: vec![Kind::Header],
+            index: MemberIndex::default(),
+            current: root,
         }
     }
 
-    fn finish(mut self) -> Value {
-        let members = std::mem::take(&mut self.nodes[ROOT as usize].members);
-        Value::Table(self.convert_members(members))
+    // ---- nodes ----
+
+    fn new_table(&mut self, kind: Kind, key: &str) -> u32 {
+        let key = self.tree.intern(key);
+        let id = self.tree.push_table(key);
+        self.kinds.push(kind);
+        id
     }
 
-    fn convert_members(&mut self, members: Vec<(String, Slot)>) -> Vec<(String, Value)> {
-        let mut converted = Vec::with_capacity(members.len());
-        for (key, slot) in members {
-            converted.push((key, self.convert_slot(slot)));
-        }
-        converted
+    fn new_array(&mut self, kind: Kind, key: &str) -> u32 {
+        let key = self.tree.intern(key);
+        let id = self.tree.push_array(key);
+        self.kinds.push(kind);
+        id
     }
 
-    #[inline(never)]
-    fn convert_slot(&mut self, slot: Slot) -> Value {
-        match slot {
-            Slot::Value(value) => value,
-            Slot::Table(id) => self.convert_table(id),
-            Slot::StaticArray(items) => {
-                let mut values = Vec::with_capacity(items.len());
-                for item in items {
-                    values.push(self.convert_slot(item));
-                }
-                Value::Array(values)
-            }
-            Slot::TableArray(ids) => {
-                let mut values = Vec::with_capacity(ids.len());
-                for id in ids {
-                    values.push(self.convert_table(id));
-                }
-                Value::Array(values)
-            }
-        }
+    fn leaf(&mut self, data: Data) -> u32 {
+        let id = self.tree.push(Span::default(), data);
+        self.kinds.push(Kind::Leaf);
+        id
     }
 
-    fn convert_table(&mut self, id: u32) -> Value {
-        let members = std::mem::take(&mut self.nodes[id as usize].members);
-        Value::Table(self.convert_members(members))
+    fn text_leaf(&mut self, text: &str) -> u32 {
+        let span = self.tree.intern(text);
+        self.leaf(Data::Text(span))
+    }
+
+    fn kind(&self, id: u32) -> Kind {
+        self.kinds[id as usize]
+    }
+
+    /// Appends `child` under `parent` with `key`, keeping the index current.
+    fn add_member(&mut self, parent: u32, key: &str, child: u32) {
+        self.tree.nodes[child as usize].key = self.tree.intern(key);
+        self.tree.append(parent, child);
+        self.index.record(&self.tree, parent, child);
     }
 
     // ---- errors and position ----
@@ -314,27 +268,26 @@ impl<'a> Parser<'a> {
     fn open_table(&mut self, path: &[String], start: usize) -> Result<u32, TomlError> {
         let (last, parents) = split_last(path);
         let parent = self.walk_header_parents(parents, start)?;
-        let existing = self.nodes[parent as usize].find(last);
-        match existing {
+        match self.index.find(&self.tree, parent, last) {
             None => {
-                let id = self.new_node(Kind::Header);
-                self.nodes[parent as usize].push(last.clone(), Slot::Table(id));
+                let id = self.new_table(Kind::Header, "");
+                self.add_member(parent, last, id);
                 Ok(id)
             }
-            Some(position) => match &self.nodes[parent as usize].members[position].1 {
-                Slot::Table(id) => {
-                    let id = *id;
-                    if self.nodes[id as usize].kind == Kind::Implicit {
-                        self.nodes[id as usize].kind = Kind::Header;
-                        Ok(id)
-                    } else {
-                        Err(self.error_at(start, "table defined twice"))
-                    }
+            Some(id) => match self.kind(id) {
+                Kind::Implicit => {
+                    self.kinds[id as usize] = Kind::Header;
+                    Ok(id)
                 }
-                Slot::TableArray(_) => {
+                Kind::Header | Kind::Dotted | Kind::Inline => {
+                    Err(self.error_at(start, "table defined twice"))
+                }
+                Kind::TableArray => {
                     Err(self.error_at(start, "already an array of tables, not a table"))
                 }
-                _ => Err(self.error_at(start, "already a value, not a table")),
+                Kind::StaticArray | Kind::Leaf => {
+                    Err(self.error_at(start, "already a value, not a table"))
+                }
             },
         }
     }
@@ -344,19 +297,20 @@ impl<'a> Parser<'a> {
     fn open_table_array(&mut self, path: &[String], start: usize) -> Result<u32, TomlError> {
         let (last, parents) = split_last(path);
         let parent = self.walk_header_parents(parents, start)?;
-        let id = self.new_node(Kind::Header);
-        let existing = self.nodes[parent as usize].find(last);
-        match existing {
+        let table = self.new_table(Kind::Header, "");
+        match self.index.find(&self.tree, parent, last) {
             None => {
-                self.nodes[parent as usize].push(last.clone(), Slot::TableArray(vec![id]));
-                Ok(id)
+                let array = self.new_array(Kind::TableArray, "");
+                self.add_member(parent, last, array);
+                self.tree.append(array, table);
+                Ok(table)
             }
-            Some(position) => match &mut self.nodes[parent as usize].members[position].1 {
-                Slot::TableArray(ids) => {
-                    ids.push(id);
-                    Ok(id)
+            Some(id) => match self.kind(id) {
+                Kind::TableArray => {
+                    self.tree.append(id, table);
+                    Ok(table)
                 }
-                Slot::StaticArray(_) => {
+                Kind::StaticArray => {
                     Err(self.error_at(start, "static array cannot be appended to"))
                 }
                 _ => Err(self.error_at(start, "already defined and not an array of tables")),
@@ -368,40 +322,30 @@ impl<'a> Parser<'a> {
     /// but inline, or the last table of an array of tables.
     #[inline(never)]
     fn walk_header_parents(&mut self, parents: &[String], start: usize) -> Result<u32, TomlError> {
-        let mut node = ROOT;
+        let mut node = self.tree.root;
         for segment in parents {
-            let existing = self.nodes[node as usize].find(segment);
-            node = match existing {
+            node = match self.index.find(&self.tree, node, segment) {
                 None => {
-                    let id = self.new_node(Kind::Implicit);
-                    self.nodes[node as usize].push(segment.clone(), Slot::Table(id));
+                    let id = self.new_table(Kind::Implicit, "");
+                    self.add_member(node, segment, id);
                     id
                 }
-                Some(position) => match &self.nodes[node as usize].members[position].1 {
-                    Slot::Table(id) => {
-                        let id = *id;
-                        if self.nodes[id as usize].kind == Kind::Inline {
-                            return Err(self.error_at(start, "inline table cannot be extended"));
-                        }
-                        id
+                Some(id) => match self.kind(id) {
+                    Kind::Inline => {
+                        return Err(self.error_at(start, "inline table cannot be extended"));
                     }
-                    Slot::TableArray(ids) => match ids.last() {
-                        Some(last) => *last,
-                        None => return Err(self.error_at(start, "empty array of tables")),
+                    Kind::Header | Kind::Implicit | Kind::Dotted => id,
+                    Kind::TableArray => match self.tree.data(id) {
+                        Data::Array(children) if children.last != NONE => children.last,
+                        _ => return Err(self.error_at(start, "empty array of tables")),
                     },
-                    _ => {
+                    Kind::StaticArray | Kind::Leaf => {
                         return Err(self.error_at(start, "path crosses a value, not a table"));
                     }
                 },
             };
         }
         Ok(node)
-    }
-
-    fn new_node(&mut self, kind: Kind) -> u32 {
-        let id = self.nodes.len() as u32;
-        self.nodes.push(Node::new(kind));
-        id
     }
 
     // ---- key/value pairs ----
@@ -418,48 +362,43 @@ impl<'a> Parser<'a> {
         }
         self.pos += 1;
         self.skip_ws();
-        let slot = self.value()?;
+        let value = self.value()?;
         let (last, parents) = split_last(&path);
         let mut node = table;
-        let inside_inline = self.nodes[table as usize].kind == Kind::Inline;
+        let inside_inline = self.kind(table) == Kind::Inline;
         for segment in parents {
-            let existing = self.nodes[node as usize].find(segment);
-            node = match existing {
+            node = match self.index.find(&self.tree, node, segment) {
                 None => {
                     let kind = if inside_inline {
                         Kind::Inline
                     } else {
                         Kind::Dotted
                     };
-                    let id = self.new_node(kind);
-                    self.nodes[node as usize].push(segment.clone(), Slot::Table(id));
+                    let id = self.new_table(kind, "");
+                    self.add_member(node, segment, id);
                     id
                 }
-                Some(position) => match &self.nodes[node as usize].members[position].1 {
-                    Slot::Table(id) => {
-                        let id = *id;
-                        let kind = self.nodes[id as usize].kind;
-                        let open_to_dotted = kind == Kind::Dotted
-                            || kind == Kind::Implicit
-                            || (inside_inline && kind == Kind::Inline);
-                        if !open_to_dotted {
-                            return Err(self.error_at(
-                                start,
-                                "dotted key cannot extend a table defined elsewhere",
-                            ));
-                        }
-                        id
+                Some(id) => {
+                    let kind = self.kind(id);
+                    let open_to_dotted = kind == Kind::Dotted
+                        || kind == Kind::Implicit
+                        || (inside_inline && kind == Kind::Inline);
+                    if !open_to_dotted {
+                        let message = if self.tree.data(id).is_table() {
+                            "dotted key cannot extend a table defined elsewhere"
+                        } else {
+                            "dotted key crosses a value, not a table"
+                        };
+                        return Err(self.error_at(start, message));
                     }
-                    _ => {
-                        return Err(self.error_at(start, "dotted key crosses a value, not a table"));
-                    }
-                },
+                    id
+                }
             };
         }
-        if self.nodes[node as usize].find(last).is_some() {
+        if self.index.find(&self.tree, node, last).is_some() {
             return Err(self.error_at(start, "key defined twice"));
         }
-        self.nodes[node as usize].push(last.clone(), slot);
+        self.add_member(node, last, value);
         Ok(())
     }
 
@@ -499,40 +438,43 @@ impl<'a> Parser<'a> {
 
     // ---- values ----
 
-    fn value(&mut self) -> Result<Slot, TomlError> {
+    /// A value as an unlinked node with no key yet.
+    fn value(&mut self) -> Result<u32, TomlError> {
         match self.peek() {
             Some(b'"') => {
                 if self.starts_with(b"\"\"\"") {
                     self.pos += 3;
-                    Ok(Slot::Value(Value::String(self.multiline_basic_string()?)))
+                    let text = self.multiline_basic_string()?;
+                    Ok(self.text_leaf(&text))
                 } else {
                     self.pos += 1;
-                    Ok(Slot::Value(Value::String(self.basic_string()?)))
+                    let text = self.basic_string()?;
+                    Ok(self.text_leaf(&text))
                 }
             }
             Some(b'\'') => {
                 if self.starts_with(b"'''") {
                     self.pos += 3;
-                    Ok(Slot::Value(Value::String(self.multiline_literal_string()?)))
+                    let text = self.multiline_literal_string()?;
+                    Ok(self.text_leaf(&text))
                 } else {
                     self.pos += 1;
-                    Ok(Slot::Value(Value::String(
-                        self.literal_string()?.to_string(),
-                    )))
+                    let text = self.literal_string()?;
+                    Ok(self.text_leaf(text))
                 }
             }
             Some(b'[') => self.array(),
             Some(b'{') => self.inline_table(),
             Some(b't') if self.starts_with(b"true") => {
                 self.pos += 4;
-                Ok(Slot::Value(Value::Bool(true)))
+                Ok(self.leaf(Data::Bool(true)))
             }
             Some(b'f') if self.starts_with(b"false") => {
                 self.pos += 5;
-                Ok(Slot::Value(Value::Bool(false)))
+                Ok(self.leaf(Data::Bool(false)))
             }
             Some(byte) if byte.is_ascii_digit() || matches!(byte, b'+' | b'-' | b'i' | b'n') => {
-                Ok(Slot::Value(self.number_or_datetime()?))
+                self.number_or_datetime()
             }
             Some(_) => self.error("expected a value"),
             None => self.error("expected a value, found the end of the document"),
@@ -540,26 +482,27 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(never)]
-    fn array(&mut self) -> Result<Slot, TomlError> {
+    fn array(&mut self) -> Result<u32, TomlError> {
         self.pos += 1;
-        let mut items = Vec::new();
+        let array = self.new_array(Kind::StaticArray, "");
         loop {
             self.skip_blank()?;
             match self.peek() {
                 Some(b']') => {
                     self.pos += 1;
-                    return Ok(Slot::StaticArray(items));
+                    return Ok(array);
                 }
                 None => return self.error("array never closed"),
                 _ => {}
             }
-            items.push(self.value()?);
+            let item = self.value()?;
+            self.tree.append(array, item);
             self.skip_blank()?;
             match self.peek() {
                 Some(b',') => self.pos += 1,
                 Some(b']') => {
                     self.pos += 1;
-                    return Ok(Slot::StaticArray(items));
+                    return Ok(array);
                 }
                 _ => return self.error("expected ',' or ']' in the array"),
             }
@@ -567,23 +510,23 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(never)]
-    fn inline_table(&mut self) -> Result<Slot, TomlError> {
+    fn inline_table(&mut self) -> Result<u32, TomlError> {
         self.pos += 1;
-        let id = self.new_node(Kind::Inline);
+        let table = self.new_table(Kind::Inline, "");
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.pos += 1;
-            return Ok(Slot::Table(id));
+            return Ok(table);
         }
         loop {
             self.skip_ws();
-            self.key_value(id)?;
+            self.key_value(table)?;
             self.skip_ws();
             match self.peek() {
                 Some(b',') => self.pos += 1,
                 Some(b'}') => {
                     self.pos += 1;
-                    return Ok(Slot::Table(id));
+                    return Ok(table);
                 }
                 _ => return self.error("expected ',' or '}' in the inline table"),
             }
@@ -816,7 +759,7 @@ impl<'a> Parser<'a> {
     // ---- numbers and datetimes ----
 
     #[inline(never)]
-    fn number_or_datetime(&mut self) -> Result<Value, TomlError> {
+    fn number_or_datetime(&mut self) -> Result<u32, TomlError> {
         let start = self.pos;
         while self.peek().is_some_and(is_token_byte) {
             self.pos += 1;
@@ -838,12 +781,14 @@ impl<'a> Parser<'a> {
         }
         let bytes = token.as_bytes();
         if looks_like_date(bytes) || looks_like_time(bytes) {
-            return match datetime_is_valid(bytes) {
-                true => Ok(Value::Datetime(token.to_string())),
-                false => Err(self.error_at(start, "invalid date or time")),
-            };
+            if !datetime_is_valid(bytes) {
+                return Err(self.error_at(start, "invalid date or time"));
+            }
+            let span = self.tree.intern(token);
+            return Ok(self.leaf(Data::Datetime(span)));
         }
-        parse_number(token).map_err(|message| self.error_at(start, message))
+        let data = parse_number(token).map_err(|message| self.error_at(start, message))?;
+        Ok(self.leaf(data))
     }
 }
 
@@ -970,7 +915,7 @@ fn datetime_is_valid(bytes: &[u8]) -> bool {
 }
 
 #[inline(never)]
-fn parse_number(token: &str) -> Result<Value, &'static str> {
+fn parse_number(token: &str) -> Result<Data, &'static str> {
     let (negative, unsigned) = match token.as_bytes().first() {
         Some(b'+') => (false, &token[1..]),
         Some(b'-') => (true, &token[1..]),
@@ -978,13 +923,13 @@ fn parse_number(token: &str) -> Result<Value, &'static str> {
     };
     match unsigned {
         "inf" => {
-            return Ok(Value::Float(if negative {
+            return Ok(Data::Float(if negative {
                 f64::NEG_INFINITY
             } else {
                 f64::INFINITY
             }));
         }
-        "nan" => return Ok(Value::Float(if negative { -f64::NAN } else { f64::NAN })),
+        "nan" => return Ok(Data::Float(if negative { -f64::NAN } else { f64::NAN })),
         _ => {}
     }
     if unsigned.is_empty() {
@@ -1003,7 +948,7 @@ fn parse_number(token: &str) -> Result<Value, &'static str> {
         let digits = strip_underscores(&unsigned[2..], radix)?;
         let magnitude =
             i64::from_str_radix(&digits, radix).map_err(|_| "integer out of the 64-bit range")?;
-        return Ok(Value::Integer(magnitude));
+        return Ok(Data::Integer(magnitude));
     }
     let is_float = unsigned.contains(['.', 'e', 'E']);
     if is_float {
@@ -1020,12 +965,12 @@ fn parse_number(token: &str) -> Result<Value, &'static str> {
     };
     signed
         .parse::<i64>()
-        .map(Value::Integer)
+        .map(Data::Integer)
         .map_err(|_| "integer out of the 64-bit range")
 }
 
 #[inline(never)]
-fn parse_float(token: &str, unsigned: &str) -> Result<Value, &'static str> {
+fn parse_float(token: &str, unsigned: &str) -> Result<Data, &'static str> {
     let (mantissa, exponent) = match unsigned.find(['e', 'E']) {
         Some(at) => (&unsigned[..at], Some(&unsigned[at + 1..])),
         None => (unsigned, None),
@@ -1059,7 +1004,7 @@ fn parse_float(token: &str, unsigned: &str) -> Result<Value, &'static str> {
     }
     normalized
         .parse::<f64>()
-        .map(Value::Float)
+        .map(Data::Float)
         .map_err(|_| "invalid float")
 }
 
@@ -1095,43 +1040,26 @@ fn strip_underscores(text: &str, radix: u32) -> Result<String, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::json::from_tree::compact_text;
 
-    fn parse_ok(text: &str) -> Value {
-        parse(text).unwrap()
-    }
-
-    fn member<'v>(value: &'v Value, key: &str) -> &'v Value {
-        match value {
-            Value::Table(members) => &members.iter().find(|(k, _)| k == key).unwrap().1,
-            _ => panic!("not a table"),
-        }
+    fn json(text: &str) -> String {
+        let tree = parse(text).unwrap();
+        compact_text(&tree, tree.root)
     }
 
     #[test]
     fn numbers_take_every_spelling() {
-        let value = parse_ok("a = 0xff\nb = 1_000\nc = -2.5e3\nd = +0\ne = 0o17\nf = 0b101\n");
-        assert_eq!(member(&value, "a"), &Value::Integer(255));
-        assert_eq!(member(&value, "b"), &Value::Integer(1000));
-        assert_eq!(member(&value, "c"), &Value::Float(-2500.0));
-        assert_eq!(member(&value, "d"), &Value::Integer(0));
-        assert_eq!(member(&value, "e"), &Value::Integer(15));
-        assert_eq!(member(&value, "f"), &Value::Integer(5));
+        assert_eq!(
+            json("a = 0xff\nb = 1_000\nc = -2.5e3\nd = +0\ne = 0o17\nf = 0b101\n"),
+            r#"{"a":255,"b":1000,"c":-2500.0,"d":0,"e":15,"f":5}"#
+        );
     }
 
     #[test]
     fn datetimes_are_validated_and_kept_as_written() {
-        let value = parse_ok("a = 1979-05-27T07:32:00Z\nb = 07:32:00.5\nc = 1979-05-27 07:32:00\n");
         assert_eq!(
-            member(&value, "a"),
-            &Value::Datetime("1979-05-27T07:32:00Z".to_string())
-        );
-        assert_eq!(
-            member(&value, "b"),
-            &Value::Datetime("07:32:00.5".to_string())
-        );
-        assert_eq!(
-            member(&value, "c"),
-            &Value::Datetime("1979-05-27 07:32:00".to_string())
+            json("a = 1979-05-27T07:32:00Z\nb = 07:32:00.5\nc = 1979-05-27 07:32:00\n"),
+            r#"{"a":"1979-05-27T07:32:00Z","b":"07:32:00.5","c":"1979-05-27 07:32:00"}"#
         );
         assert!(parse("a = 1979-13-01\n").is_err());
         assert!(parse("a = 25:00:00\n").is_err());
@@ -1150,8 +1078,9 @@ mod tests {
         for index in 0..40 {
             text.push_str(&format!("k{index} = {index}\n"));
         }
-        let value = parse_ok(&text);
-        assert_eq!(member(&value, "k39"), &Value::Integer(39));
+        let tree = parse(&text).unwrap();
+        let last = tree.find_member(tree.root, "k39").unwrap();
+        assert_eq!(tree.data(last), Data::Integer(39));
         text.push_str("k5 = 0\n");
         assert!(parse(&text).is_err());
     }

@@ -82,6 +82,5 @@ non-ASCII byte), not against the Unicode name tables.
 
 `DOCS/benchmarks/xml-json.md`. The reader never holds the input: it
 pulls the file through a 256 KiB window and scans text, names, and
-whitespace a word at a time, so the value tree is the only cost per
-byte, and the arena-backed tree in `STATE.md` Tech Debt is the lever
-shared with TOML and YAML.
+whitespace a word at a time, and the value tree is an arena, so a
+document costs about two bytes of memory per input byte.

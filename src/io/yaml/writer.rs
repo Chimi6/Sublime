@@ -1,4 +1,4 @@
-//! YAML writer from the value hub, block style: `key: value` mappings,
+//! YAML writer from the value tree, block style: `key: value` mappings,
 //! `- item` sequences indented two under their key, compact mappings on a
 //! dash line, empty collections as `{}` and `[]`, strings plain when the
 //! core schema would read them back unchanged and double-quoted otherwise,
@@ -6,82 +6,78 @@
 
 use std::fmt::Write;
 
-use crate::io::yaml::reader::resolve_plain;
-use crate::value::{ChunkedText, Value, push_double_quoted, push_float};
+use crate::io::yaml::reader::{Plain, resolve_plain};
+use crate::value::{ChunkedText, Data, NONE, Tree, push_double_quoted, push_float};
 
-/// Writes one document (no `---`).
-pub fn write_document(value: &Value, out: &mut ChunkedText<'_>) {
-    match value {
-        Value::Table(members) if !members.is_empty() => write_mapping(members, 0, out),
-        Value::Array(items) if !items.is_empty() => write_sequence(items, 0, out),
-        Value::String(text) if text.contains('\n') => {
-            write_literal_block(text, 2, out);
+/// Writes the subtree at `root` as one document (no `---`).
+pub fn write_document(tree: &Tree, root: u32, out: &mut ChunkedText<'_>) {
+    match tree.data(root) {
+        Data::Table(children) if children.first != NONE => write_mapping(tree, root, 0, out),
+        Data::Array(children) if children.first != NONE => write_sequence(tree, root, 0, out),
+        Data::Text(span) if tree.str(span).contains('\n') => {
+            write_literal_block(tree.str(span), 2, out);
         }
-        scalar => {
-            write_scalar(scalar, out);
+        _ => {
+            write_scalar(tree, root, out);
             out.push('\n');
         }
     }
 }
 
-fn write_mapping(members: &[(String, Value)], indent: usize, out: &mut ChunkedText<'_>) {
-    for (index, (key, value)) in members.iter().enumerate() {
+fn write_mapping(tree: &Tree, table: u32, indent: usize, out: &mut ChunkedText<'_>) {
+    for (index, member) in tree.children(table).enumerate() {
         if index > 0 {
             push_indent(indent, out);
         }
-        write_key(key, out);
+        write_key(tree.key(member), out);
         out.push(':');
-        write_member_value(value, indent, out);
+        write_member_value(tree, member, indent, out);
     }
 }
 
 /// After `key:`: a scalar on the line, or a collection below.
-fn write_member_value(value: &Value, indent: usize, out: &mut ChunkedText<'_>) {
-    match value {
-        Value::Table(members) if !members.is_empty() => {
+fn write_member_value(tree: &Tree, node: u32, indent: usize, out: &mut ChunkedText<'_>) {
+    match tree.data(node) {
+        Data::Table(children) if children.first != NONE => {
             out.push('\n');
             push_indent(indent + 2, out);
-            write_mapping(members, indent + 2, out);
+            write_mapping(tree, node, indent + 2, out);
         }
-        Value::Array(items) if !items.is_empty() => {
+        Data::Array(children) if children.first != NONE => {
             out.push('\n');
             push_indent(indent + 2, out);
-            write_sequence(items, indent + 2, out);
+            write_sequence(tree, node, indent + 2, out);
         }
-        Value::String(text) if is_literal_block_candidate(text) => {
+        Data::Text(span) if is_literal_block_candidate(tree.str(span)) => {
             out.push(' ');
-            write_literal_block(text, indent + 2, out);
+            write_literal_block(tree.str(span), indent + 2, out);
         }
-        scalar => {
+        _ => {
             out.push(' ');
-            write_scalar(scalar, out);
+            write_scalar(tree, node, out);
             out.push('\n');
         }
     }
 }
 
-fn write_sequence(items: &[Value], indent: usize, out: &mut ChunkedText<'_>) {
-    for (index, item) in items.iter().enumerate() {
+fn write_sequence(tree: &Tree, array: u32, indent: usize, out: &mut ChunkedText<'_>) {
+    for (index, item) in tree.children(array).enumerate() {
         if index > 0 {
             push_indent(indent, out);
         }
-        out.push('-');
-        match item {
-            Value::Table(members) if !members.is_empty() => {
-                out.push(' ');
-                write_mapping(members, indent + 2, out);
+        out.push_str("- ");
+        match tree.data(item) {
+            Data::Table(children) if children.first != NONE => {
+                write_mapping(tree, item, indent + 2, out);
             }
-            Value::Array(inner) if !inner.is_empty() => {
-                out.push(' ');
-                write_sequence(inner, indent + 2, out);
+            Data::Array(children) if children.first != NONE => {
+                write_sequence(tree, item, indent + 2, out);
             }
-            Value::String(text) if is_literal_block_candidate(text) => {
-                out.push(' ');
-                write_literal_block(text, indent + 2, out);
+            Data::Text(span) if is_literal_block_candidate(tree.str(span)) => {
+                write_literal_block(tree.str(span), indent + 2, out);
             }
-            scalar => {
-                out.push(' ');
-                write_scalar(scalar, out);
+            _ => {
+                write_scalar(tree, item, out);
                 out.push('\n');
             }
         }
@@ -102,34 +98,35 @@ fn write_key(key: &str, out: &mut ChunkedText<'_>) {
     }
 }
 
-fn write_scalar(value: &Value, out: &mut ChunkedText<'_>) {
-    match value {
-        Value::Null => out.push_str("null"),
-        Value::Bool(flag) => out.push_str(if *flag { "true" } else { "false" }),
-        Value::Integer(number) => {
+fn write_scalar(tree: &Tree, node: u32, out: &mut ChunkedText<'_>) {
+    match tree.data(node) {
+        Data::Null => out.push_str("null"),
+        Data::Bool(flag) => out.push_str(if flag { "true" } else { "false" }),
+        Data::Integer(number) => {
             let _ = write!(out, "{number}");
         }
-        Value::Float(number) => {
+        Data::Float(number) => {
             if number.is_nan() {
                 out.push_str(".nan");
             } else if number.is_infinite() {
-                out.push_str(if *number > 0.0 { ".inf" } else { "-.inf" });
+                out.push_str(if number > 0.0 { ".inf" } else { "-.inf" });
             } else {
                 let mut text = String::new();
-                push_float(&mut text, *number);
+                push_float(&mut text, number);
                 out.push_str(&text);
             }
         }
-        Value::String(text) => {
+        Data::Text(span) => {
+            let text = tree.str(span);
             if is_plain_safe(text) {
                 out.push_str(text);
             } else {
                 write_double_quoted(text, out);
             }
         }
-        Value::Datetime(text) => out.push_str(text),
-        Value::Table(_) => out.push_str("{}"),
-        Value::Array(_) => out.push_str("[]"),
+        Data::Datetime(span) => out.push_str(tree.str(span)),
+        Data::Table(_) => out.push_str("{}"),
+        Data::Array(_) => out.push_str("[]"),
     }
 }
 
@@ -193,10 +190,10 @@ fn is_plain_safe(text: &str) -> bool {
     if matches!(lowered.as_str(), "yes" | "no" | "on" | "off") {
         return false;
     }
-    if text.contains('_') && !matches!(resolve_plain(&text.replace('_', "")), Value::String(_)) {
+    if text.contains('_') && resolve_plain(&text.replace('_', "")) != Plain::Str {
         return false;
     }
-    matches!(resolve_plain(text), Value::String(_))
+    resolve_plain(text) == Plain::Str
 }
 
 fn write_double_quoted(text: &str, out: &mut ChunkedText<'_>) {
@@ -208,12 +205,14 @@ fn write_double_quoted(text: &str, out: &mut ChunkedText<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::json::parse;
 
-    fn render(value: Value) -> String {
+    fn render(json: &str) -> String {
+        let tree = parse(json.as_bytes()).unwrap();
         let mut bytes = Vec::new();
         {
             let mut out = ChunkedText::new(&mut bytes);
-            write_document(&value, &mut out);
+            write_document(&tree, tree.root, &mut out);
             out.finish().unwrap();
         }
         String::from_utf8(bytes).unwrap()
@@ -221,39 +220,25 @@ mod tests {
 
     #[test]
     fn strings_that_would_resolve_are_quoted() {
-        let value = Value::Table(vec![
-            ("a".to_string(), Value::String("true".to_string())),
-            ("b".to_string(), Value::String("1e3".to_string())),
-            ("c".to_string(), Value::String("plain text".to_string())),
-            ("d".to_string(), Value::String("".to_string())),
-        ]);
         assert_eq!(
-            render(value),
+            render(r#"{"a":"true","b":"1e3","c":"plain text","d":""}"#),
             "a: \"true\"\nb: \"1e3\"\nc: plain text\nd: \"\"\n"
         );
     }
 
     #[test]
     fn nested_collections_indent_under_their_key() {
-        let value = Value::Table(vec![(
-            "list".to_string(),
-            Value::Array(vec![
-                Value::Table(vec![
-                    ("a".to_string(), Value::Integer(1)),
-                    ("b".to_string(), Value::Integer(2)),
-                ]),
-                Value::Array(vec![Value::Integer(3)]),
-            ]),
-        )]);
-        assert_eq!(render(value), "list:\n  - a: 1\n    b: 2\n  - - 3\n");
+        assert_eq!(
+            render(r#"{"list":[{"a":1,"b":2},[3]]}"#),
+            "list:\n  - a: 1\n    b: 2\n  - - 3\n"
+        );
     }
 
     #[test]
     fn multi_line_strings_become_literal_blocks() {
-        let value = Value::Table(vec![
-            ("keep".to_string(), Value::String("a\nb\n\n".to_string())),
-            ("strip".to_string(), Value::String("a\nb".to_string())),
-        ]);
-        assert_eq!(render(value), "keep: |+\n  a\n  b\n\nstrip: |-\n  a\n  b\n");
+        assert_eq!(
+            render(r#"{"keep":"a\nb\n\n","strip":"a\nb"}"#),
+            "keep: |+\n  a\n  b\n\nstrip: |-\n  a\n  b\n"
+        );
     }
 }

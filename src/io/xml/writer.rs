@@ -5,75 +5,86 @@
 
 use crate::io::xml::tree::is_name;
 use crate::io::xml::{escape_attribute, escape_text};
-use crate::value::{ChunkedText, Value, push_float};
+use crate::value::{ChunkedText, Data, NONE, Tree, push_float};
 
-/// Writes `value` as a document. The root object's one member is the root
-/// element; anything else is wrapped in `<root>` with a warning. Keys that
-/// are not XML names and attributes that are not scalars are errors.
+/// Writes the subtree at `root` as a document. The root object's one
+/// member is the root element; anything else is wrapped in `<root>` with
+/// a warning. Keys that are not XML names and attributes that are not
+/// scalars are errors.
 pub fn write_document(
-    value: &Value,
+    tree: &Tree,
+    root: u32,
     out: &mut ChunkedText<'_>,
     warnings: &mut Vec<String>,
 ) -> Result<(), String> {
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    match value {
-        Value::Table(members) if members.len() == 1 && !members[0].0.starts_with(['@', '#']) => {
-            let (name, node) = &members[0];
-            write_member(name, node, 0, out)?;
+    match tree.data(root) {
+        Data::Table(_) if tree.child_count(root) == 1 => {
+            let member = tree.children(root).next().unwrap_or(NONE);
+            if tree.key(member).starts_with(['@', '#']) {
+                warnings.push("the JSON root has no single member; wrapped in <root>".to_string());
+                return write_element(tree, "root", root, 0, out);
+            }
+            write_member(tree, tree.key(member), member, 0, out)
         }
-        Value::Table(_) => {
+        Data::Table(_) => {
             warnings.push("the JSON root has no single member; wrapped in <root>".to_string());
-            write_element("root", value, 0, out)?;
+            write_element(tree, "root", root, 0, out)
         }
-        Value::Array(items) => {
+        Data::Array(_) => {
             warnings.push(
                 "the JSON root is an array; wrapped in <root> as <item> elements".to_string(),
             );
-            let wrapped = Value::Table(vec![("item".to_string(), Value::Array(items.clone()))]);
-            write_element("root", &wrapped, 0, out)?;
+            out.push_str("<root>\n");
+            for item in tree.children(root) {
+                write_member(tree, "item", item, 2, out)?;
+            }
+            out.push_str("</root>\n");
+            Ok(())
         }
-        scalar => {
+        _ => {
             warnings.push("the JSON root is a scalar; wrapped in <root>".to_string());
-            write_element("root", scalar, 0, out)?;
+            write_element(tree, "root", root, 0, out)
         }
     }
-    Ok(())
 }
 
 /// A member of a table: one element, or one per item of an array.
 fn write_member(
+    tree: &Tree,
     name: &str,
-    value: &Value,
+    node: u32,
     indent: usize,
     out: &mut ChunkedText<'_>,
 ) -> Result<(), String> {
     if !is_name(name) {
         return Err(format!("'{name}' is not an XML element name"));
     }
-    match value {
-        Value::Array(items) => {
-            for item in items {
-                write_member(name, item, indent, out)?;
+    match tree.data(node) {
+        Data::Array(_) => {
+            for item in tree.children(node) {
+                write_member(tree, name, item, indent, out)?;
             }
             Ok(())
         }
-        other => write_element(name, other, indent, out),
+        _ => write_element(tree, name, node, indent, out),
     }
 }
 
 fn write_element(
+    tree: &Tree,
     name: &str,
-    value: &Value,
+    node: u32,
     indent: usize,
     out: &mut ChunkedText<'_>,
 ) -> Result<(), String> {
     push_indent(indent, out);
     out.push('<');
     out.push_str(name);
-    let Value::Table(members) = value else {
+    if !tree.data(node).is_table() {
         // A scalar: text content, or nothing.
         let mut text = String::new();
-        push_scalar_text(value, &mut text);
+        push_scalar_text(tree, node, &mut text);
         if text.is_empty() {
             out.push_str("/>\n");
         } else {
@@ -86,19 +97,20 @@ fn write_element(
             out.push_str(">\n");
         }
         return Ok(());
-    };
+    }
     let mut text: Option<String> = None;
-    let mut children: Vec<(&str, &Value)> = Vec::new();
-    for (key, member) in members {
+    let mut children: Vec<u32> = Vec::new();
+    for member in tree.children(node) {
+        let key = tree.key(member);
         if let Some(attribute) = key.strip_prefix('@') {
             if !is_name(attribute) {
                 return Err(format!("'{attribute}' is not an XML attribute name"));
             }
-            if matches!(member, Value::Table(_) | Value::Array(_)) {
+            if tree.data(member).is_container() {
                 return Err(format!("attribute '{attribute}' must be a scalar"));
             }
             let mut raw = String::new();
-            push_scalar_text(member, &mut raw);
+            push_scalar_text(tree, member, &mut raw);
             let mut escaped = String::with_capacity(raw.len() + attribute.len() + 4);
             escaped.push(' ');
             escaped.push_str(attribute);
@@ -108,10 +120,10 @@ fn write_element(
             out.push_str(&escaped);
         } else if key == "#text" {
             let mut raw = String::new();
-            push_scalar_text(member, &mut raw);
+            push_scalar_text(tree, member, &mut raw);
             text = Some(raw);
         } else {
-            children.push((key, member));
+            children.push(member);
         }
     }
     let text = text.filter(|text| !text.is_empty());
@@ -137,8 +149,8 @@ fn write_element(
                 out.push_str(&escaped);
                 out.push('\n');
             }
-            for (key, child) in children {
-                write_member(key, child, indent + 2, out)?;
+            for child in children {
+                write_member(tree, tree.key(child), child, indent + 2, out)?;
             }
             push_indent(indent, out);
             out.push_str("</");
@@ -149,25 +161,25 @@ fn write_element(
     Ok(())
 }
 
-fn push_scalar_text(value: &Value, out: &mut String) {
+fn push_scalar_text(tree: &Tree, node: u32, out: &mut String) {
     use std::fmt::Write;
-    match value {
-        Value::Null => {}
-        Value::Bool(flag) => out.push_str(if *flag { "true" } else { "false" }),
-        Value::Integer(number) => {
+    match tree.data(node) {
+        Data::Null => {}
+        Data::Bool(flag) => out.push_str(if flag { "true" } else { "false" }),
+        Data::Integer(number) => {
             let _ = write!(out, "{number}");
         }
-        Value::Float(number) => {
+        Data::Float(number) => {
             if number.is_nan() {
                 out.push_str("NaN");
             } else if number.is_infinite() {
-                out.push_str(if *number > 0.0 { "INF" } else { "-INF" });
+                out.push_str(if number > 0.0 { "INF" } else { "-INF" });
             } else {
-                push_float(out, *number);
+                push_float(out, number);
             }
         }
-        Value::String(text) | Value::Datetime(text) => out.push_str(text),
-        Value::Table(_) | Value::Array(_) => {}
+        Data::Text(span) | Data::Datetime(span) => out.push_str(tree.str(span)),
+        Data::Table(_) | Data::Array(_) => {}
     }
 }
 
@@ -180,13 +192,15 @@ fn push_indent(indent: usize, out: &mut ChunkedText<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::json::parse;
 
-    fn render(value: Value) -> (String, Vec<String>) {
+    fn render(json: &str) -> (String, Vec<String>) {
+        let tree = parse(json.as_bytes()).unwrap();
         let mut bytes = Vec::new();
         let mut warnings = Vec::new();
         {
             let mut out = ChunkedText::new(&mut bytes);
-            write_document(&value, &mut out, &mut warnings).unwrap();
+            write_document(&tree, tree.root, &mut out, &mut warnings).unwrap();
             out.finish().unwrap();
         }
         (String::from_utf8(bytes).unwrap(), warnings)
@@ -194,18 +208,7 @@ mod tests {
 
     #[test]
     fn attributes_text_and_repeated_children() {
-        let value = Value::Table(vec![(
-            "r".to_string(),
-            Value::Table(vec![
-                ("@a".to_string(), Value::Integer(1)),
-                (
-                    "k".to_string(),
-                    Value::Array(vec![Value::String("x".to_string()), Value::Null]),
-                ),
-                ("#text".to_string(), Value::String("t & u".to_string())),
-            ]),
-        )]);
-        let (xml, warnings) = render(value);
+        let (xml, warnings) = render(r##"{"r":{"@a":1,"k":["x",null],"#text":"t & u"}}"##);
         assert_eq!(
             xml,
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<r a=\"1\">\n  t &amp; u\n  <k>x</k>\n  <k/>\n</r>\n"
@@ -215,9 +218,9 @@ mod tests {
 
     #[test]
     fn bad_names_are_refused() {
-        let value = Value::Table(vec![("1st".to_string(), Value::Null)]);
+        let tree = parse(r#"{"1st":null}"#.as_bytes()).unwrap();
         let mut bytes = Vec::new();
         let mut out = ChunkedText::new(&mut bytes);
-        assert!(write_document(&value, &mut out, &mut Vec::new()).is_err());
+        assert!(write_document(&tree, tree.root, &mut out, &mut Vec::new()).is_err());
     }
 }

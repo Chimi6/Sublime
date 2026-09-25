@@ -5,13 +5,13 @@
 use std::io::Read;
 
 use crate::io::json::tokenizer::{JsonError, JsonTokenizer, Token};
-use crate::value::{Scalar, TreeBuilder, Value, ValueSink};
+use crate::value::{Scalar, Tree, TreeSink, ValueSink};
 
 /// Parses one JSON document from `source` into a tree.
-pub fn parse<R: Read>(source: R) -> Result<Value, JsonError> {
-    let mut builder = TreeBuilder::new();
-    parse_into(source, &mut builder)?;
-    Ok(builder.finish().unwrap_or(Value::Null))
+pub fn parse<R: Read>(source: R) -> Result<Tree, JsonError> {
+    let mut sink = TreeSink::new(Tree::new());
+    parse_into(source, &mut sink)?;
+    Ok(sink.finish())
 }
 
 /// Pushes one JSON document from `source` into `sink`.
@@ -124,38 +124,26 @@ fn unexpected<R: Read>(tokens: &JsonTokenizer<R>, token: Token) -> JsonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::json::from_tree::compact_text;
 
-    fn parse_text(text: &str) -> Value {
-        parse(text.as_bytes()).unwrap()
+    fn round(text: &str) -> String {
+        let tree = parse(text.as_bytes()).unwrap();
+        compact_text(&tree, tree.root)
     }
 
     #[test]
     fn numbers_split_into_integers_and_floats() {
-        let value = parse_text(r#"[1, -2, 1.5, 1e3, 99999999999999999999]"#);
         assert_eq!(
-            value,
-            Value::Array(vec![
-                Value::Integer(1),
-                Value::Integer(-2),
-                Value::Float(1.5),
-                Value::Float(1000.0),
-                Value::Float(1e20),
-            ])
+            round("[1, -2, 1.5, 1e3, 99999999999999999999]"),
+            "[1,-2,1.5,1000.0,100000000000000000000.0]"
         );
     }
 
     #[test]
     fn objects_keep_member_order() {
-        let value = parse_text(r#"{"z": null, "a": {"b": true}}"#);
         assert_eq!(
-            value,
-            Value::Table(vec![
-                ("z".to_string(), Value::Null),
-                (
-                    "a".to_string(),
-                    Value::Table(vec![("b".to_string(), Value::Bool(true))])
-                ),
-            ])
+            round(r#"{"z": null, "a": {"b": true}}"#),
+            r#"{"z":null,"a":{"b":true}}"#
         );
     }
 

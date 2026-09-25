@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-09-25: The value hub is an arena tree (`src/value/tree.rs`): the three hub formats cost about two to three bytes of memory per input byte where they cost ten, and read 1.2 to 1.9 times faster. Every pair document carries the new block.
 - 2026-09-24: XML both ways through the value hub under the xmltodict mapping: a strict reader with located errors and a pretty-printing writer. Map in `DOCS/formats/xml.md`, oracles in `tests/xml_json.rs`, pair `xml-json` against `quick-xml`.
 - 2026-09-24: YAML both ways through the value hub: a YAML 1.2 core-schema reader (block and flow, all scalar styles, anchors, merge keys, tags, multi-document) and a block-style writer. Map in `DOCS/formats/yaml.md`, oracles in `tests/yaml_json.rs`, pair `yaml-json` against `serde_yaml`.
 - 2026-09-24: Data category, first tree format: TOML both ways through the new value hub (`src/value`: a `Value` tree, a push `ValueSink`, a `TreeBuilder`), with JSON reading into the hub. Map in `DOCS/formats/toml.md`, oracles in `tests/toml_json.rs`, pair `toml-json` passing every line against the `toml` crate.
@@ -44,15 +45,10 @@ The document category's one-way streets are closed (phases 1 to 4 below, release
 
 ## Tech Debt
 
-- 2026-09-24: Value hub leftovers:
-  - The tree holds the whole document at about ten times its bytes on the dense shapes (654 MB peak on 60 MB of TOML, 615 MB on 62 MB of YAML; the references sit at 1.9 and 2.2 GB). An arena-backed tree (one text buffer, spans, `u32` links) is the lever, the shape the document model uses. Do it when YAML shares the hub, so both formats gain.
-  - The tree-to-JSON walk lives in `io::json::from_value` and is shared; `ValueSink` has one implementor (`TreeBuilder`) until a format streams.
-  - Datetimes are validated for shape and range, not the calendar.
-  - The TOML and YAML readers each carry their own lazy member index; `value::MemberIndex` (from XML) is the shared one to move them onto.
-- 2026-09-24: Events bridge (Markdown, HTML, and text into Word) leftovers:
-  - The input is held whole (the readers borrow it) and the text arena copies it: peak memory on Word output is about twice the input plus the link table (59 MB on 26.6 MB of dense HTML with 100,000 links). A streaming reader would halve it; nothing needs it yet.
-  - Loose lists come out tight, and a list item's later paragraphs read back outside the list; blocks other than paragraphs inside quotes and items lose their container (`DOCS/formats/docx.md`, Known deviations).
-  - Images not given as data URIs become links; the converter cannot read files beside the input.
+- 2026-09-25: Value hub leftovers:
+  - The TOML and YAML readers hold the input text whole beside the tree (60 to 190 MB of their peaks on the benchmark shapes); the XML reader's sliding window is the shape to port if a large config case ever matters.
+  - `ValueSink` has one implementor (`TreeSink`) until a format streams.
+  - TOML datetimes are validated for shape and range, not the calendar.
 - 2026-09-24: WebAssembly leftovers:
   - Multi-hop paths hold each intermediate whole in memory (no threads in the browser); a single-hop path streams as on the command line. Fine for documents, a concern only for large data files through two hops.
   - The module has no size tooling beyond `opt-level = "z"`; `wasm-opt` would take 10 to 20% more off but is a toolchain dependency the build does not assume.
@@ -108,6 +104,7 @@ The document category's one-way streets are closed (phases 1 to 4 below, release
 
 ## Done
 
+- 2026-09-25: Value hub as an arena tree (unreleased, branch `spike-value-arena`): memory 2.7 to 3.4 times lower and throughput 1.2 to 1.9 times higher on every hub pair.
 - 2026-09-24: XML both ways released as 0.13.0: `xml -> json`, `json -> xml`, the `xml-json` pair passing every line against `quick-xml`; the reader streams its input.
 - 2026-09-24: YAML both ways released as 0.12.0: `yaml -> json`, `json -> yaml`, the `yaml-json` pair passing every line against `serde_yaml`; the TOML and YAML writers stream.
 - 2026-09-24: TOML both ways and the value hub released as 0.11.0: `toml -> json`, `json -> toml`, the `toml-json` pair passing every line against the `toml` crate.
