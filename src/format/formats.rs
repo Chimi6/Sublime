@@ -34,6 +34,14 @@ pub static YAML: Format = Format {
     category: Category::Data,
 };
 
+pub static XML: Format = Format {
+    id: "xml",
+    display_name: "XML",
+    extensions: &["xml"],
+    magic: None,
+    category: Category::Data,
+};
+
 pub static MARKDOWN: Format = Format {
     id: "markdown",
     display_name: "Markdown",

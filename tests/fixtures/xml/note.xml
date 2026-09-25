@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- a comment -->
+<!DOCTYPE note SYSTEM "note.dtd" [
+  <!ELEMENT note ANY>
+]>
+<note id="1" lang="en">
+  <to>Tove</to>
+  <from>Jani</from>
+  <heading/>
+  <body>Don't &amp; &lt;forget&gt; &#169; &#xA9; &quot;me&quot;</body>
+  <items>
+    <item>a</item>
+    <item>b</item>
+  </items>
+  <single><item>only</item></single>
+  <empty attr="x"/>
+  <mixed>text <b>bold</b> tail</mixed>
+  <cdata><![CDATA[<raw> & stuff]]></cdata>
+  <ns:tag xmlns:ns="urn:x" ns:attr='single &apos;quoted&apos;'>n</ns:tag>
+  <?pi target?>
+  <padded>  spaced out  </padded>
+</note>
+<!-- trailing comment -->

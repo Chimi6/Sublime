@@ -1,0 +1,1 @@
+{"config":{"@version":"2","name":"demo","count":3,"ratio":1.5,"on":true,"none":null,"list":["a","b"],"objs":[{"id":1},{"id":2}],"nested":{"deep":{"x":"y"}},"#text":"hello","text_only":"a & b <c> \"q\""}}
