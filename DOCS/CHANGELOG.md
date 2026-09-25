@@ -6,6 +6,11 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-09-25
+
+The value hub as an arena tree: every TOML, YAML, and XML path uses a
+third of the memory and reads up to twice as fast.
+
 ### Changed
 
 - The value hub is an arena (`value::Tree`): 32-byte nodes chained by index, strings as spans into one text buffer, aliases copied by node with the text shared. TOML, YAML, and XML read into it and write from it, and JSON reads into it through the sink. Peak memory on the dense shapes fell 2.7 to 3.4 times (toml -> json 654 -> 237 MB, yaml -> json 615 -> 235 MB, xml -> json 570 -> 171 MB) and throughput rose 1.2 to 1.9 times (toml -> json 79 -> 148 MB/s, yaml -> json 82 -> 129 MB/s, xml -> json 104 -> 145 MB/s); every pair's rows are recorded in its benchmark document. `value::MemberIndex` now serves every table of a tree; the TOML and YAML readers use it instead of their own.
