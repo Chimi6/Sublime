@@ -18,7 +18,7 @@ use std::io::Read;
 use crate::io::scan::{find_any_of3, find_byte};
 
 use crate::converter::Location;
-use crate::value::{MemberIndex, Value};
+use crate::value::{Data, MemberIndex, NONE, Span, Tree};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XmlError {
@@ -26,10 +26,11 @@ pub struct XmlError {
     pub message: String,
 }
 
-/// The document as `{root: node}` and the notes on what was dropped.
+/// The tree, whose root is `{root: node}`, and the notes on what was
+/// dropped.
 #[derive(Debug)]
 pub struct Parsed {
-    pub document: Value,
+    pub tree: Tree,
     pub notes: Vec<String>,
 }
 
@@ -46,8 +47,9 @@ pub fn parse_reader(source: &mut dyn Read) -> Result<Parsed, XmlError> {
     if let Some(failure) = parser.failure.take() {
         return Err(failure);
     }
+    document?;
     Ok(Parsed {
-        document: document?,
+        tree: parser.tree,
         notes: parser.notes,
     })
 }
@@ -69,6 +71,8 @@ struct Parser<'a> {
     line_start: usize,
     notes: Vec<String>,
     path: String,
+    tree: Tree,
+    index: MemberIndex,
 }
 
 impl<'a> Parser<'a> {
@@ -85,6 +89,8 @@ impl<'a> Parser<'a> {
             line_start: 0,
             notes: Vec::new(),
             path: String::new(),
+            tree: Tree::new(),
+            index: MemberIndex::default(),
         }
     }
 
@@ -287,7 +293,7 @@ impl<'a> Parser<'a> {
 
     // ---- document ----
 
-    fn document(&mut self) -> Result<Value, XmlError> {
+    fn document(&mut self) -> Result<(), XmlError> {
         if self.starts_with(b"\xef\xbb\xbf") {
             self.pos += 3;
         }
@@ -304,12 +310,15 @@ impl<'a> Parser<'a> {
         if self.peek() != Some(b'<') {
             return self.error("expected the root element");
         }
-        let (name, node) = self.element()?;
+        let element = self.element()?;
         self.misc()?;
         if !self.at_end() {
             return self.error("content after the root element");
         }
-        Ok(Value::Table(vec![(name, node)]))
+        let document = self.tree.push_table(Span::default());
+        self.tree.append(document, element);
+        self.tree.root = document;
+        Ok(())
     }
 
     /// Whitespace, comments, and processing instructions between things.
@@ -385,8 +394,8 @@ impl<'a> Parser<'a> {
 
     // ---- elements ----
 
-    /// At `<`: the element and its name.
-    fn element(&mut self) -> Result<(String, Value), XmlError> {
+    /// At `<`: the element as an unlinked table node keyed by its name.
+    fn element(&mut self) -> Result<u32, XmlError> {
         self.pos += 1;
         let name = self.name()?;
         self.mark = self.pos;
@@ -395,7 +404,8 @@ impl<'a> Parser<'a> {
             self.path.push('.');
         }
         self.path.push_str(&name);
-        let mut attributes: Vec<(String, Value)> = Vec::new();
+        let key = self.tree.intern(&name);
+        let element = self.tree.push_table(key);
         let mut self_closing = false;
         loop {
             let had_space = matches!(
@@ -433,16 +443,18 @@ impl<'a> Parser<'a> {
                     let mut key = String::with_capacity(attribute.len() + 1);
                     key.push('@');
                     key.push_str(&attribute);
-                    if attributes.iter().any(|(existing, _)| *existing == key) {
+                    if self.tree.find_member(element, &key).is_some() {
                         return self.error("attribute given twice");
                     }
-                    attributes.push((key, Value::String(value)));
+                    let key = self.tree.intern(&key);
+                    let value = self.tree.intern(&value);
+                    let node = self.tree.push(key, Data::Text(value));
+                    self.tree.append(element, node);
                 }
             }
         }
         let mut node = Node {
-            members: attributes,
-            index: MemberIndex::default(),
+            element,
             text: String::new(),
             pending: String::new(),
             has_children: false,
@@ -450,9 +462,9 @@ impl<'a> Parser<'a> {
         if !self_closing {
             self.content(&name, &mut node)?;
         }
-        let value = self.finish_node(node);
+        self.finish_node(node);
         self.path.truncate(path_length);
-        Ok((name, value))
+        Ok(element)
     }
 
     fn content(&mut self, name: &str, node: &mut Node) -> Result<(), XmlError> {
@@ -494,8 +506,10 @@ impl<'a> Parser<'a> {
                     } else if self.starts_with(b"<?") {
                         self.instruction()?;
                     } else {
-                        let (child_name, child) = self.element()?;
-                        node.add_child(child_name, child);
+                        let child = self.element()?;
+                        node.has_children = true;
+                        node.flush_pending();
+                        self.add_child(node.element, child);
                     }
                 }
                 Some(b'&') => {
@@ -525,7 +539,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn finish_node(&mut self, mut node: Node) -> Value {
+    /// Closes the element: text only becomes its whole value, otherwise
+    /// text beside attributes or children becomes a `#text` member.
+    fn finish_node(&mut self, mut node: Node) {
         node.flush_pending();
         let mixed = node.has_children && !node.text.is_empty();
         if mixed {
@@ -536,18 +552,45 @@ impl<'a> Parser<'a> {
             self.note(note);
         }
         let text = normalize_newlines(node.text);
-        let mut members = node.members;
-        if members.is_empty() {
-            return if text.is_empty() {
-                Value::Null
+        let has_members = match self.tree.data(node.element) {
+            Data::Table(children) => children.first != NONE,
+            _ => false,
+        };
+        if !has_members {
+            self.tree.nodes[node.element as usize].data = if text.is_empty() {
+                Data::Null
             } else {
-                Value::String(text)
+                Data::Text(self.tree.intern(&text))
             };
+            return;
         }
         if !text.is_empty() {
-            members.push(("#text".to_string(), Value::String(text)));
+            let key = self.tree.intern("#text");
+            let span = self.tree.intern(&text);
+            let member = self.tree.push(key, Data::Text(span));
+            self.tree.append(node.element, member);
         }
-        Value::Table(members)
+    }
+
+    /// Adds a child element under `parent`; a child whose name repeats
+    /// joins an array at the first one's position.
+    fn add_child(&mut self, parent: u32, child: u32) {
+        let name = self.tree.key(child).to_string();
+        match self.index.find(&self.tree, parent, &name) {
+            Some(existing) => {
+                if !matches!(self.tree.data(existing), Data::Array(_)) {
+                    // The first one moves into a fresh node; its slot becomes the array.
+                    let first = self.tree.push(Span::default(), self.tree.data(existing));
+                    self.tree.nodes[existing as usize].data =
+                        Data::Array(crate::value::Children { first, last: first });
+                }
+                self.tree.append(existing, child);
+            }
+            None => {
+                self.tree.append(parent, child);
+                self.index.record(&self.tree, parent, child);
+            }
+        }
     }
 
     fn name(&mut self) -> Result<String, XmlError> {
@@ -662,13 +705,12 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// An element being read: attributes first, then children grouped by
-/// name. Text accumulates raw in `pending` until a child element or the
-/// end tag; each stretch is then trimmed and joined to the rest with one
-/// space, so entity references never split a stretch.
+/// An element being read. Text accumulates raw in `pending` until a
+/// child element or the end tag; each stretch is then trimmed and joined
+/// to the rest with one space, so entity references never split a
+/// stretch.
 struct Node {
-    members: Vec<(String, Value)>,
-    index: MemberIndex,
+    element: u32,
     text: String,
     pending: String,
     has_children: bool,
@@ -698,29 +740,6 @@ impl Node {
             self.text.push_str(&self.pending);
         }
         self.pending.clear();
-    }
-
-    fn add_child(&mut self, name: String, child: Value) {
-        self.flush_pending();
-        self.has_children = true;
-        match self.index.find(&self.members, &name) {
-            Some(position) => {
-                let slot = &mut self.members[position].1;
-                match slot {
-                    Value::Array(items) => items.push(child),
-                    _ => {
-                        let first = std::mem::replace(slot, Value::Null);
-                        *slot = Value::Array(vec![first, child]);
-                    }
-                }
-            }
-            None => {
-                let position = self.members.len();
-                self.members.push((name, child));
-                let key = &self.members[position].0;
-                self.index.record(&self.members, key, position);
-            }
-        }
     }
 }
 
@@ -752,25 +771,18 @@ pub fn is_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::json::from_tree::compact_text;
+
+    fn json(text: &str) -> String {
+        let parsed = parse(text).unwrap();
+        compact_text(&parsed.tree, parsed.tree.root)
+    }
 
     #[test]
     fn repeated_children_become_an_array_at_the_first_position() {
-        let parsed = parse("<r><a>1</a><b>2</b><a>3</a></r>").unwrap();
         assert_eq!(
-            parsed.document,
-            Value::Table(vec![(
-                "r".to_string(),
-                Value::Table(vec![
-                    (
-                        "a".to_string(),
-                        Value::Array(vec![
-                            Value::String("1".to_string()),
-                            Value::String("3".to_string())
-                        ])
-                    ),
-                    ("b".to_string(), Value::String("2".to_string())),
-                ])
-            )])
+            json("<r><a>1</a><b>2</b><a>3</a></r>"),
+            r#"{"r":{"a":["1","3"],"b":"2"}}"#
         );
     }
 
@@ -794,7 +806,10 @@ mod tests {
         let mut whole = OneByte(text.as_bytes());
         let streamed = parse_reader(&mut whole).unwrap();
         let direct = parse(text).unwrap();
-        assert_eq!(streamed.document, direct.document);
+        assert_eq!(
+            compact_text(&streamed.tree, streamed.tree.root),
+            compact_text(&direct.tree, direct.tree.root)
+        );
         assert_eq!(streamed.notes, direct.notes);
     }
 
@@ -812,13 +827,9 @@ mod tests {
         }
         text.push_str("<k5>again</k5></r>");
         let parsed = parse(&text).unwrap();
-        let Value::Table(root) = parsed.document else {
-            panic!()
-        };
-        let Value::Table(members) = &root[0].1 else {
-            panic!()
-        };
-        assert_eq!(members.len(), 40);
-        assert!(matches!(&members[5].1, Value::Array(items) if items.len() == 2));
+        let root = parsed.tree.children(parsed.tree.root).next().unwrap();
+        assert_eq!(parsed.tree.child_count(root), 40);
+        let fifth = parsed.tree.find_member(root, "k5").unwrap();
+        assert_eq!(compact_text(&parsed.tree, fifth), r#"["5","again"]"#);
     }
 }

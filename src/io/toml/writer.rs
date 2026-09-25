@@ -1,4 +1,4 @@
-//! TOML writer from the value hub. A table's plain members come first,
+//! TOML writer from the value tree. A table's plain members come first,
 //! then its sub-tables under `[a.b]` headers and its arrays of tables under
 //! `[[a.b]]`, in document order. Arrays that are not all tables, and tables
 //! inside them, are written inline. Nulls have no TOML form and are dropped;
@@ -6,29 +6,27 @@
 
 use std::fmt::Write;
 
-use crate::value::{ChunkedText, Value, push_double_quoted, push_float};
+use crate::value::{ChunkedText, Data, Tree, push_double_quoted, push_float};
 
-/// Writes `members` as a TOML document.
-pub fn write_document(
-    members: &[(String, Value)],
-    out: &mut ChunkedText<'_>,
-    losses: &mut Vec<String>,
-) {
+/// Writes the table at `root` as a TOML document.
+pub fn write_document(tree: &Tree, root: u32, out: &mut ChunkedText<'_>, losses: &mut Vec<String>) {
     let mut path: Vec<&str> = Vec::new();
-    write_table(members, &mut path, out, losses);
+    write_table(tree, root, &mut path, out, losses);
 }
 
-fn write_table<'v>(
-    members: &'v [(String, Value)],
-    path: &mut Vec<&'v str>,
+fn write_table<'t>(
+    tree: &'t Tree,
+    table: u32,
+    path: &mut Vec<&'t str>,
     out: &mut ChunkedText<'_>,
     losses: &mut Vec<String>,
 ) {
-    for (key, value) in members {
-        if is_deferred(value) {
+    for member in tree.children(table) {
+        if is_deferred(tree, member) {
             continue;
         }
-        if let Value::Null = value {
+        let key = tree.key(member);
+        if let Data::Null = tree.data(member) {
             path.push(key);
             losses.push(path.join("."));
             path.pop();
@@ -37,28 +35,26 @@ fn write_table<'v>(
         write_key(out, key);
         out.push_str(" = ");
         path.push(key);
-        write_inline(value, path, out, losses);
+        write_inline(tree, member, path, out, losses);
         path.pop();
         out.push('\n');
     }
-    for (key, value) in members {
-        if !is_deferred(value) {
+    for member in tree.children(table) {
+        if !is_deferred(tree, member) {
             continue;
         }
-        path.push(key);
-        match value {
-            Value::Table(children) => {
+        path.push(tree.key(member));
+        match tree.data(member) {
+            Data::Table(_) => {
                 separate(out);
                 write_header(out, path, "[", "]");
-                write_table(children, path, out, losses);
+                write_table(tree, member, path, out, losses);
             }
-            Value::Array(items) => {
-                for item in items {
-                    if let Value::Table(children) = item {
-                        separate(out);
-                        write_header(out, path, "[[", "]]");
-                        write_table(children, path, out, losses);
-                    }
+            Data::Array(_) => {
+                for item in tree.children(member) {
+                    separate(out);
+                    write_header(out, path, "[[", "]]");
+                    write_table(tree, item, path, out, losses);
                 }
             }
             _ => {}
@@ -68,10 +64,13 @@ fn write_table<'v>(
 }
 
 /// Sub-tables and arrays of tables are written after the plain members.
-fn is_deferred(value: &Value) -> bool {
-    match value {
-        Value::Table(_) => true,
-        Value::Array(items) => !items.is_empty() && items.iter().all(Value::is_table),
+fn is_deferred(tree: &Tree, node: u32) -> bool {
+    match tree.data(node) {
+        Data::Table(_) => true,
+        Data::Array(children) => {
+            children.first != crate::value::NONE
+                && tree.children(node).all(|item| tree.data(item).is_table())
+        }
         _ => false,
     }
 }
@@ -108,27 +107,28 @@ fn write_key(out: &mut ChunkedText<'_>, key: &str) {
 }
 
 #[inline(never)]
-fn write_inline<'v>(
-    value: &'v Value,
-    path: &mut Vec<&'v str>,
+fn write_inline<'t>(
+    tree: &'t Tree,
+    node: u32,
+    path: &mut Vec<&'t str>,
     out: &mut ChunkedText<'_>,
     losses: &mut Vec<String>,
 ) {
-    match value {
-        Value::Null => losses.push(path.join(".")),
-        Value::Bool(flag) => out.push_str(if *flag { "true" } else { "false" }),
-        Value::Integer(number) => {
+    match tree.data(node) {
+        Data::Null => losses.push(path.join(".")),
+        Data::Bool(flag) => out.push_str(if flag { "true" } else { "false" }),
+        Data::Integer(number) => {
             let _ = write!(out, "{number}");
         }
-        Value::Float(number) => write_float(out, *number),
-        Value::String(text) => write_string(out, text),
-        Value::Datetime(text) => out.push_str(text),
-        Value::Array(items) => {
+        Data::Float(number) => write_float(out, number),
+        Data::Text(span) => write_string(out, tree.str(span)),
+        Data::Datetime(span) => out.push_str(tree.str(span)),
+        Data::Array(_) => {
             out.push('[');
             let mut written = 0;
             let mut index_text = String::new();
-            for (index, item) in items.iter().enumerate() {
-                if let Value::Null = item {
+            for (index, item) in tree.children(node).enumerate() {
+                if let Data::Null = tree.data(item) {
                     index_text.clear();
                     let _ = write!(index_text, "[{index}]");
                     let mut dropped = path.join(".");
@@ -139,18 +139,18 @@ fn write_inline<'v>(
                 if written > 0 {
                     out.push_str(", ");
                 }
-                write_inline(item, path, out, losses);
+                write_inline(tree, item, path, out, losses);
                 written += 1;
             }
             out.push(']');
         }
-        Value::Table(members) => {
-            let nothing_to_write = members
-                .iter()
-                .all(|(_, member)| matches!(member, Value::Null));
+        Data::Table(_) => {
+            let nothing_to_write = tree
+                .children(node)
+                .all(|member| matches!(tree.data(member), Data::Null));
             if nothing_to_write {
-                for (key, _) in members {
-                    path.push(key);
+                for member in tree.children(node) {
+                    path.push(tree.key(member));
                     losses.push(path.join("."));
                     path.pop();
                 }
@@ -159,9 +159,10 @@ fn write_inline<'v>(
             }
             out.push_str("{ ");
             let mut written = 0;
-            for (key, member) in members {
+            for member in tree.children(node) {
+                let key = tree.key(member);
                 path.push(key);
-                if let Value::Null = member {
+                if let Data::Null = tree.data(member) {
                     losses.push(path.join("."));
                     path.pop();
                     continue;
@@ -171,7 +172,7 @@ fn write_inline<'v>(
                 }
                 write_key(out, key);
                 out.push_str(" = ");
-                write_inline(member, path, out, losses);
+                write_inline(tree, member, path, out, losses);
                 path.pop();
                 written += 1;
             }
@@ -201,17 +202,15 @@ fn write_string(out: &mut ChunkedText<'_>, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::json::parse;
 
-    fn render(members: Vec<(&str, Value)>) -> (String, Vec<String>) {
-        let owned: Vec<(String, Value)> = members
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), value))
-            .collect();
+    fn render(json: &str) -> (String, Vec<String>) {
+        let tree = parse(json.as_bytes()).unwrap();
         let mut bytes = Vec::new();
         let mut losses = Vec::new();
         {
             let mut out = ChunkedText::new(&mut bytes);
-            write_document(&owned, &mut out, &mut losses);
+            write_document(&tree, tree.root, &mut out, &mut losses);
             out.finish().unwrap();
         }
         (String::from_utf8(bytes).unwrap(), losses)
@@ -219,30 +218,14 @@ mod tests {
 
     #[test]
     fn plain_members_come_before_sub_tables() {
-        let (out, losses) = render(vec![
-            (
-                "sub",
-                Value::Table(vec![("x".to_string(), Value::Integer(1))]),
-            ),
-            ("a", Value::String("s".to_string())),
-        ]);
+        let (out, losses) = render(r#"{"sub":{"x":1},"a":"s"}"#);
         assert_eq!(out, "a = \"s\"\n\n[sub]\nx = 1\n");
         assert!(losses.is_empty());
     }
 
     #[test]
     fn nulls_are_dropped_and_reported_by_path() {
-        let (out, losses) = render(vec![
-            ("gone", Value::Null),
-            ("list", Value::Array(vec![Value::Integer(1), Value::Null])),
-            (
-                "inline",
-                Value::Array(vec![
-                    Value::Table(vec![("n".to_string(), Value::Null)]),
-                    Value::Integer(2),
-                ]),
-            ),
-        ]);
+        let (out, losses) = render(r#"{"gone":null,"list":[1,null],"inline":[{"n":null},2]}"#);
         assert_eq!(out, "list = [1]\ninline = [{}, 2]\n");
         assert_eq!(losses, vec!["gone", "list[1]", "inline.n"]);
     }

@@ -44,10 +44,10 @@ impl Converter for JsonToXml {
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
-        let document = json::parse(input)?;
+        let tree = json::parse(input)?;
         let mut warnings = Vec::new();
         let mut text = ChunkedText::new(output);
-        let written = writer::write_document(&document, &mut text, &mut warnings);
+        let written = writer::write_document(&tree, tree.root, &mut text, &mut warnings);
         if let Err(message) = written {
             return Err(ConvertError::Unsupported(message));
         }

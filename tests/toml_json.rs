@@ -10,7 +10,6 @@ use sublime::converter::{ConvertError, ConvertOptions, Converter, Input};
 use sublime::converters::json_to_toml::JsonToToml;
 use sublime::converters::toml_to_json::TomlToJson;
 use sublime::event::{CollectingSink, Context, Event};
-use sublime::value::Value;
 
 fn fixture_dir(sub: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -100,26 +99,35 @@ fn every_valid_toml_survives_the_round_trip_through_the_writer() {
     }
 }
 
-fn sorted_tree(json: &[u8]) -> Value {
-    let mut value = sublime::io::json::parse(json).expect("our JSON parses");
-    sort_members(&mut value);
-    value
+/// The JSON re-parsed and written back with every table's members
+/// sorted by key, so two documents that differ only in member order
+/// compare equal.
+fn sorted_tree(json: &[u8]) -> String {
+    let mut tree = sublime::io::json::parse(json).expect("our JSON parses");
+    let root = tree.root;
+    sort_members(&mut tree, root);
+    sublime::io::json::from_tree::compact_text(&tree, tree.root)
 }
 
-fn sort_members(value: &mut Value) {
-    match value {
-        Value::Table(members) => {
-            members.sort_by(|left, right| left.0.cmp(&right.0));
-            for (_, member) in members {
-                sort_members(member);
-            }
+fn sort_members(tree: &mut sublime::value::Tree, node: u32) {
+    use sublime::value::{Children, Data, NONE};
+    let children: Vec<u32> = tree.children(node).collect();
+    for child in &children {
+        sort_members(tree, *child);
+    }
+    if let Data::Table(_) = tree.data(node) {
+        let mut sorted = children;
+        sorted.sort_by(|left, right| tree.key(*left).cmp(tree.key(*right)));
+        for pair in sorted.windows(2) {
+            tree.nodes[pair[0] as usize].next = pair[1];
         }
-        Value::Array(items) => {
-            for item in items {
-                sort_members(item);
-            }
+        if let Some(last) = sorted.last() {
+            tree.nodes[*last as usize].next = NONE;
         }
-        _ => {}
+        tree.nodes[node as usize].data = Data::Table(Children {
+            first: sorted.first().copied().unwrap_or(NONE),
+            last: sorted.last().copied().unwrap_or(NONE),
+        });
     }
 }
 

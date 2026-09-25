@@ -11,9 +11,9 @@ use crate::converters::input::read_text_document;
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
-use crate::io::json::{JsonWriter, from_value};
+use crate::io::json::{JsonWriter, from_tree};
 use crate::io::yaml;
-use crate::value::Value;
+use crate::value::Span;
 
 const NAME: &str = "yaml-to-json";
 const FIDELITY_NOTE: &str = "anchors are expanded, tags outside the core schema are dropped, keys become strings, infinities and NaN become strings, a multi-document stream becomes an array";
@@ -52,14 +52,20 @@ impl Converter for YamlToJson {
         for note in parsed.notes {
             context.loss(NAME, Location::default(), note);
         }
-        let mut documents = parsed.documents;
-        let value = match documents.len() {
-            0 => Value::Null,
-            1 => documents.pop().unwrap_or(Value::Null),
-            _ => Value::Array(documents),
+        let mut tree = parsed.tree;
+        let node = match parsed.documents.as_slice() {
+            [] => tree.push(Span::default(), crate::value::Data::Null),
+            [single] => *single,
+            documents => {
+                let array = tree.push_array(Span::default());
+                for document in documents {
+                    tree.append(array, *document);
+                }
+                array
+            }
         };
         let mut writer = JsonWriter::new(output);
-        from_value::write_value(&value, &mut writer, NAME, context)?;
+        from_tree::write_tree(&tree, node, &mut writer, NAME, context)?;
         writer.flush()?;
         Ok(())
     }
