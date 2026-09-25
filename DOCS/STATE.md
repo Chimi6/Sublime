@@ -104,7 +104,7 @@ The document category's one-way streets are closed (phases 1 to 4 below, release
 
 ## Done
 
-- 2026-09-25: Value hub as an arena tree (unreleased, branch `spike-value-arena`): memory 2.7 to 3.4 times lower and throughput 1.2 to 1.9 times higher on every hub pair.
+- 2026-09-25: Value hub as an arena tree released as 0.13.1: memory 2.7 to 3.4 times lower and throughput 1.2 to 1.9 times higher on every hub pair.
 - 2026-09-24: XML both ways released as 0.13.0: `xml -> json`, `json -> xml`, the `xml-json` pair passing every line against `quick-xml`; the reader streams its input.
 - 2026-09-24: YAML both ways released as 0.12.0: `yaml -> json`, `json -> yaml`, the `yaml-json` pair passing every line against `serde_yaml`; the TOML and YAML writers stream.
 - 2026-09-24: TOML both ways and the value hub released as 0.11.0: `toml -> json`, `json -> toml`, the `toml-json` pair passing every line against the `toml` crate.
