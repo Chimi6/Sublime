@@ -13,5 +13,6 @@ pub mod protobuf;
 pub mod scan;
 pub mod snappy;
 pub mod text;
+pub mod toml;
 pub mod xml;
 pub mod zip;

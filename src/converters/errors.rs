@@ -3,6 +3,7 @@
 use crate::converter::{ConvertError, Location};
 use crate::io::csv::CsvError;
 use crate::io::json::JsonError;
+use crate::io::toml::TomlError;
 
 impl From<CsvError> for ConvertError {
     fn from(error: CsvError) -> Self {
@@ -31,6 +32,15 @@ impl From<JsonError> for ConvertError {
                 location,
                 message: "invalid UTF-8 in string".to_string(),
             },
+        }
+    }
+}
+
+impl From<TomlError> for ConvertError {
+    fn from(error: TomlError) -> Self {
+        ConvertError::Malformed {
+            location: error.location,
+            message: error.message,
         }
     }
 }
