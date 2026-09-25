@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-09-24: Data category, first tree format: TOML both ways through the new value hub (`src/value`: a `Value` tree, a push `ValueSink`, a `TreeBuilder`), with JSON reading into the hub. Map in `DOCS/formats/toml.md`, oracles in `tests/toml_json.rs`, pair `toml-json` passing every line against the `toml` crate.
 - 2026-09-24: HTML and plain text input (phases 3 and 4): the HTML reader and the text reader emit the Markdown event stream, so a page or a text file reaches Markdown, text, Markdown JSON, and Word. Maps in `DOCS/formats/html.md`; oracles in `tests/html_document.rs`; pairs `html-markdown`, `html-text`, `html-docx`, `text-markdown`.
 - 2026-09-24: Markdown into Word (phase 2): the events bridge builds the document model from the Markdown event stream, so every text input reaches Word; `markdown -> docx`, `markdown-json -> docx`. Oracles in `tests/markdown_docx.rs`, pair `markdown-docx`.
 - 2026-09-24: Word input (phase 1 of the document-category plan under Next): the Word reader fills the document model and every projection out of it now takes `.docx`. Map in `DOCS/formats/docx.md`, oracles in `tests/docx_document.rs`, pairs `docx-markdown`, `docx-html`, `docx-text`.
@@ -15,7 +16,7 @@ describes.
 
 ## Next
 
-The document category's one-way streets are closed (phases 1 to 4 below, released as 0.8.0 to 0.10.0). What remains is the decision on a Pages writer; after it, the next category from `ROADMAP.md`.
+The document category's one-way streets are closed (phases 1 to 4 below, released as 0.8.0 to 0.10.0). The data category is being filled out next, one format per branch, each reading into and writing from the value hub: TOML (done), then YAML (streaming through `ValueSink`), then XML (conditional mapping to and from JSON), then JSON Lines and TSV as one small branch. The Pages writer decision stays open in parallel (a separate branch on the Mac).
 
 - 2026-09-24, phase 1 (0.8.0, done): Word reader into the document model (`src/io/docx/reader.rs`: styles, numbering, sections, headers and footers, footnotes, tables, images, fields, revisions, links, text boxes), giving `docx -> markdown`, `html`, `text`, `markdown-json`. Oracles: the 28 Apple Word exports against their text exports, and `pages -> docx -> markdown` equal to `pages -> markdown` on every fixture. Pairs: `docx-markdown`, `docx-html`, `docx-text`.
 - 2026-09-24, phase 2 (0.9.0, done): events-to-model bridge (`src/document/from_events.rs`) with built-in named styles, giving `markdown -> docx` and `markdown-json -> docx`, and later HTML and text to Word through the same bridge. Oracle: `markdown -> docx -> markdown` on the CommonMark and GFM corpus for the represented subset. Pair: `markdown-docx`.
@@ -41,6 +42,10 @@ The document category's one-way streets are closed (phases 1 to 4 below, release
 
 ## Tech Debt
 
+- 2026-09-24: Value hub leftovers:
+  - The tree holds the whole document at about ten times its bytes on the dense TOML shape (654 MB peak on 60 MB; the reference sits at 1.9 GB). An arena-backed tree (one text buffer, spans, `u32` links) is the lever, the shape the document model uses. Do it when YAML shares the hub, so both formats gain.
+  - `TomlToJson` walks the tree itself to report losses by path; when YAML streams, `JsonWriter` becomes a `ValueSink` and the walk moves into the hub.
+  - Datetimes are validated for shape and range, not the calendar.
 - 2026-09-24: Events bridge (Markdown, HTML, and text into Word) leftovers:
   - The input is held whole (the readers borrow it) and the text arena copies it: peak memory on Word output is about twice the input plus the link table (59 MB on 26.6 MB of dense HTML with 100,000 links). A streaming reader would halve it; nothing needs it yet.
   - Loose lists come out tight, and a list item's later paragraphs read back outside the list; blocks other than paragraphs inside quotes and items lose their container (`DOCS/formats/docx.md`, Known deviations).
@@ -100,6 +105,7 @@ The document category's one-way streets are closed (phases 1 to 4 below, release
 
 ## Done
 
+- 2026-09-24: TOML both ways and the value hub (unreleased, branch `toml`): `toml -> json`, `json -> toml`, the `toml-json` pair passing every line.
 - 2026-09-24: HTML and plain text input released as 0.10.0 (document-category phases 3 and 4): the tag-soup HTML reader and the text reader into the event stream; `html -> markdown`, `text`, `markdown-json`, `docx` and `text -> markdown`, `html`, `docx`; four benchmark pairs.
 - 2026-09-24: Markdown into Word released as 0.9.0 (document-category phase 2): the events bridge with named styles, `markdown -> docx` and `markdown-json -> docx`, corpus oracles, the `markdown-docx` pair.
 - 2026-09-24: Word input released as 0.8.0 (document-category phase 1): the Word reader into the document model, `docx -> markdown`, `html`, `text`, `markdown-json`, oracles against Apple's exports and our own writer, three benchmark pairs passing every line.

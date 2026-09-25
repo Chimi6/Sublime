@@ -40,7 +40,9 @@ time_cmd() {
     "$time_bin" -f "%M" -o "$data/rss.txt" "$@"
     end="$(date +%s.%N)"
     results+=("$(echo "$end - $start" | bc -l)")
-    rss="$(cat "$data/rss.txt")"
+    # A conversion that reports losses exits 2, and GNU time then puts a
+    # status line ahead of the number; the number is always the last line.
+    rss="$(tail -n 1 "$data/rss.txt")"
   done
   local median
   median="$(printf '%s\n' "${results[@]}" | sort -n | sed -n 2p)"

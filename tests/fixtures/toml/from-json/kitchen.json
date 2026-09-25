@@ -1,0 +1,1 @@
+{"title":"x","count":3,"ratio":1.0,"big":1e21,"ok":true,"none":null,"list":[1,null,"two",2.5],"empty_list":[],"empty":{},"key with space":"q","dotted.key":"d","":"blank","tab":"a\tb\"c\\d\u0001","sub":{"a":1,"deep":{"b":[{"c":1},{"c":2}]}},"objects":[{"n":1,"inner":{"z":true}},{"n":2}],"mixed":[{"a":1},2],"nested_lists":[[1,2],[3]]}
