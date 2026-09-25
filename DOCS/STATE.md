@@ -22,13 +22,17 @@ describes.
 
 ## Next
 
-The document category's one-way streets are closed (phases 1 to 4 below, released as 0.8.0 to 0.10.0). The data category is being filled out next, one format per branch, each reading into and writing from the value hub: TOML (done), YAML (done; it builds the tree, since aliases and merge keys need whole subtrees), XML (done, the xmltodict mapping), the direct pairs between them (done), and JSON Lines and TSV (done). The planned data set is complete and XLSX (one sheet at a time) is in. Next: the cheap hub batch (INI, plist, MessagePack, CBOR), then every-sheet XLSX output as a JSON object of sheets, then the document category (ODT, EPUB). The Pages writer decision stays open in parallel (a separate branch on the Mac).
+The document category's one-way streets are closed (0.8.0 to 0.10.0) and the data category's planned set is in (0.11.0 to 0.16.0). What follows, in order:
 
-- 2026-09-24, phase 1 (0.8.0, done): Word reader into the document model (`src/io/docx/reader.rs`: styles, numbering, sections, headers and footers, footnotes, tables, images, fields, revisions, links, text boxes), giving `docx -> markdown`, `html`, `text`, `markdown-json`. Oracles: the 28 Apple Word exports against their text exports, and `pages -> docx -> markdown` equal to `pages -> markdown` on every fixture. Pairs: `docx-markdown`, `docx-html`, `docx-text`.
-- 2026-09-24, phase 2 (0.9.0, done): events-to-model bridge (`src/document/from_events.rs`) with built-in named styles, giving `markdown -> docx` and `markdown-json -> docx`, and later HTML and text to Word through the same bridge. Oracle: `markdown -> docx -> markdown` on the CommonMark and GFM corpus for the represented subset. Pair: `markdown-docx`.
-- 2026-09-24, phase 3 (0.10.0, done): HTML reader (`src/io/html/reader.rs`: tokenizer subset, tag-soup tolerant tree builder, whitespace collapsing) emitting Markdown events, giving `html -> markdown`, `text`, `markdown-json`, `docx`. Oracle: `markdown -> html -> markdown` on the corpus plus saved real pages. Pairs: `html-markdown`, `html-text`, `html-docx`.
-- 2026-09-24, phase 4 (0.10.0, done): plain text reader (paragraphs from blank lines, conditional), giving `text -> markdown`, `docx`, `html`. Pair: `text-markdown`. Ships with phase 3 or alone.
-- 2026-09-24, decide after phase 4: a Pages writer from the model (`docx -> pages`), which needs a Snappy and protobuf encoder and a complete object graph Pages will open (XL). Measure demand first; otherwise Pages stays input-only and the roadmap says so.
+- 2026-09-25, spreadsheets as a family (the XLSX reader and writer are the model; every entry below reads into rows and writes from them so it reaches CSV, TSV, JSON, JSON Lines, and the hub formats through the planner):
+  - **Apple Numbers** (`.numbers`, Mac session): IWA package like Pages, so the Snappy and protobuf readers and the Pages fixtures pipeline apply; tables of the first sheet to rows first, then sheet and table selection through `--sheet`. Needs Numbers-made fixtures with Numbers' own CSV exports as references, which only the Mac can produce. Reader before writer; a writer needs the same object-graph work as the Pages writer and waits on that decision.
+  - **OpenDocument spreadsheet** (`.ods`): the same keystones as XLSX (ZIP, XML) with `content.xml` rows and `table:table-cell` repeats; LibreOffice's own CSV exports as references. Reader and writer, a week.
+  - **Google Sheets** is not a file format: it lives in Google's cloud and exports as XLSX, CSV, or ODS, which we read. Nothing to build; the docs should say so.
+  - **Spreadsheet to document**: a sheet as a Markdown, HTML, or Word table through the document model's tables (`rows -> events`), so a workbook reaches every document format; and a whole workbook as one JSON object of sheets (or one CSV per sheet) instead of one sheet per run.
+  - **Excel-made fixtures** for the XLSX reader (Mac session, Excel or Numbers export), and number formats beyond dates.
+- 2026-09-25, the cheap hub batch: INI, plist (XML and binary), MessagePack, CBOR, each a day on the value tree.
+- Then the document category: ODT and EPUB, which reuse the Word and HTML work almost entirely; RTF; then PDF write as its own plan.
+- The Pages writer decision stays with the Mac session.
 
 ## Future
 
