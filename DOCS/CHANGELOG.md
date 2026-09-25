@@ -6,6 +6,12 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-25
+
+TSV and JSON Lines, and every row path among CSV, TSV, JSON, and JSON
+Lines, all streamed in constant memory; the data category's planned set
+is complete.
+
 ### Added
 
 - TSV: the CSV reader and writer take a separator (`CsvReader::with_delimiter`, `CsvWriter::with_delimiter`, a tab scanner in `io::scan`), and the row converters are parametrized by it: `tsv -> json`, `json -> tsv`, `csv <-> tsv` (lossless, quoting for the target's separator), and TSV to and from JSON Lines. Extensions `.tsv` and `.tab`.
