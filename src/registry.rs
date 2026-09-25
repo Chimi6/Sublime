@@ -6,9 +6,11 @@ use crate::converters::csv_to_json;
 use crate::converters::csv_to_xlsx;
 use crate::converters::docx_to_html::DocxToHtml;
 use crate::converters::docx_to_markdown::DocxToMarkdown;
+use crate::converters::docx_to_pages::DocxToPages;
 use crate::converters::docx_to_text::DocxToText;
 use crate::converters::html_to_docx::HtmlToDocx;
 use crate::converters::html_to_markdown::HtmlToMarkdown;
+use crate::converters::html_to_pages::HtmlToPages;
 use crate::converters::html_to_text::HtmlToText;
 use crate::converters::hub;
 use crate::converters::json_to_csv;
@@ -20,6 +22,7 @@ use crate::converters::markdown_json_to_markdown::MarkdownJsonToMarkdown;
 use crate::converters::markdown_to_docx::MarkdownToDocx;
 use crate::converters::markdown_to_html::MarkdownToHtml;
 use crate::converters::markdown_to_json::MarkdownToJson;
+use crate::converters::markdown_to_pages::MarkdownToPages;
 use crate::converters::markdown_to_text::MarkdownToText;
 use crate::converters::pages_to_docx::PagesToDocx;
 use crate::converters::pages_to_html::PagesToHtml;
@@ -30,13 +33,14 @@ use crate::converters::rows;
 use crate::converters::text_to_docx::TextToDocx;
 use crate::converters::text_to_html::TextToHtml;
 use crate::converters::text_to_markdown::TextToMarkdown;
+use crate::converters::text_to_pages::TextToPages;
 use crate::converters::toml_to_json::TomlToJson;
 use crate::converters::xlsx_to_csv;
 use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 48] = [
+static CONVERTERS: [&dyn Converter; 52] = [
     &csv_to_json::CSV_TO_JSON,
     &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
@@ -53,6 +57,10 @@ static CONVERTERS: [&dyn Converter; 48] = [
     &DocxToHtml,
     &DocxToText,
     &MarkdownToDocx,
+    &MarkdownToPages,
+    &TextToPages,
+    &HtmlToPages,
+    &DocxToPages,
     &HtmlToMarkdown,
     &HtmlToText,
     &HtmlToDocx,

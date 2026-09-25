@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- Apple Pages output: `src/io/pages/writer.rs` writes a `.pages` package by rewriting a template's body storage (a real document is the scaffolding, not a graph generated from nothing; see `DOCS/formats/pages.md`), setting the body text and one paragraph-style run per paragraph mapped to Pages' own named styles (Title, Heading, Body). Bold and italic runs point at the template's own character styles, since the bold/italic toggle alone does not render in Pages (its styles carry the weighted font) and the character-style table must start at offset 0 with the template's declared base style or Pages drops it whole. Bulleted and numbered lists reuse the template's live list styles (the theme's "Bullets"/"Numbered" instances, not the preset definitions, which do not render), with the nesting level and list-start number written to the paragraph-data tables and the referenced styles added to the storage's object references so the document scope keeps them. Tables reuse the template's own tables: Pages requires every table registered in the document's calculation engine (which cannot be synthesized), so the writer rewrites a template table's tile, string table, header buckets, and column/row UID map with the model table's cells and grid, and anchors it inline with a `U+FFFC` and a `table_attachment` entry; a document with more tables than the template carries flattens the extras. Paths `markdown -> pages`, `text -> pages`, `html -> pages`, `docx -> pages`, declared lossy: links and images are not yet written. Oracles in `src/io/pages/writer.rs` (a written document reads back through the document reader, bold, italic, lists, and tables included); output opens in Pages 12. The template (`style_template.pages`: a Pages 12 document carrying the theme's named paragraph, character, list, and table styles and a reference table with its calculation-engine registration, with preview thumbnails stripped) is compiled in.
+
 ## [0.16.0] - 2026-09-25
 
 Excel workbooks: a chosen sheet to CSV, TSV, JSON, and JSON Lines, and
