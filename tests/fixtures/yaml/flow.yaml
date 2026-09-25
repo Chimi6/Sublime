@@ -1,0 +1,5 @@
+{a: [1, 2,
+  3], b: {c: d,
+    e: f}, "g h": 'i', empty:, k: "multi
+  line", plain: multi
+  line plain, bare, trailing: [1,],}

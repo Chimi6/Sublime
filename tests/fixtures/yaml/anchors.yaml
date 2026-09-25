@@ -1,0 +1,14 @@
+base: &base
+  a: 1
+  b: 2
+child:
+  <<: *base
+  b: 3
+  c: 4
+list: &l [1, 2]
+copy: *l
+multi:
+  <<: [*base, {z: 9}]
+  a: 0
+scalar_anchor: &s hello
+alias_scalar: *s

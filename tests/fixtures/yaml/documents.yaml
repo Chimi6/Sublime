@@ -1,0 +1,7 @@
+%YAML 1.2
+---
+first: 1
+...
+---
+- second
+--- third

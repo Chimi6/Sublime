@@ -1,0 +1,17 @@
+dq: "tab\there \u00e9 \U0001F600 \x41 \/ \\ \" \0 end"
+dq_fold: "first
+  second
+
+  third"
+dq_escape_nl: "join\
+  ed"
+sq: 'don''t fold
+  this'
+plain_hash: a # comment
+plain_not_hash: a#b
+plain_colon_end: "ends:"
+key with spaces: v
+"key: colon": v2
+empty_dq: ""
+empty_sq: ''
+unicode: café — naïve
