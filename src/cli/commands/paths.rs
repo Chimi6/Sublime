@@ -6,7 +6,8 @@ use std::io::Write;
 use crate::cli::args::LogFormat;
 use crate::cli::render::json_lines::write_hop;
 use crate::cli::{CliError, ExitCode};
-use crate::converter::FidelityKind;
+use crate::converter::{Converter, FidelityKind};
+use crate::format::Category;
 use crate::io::json::JsonWriter;
 use crate::planner::{self, Plan, PlanOptions};
 use crate::registry;
@@ -168,74 +169,114 @@ pub fn render_markdown() -> String {
     }
 
     text.push_str("\n## Map\n\n");
-    text.push_str("One arrow per converter: solid for lossless, labeled for conditional, dotted for lossy. Longer paths chain them.\n\n");
+    text.push_str("One graph per category and one for the crossings between them. One arrow per converter: solid for lossless, labeled for conditional, dotted for lossy; longer paths chain them. A stadium-shaped format has a converter into another category.\n\n");
     text.push_str(&render_mermaid());
     text
 }
 
-/// A Mermaid graph of the converters, grouped by format category, which
-/// GitHub renders inline at the bottom of DOCS/FORMATS.md.
+/// The map at the bottom of DOCS/FORMATS.md: one Mermaid graph per
+/// category with the converters inside it, and a last graph of the
+/// converters that cross categories. A format with a converter into
+/// another category is drawn as a stadium (`([id])`) in its own graph and
+/// again in the crossing graph, where the other category is a hexagon
+/// (`{{label}}`) standing for the hub behind it.
 #[inline(never)]
 fn render_mermaid() -> String {
-    let mut text = String::from("```mermaid\ngraph LR\n");
     let mut formats = registry::all_formats();
     formats.sort_by(|left, right| (left.category, left.id).cmp(&(right.category, right.id)));
-    let mut current_category = None;
-    for format in formats {
-        if current_category != Some(format.category) {
-            if current_category.is_some() {
-                text.push_str("  end\n");
-            }
-            text.push_str("  subgraph ");
-            text.push_str(format.category.label());
+    let converters = registry::all_converters();
+    let crosses = |id: &str| {
+        converters.iter().any(|converter| {
+            (converter.from().id == id || converter.to().id == id)
+                && converter.from().category != converter.to().category
+        })
+    };
+    let mut text = String::new();
+    let mut categories: Vec<Category> = formats.iter().map(|format| format.category).collect();
+    categories.dedup();
+    for category in &categories {
+        text.push_str("### ");
+        text.push_str(category.label());
+        text.push_str("\n\n```mermaid\ngraph LR\n");
+        for format in formats.iter().filter(|format| format.category == *category) {
+            text.push_str("  ");
+            push_node(&mut text, format.id, crosses(format.id));
             text.push('\n');
-            current_category = Some(format.category);
         }
-        text.push_str("    ");
-        push_mermaid_id(&mut text, format.id);
-        text.push_str("[\"");
-        text.push_str(format.id);
-        text.push_str("\"]\n");
-    }
-    if current_category.is_some() {
-        text.push_str("  end\n");
-    }
-    // An edge inside a category joins two formats. An edge between
-    // categories joins a format to the other category's box, since the
-    // hub behind that box carries it on to every format there; the box
-    // stands for the endpoint in the later category, and equal edges
-    // are drawn once.
-    let mut drawn: Vec<String> = Vec::new();
-    for converter in registry::all_converters() {
-        let arrow = match converter.fidelity().kind() {
-            FidelityKind::Lossless => " --> ",
-            FidelityKind::Conditional => " -- conditional --> ",
-            FidelityKind::Lossy => " -. lossy .-> ",
-        };
-        let from = converter.from();
-        let to = converter.to();
-        let mut line = String::from("  ");
-        if from.category == to.category {
-            push_mermaid_id(&mut line, from.id);
-            line.push_str(arrow);
-            push_mermaid_id(&mut line, to.id);
-        } else if from.category < to.category {
-            push_mermaid_id(&mut line, from.id);
-            line.push_str(arrow);
-            line.push_str(to.category.label());
-        } else {
-            line.push_str(from.category.label());
-            line.push_str(arrow);
-            push_mermaid_id(&mut line, to.id);
+        for converter in converters {
+            let same =
+                converter.from().category == *category && converter.to().category == *category;
+            if same {
+                push_edge(
+                    &mut text,
+                    converter.from().id,
+                    arrow_for(*converter),
+                    converter.to().id,
+                );
+            }
         }
-        line.push('\n');
-        if !drawn.contains(&line) {
-            text.push_str(&line);
-            drawn.push(line);
-        }
+        text.push_str("```\n\n");
     }
-    text.push_str("```\n");
+    let crossing: Vec<&&dyn Converter> = converters
+        .iter()
+        .filter(|converter| converter.from().category != converter.to().category)
+        .collect();
+    if !crossing.is_empty() {
+        text.push_str("### Between categories\n\n");
+        text.push_str("A format's converter into another category opens every path that category already has, so the other side is drawn as the category itself.\n\n```mermaid\ngraph LR\n");
+        let mut drawn: Vec<String> = Vec::new();
+        for converter in crossing {
+            let from = converter.from();
+            let to = converter.to();
+            let mut line = String::from("  ");
+            if from.category < to.category {
+                push_mermaid_id(&mut line, from.id);
+                line.push_str(arrow_for(*converter));
+                line.push_str(to.category.label());
+                line.push_str("{{");
+                line.push_str(to.category.label());
+                line.push_str("}}");
+            } else {
+                line.push_str(from.category.label());
+                line.push_str("{{");
+                line.push_str(from.category.label());
+                line.push_str("}}");
+                line.push_str(arrow_for(*converter));
+                push_mermaid_id(&mut line, to.id);
+            }
+            line.push('\n');
+            if !drawn.contains(&line) {
+                text.push_str(&line);
+                drawn.push(line);
+            }
+        }
+        text.push_str("```\n");
+    }
     text
+}
+
+fn arrow_for(converter: &dyn Converter) -> &'static str {
+    match converter.fidelity().kind() {
+        FidelityKind::Lossless => " --> ",
+        FidelityKind::Conditional => " -- conditional --> ",
+        FidelityKind::Lossy => " -. lossy .-> ",
+    }
+}
+
+/// A format node: a stadium when it has a converter across categories.
+fn push_node(text: &mut String, format_id: &str, crosses: bool) {
+    push_mermaid_id(text, format_id);
+    text.push_str(if crosses { "([\"" } else { "[\"" });
+    text.push_str(format_id);
+    text.push_str(if crosses { "\"])" } else { "\"]" });
+}
+
+fn push_edge(text: &mut String, from: &str, arrow: &str, to: &str) {
+    text.push_str("  ");
+    push_mermaid_id(text, from);
+    text.push_str(arrow);
+    push_mermaid_id(text, to);
+    text.push('\n');
 }
 
 /// Mermaid node ids cannot contain hyphens, which read as edge syntax.
