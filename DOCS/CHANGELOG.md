@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Changed
+
+- The formats map is one Mermaid graph per category plus one for the crossings between categories, instead of a single graph of everything: a format with a converter into another category is a stadium in its own graph, and the other category is a hexagon in the crossing graph. The binary size budget is raised 1.8 -> 1.85 MB: the binary had 3 KB of headroom after 0.17.0 and this rendering takes 4 KB.
+
 ## [0.17.0] - 2026-09-25
 
 The bridge between rows and documents: spreadsheets reach every
