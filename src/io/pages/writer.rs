@@ -13,7 +13,7 @@ use crate::document::{
     Block, Document, Id, Inline, ListItem, ListLabel, MediaId, NumberKind, Paragraph, RunProperties,
 };
 use crate::io::protobuf::schema::MessageRef;
-use crate::io::protobuf::tree::{Chain, NONE, Node, Tree, TreeError};
+use crate::io::protobuf::tree::{Chain, Entry as TreeEntry, NONE, Node, Tree, TreeError};
 
 /// A blank Pages 12 document with the preview thumbnails stripped: the
 /// scaffolding every written document is built on. Made once on a Mac and
@@ -157,13 +157,29 @@ fn rebuild_body(
         reuse_table(package, table, mark)?;
         anchors.push((mark.offset, table.attach_id));
     }
-    // Each model image reuses one template image (its bytes, size, and inline
-    // anchor), up to the number the template carries; extras are flattened.
-    let template_images = collect_template_images(package);
-    for (mark, image) in body.images.iter().zip(&template_images) {
-        let bytes = document.media[mark.media].bytes.clone();
-        reuse_image(package, image, mark, &bytes)?;
-        anchors.push((mark.offset, image.attach_id));
+    // The template carries one image as a prototype: the first model image
+    // reuses it; any others clone it so every image reaches Pages, each with its
+    // own objects and data files.
+    if let Some(prototype) = collect_template_images(package).first().copied() {
+        let mut next_object_id = max_identifier(package) + 1;
+        let mut next_data_id = max_data_id(package) + 1;
+        for (index, mark) in body.images.iter().enumerate() {
+            let bytes = document.media[mark.media].bytes.clone();
+            let attach_id = if index == 0 {
+                reuse_image(package, &prototype, mark, &bytes)?;
+                prototype.attach_id
+            } else {
+                clone_image(
+                    package,
+                    &prototype,
+                    mark,
+                    &bytes,
+                    &mut next_object_id,
+                    &mut next_data_id,
+                )?
+            };
+            anchors.push((mark.offset, attach_id));
+        }
     }
     // Attachments anchor by ascending character offset in one table.
     anchors.sort_by_key(|(offset, _)| *offset);
@@ -617,6 +633,7 @@ fn update_model_dims(
 /// An image the template carries, by the identifiers a rewrite touches: the
 /// drawable attachment the body anchors, the image archive whose size and
 /// bytes change, and the data references naming its full and thumbnail files.
+#[derive(Clone, Copy)]
 struct TemplateImage {
     attach_id: u64,
     image_id: u64,
@@ -766,6 +783,424 @@ fn png_crc32(data: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+/// The highest data-reference identifier the package metadata records; a new
+/// image's data files take the next ones (a small namespace, separate from
+/// object identifiers).
+fn max_data_id(package: &Package) -> u64 {
+    let mut max = 0;
+    for entry in &package.entries {
+        let Entry::Stream(stream) = entry else {
+            continue;
+        };
+        for object in &stream.objects {
+            if first_type(object) != Some(PACKAGE_METADATA) {
+                continue;
+            }
+            let Some(first) = object.messages.first().map(|message| message.first) else {
+                continue;
+            };
+            for (_, field) in stream.tree.chain(first) {
+                if stream.tree.field(field).map(|field| field.name) == Some("datas")
+                    && let Node::Message(datas_first) = field.value
+                    && let Some(Node::Uint(id)) =
+                        field_value(&stream.tree, datas_first, "identifier")
+                {
+                    max = max.max(id);
+                }
+            }
+        }
+    }
+    max
+}
+
+/// The file extension for image bytes (Pages sniffs the content, but the data
+/// file and its metadata name must agree).
+fn image_extension(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0xFF, 0xD8]) {
+        "jpg"
+    } else {
+        "png"
+    }
+}
+
+/// Deep-copies a message chain within the same tree, applying `remap` to each
+/// copied entry (to repoint references). Byte and string spans are shared —
+/// the tree's text buffer is append-only, so the originals stay valid.
+fn clone_chain(
+    tree: &mut Tree,
+    first: u32,
+    remap: &mut dyn FnMut(&mut TreeEntry),
+) -> Result<u32, PackageError> {
+    let originals: Vec<TreeEntry> = tree.chain(first).map(|(_, entry)| *entry).collect();
+    let mut chain = Chain::new();
+    for mut entry in originals {
+        entry.next = NONE;
+        if let Node::Message(nested) = entry.value {
+            entry.value = Node::Message(clone_chain(tree, nested, remap)?);
+        }
+        remap(&mut entry);
+        tree.push(&mut chain, entry).map_err(tree_error)?;
+    }
+    Ok(chain.first)
+}
+
+/// Clones an object (its message and header) within the document stream under a
+/// new identifier, returning the cloned message and header chain starts so the
+/// caller can adjust them. The clone is appended to the stream's objects.
+fn clone_object(
+    stream: &mut Stream,
+    source_id: u64,
+    new_id: u64,
+) -> Result<(u32, u32), PackageError> {
+    let (message_type, message_first, info_first) = {
+        let source = stream
+            .objects
+            .iter()
+            .find(|object| object.identifier == source_id)
+            .ok_or_else(|| malformed("clone source object is missing"))?;
+        let message = source
+            .messages
+            .first()
+            .ok_or_else(|| malformed("clone source has no message"))?;
+        (message.message_type, message.first, source.info)
+    };
+    let new_message = clone_chain(&mut stream.tree, message_first, &mut |_| {})?;
+    let new_info = clone_chain(&mut stream.tree, info_first, &mut |_| {})?;
+    if let Some(index) = field_entry(&stream.tree, new_info, "identifier") {
+        stream.tree.entries[index as usize].value = Node::Uint(new_id);
+    }
+    stream.objects.push(Object {
+        identifier: new_id,
+        info: new_info,
+        messages: vec![ObjectMessage {
+            message_type,
+            first: new_message,
+        }],
+    });
+    Ok((new_message, new_info))
+}
+
+/// Repoints one reference in an object header chain (`message_infos`) — a
+/// `data_references` or `object_references` value — from `old` to `new`.
+fn remap_info_reference(tree: &mut Tree, info_first: u32, field: &str, old: u64, new: u64) {
+    let Some(infos_first) = message_field(tree, info_first, "message_infos") else {
+        return;
+    };
+    let mut cursor = infos_first;
+    while cursor != NONE {
+        let entry = &tree.entries[cursor as usize];
+        let next = entry.next;
+        if tree.field(entry).map(|name| name.name) == Some(field) && entry.value == Node::Uint(old)
+        {
+            tree.entries[cursor as usize].value = Node::Uint(new);
+            return;
+        }
+        cursor = next;
+    }
+}
+
+/// Sets the `identifier` inside a data-reference field (`data` or
+/// `thumbnailData`) of an image message to a new data id, in place.
+fn set_message_data_id(tree: &mut Tree, message_first: u32, field: &str, new: u64) {
+    if let Some(data_first) = message_field(tree, message_first, field)
+        && let Some(index) = field_entry(tree, data_first, "identifier")
+    {
+        tree.entries[index as usize].value = Node::Uint(new);
+    }
+}
+
+/// Appends a data file to the package.
+fn add_data_file(package: &mut Package, name: &str, bytes: &[u8]) {
+    package.entries.push(Entry::File {
+        name: format!("Data/{name}"),
+        bytes: bytes.to_vec(),
+    });
+}
+
+/// The stream holding the package metadata, and the metadata message's chain.
+fn metadata_message(package: &mut Package) -> Option<(&mut Stream, u32)> {
+    for entry in &mut package.entries {
+        if let Entry::Stream(stream) = entry
+            && let Some(first) = stream
+                .objects
+                .iter()
+                .find(|object| first_type(object) == Some(PACKAGE_METADATA))
+                .and_then(|object| object.messages.first())
+                .map(|message| message.first)
+        {
+            return Some((stream, first));
+        }
+    }
+    None
+}
+
+/// Appends a `Node::Message` to a repeated field at the end of a chain.
+fn append_message_field(
+    tree: &mut Tree,
+    parent: MessageRef,
+    parent_first: u32,
+    field_name: &str,
+    message_first: u32,
+) -> Result<(), PackageError> {
+    let (slot, field) = parent
+        .slot_named(field_name)
+        .ok_or_else(|| malformed("field is not in the schema"))?;
+    let mut last = parent_first;
+    for (index, _) in tree.chain(parent_first) {
+        last = index;
+    }
+    let mut chain = Chain {
+        first: parent_first,
+        last,
+    };
+    tree.push_known(
+        &mut chain,
+        parent,
+        slot,
+        field,
+        field.number,
+        Node::Message(message_first),
+    )
+    .map_err(tree_error)?;
+    Ok(())
+}
+
+/// The chain start of the `datas` entry (a `TSP.DataInfo`) for a data id.
+fn datas_entry(tree: &Tree, metadata_first: u32, data_id: u64) -> Option<u32> {
+    data_info_chain(tree, metadata_first, data_id)
+}
+
+/// The component info (in the package metadata) whose data references include
+/// `data_id`, and the chain start of that data-reference entry.
+fn component_data_reference(tree: &Tree, metadata_first: u32, data_id: u64) -> Option<(u32, u32)> {
+    for (_, field) in tree.chain(metadata_first) {
+        let Node::Message(component_first) = field.value else {
+            continue;
+        };
+        if tree.field(field).map(|name| name.name) != Some("components")
+            && tree.field(field).map(|name| name.name) != Some("versioned_components")
+        {
+            continue;
+        }
+        for (_, inner) in tree.chain(component_first) {
+            if tree.field(inner).map(|name| name.name) == Some("data_references")
+                && let Node::Message(reference_first) = inner.value
+                && field_value(tree, reference_first, "data_identifier")
+                    == Some(Node::Uint(data_id))
+            {
+                return Some((component_first, reference_first));
+            }
+        }
+    }
+    None
+}
+
+/// Clones the template's one image into a fresh image for `mark`: new image and
+/// attachment objects, new data files, and cloned metadata entries, all with
+/// distinct identifiers so a document with several images keeps them all.
+/// Returns the new attachment id for the body to anchor.
+#[allow(clippy::too_many_arguments)]
+fn clone_image(
+    package: &mut Package,
+    proto: &TemplateImage,
+    mark: &ImageMark,
+    bytes: &[u8],
+    next_object_id: &mut u64,
+    next_data_id: &mut u64,
+) -> Result<u64, PackageError> {
+    let new_image_id = *next_object_id;
+    let new_attach_id = *next_object_id + 1;
+    *next_object_id += 2;
+    let new_full = *next_data_id;
+    *next_data_id += 1;
+    let new_thumb = proto.thumb_id.map(|_| {
+        let id = *next_data_id;
+        *next_data_id += 1;
+        id
+    });
+
+    let extension = image_extension(bytes);
+    let full_name = format!("image-{new_full}.{extension}");
+    let thumbnail = distinct_thumbnail(bytes);
+    let thumb_name = new_thumb.map(|id| format!("image-{id}.{extension}"));
+
+    let pixels = image_dimensions(bytes);
+    let (width, height) = display_size(mark, pixels);
+    let (natural_w, natural_h) = pixels.map_or((width, height), |(w, h)| (w as f32, h as f32));
+
+    // Clone the image and attachment objects into the document stream, with the
+    // new data ids and the attachment pointing at the new image.
+    {
+        let stream = document_stream(package)?;
+        let (image_message, image_info) = clone_object(stream, proto.image_id, new_image_id)?;
+        set_message_data_id(&mut stream.tree, image_message, "data", new_full);
+        remap_info_reference(
+            &mut stream.tree,
+            image_info,
+            "data_references",
+            proto.data_id,
+            new_full,
+        );
+        if let (Some(old_thumb), Some(new_thumb)) = (proto.thumb_id, new_thumb) {
+            set_message_data_id(&mut stream.tree, image_message, "thumbnailData", new_thumb);
+            remap_info_reference(
+                &mut stream.tree,
+                image_info,
+                "data_references",
+                old_thumb,
+                new_thumb,
+            );
+        }
+        let (attach_message, attach_info) = clone_object(stream, proto.attach_id, new_attach_id)?;
+        if let Some(index) = field_entry(&stream.tree, attach_message, "drawable") {
+            stream.tree.entries[index as usize].value = Node::Reference(new_image_id);
+        }
+        remap_info_reference(
+            &mut stream.tree,
+            attach_info,
+            "object_references",
+            proto.image_id,
+            new_image_id,
+        );
+    }
+
+    // Rewrite the clone's sizes and traced path, and make its attachment inline.
+    rewrite_object_with(package, new_image_id, |tree, old_first| {
+        rebuild_image(tree, old_first, width, height, natural_w, natural_h, mark)
+    })?;
+    rewrite_object_with(package, new_attach_id, |tree, old_first| {
+        rebuild_inline_attachment(tree, old_first)
+    })?;
+
+    // Add the data files and clone their metadata entries under the new ids.
+    add_data_file(package, &full_name, bytes);
+    clone_data_metadata(
+        package,
+        proto.data_id,
+        new_full,
+        &full_name,
+        &sha1(bytes),
+        natural_w,
+        natural_h,
+        new_image_id,
+    )?;
+    if let (Some(old_thumb), Some(new_thumb), Some(name)) = (proto.thumb_id, new_thumb, thumb_name)
+    {
+        add_data_file(package, &name, &thumbnail);
+        clone_data_metadata(
+            package,
+            old_thumb,
+            new_thumb,
+            &name,
+            &sha1(&thumbnail),
+            natural_w,
+            natural_h,
+            new_image_id,
+        )?;
+    }
+    Ok(new_attach_id)
+}
+
+/// Clones the package-metadata entries for a data reference under a new id: its
+/// `datas` entry (digest, file name, pixel size) and its component's
+/// data-reference (which object uses it), so the new data file is registered
+/// exactly as the prototype's was.
+#[allow(clippy::too_many_arguments)]
+fn clone_data_metadata(
+    package: &mut Package,
+    proto_data_id: u64,
+    new_data_id: u64,
+    file_name: &str,
+    digest: &[u8],
+    width: f32,
+    height: f32,
+    object_id: u64,
+) -> Result<(), PackageError> {
+    let metadata = message_ref("TSP.PackageMetadata")?;
+    let components = message_of(
+        metadata
+            .field_named("components")
+            .ok_or_else(|| malformed("metadata has no components"))?
+            .kind,
+    )?;
+    let (stream, meta_first) =
+        metadata_message(package).ok_or_else(|| malformed("package metadata is missing"))?;
+    let tree = &mut stream.tree;
+
+    // Clone and retarget the datas entry.
+    let source = datas_entry(tree, meta_first, proto_data_id)
+        .ok_or_else(|| malformed("source datas entry is missing"))?;
+    let new_datas = clone_chain(tree, source, &mut |_| {})?;
+    set_field_uint(tree, new_datas, "identifier", new_data_id);
+    set_field_bytes(tree, new_datas, "digest", digest)?;
+    set_field_str(tree, new_datas, "file_name", file_name)?;
+    set_field_str(tree, new_datas, "preferred_file_name", "image.png")?;
+    if let Some(size) = message_field(tree, new_datas, "attributes")
+        .and_then(|attributes| message_field(tree, attributes, "image_data_attributes"))
+        .and_then(|image| message_field(tree, image, "pixel_size"))
+    {
+        set_field_float(tree, size, "width", width);
+        set_field_float(tree, size, "height", height);
+    }
+    append_message_field(tree, metadata, meta_first, "datas", new_datas)?;
+
+    // Clone and retarget the component's data-reference (data id -> object).
+    if let Some((component_first, source_reference)) =
+        component_data_reference(tree, meta_first, proto_data_id)
+    {
+        let new_reference = clone_chain(tree, source_reference, &mut |_| {})?;
+        set_field_uint(tree, new_reference, "data_identifier", new_data_id);
+        if let Some(list) = message_field(tree, new_reference, "object_reference_list") {
+            set_field_uint(tree, list, "object_identifier", object_id);
+        }
+        append_message_field(
+            tree,
+            components,
+            component_first,
+            "data_references",
+            new_reference,
+        )?;
+    }
+    Ok(())
+}
+
+/// Sets a named uint field in a chain, in place, if present.
+fn set_field_uint(tree: &mut Tree, first: u32, name: &str, value: u64) {
+    if let Some(index) = field_entry(tree, first, name) {
+        tree.entries[index as usize].value = Node::Uint(value);
+    }
+}
+
+/// Sets a named float field in a chain, in place, if present.
+fn set_field_float(tree: &mut Tree, first: u32, name: &str, value: f32) {
+    if let Some(index) = field_entry(tree, first, name) {
+        tree.entries[index as usize].value = Node::Float(value);
+    }
+}
+
+/// Sets a named string field in a chain, in place, if present.
+fn set_field_str(tree: &mut Tree, first: u32, name: &str, value: &str) -> Result<(), PackageError> {
+    if let Some(index) = field_entry(tree, first, name) {
+        let span = tree.push_bytes(value.as_bytes()).map_err(tree_error)?;
+        tree.entries[index as usize].value = Node::Str(span);
+    }
+    Ok(())
+}
+
+/// Sets a named bytes field in a chain, in place, if present.
+fn set_field_bytes(
+    tree: &mut Tree,
+    first: u32,
+    name: &str,
+    value: &[u8],
+) -> Result<(), PackageError> {
+    if let Some(index) = field_entry(tree, first, name) {
+        let span = tree.push_bytes(value).map_err(tree_error)?;
+        tree.entries[index as usize].value = Node::Bytes(span);
+    }
+    Ok(())
 }
 
 /// Updates a data reference's metadata for the replaced bytes: its digest (so
