@@ -19,6 +19,8 @@ serde_yaml = "0.9"
 quick-xml = "0.37"
 calamine = { version = "0.26", features = ["dates"] }
 rust_xlsxwriter = "0.79"
+png = "0.17"
+image = { version = "0.25", default-features = false, features = ["bmp"] }
 
 [profile.release]
 lto = "fat"

@@ -6,6 +6,24 @@ section under a version heading.
 
 ## [Unreleased]
 
+The image category opens: an 8-bit pixel hub, PNG in and out, BMP in
+and out, and a streaming inflater that decodes as the file arrives.
+
+### Added
+
+- The image hub (`src/image`): an 8-bit pixel buffer in gray, gray+alpha, RGB, or RGBA that every raster format reads into and writes from.
+- PNG (`src/io/png`): a reader for every bit depth, color type, palette, transparency key, and interlace the specification allows, fed in pieces so memory is the image plus a few hundred kilobytes; a writer of 8-bit images with per-row adaptive filters and deflated IDAT chunks. `png -> bmp` (conditional: 16-bit samples become 8-bit, gray becomes RGB, metadata dropped) and `bmp -> png` (lossless). Map in `DOCS/formats/png.md`; oracles in `tests/png_suite.rs` (116 PngSuite images against Pillow's pixels, 14 corrupt images refused) and `tests/png_bmp.rs`.
+- BMP (`src/io/bmp`): a reader for 1-, 4-, 8-, 16-, 24-, and 32-bit files with palettes, channel masks, top-down rows, and V4 and V5 headers (RLE is refused), and a writer of 24-bit BGR or 32-bit BGRA with an alpha mask. Map in `DOCS/formats/bmp.md`.
+- Benchmark pair `png-bmp` against the `png` and `image` crates on 4000 by 4000 RGBA images in two shapes (a gradient with independent per-channel noise, and flat blocks), with the png crate's fast level as context.
+- The binary size budget is raised 1.9 -> 2.0 MB and the WebAssembly budget 0.9 -> 1.0 MB for the image category (the PNG and BMP codecs, the streaming inflater, and the sixteen CRC tables).
+
+### Changed
+
+- The inflater (`src/io/deflate/inflate.rs`) is resumable: it takes input in pieces of any size, hands output back in slabs, and keeps a 32 KiB window, so the PNG reader (and later the ZIP readers) never hold a compressed stream whole. Its literal path reads a 12-bit table that packs up to three short literal codes per entry, looks the next entry up before refilling, and writes through an index into a reused slab; the one-shot `inflate` is the same code and decodes the benchmark's 61 MB of pixels in 69 ms where it took 310.
+- CRC-32 (`src/io/zip/crc32.rs`) folds sixteen bytes per step over sixteen tables and checks a long input as two interleaved halves joined with zlib's combine, five times faster than the byte loop; every ZIP-based reader and writer gets it.
+- Deflate (`src/io/deflate/compress.rs`): the hash chain is a ring of 16-bit back-distances (in cache where the old position array was not), length and distance codes come from tables instead of a scan, the interior of a maximal match is not re-indexed, and the chain budget drops to a twelfth while recent matches have been short (noise, where a long walk finds nothing) and comes back as they lengthen. The 8 MiB words benchmark keeps its 14.2% ratio and runs 116 -> 93 ms; a noisy 61 MB image encodes in 0.73 s where it took 2.35.
+- Adler-32 runs in 32-byte blocks with lane sums.
+
 ## [0.18.0] - 2026-09-26
 
 Batch conversion: directories, globs, parallel workers, atomic writes,

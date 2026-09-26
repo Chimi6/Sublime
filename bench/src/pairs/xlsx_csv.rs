@@ -32,20 +32,38 @@ fn generate_xlsx(rows: &str, path: &str) -> Result<(), String> {
     let date_format = rust_xlsxwriter::Format::new().set_num_format("yyyy-mm-dd");
     let headers = ["id", "name", "email", "city", "score", "created", "note"];
     for (column, header) in headers.iter().enumerate() {
-        sheet.write_string(0, column as u16, *header).map_err(|error| error.to_string())?;
+        sheet
+            .write_string(0, column as u16, *header)
+            .map_err(|error| error.to_string())?;
     }
     for index in 0..count {
         let row = (index + 1) as u32;
-        let note = if index % 7 == 0 { "quoted, with comma" } else { "plain" };
-        sheet.write_number(row, 0, index as f64).map_err(|error| error.to_string())?;
-        sheet.write_string(row, 1, format!("user{index}")).map_err(|error| error.to_string())?;
-        sheet.write_string(row, 2, format!("user{index}@example.com")).map_err(|error| error.to_string())?;
-        sheet.write_string(row, 3, format!("City{}", index % 1000)).map_err(|error| error.to_string())?;
-        sheet.write_number(row, 4, ((index * 37) % 100) as f64 + 0.5).map_err(|error| error.to_string())?;
+        let note = if index % 7 == 0 {
+            "quoted, with comma"
+        } else {
+            "plain"
+        };
+        sheet
+            .write_number(row, 0, index as f64)
+            .map_err(|error| error.to_string())?;
+        sheet
+            .write_string(row, 1, format!("user{index}"))
+            .map_err(|error| error.to_string())?;
+        sheet
+            .write_string(row, 2, format!("user{index}@example.com"))
+            .map_err(|error| error.to_string())?;
+        sheet
+            .write_string(row, 3, format!("City{}", index % 1000))
+            .map_err(|error| error.to_string())?;
+        sheet
+            .write_number(row, 4, ((index * 37) % 100) as f64 + 0.5)
+            .map_err(|error| error.to_string())?;
         sheet
             .write_number_with_format(row, 5, 45_000.0 + (index % 365) as f64, &date_format)
             .map_err(|error| error.to_string())?;
-        sheet.write_string(row, 6, note).map_err(|error| error.to_string())?;
+        sheet
+            .write_string(row, 6, note)
+            .map_err(|error| error.to_string())?;
     }
     workbook.save(path).map_err(|error| error.to_string())
 }
@@ -76,7 +94,9 @@ fn crates_xlsx_to_csv(input: &str, output: &str) -> Result<(), String> {
                 other => other.to_string(),
             })
             .collect();
-        writer.write_record(&cells).map_err(|error| error.to_string())?;
+        writer
+            .write_record(&cells)
+            .map_err(|error| error.to_string())?;
     }
     writer.flush().map_err(|error| error.to_string())
 }
@@ -90,15 +110,24 @@ fn crates_csv_to_xlsx(input: &str, output: &str) -> Result<(), String> {
     let sheet = workbook.add_worksheet();
     let mut record = csv::StringRecord::new();
     let mut row: u32 = 0;
-    while reader.read_record(&mut record).map_err(|error| error.to_string())? {
+    while reader
+        .read_record(&mut record)
+        .map_err(|error| error.to_string())?
+    {
         for (column, cell) in record.iter().enumerate() {
             match cell.parse::<f64>() {
-                Ok(number) if !cell.is_empty() && sublime::io::xlsx::writer::is_number_literal(cell) => {
-                    sheet.write_number(row, column as u16, number).map_err(|error| error.to_string())?;
+                Ok(number)
+                    if !cell.is_empty() && sublime::io::xlsx::writer::is_number_literal(cell) =>
+                {
+                    sheet
+                        .write_number(row, column as u16, number)
+                        .map_err(|error| error.to_string())?;
                 }
                 _ => {
                     if !cell.is_empty() {
-                        sheet.write_string(row, column as u16, cell).map_err(|error| error.to_string())?;
+                        sheet
+                            .write_string(row, column as u16, cell)
+                            .map_err(|error| error.to_string())?;
                     }
                 }
             }

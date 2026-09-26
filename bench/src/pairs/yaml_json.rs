@@ -32,8 +32,18 @@ pub fn run(mode: &str, args: &[String]) -> Result<(), String> {
 }
 
 const WORDS: [&str; 12] = [
-    "converter", "lossless", "fidelity", "planner", "arena", "buffer", "table", "record",
-    "stream", "package", "schema", "document",
+    "converter",
+    "lossless",
+    "fidelity",
+    "planner",
+    "arena",
+    "buffer",
+    "table",
+    "record",
+    "stream",
+    "package",
+    "schema",
+    "document",
 ];
 
 /// Sentences as lines, so a paragraph is a block scalar of several lines.
@@ -68,9 +78,14 @@ fn open_output(path: &str) -> Result<BufWriter<File>, String> {
 fn generate_yaml(units: &str, path: &str) -> Result<(), String> {
     let count = parse_rows(units)?;
     let mut writer = open_output(path)?;
-    writeln!(writer, "title: benchmark\nversion: 3\nrecords:").map_err(|error| error.to_string())?;
+    writeln!(writer, "title: benchmark\nversion: 3\nrecords:")
+        .map_err(|error| error.to_string())?;
     for index in 0..count {
-        let quoted = if index % 7 == 0 { "\"with \\\"quotes\\\" and a \\\\ backslash\"" } else { "plain" };
+        let quoted = if index % 7 == 0 {
+            "\"with \\\"quotes\\\" and a \\\\ backslash\""
+        } else {
+            "plain"
+        };
         writeln!(
             writer,
             "  - id: {index}\n    name: user{index}\n    email: user{index}@example.com\n    score: {}.{}\n    active: {}\n    created: 2026-09-{:02}T{:02}:00:00Z\n    tags: [a, b{}, c]\n    note: {quoted}\n    limits:\n      min: {}\n      max: {}",
@@ -96,12 +111,23 @@ fn generate_yaml_prose(units: &str, path: &str) -> Result<(), String> {
     for index in 0..count {
         lines.clear();
         paragraph_lines(index, &mut lines);
-        writeln!(writer, "  s{index}:\n    heading: Section {index}\n    body: |").map_err(|error| error.to_string())?;
+        writeln!(
+            writer,
+            "  s{index}:\n    heading: Section {index}\n    body: |"
+        )
+        .map_err(|error| error.to_string())?;
         for line in &lines {
             writeln!(writer, "      {line}").map_err(|error| error.to_string())?;
         }
-        writeln!(writer, "    words: {}", lines.iter().map(|line| line.split(' ').count()).sum::<usize>())
-            .map_err(|error| error.to_string())?;
+        writeln!(
+            writer,
+            "    words: {}",
+            lines
+                .iter()
+                .map(|line| line.split(' ').count())
+                .sum::<usize>()
+        )
+        .map_err(|error| error.to_string())?;
     }
     writer.flush().map_err(|error| error.to_string())
 }
@@ -109,12 +135,20 @@ fn generate_yaml_prose(units: &str, path: &str) -> Result<(), String> {
 fn generate_json(units: &str, path: &str) -> Result<(), String> {
     let count = parse_rows(units)?;
     let mut writer = open_output(path)?;
-    write!(writer, "{{\"title\":\"benchmark\",\"version\":3,\"records\":[").map_err(|error| error.to_string())?;
+    write!(
+        writer,
+        "{{\"title\":\"benchmark\",\"version\":3,\"records\":["
+    )
+    .map_err(|error| error.to_string())?;
     for index in 0..count {
         if index > 0 {
             write!(writer, ",").map_err(|error| error.to_string())?;
         }
-        let quoted = if index % 7 == 0 { "with \\\"quotes\\\" and a \\\\ backslash" } else { "plain" };
+        let quoted = if index % 7 == 0 {
+            "with \\\"quotes\\\" and a \\\\ backslash"
+        } else {
+            "plain"
+        };
         write!(
             writer,
             "{{\"id\":{index},\"name\":\"user{index}\",\"email\":\"user{index}@example.com\",\"score\":{}.{},\"active\":{},\"created\":\"2026-09-{:02}T{:02}:00:00Z\",\"tags\":[\"a\",\"b{}\",\"c\"],\"note\":\"{quoted}\",\"limits\":{{\"min\":{},\"max\":{}}}}}",
@@ -148,7 +182,10 @@ fn generate_json_prose(units: &str, path: &str) -> Result<(), String> {
         write!(
             writer,
             "\"s{index}\":{{\"heading\":\"Section {index}\",\"body\":\"{body}\\n\",\"words\":{}}}",
-            lines.iter().map(|line| line.split(' ').count()).sum::<usize>()
+            lines
+                .iter()
+                .map(|line| line.split(' ').count())
+                .sum::<usize>()
         )
         .map_err(|error| error.to_string())?;
     }

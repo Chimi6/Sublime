@@ -31,8 +31,18 @@ pub fn run(mode: &str, args: &[String]) -> Result<(), String> {
 }
 
 const WORDS: [&str; 12] = [
-    "converter", "lossless", "fidelity", "planner", "arena", "buffer", "table", "record",
-    "stream", "package", "schema", "document",
+    "converter",
+    "lossless",
+    "fidelity",
+    "planner",
+    "arena",
+    "buffer",
+    "table",
+    "record",
+    "stream",
+    "package",
+    "schema",
+    "document",
 ];
 
 fn paragraph(index: u64, out: &mut String) {
@@ -66,7 +76,11 @@ fn generate_toml(units: &str, path: &str) -> Result<(), String> {
     let mut writer = open_output(path)?;
     writeln!(writer, "title = \"benchmark\"\nversion = 3\n").map_err(|error| error.to_string())?;
     for index in 0..count {
-        let quoted = if index % 7 == 0 { "with \\\"quotes\\\" and a \\\\ backslash" } else { "plain" };
+        let quoted = if index % 7 == 0 {
+            "with \\\"quotes\\\" and a \\\\ backslash"
+        } else {
+            "plain"
+        };
         writeln!(
             writer,
             "[[record]]\nid = {index}\nname = \"user{index}\"\nemail = \"user{index}@example.com\"\nscore = {}.{}\nactive = {}\ncreated = 2026-09-{:02}T{:02}:00:00Z\ntags = [\"a\", \"b{}\", \"c\"]\nnote = \"{quoted}\"\nlimits = {{ min = {}, max = {} }}\n",
@@ -104,12 +118,20 @@ fn generate_toml_prose(units: &str, path: &str) -> Result<(), String> {
 fn generate_json(units: &str, path: &str) -> Result<(), String> {
     let count = parse_rows(units)?;
     let mut writer = open_output(path)?;
-    write!(writer, "{{\"title\":\"benchmark\",\"version\":3,\"record\":[").map_err(|error| error.to_string())?;
+    write!(
+        writer,
+        "{{\"title\":\"benchmark\",\"version\":3,\"record\":["
+    )
+    .map_err(|error| error.to_string())?;
     for index in 0..count {
         if index > 0 {
             write!(writer, ",").map_err(|error| error.to_string())?;
         }
-        let quoted = if index % 7 == 0 { "with \\\"quotes\\\" and a \\\\ backslash" } else { "plain" };
+        let quoted = if index % 7 == 0 {
+            "with \\\"quotes\\\" and a \\\\ backslash"
+        } else {
+            "plain"
+        };
         write!(
             writer,
             "{{\"id\":{index},\"name\":\"user{index}\",\"email\":\"user{index}@example.com\",\"score\":{}.{},\"active\":{},\"created\":\"2026-09-{:02}T{:02}:00:00Z\",\"tags\":[\"a\",\"b{}\",\"c\"],\"note\":\"{quoted}\",\"limits\":{{\"min\":{},\"max\":{}}}}}",
@@ -164,6 +186,8 @@ fn crates_json_to_toml(input: &str, output: &str) -> Result<(), String> {
         serde_json::from_reader(BufReader::new(file)).map_err(|error| error.to_string())?;
     let text = toml::to_string(&table).map_err(|error| error.to_string())?;
     let mut writer = open_output(output)?;
-    writer.write_all(text.as_bytes()).map_err(|error| error.to_string())?;
+    writer
+        .write_all(text.as_bytes())
+        .map_err(|error| error.to_string())?;
     writer.flush().map_err(|error| error.to_string())
 }

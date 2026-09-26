@@ -42,13 +42,18 @@ fn generate_jsonl(rows: &str, path: &str) -> Result<(), String> {
 fn crates_jsonl_to_json(input: &str, output: &str) -> Result<(), String> {
     use serde::ser::{SerializeSeq, Serializer};
     let file = File::open(input).map_err(|error| error.to_string())?;
-    let stream = serde_json::Deserializer::from_reader(BufReader::new(file)).into_iter::<serde_json::Value>();
+    let stream = serde_json::Deserializer::from_reader(BufReader::new(file))
+        .into_iter::<serde_json::Value>();
     let out = File::create(output).map_err(|error| error.to_string())?;
     let mut serializer = serde_json::Serializer::new(BufWriter::new(out));
-    let mut sequence = serializer.serialize_seq(None).map_err(|error| error.to_string())?;
+    let mut sequence = serializer
+        .serialize_seq(None)
+        .map_err(|error| error.to_string())?;
     for value in stream {
         let value = value.map_err(|error| error.to_string())?;
-        sequence.serialize_element(&value).map_err(|error| error.to_string())?;
+        sequence
+            .serialize_element(&value)
+            .map_err(|error| error.to_string())?;
     }
     sequence.end().map_err(|error| error.to_string())?;
     Ok(())
@@ -56,7 +61,8 @@ fn crates_jsonl_to_json(input: &str, output: &str) -> Result<(), String> {
 
 fn crates_json_to_jsonl(input: &str, output: &str) -> Result<(), String> {
     let file = File::open(input).map_err(|error| error.to_string())?;
-    let values: Vec<serde_json::Value> = serde_json::from_reader(BufReader::new(file)).map_err(|error| error.to_string())?;
+    let values: Vec<serde_json::Value> =
+        serde_json::from_reader(BufReader::new(file)).map_err(|error| error.to_string())?;
     let out = File::create(output).map_err(|error| error.to_string())?;
     let mut writer = BufWriter::new(out);
     for value in &values {
