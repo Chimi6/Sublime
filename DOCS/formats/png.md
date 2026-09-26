@@ -67,8 +67,13 @@ rows); it writes one IHDR (8-bit, the hub's color type, no interlace), IDAT chun
 about 256 KiB of deflated rows each (our deflate at its default level,
 one zlib stream across them, Adler-32 at the end), IEND. Each row
 takes the filter whose residuals have the smallest sum of magnitudes
-(the standard heuristic), stopping early when a filter leaves a row
-of zeros. No text, gamma, or color profile chunks are written.
+(the standard heuristic). The trial runs on every fourth row and its
+winner is kept for the rows between (image statistics change slowly
+down the rows; the trials cost four extra passes a row and the choice
+moved sizes by at most 1.4% on the benchmark inputs); a trial tries
+Sub first, stops any filter whose running sum passes the best, and
+stops trying once a filter's residuals average under a sixteenth. No
+text, gamma, or color profile chunks are written.
 
 ## Known deviations
 

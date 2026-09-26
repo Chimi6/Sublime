@@ -7,6 +7,7 @@ pub mod deflate;
 pub mod docx;
 pub mod html;
 pub mod iwa;
+pub mod jpeg;
 pub mod json;
 pub mod markdown;
 pub mod pages;

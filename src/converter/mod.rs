@@ -244,6 +244,9 @@ pub struct ConvertOptions {
     /// The worksheet to read or the name to give the one written: a sheet
     /// name or a 1-based number; the first sheet when absent.
     pub sheet: Option<String>,
+    /// The quality a lossy image writer encodes at, 1 to 100; the
+    /// writer's default (85 for JPEG) when absent.
+    pub quality: Option<u8>,
 }
 
 /// One edge in the format graph. Implement this and add one line to

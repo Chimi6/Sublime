@@ -6,6 +6,24 @@ section under a version heading.
 
 ## [Unreleased]
 
+JPEG, both ways, streaming: a decoder bit-exact with libjpeg-turbo
+and an encoder with `--quality`; with it, a faster deflate on
+photographic data and a leaner PNG filter selection.
+
+### Added
+
+- JPEG (`src/io/jpeg`): a reader for baseline, extended sequential, and progressive files of one or three components (every subsampling, restart intervals, optimized tables, the Adobe transform flag), matching libjpeg-turbo's pixels bit for bit (the accurate integer IDCT, fancy upsampling, fixed-point color); an interleaved baseline scan streams one MCU row at a time into a `RowSink`, progressive and per-component scans collect coefficients first. A writer of JFIF baseline at a quality (the IJG table scaling, 4:2:0 below 90 and 4:4:4 from 90, standard Huffman tables so it streams sixteen rows at a time, alpha flattened onto white). Map in `DOCS/formats/jpeg.md`; oracles in `tests/jpeg_suite.rs` (140 Pillow-written fixtures decoded bit-exact, 6 corrupt files refused, round trips through our writer).
+- `jpeg -> png` and `jpeg -> bmp` (conditional: Exif orientation reported and not applied, metadata dropped), `png -> jpeg` and `bmp -> jpeg` (lossy), all streaming: 5 to 6 MB peak on a 46 MB image where the crates hold 51 to 70.
+- `--quality <1-100>` on `convert` (and batches): the quality a lossy image writer encodes at, 85 when absent.
+- The binary size budget is raised 2.0 -> 2.1 MB and the WebAssembly budget 1.0 -> 1.05 MB for JPEG (the decoder with its progressive path, the encoder, and their tables: 100 KB).
+- Benchmark pair `jpeg-png` against the `image` crate (zune-jpeg) and the `jpeg-encoder` crate, with output size and PSNR against the source pixels at quality 85 as extra rows, and `[stock]` rows for a photograph at `bench/data/stock.jpg`.
+
+### Changed
+
+- Deflate's chain budget shrinks while recent matches average under eight bytes (was five): the words benchmark keeps its 14.2% ratio and decoded photographs, whose matches run five to seven bytes everywhere, encode to PNG twice as fast at the reference's own size (a decoded 46 MB photo: 1.14 -> 0.50 s).
+- The PNG writer's filter selection runs its trial on every fourth row and keeps the winner for the rows between (sizes moved by at most 1.4% on the benchmark inputs, a flat image writes 25% faster), tries Sub first and None last, stops a trial as soon as its running sum passes the best (libpng's rule), and stops trying once a filter's residuals average under a sixteenth; both Paeth predictors use stb_image's formulation, which compiles branch-free (a Paeth-heavy 418 MB photograph decodes 8% faster).
+- The JPEG encoder quantizes by a vectorized reciprocal multiply instead of a division per coefficient, and writes bits four bytes at a time when none is 0xFF; the decoder short-cuts flat blocks.
+
 ## [0.19.0] - 2026-09-26
 
 The image category opens: an 8-bit pixel hub, PNG in and out, BMP in

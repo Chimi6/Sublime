@@ -155,6 +155,7 @@ pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliE
     let options = ConvertOptions {
         strict: args.strict,
         sheet: args.sheet.clone(),
+        quality: args.quality,
     };
     let workers = args
         .jobs
