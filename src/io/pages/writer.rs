@@ -11,7 +11,6 @@ use super::package::{Entry, Object, ObjectMessage, Package, PackageError, Stream
 use super::schema::SCHEMA;
 use crate::document::{
     Block, Color, Document, Id, Inline, ListItem, ListLabel, MediaId, NumberKind, Paragraph,
-    RunProperties,
 };
 use crate::io::protobuf::schema::MessageRef;
 use crate::io::protobuf::tree::{Chain, Entry as TreeEntry, NONE, Node, Tree, TreeError};
@@ -2563,7 +2562,7 @@ impl Walk {
             if piece.is_empty() {
                 continue;
             }
-            self.mark(run_format(document, run));
+            self.mark(run_format(document, paragraph, run));
             self.link_mark(run.link);
             self.text.push_str(piece);
             self.offset += utf16_len(piece);
@@ -2635,12 +2634,11 @@ fn cell_text(document: &Document, cell: &crate::document::Cell) -> String {
 }
 
 /// A run's own bold and italic, independent of the paragraph.
-fn run_format(document: &Document, run: &crate::document::Run) -> Format {
-    let mut properties = RunProperties::default();
-    if let Some(style) = run.style {
-        properties.overlay(&document.character_style_run(style));
-    }
-    properties.overlay(&document.run_properties(run));
+fn run_format(document: &Document, paragraph: &Paragraph, run: &crate::document::Run) -> Format {
+    // The run's effective formatting: the paragraph style's, overlaid with the
+    // character style's, overlaid with the run's own — so a font, size, or
+    // colour inherited from a named style reaches the run and is carried.
+    let properties = document.effective_run(paragraph, run);
     Format {
         bold: properties.bold.unwrap_or(false),
         italic: properties.italic.unwrap_or(false),
