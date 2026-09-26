@@ -695,95 +695,150 @@ fn reuse_image(
         rebuild_inline_attachment(tree, old_first)
     })?;
 
-    // Replace the bytes of the full and thumbnail data files with the model
-    // image, keeping the template's file names and data-reference ids. The
-    // digest must be recomputed: Pages keys its asset cache by it, so a stale
-    // digest makes it render the template's original image, not the new one.
-    let digest = sha1(bytes);
-    for data_id in [Some(image.data_id), image.thumb_id].into_iter().flatten() {
-        if let Some(name) = data_file_name(package, data_id) {
-            replace_data_file(package, &name, bytes);
+    // Replace the full picture's bytes and recompute its digest and size (Pages
+    // keys its data store by the digest, and aborts loading if a data file's
+    // recorded size or digest does not match its bytes).
+    if let Some(name) = data_file_name(package, image.data_id) {
+        replace_data_file(package, &name, bytes);
+    }
+    update_data_metadata(package, image.data_id, &sha1(bytes), natural_w, natural_h)?;
+    // The thumbnail gets the same picture but with distinct bytes, so its digest
+    // differs from the full picture's: the data store keys on the digest and
+    // aborts when two data files collide on one.
+    if let Some(thumb_id) = image.thumb_id {
+        let thumbnail = distinct_thumbnail(bytes);
+        if let Some(name) = data_file_name(package, thumb_id) {
+            replace_data_file(package, &name, &thumbnail);
         }
-        update_data_digest(package, data_id, &digest)?;
+        update_data_metadata(package, thumb_id, &sha1(&thumbnail), natural_w, natural_h)?;
     }
     Ok(())
 }
 
-/// Recomputes the digest of a data reference in the package metadata, so Pages
-/// treats the replaced bytes as new rather than serving a cached original.
-fn update_data_digest(
+/// The same image with distinct bytes (so its digest differs), by adding a
+/// metadata chunk that decoders ignore: a `tEXt` chunk for PNG, a comment
+/// segment for JPEG, else a trailing byte. Used for the reused thumbnail.
+fn distinct_thumbnail(bytes: &[u8]) -> Vec<u8> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G'])
+        && let Some(iend) = bytes.windows(4).rposition(|window| window == b"IEND")
+        && iend >= 4
+    {
+        // A tEXt chunk: length (of type+data minus the 4-byte type), the type
+        // and data, then the CRC over type and data, inserted before IEND.
+        let type_and_data: &[u8] = b"tEXtsublime\0thumbnail";
+        let length = (type_and_data.len() - 4) as u32;
+        let mut out = Vec::with_capacity(bytes.len() + type_and_data.len() + 8);
+        out.extend_from_slice(&bytes[..iend - 4]);
+        out.extend_from_slice(&length.to_be_bytes());
+        out.extend_from_slice(type_and_data);
+        out.extend_from_slice(&png_crc32(type_and_data).to_be_bytes());
+        out.extend_from_slice(&bytes[iend - 4..]);
+        return out;
+    }
+    if bytes.starts_with(&[0xFF, 0xD8]) {
+        // A JPEG comment (COM) segment right after the start-of-image marker.
+        let comment: &[u8] = b"sublime-thumbnail";
+        let segment_length = (comment.len() + 2) as u16;
+        let mut out = Vec::with_capacity(bytes.len() + comment.len() + 4);
+        out.extend_from_slice(&bytes[..2]);
+        out.extend_from_slice(&[0xFF, 0xFE]);
+        out.extend_from_slice(&segment_length.to_be_bytes());
+        out.extend_from_slice(comment);
+        out.extend_from_slice(&bytes[2..]);
+        return out;
+    }
+    let mut out = bytes.to_vec();
+    out.push(0);
+    out
+}
+
+/// The PNG CRC-32 of a chunk's type and data.
+fn png_crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+/// Updates a data reference's metadata for the replaced bytes: its digest (so
+/// Pages treats the bytes as new instead of serving a cached original) and its
+/// recorded pixel size (which the template left at its original picture's size;
+/// left mismatched against the new bytes, Pages aborts while loading). Both are
+/// patched in place — the package metadata is a fragile root object, and
+/// rebuilding its chain reorders fields and makes Pages abort loading it.
+fn update_data_metadata(
     package: &mut Package,
     data_id: u64,
     digest: &[u8],
+    width: f32,
+    height: f32,
 ) -> Result<(), PackageError> {
-    let Some(metadata) = package
-        .entries
-        .iter()
-        .filter_map(|entry| match entry {
-            Entry::Stream(stream) => Some(stream),
-            _ => None,
-        })
-        .flat_map(|stream| &stream.objects)
-        .find(|object| first_type(object) == Some(PACKAGE_METADATA))
-    else {
+    for entry in &mut package.entries {
+        let Entry::Stream(stream) = entry else {
+            continue;
+        };
+        let Some(metadata_first) = stream
+            .objects
+            .iter()
+            .find(|object| first_type(object) == Some(PACKAGE_METADATA))
+            .and_then(|object| object.messages.first())
+            .map(|message| message.first)
+        else {
+            continue;
+        };
+        let Some(datas_first) = data_info_chain(&stream.tree, metadata_first, data_id) else {
+            return Ok(());
+        };
+        if let Some(index) = field_entry(&stream.tree, datas_first, "digest") {
+            let span = stream.tree.push_bytes(digest).map_err(tree_error)?;
+            stream.tree.entries[index as usize].value = Node::Bytes(span);
+        }
+        // datas -> attributes -> image_data_attributes -> pixel_size -> w/h.
+        if let Some(size) = message_field(&stream.tree, datas_first, "attributes")
+            .and_then(|attributes| message_field(&stream.tree, attributes, "image_data_attributes"))
+            .and_then(|image| message_field(&stream.tree, image, "pixel_size"))
+        {
+            if let Some(index) = field_entry(&stream.tree, size, "width") {
+                stream.tree.entries[index as usize].value = Node::Float(width);
+            }
+            if let Some(index) = field_entry(&stream.tree, size, "height") {
+                stream.tree.entries[index as usize].value = Node::Float(height);
+            }
+        }
         return Ok(());
-    };
-    let metadata_id = metadata.identifier;
-    rewrite_object_with(package, metadata_id, |tree, old_first| {
-        rebuild_datas_digest(tree, old_first, data_id, digest)
-    })
+    }
+    Ok(())
 }
 
-/// Rebuilds the package metadata, replacing the digest of the one data entry
-/// whose identifier matches, keeping every other field and entry as they were.
-fn rebuild_datas_digest(
-    tree: &mut Tree,
-    old_first: u32,
-    data_id: u64,
-    digest: &[u8],
-) -> Result<u32, PackageError> {
-    let metadata = message_ref("TSP.PackageMetadata")?;
-    let data_info = message_ref("TSP.DataInfo")?;
-    let datas_number = metadata
-        .field_named("datas")
-        .ok_or_else(|| malformed("metadata has no datas field"))?
-        .number;
-    let fields: Vec<(u32, Node)> = tree
-        .chain(old_first)
-        .map(|(_, entry)| (entry.number, entry.value))
-        .collect();
-    let digest_span = tree.push_bytes(digest).map_err(tree_error)?;
-
-    let mut items: Vec<(u32, Node)> = Vec::new();
-    for (number, value) in fields {
-        if number == datas_number
-            && let Node::Message(datas_first) = value
+/// The message chain start of the `datas` entry whose identifier matches.
+fn data_info_chain(tree: &Tree, metadata_first: u32, data_id: u64) -> Option<u32> {
+    for (_, entry) in tree.chain(metadata_first) {
+        if tree.field(entry).map(|field| field.name) == Some("datas")
+            && let Node::Message(datas_first) = entry.value
             && field_value(tree, datas_first, "identifier") == Some(Node::Uint(data_id))
         {
-            let new_first = rebuild_message(
-                tree,
-                data_info,
-                datas_first,
-                vec![("digest", Node::Bytes(digest_span))],
-            )?;
-            items.push((number, Node::Message(new_first)));
-            continue;
+            return Some(datas_first);
         }
-        items.push((number, value));
     }
+    None
+}
 
-    let mut chain = Chain::new();
-    for (number, value) in items {
-        let slot = metadata
-            .slot(number)
-            .ok_or_else(|| malformed("metadata field without a schema slot"))?;
-        let field = metadata
-            .field_at(slot)
-            .ok_or_else(|| malformed("metadata field slot out of range"))?;
-        tree.push_known(&mut chain, metadata, slot, field, number, value)
-            .map_err(tree_error)?;
+/// The tree index of a named field within a message chain.
+fn field_entry(tree: &Tree, first: u32, name: &str) -> Option<u32> {
+    for (index, entry) in tree.chain(first) {
+        if tree.field(entry).map(|field| field.name) == Some(name) {
+            return Some(index);
+        }
     }
-    Ok(chain.first)
+    None
 }
 
 /// The SHA-1 digest of `data`, as Pages stores it for a data reference.
@@ -890,12 +945,83 @@ fn rebuild_image(
     let new_super = rebuild_image_super(tree, super_first, width, height, mark)?;
     let original = build_size(tree, width, height)?;
     let natural = build_size(tree, natural_w, natural_h)?;
-    let overrides = vec![
+    let mut overrides = vec![
         ("super", Node::Message(new_super)),
         ("originalSize", Node::Message(original)),
         ("naturalSize", Node::Message(natural)),
     ];
-    rebuild_message(tree, image, old_first, overrides)
+    // The template's traced path is a rectangle at its original picture's
+    // pixel size; rewritten to the new size so Pages' outline matches the
+    // image. The instant-alpha cut-out path (if any) is dropped.
+    let traced = build_traced_path(tree, natural_w, natural_h)?;
+    overrides.push(("traced_path", Node::Message(traced)));
+    rebuild_message(tree, image, old_first, overrides, &["instantAlphaPath"])
+}
+
+/// A rectangular traced path covering the whole image, the outline Pages draws
+/// for a plain picture: move to a corner, line around, close, move back.
+fn build_traced_path(tree: &mut Tree, width: f32, height: f32) -> Result<u32, PackageError> {
+    let path = message_ref("TSP.Path")?;
+    let element = message_ref("TSP.Path.Element")?;
+    let point = message_ref("TSP.Point")?;
+    let corners = [
+        (1u64, 0.0, 0.0),
+        (2, width, 0.0),
+        (2, width, height),
+        (2, 0.0, height),
+    ];
+    let mut chain = Chain::new();
+    for (kind, x, y) in corners {
+        let mut element_chain = Chain::new();
+        push_field(tree, &mut element_chain, element, "type", Node::Uint(kind))?;
+        let mut point_chain = Chain::new();
+        push_field(tree, &mut point_chain, point, "x", Node::Float(x))?;
+        push_field(tree, &mut point_chain, point, "y", Node::Float(y))?;
+        push_field(
+            tree,
+            &mut element_chain,
+            element,
+            "points",
+            Node::Message(point_chain.first),
+        )?;
+        push_field(
+            tree,
+            &mut chain,
+            path,
+            "elements",
+            Node::Message(element_chain.first),
+        )?;
+    }
+    // A close element (type 5) then a move back to the origin (type 1).
+    let mut close = Chain::new();
+    push_field(tree, &mut close, element, "type", Node::Uint(5))?;
+    push_field(
+        tree,
+        &mut chain,
+        path,
+        "elements",
+        Node::Message(close.first),
+    )?;
+    let mut back = Chain::new();
+    push_field(tree, &mut back, element, "type", Node::Uint(1))?;
+    let mut origin = Chain::new();
+    push_field(tree, &mut origin, point, "x", Node::Float(0.0))?;
+    push_field(tree, &mut origin, point, "y", Node::Float(0.0))?;
+    push_field(
+        tree,
+        &mut back,
+        element,
+        "points",
+        Node::Message(origin.first),
+    )?;
+    push_field(
+        tree,
+        &mut chain,
+        path,
+        "elements",
+        Node::Message(back.first),
+    )?;
+    Ok(chain.first)
 }
 
 /// Rebuilds the image's drawable base, replacing the geometry's size (so the
@@ -918,7 +1044,7 @@ fn rebuild_image_super(
             .map_err(tree_error)?;
         overrides.push(("accessibility_description", Node::Str(span)));
     }
-    rebuild_message(tree, drawable, super_first, overrides)
+    rebuild_message(tree, drawable, super_first, overrides, &[])
 }
 
 /// Rebuilds a geometry, replacing only its size.
@@ -935,6 +1061,7 @@ fn rebuild_geometry(
         geometry,
         geometry_first,
         vec![("size", Node::Message(size))],
+        &[],
     )
 }
 
@@ -955,39 +1082,92 @@ fn rebuild_inline_attachment(tree: &mut Tree, old_first: u32) -> Result<u32, Pac
         .ok_or_else(|| malformed("attachment has no drawable"))?;
     let mut chain = Chain::new();
     push_field(tree, &mut chain, attachment, "drawable", drawable)?;
+    // An inline attachment carries the offset fields with a not-a-number value
+    // (as Pages writes them); the reader reads NaN as "in the text line".
+    push_field(tree, &mut chain, attachment, "h_offset_type", Node::Uint(0))?;
+    push_field(
+        tree,
+        &mut chain,
+        attachment,
+        "h_offset",
+        Node::Float(f32::NAN),
+    )?;
+    push_field(tree, &mut chain, attachment, "v_offset_type", Node::Uint(0))?;
+    push_field(
+        tree,
+        &mut chain,
+        attachment,
+        "v_offset",
+        Node::Float(f32::NAN),
+    )?;
     Ok(chain.first)
 }
 
-/// Rebuilds a message chain, keeping every field except those named in
-/// `overrides`, which are appended with the given nodes (replacing the kept
-/// ones). Nodes referencing nested chains must be built before the call.
+/// Rebuilds a message chain, replacing the fields named in `overrides` with
+/// the given nodes and dropping those in `remove`, keeping every other field
+/// and — importantly — its original order: iWork's persistence expects a
+/// message's `super` base to come first, so an override is substituted in
+/// place rather than appended (a field not already present is appended). Nodes
+/// referencing nested chains must be built first.
 fn rebuild_message(
     tree: &mut Tree,
     message: MessageRef,
     old_first: u32,
     overrides: Vec<(&str, Node)>,
+    remove: &[&str],
 ) -> Result<u32, PackageError> {
-    let mut kept: Vec<(u32, Node)> = Vec::new();
-    for (_, entry) in tree.chain(old_first) {
-        let name = tree.field(entry).map(|field| field.name);
-        if name.is_some_and(|name| overrides.iter().any(|(over, _)| *over == name)) {
-            continue;
-        }
-        kept.push((entry.number, entry.value));
-    }
-    let mut chain = Chain::new();
-    for (number, value) in kept {
+    // Resolve the override and remove names to field numbers up front.
+    let overrides: Vec<(u32, Node)> = overrides
+        .iter()
+        .filter_map(|(name, node)| message.field_named(name).map(|field| (field.number, *node)))
+        .collect();
+    let remove: Vec<u32> = remove
+        .iter()
+        .filter_map(|name| message.field_named(name).map(|field| field.number))
+        .collect();
+    let originals: Vec<(u32, Node)> = tree
+        .chain(old_first)
+        .map(|(_, entry)| (entry.number, entry.value))
+        .collect();
+
+    let push = |tree: &mut Tree, chain: &mut Chain, number: u32, value: Node| {
         let slot = message
             .slot(number)
             .ok_or_else(|| malformed("field without a schema slot"))?;
         let field = message
             .field_at(slot)
             .ok_or_else(|| malformed("field slot out of range"))?;
-        tree.push_known(&mut chain, message, slot, field, number, value)
-            .map_err(tree_error)?;
+        tree.push_known(chain, message, slot, field, number, value)
+            .map_err(tree_error)
+    };
+
+    // Build the field list: originals (with overrides substituted, removals
+    // dropped), then any overridden field the original lacked. A stable sort by
+    // field number then matches how iWork writes a message — fields in number
+    // order, `super` (field 1) first — which its persistence layer expects.
+    let mut fields: Vec<(u32, Node)> = Vec::new();
+    let mut emitted: Vec<u32> = Vec::new();
+    for (number, value) in &originals {
+        if remove.contains(number) {
+            continue;
+        }
+        let value = overrides
+            .iter()
+            .find(|(over, _)| over == number)
+            .map_or(*value, |(_, node)| *node);
+        fields.push((*number, value));
+        emitted.push(*number);
     }
-    for (name, node) in overrides {
-        push_field(tree, &mut chain, message, name, node)?;
+    for (number, node) in &overrides {
+        if !emitted.contains(number) {
+            fields.push((*number, *node));
+        }
+    }
+    fields.sort_by_key(|(number, _)| *number);
+
+    let mut chain = Chain::new();
+    for (number, value) in fields {
+        push(tree, &mut chain, number, value)?;
     }
     Ok(chain.first)
 }
