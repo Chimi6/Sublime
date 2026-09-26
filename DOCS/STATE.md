@@ -118,7 +118,7 @@ The document category's one-way streets are closed (0.8.0 to 0.10.0) and the dat
 
 ## Done
 
-- 2026-09-25: Batch conversion (unreleased, branch `batch-convert`).
+- 2026-09-26: Batch conversion released as 0.18.0.
 - 2026-09-25: The rows-to-document bridge released as 0.17.0, with the Markdown pairs re-validated.
 - 2026-09-25: Excel workbooks one sheet at a time released as 0.16.0.
 - 2026-09-25: TSV and JSON Lines with every row path released as 0.15.0.
