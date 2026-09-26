@@ -10,8 +10,7 @@
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::mpsc;
+use std::sync::{Condvar, Mutex};
 
 use crate::cli::args::ConvertArgs;
 use crate::cli::{CliError, ExitCode};
@@ -189,6 +188,12 @@ struct Outcome {
     result: Result<bool, CliError>,
 }
 
+/// Finished files waiting to be reported, in completion order.
+struct Finished {
+    outcomes: Mutex<Vec<Outcome>>,
+    ready: Condvar,
+}
+
 /// Converts every job on `workers` threads; returns (converted, lossy, failed).
 fn convert_all(
     jobs: &[Job],
@@ -197,20 +202,22 @@ fn convert_all(
     renderer: &mut dyn Sink,
 ) -> (u64, u64, u64) {
     let next = Mutex::new(0usize);
-    let (sender, receiver) = mpsc::channel::<Outcome>();
+    let finished = Finished {
+        outcomes: Mutex::new(Vec::new()),
+        ready: Condvar::new(),
+    };
     let mut converted = 0;
     let mut lossy = 0;
     let mut failed = 0;
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            let sender = sender.clone();
             let next = &next;
+            let finished = &finished;
             scope.spawn(move || {
                 loop {
                     let index = {
-                        let mut cursor = match next.lock() {
-                            Ok(cursor) => cursor,
-                            Err(_) => return,
+                        let Ok(mut cursor) = next.lock() else {
+                            return;
                         };
                         let index = *cursor;
                         *cursor += 1;
@@ -222,42 +229,56 @@ fn convert_all(
                     let mut sink = CollectingSink::new();
                     let result = convert_one(job, options, &mut sink);
                     let events = sink.into_events();
-                    if sender
-                        .send(Outcome {
-                            job: index,
-                            events,
-                            result,
-                        })
-                        .is_err()
-                    {
+                    let Ok(mut outcomes) = finished.outcomes.lock() else {
                         return;
-                    }
+                    };
+                    outcomes.push(Outcome {
+                        job: index,
+                        events,
+                        result,
+                    });
+                    finished.ready.notify_one();
                 }
             });
         }
-        drop(sender);
-        for outcome in receiver {
-            let job = &jobs[outcome.job];
-            renderer.emit(&Event::FileStarted {
-                input: job.input.display().to_string(),
-                output: job.output.display().to_string(),
-            });
-            for event in &outcome.events {
-                renderer.emit(event);
-            }
-            match outcome.result {
-                Ok(lossless) => {
-                    converted += 1;
-                    if !lossless {
-                        lossy += 1;
-                    }
+        let mut reported = 0usize;
+        while reported < jobs.len() {
+            let batch: Vec<Outcome> = {
+                let Ok(mut outcomes) = finished.outcomes.lock() else {
+                    break;
+                };
+                while outcomes.is_empty() {
+                    outcomes = match finished.ready.wait(outcomes) {
+                        Ok(outcomes) => outcomes,
+                        Err(_) => return,
+                    };
                 }
-                Err(error) => {
-                    failed += 1;
-                    renderer.emit(&Event::FileFailed {
-                        input: job.input.display().to_string(),
-                        message: error.to_string(),
-                    });
+                std::mem::take(&mut *outcomes)
+            };
+            for outcome in batch {
+                reported += 1;
+                let job = &jobs[outcome.job];
+                renderer.emit(&Event::FileStarted {
+                    input: job.input.display().to_string(),
+                    output: job.output.display().to_string(),
+                });
+                for event in &outcome.events {
+                    renderer.emit(event);
+                }
+                match outcome.result {
+                    Ok(lossless) => {
+                        converted += 1;
+                        if !lossless {
+                            lossy += 1;
+                        }
+                    }
+                    Err(error) => {
+                        failed += 1;
+                        renderer.emit(&Event::FileFailed {
+                            input: job.input.display().to_string(),
+                            message: error.to_string(),
+                        });
+                    }
                 }
             }
         }
