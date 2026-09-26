@@ -16,6 +16,7 @@ their shape from what the fastest safe decoders do.
 
 ### Changed
 
+- The `png-bmp` benchmark runs its lines on a stock photograph when one is placed at `bench/data/stock.png` (marked `[stock]`, never committed); on an 11220 by 9775 RGBA photograph the decode runs at 458 against the crates' 413 MB/s holding 5.5 MB against 424, and the encode at 233 against 176 MB/s writing 29 MB against 44.
 - The inflater decodes up to three table entries, nine literals, from one refill: the second and third lookups take their bits from the unchanged buffer through the code lengths of the entries before them, so one consume and refill serve the group and the fourth lookup starts the next (fdeflate's loop shape, in safe code like theirs).
 - CRC-32 runs as four interleaved streams joined by one zero-carry operator built per call; Adler-32 sums even and odd byte lanes over 64-byte blocks and weights them with two 64-bit multiplies per block. Both are about half their earlier cost on the photo's 33 MB of chunks and 61 MB of rows.
 - The Sub unfilter loads and stores each pixel pair as one word.

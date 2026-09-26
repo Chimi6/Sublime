@@ -6,7 +6,9 @@
 # pixel bytes, as the README says for compressed formats. References:
 # the png crate at its default compression level (the same deflate class
 # as ours) with the image crate's BMP codec; the png crate's fast level
-# (fdeflate, a third larger output) is an extra row.
+# (fdeflate, a third larger output) is an extra row. A stock image at
+# bench/data/stock.png (or $SUBLIME_STOCK_PNG), never committed, adds
+# [stock] rows when present.
 
 run_pair() {
   local side=4000
@@ -38,4 +40,29 @@ run_pair() {
     row "bmp -> png, ${shape}: output size (MB) [extra]" "$(mb "$(wc -c < "$data/out-$shape-ours.png" | tr -d ' ')")" "$(mb "$(wc -c < "$data/out-$shape-crates.png" | tr -d ' ')") (png)" "n/a"
     row "bmp -> png, ${shape}: the png crate's fast level, throughput and size [extra]" "-" "$(mbps "$handled" "$(seconds_of "$fast")") MB/s, $(mb "$(wc -c < "$data/out-$shape-fast.png" | tr -d ' ')") MB (png fast)" "n/a"
   done
+
+  # A stock image the owner supplies, never committed (the file is a
+  # photograph from the web, tens of megabytes): the same lines, marked
+  # [stock] because nobody else can reproduce them from the repository.
+  local stock="${SUBLIME_STOCK_PNG:-$data/stock.png}"
+  if [ -f "$stock" ]; then
+    echo "== stock image $stock" >&2
+    local png bmp png_bytes bmp_bytes pixels ours crates
+    png="$stock"; bmp="$data/stock.bmp"
+    [ -f "$bmp" ] || "$sublime" -q convert "$png" "$bmp"
+    png_bytes="$(wc -c < "$png" | tr -d ' ')"
+    bmp_bytes="$(wc -c < "$bmp" | tr -d ' ')"
+    pixels="$("$bench" png-bmp pixels "$png")"
+    ours="$(time_cmd ours "$sublime" -q convert "$png" "$data/out-stock-ours.bmp")"
+    crates="$(time_cmd crates "$bench" png-bmp crates-png-bmp "$png" "$data/out-stock-crates.bmp")"
+    row "png -> bmp, stock ($(mb "$pixels") MB of pixels, $(mb "$png_bytes") MB on disk): throughput (MB/s of decoded pixels) [stock]" "$(mbps "$pixels" "$(seconds_of "$ours")")" "$(mbps "$pixels" "$(seconds_of "$crates")") (png + image)" "$(pass "$(echo "$(seconds_of "$ours") <= $(seconds_of "$crates")" | bc -l)")"
+    row "png -> bmp, stock: peak memory (MB) [stock]" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$crates")") (png + image)" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$crates")" | bc -l)")"
+    local handled=$((bmp_bytes + pixels))
+    ours="$(time_cmd ours "$sublime" -q convert "$bmp" "$data/out-stock-ours.png")"
+    crates="$(time_cmd crates "$bench" png-bmp crates-bmp-png "$bmp" "$data/out-stock-crates.png")"
+    row "bmp -> png, stock ($(mb "$bmp_bytes") MB in + $(mb "$pixels") MB of pixels): throughput (MB/s of input plus pixels) [stock]" "$(mbps "$handled" "$(seconds_of "$ours")")" "$(mbps "$handled" "$(seconds_of "$crates")") (image + png)" "$(pass "$(echo "$(seconds_of "$ours") <= $(seconds_of "$crates")" | bc -l)")"
+    row "bmp -> png, stock: peak memory (MB) [stock]" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$crates")") (image + png)" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$crates")" | bc -l)")"
+    row "bmp -> png, stock: output size (MB) [stock]" "$(mb "$(wc -c < "$data/out-stock-ours.png" | tr -d ' ')")" "$(mb "$(wc -c < "$data/out-stock-crates.png" | tr -d ' ')") (png)" "n/a"
+    rm -f "$data/out-stock-"*
+  fi
 }
