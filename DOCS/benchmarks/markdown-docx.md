@@ -1,6 +1,6 @@
 # Markdown -> Word
 
-**Latest** (2026-09-24, the streaming bridge: markdown -> docx 204.8 MB/s of input plus uncompressed output on the markup-dense shape and 291.4 on prose, at 91.5 and 34.8 MB peak; every line PASSES against pulldown-cmark feeding docx-rs, at 4.5 and 3.2 times its throughput and a seventeenth of its memory)
+**Latest** (2026-09-25, 0.17.0 Markdown speedups: markdown -> docx 206.7 MB/s of input plus uncompressed output on the markup-dense shape and 288.8 on prose, at 92 and 35 MB peak; all lines PASS against pulldown-cmark with docx-rs)
 
 ## Purpose
 
@@ -69,6 +69,27 @@ row. Rows and units follow `README.md`.
   block as it closes.
 
 ## Results
+
+### 2026-09-25, 0.17.0 Markdown speedups
+
+commit: 0b33385 (the merge of the rows-to-document bridge, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| markdown -> docx, markup-dense (14.7 MB in + 90.7 MB out): throughput (MB/s of input plus uncompressed output) | 206.7 | 45.7 (pulldown-cmark + docx-rs, paragraphs and runs only) | PASS |
+| markdown -> docx, markup-dense: throughput (MB/s of input) [extra] | 28.8 | 8.4 (reference) | n/a |
+| markdown -> docx, markup-dense: peak memory (MB) | 91.9 | 1580.9 (reference) | PASS |
+| markdown -> docx, prose (11.3 MB in + 20.2 MB out): throughput (MB/s of input plus uncompressed output) | 288.8 | 90.1 (pulldown-cmark + docx-rs, paragraphs and runs only) | PASS |
+| markdown -> docx, prose: throughput (MB/s of input) [extra] | 103.6 | 26.9 (reference) | n/a |
+| markdown -> docx, prose: peak memory (MB) | 35.0 | 444.9 (reference) | PASS |
+
+Recorded at the 0.17.0 release because the Markdown writer (text
+copied in runs, digits scanned only where a list could open), the block
+parser (one cell vector per table), and inline rendering (a plain-text
+fast path) changed for the rows-to-document bridge. The 4.7 MB prose
+inputs run in about fifteen milliseconds, so their throughput medians
+swing between runs; the dense rows are the stable ones.
 
 ### 2026-09-24, the streaming bridge
 
