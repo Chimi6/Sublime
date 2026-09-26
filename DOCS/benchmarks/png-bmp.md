@@ -1,6 +1,6 @@
 # PNG <-> BMP
 
-**Latest** (2026-09-26, first release of the image category: png -> bmp 358.2 MB/s of decoded pixels on the photo at 64.9 MB peak (FAILS the png crate's 432.5), 719.6 MB/s on the flat image (passes); bmp -> png 150.9 and 934.9 MB/s of input plus pixels at 125 MB peak, both passing; every memory line passes)
+**Latest** (2026-09-26, `png -> bmp` streams rows into a top-down BMP: png -> bmp 438.2 MB/s of decoded pixels on the photo at 5.4 MB peak, 1011.0 on the flat image; bmp -> png 149.9 and 999.9 MB/s of input plus pixels at 125 MB peak; every line PASSES against the png and image crates)
 
 ## Purpose
 
@@ -73,6 +73,28 @@ median wall clock of the whole process, peak resident memory from GNU
 
 ## Results
 
+### 2026-09-26, png -> bmp streams rows into a top-down BMP
+
+commit: 00ee909 (on the `inflate-speculative-literals` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| png -> bmp, photo (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 438.2 | 412.0 (png + image) | PASS |
+| png -> bmp, photo (32.8 MB on disk): throughput (MB/s of file bytes) [extra] | 235.5 | 221.4 (png + image) | n/a |
+| png -> bmp, photo: peak memory (MB) | 5.4 | 66.1 (png + image) | PASS |
+| bmp -> png, photo (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 149.9 | 142.8 (image + png) | PASS |
+| bmp -> png, photo: peak memory (MB) | 124.4 | 159.6 (image + png) | PASS |
+| bmp -> png, photo: output size (MB) [extra] | 33.6 | 32.2 (png) | n/a |
+| bmp -> png, photo: the png crate's fast level, throughput and size [extra] | - | 509.2 MB/s, 32.8 MB (png fast) | n/a |
+| png -> bmp, flat (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 1011.0 | 713.8 (png + image) | PASS |
+| png -> bmp, flat (1.7 MB on disk): throughput (MB/s of file bytes) [extra] | 28.1 | 19.8 (png + image) | n/a |
+| png -> bmp, flat: peak memory (MB) | 5.1 | 66.3 (png + image) | PASS |
+| bmp -> png, flat (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 999.9 | 615.4 (image + png) | PASS |
+| bmp -> png, flat: peak memory (MB) | 124.6 | 127.7 (image + png) | PASS |
+| bmp -> png, flat: output size (MB) [extra] | 0.3 | 0.4 (png) | n/a |
+| bmp -> png, flat: the png crate's fast level, throughput and size [extra] | - | 765.3 MB/s, 1.7 MB (png fast) | n/a |
+
 ### 2026-09-26, first release of the image category
 
 commit: 14cd1d4 (on the `png` branch, before its merge)
@@ -97,21 +119,24 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(
 
 ## Conclusions
 
-Seven of eight pass lines pass; the photo decode fails by 17% in this
-block and by 2 to 15% across the session's runs. In process, from
-memory, the decode is 95 ms against the crate's 78 on the photo:
-inflate 69 ms (310 before the streaming inflater's table, packing, and
-slab work), the chunk CRC about 3, Adler-32 about 5, unfilter about 5,
-first-touch page faults on the 61 MB image about 8. The crate's
-fdeflate, SIMD checksums, and SIMD unfilter each take a few
-milliseconds less, and the sum is the line. Memory is the image plus
-300 KB, where the first reader held the file, the raw rows, and the
-image (190 MB). Levers are recorded in `STATE.md` Blockers.
+Every pass line passes. The photo decode went from 358 to 438 MB/s
+against the crates' 412, and its memory from 65 MB to 5, when the
+conversion stopped holding an image: rows go from the unfilter into a
+top-down BMP as they complete, which drops the 61 MB buffer, its
+16,000 first-touch page faults, and the separate swizzle pass that the
+three-crate reference pipeline cannot avoid. Direct medians of seven
+runs put the two at 101 and 107 ms; the block's margin moves with the
+machine's load, so the difference to trust is the memory line and the
+flat decode, both a third or more ahead.
 
-The encodes pass. The photo encode went from 2.35 s to 0.73 s when the
-deflate matcher stopped walking 23 candidates per search on noise: a
-chain budget that follows the running match length. It costs 4% of
-output size on this incompressible image (33.6 against 32.2 MB, equal
-before the budget rule) and nothing on the words benchmark; the flat
-image compresses smaller than the crate's output at 1.5 times its
-speed.
+Two spikes that measured nothing are recorded in `STATE.md` and the
+patterns file: the x86-64-v2 baseline and unchecked access in the
+inflater. fdeflate is safe Rust; its loop shape (three lookups from one
+unchanged buffer per refill) is now ours too, and the checksums run as
+interleaved streams and lane sums, but phase timers showed the gap
+was the pipeline, not the loop.
+
+The encodes pass with the same margins as before: the photo at 150
+against 143 MB/s with a 4% larger output on this incompressible image
+(the matcher's payoff-adaptive chain budget, `STATE.md` Tech Debt),
+the flat image smaller than the crate's output at 1.6 times its speed.

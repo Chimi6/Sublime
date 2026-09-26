@@ -68,6 +68,48 @@ pub fn read_png(bytes: &[u8]) -> Result<(Image, PngNotes), PngError> {
     read_png_from(&mut source)
 }
 
+/// Where rows go when a PNG is read row by row: `start` once with the
+/// dimensions, then `row` with each row's pixels in the hub layout, top
+/// to bottom.
+pub trait RowSink {
+    fn start(&mut self, width: u32, height: u32, color: ColorType) -> std::io::Result<()>;
+    fn row(&mut self, pixels: &[u8]) -> std::io::Result<()>;
+}
+
+/// What can go wrong reading rows into a sink: the file, or the sink.
+#[derive(Debug)]
+pub enum RowsError {
+    Png(PngError),
+    Io(std::io::Error),
+}
+
+impl From<PngError> for RowsError {
+    fn from(error: PngError) -> Self {
+        RowsError::Png(error)
+    }
+}
+
+impl From<std::io::Error> for RowsError {
+    fn from(error: std::io::Error) -> Self {
+        RowsError::Io(error)
+    }
+}
+
+/// Reads a PNG from a stream straight into `sink`, one row at a time,
+/// without holding the image: each row is unfiltered from the inflater's
+/// output and handed over. An interlaced image is decoded whole first
+/// (its rows arrive out of order) and then handed over row by row.
+pub fn read_png_rows(reader: &mut dyn Read, sink: &mut dyn RowSink) -> Result<PngNotes, RowsError> {
+    let (image, notes) = read_png_inner(reader, Some(sink))?;
+    if image.height > 0 {
+        sink.start(image.width, image.height, image.color)?;
+        for y in 0..image.height {
+            sink.row(image.row(y))?;
+        }
+    }
+    Ok(notes)
+}
+
 /// Input is read in pieces of this size.
 const PIECE: usize = 256 * 1024;
 /// How much decoded data the inflater is asked for at a time; rows are
@@ -83,9 +125,23 @@ const MAX_WHOLE_CHUNK: usize = PIECE;
 /// image the moment it is complete. Memory is the image plus a few
 /// hundred kilobytes, whatever the file's size.
 pub fn read_png_from(reader: &mut dyn Read) -> Result<(Image, PngNotes), PngError> {
+    match read_png_inner(reader, None) {
+        Ok(result) => Ok(result),
+        Err(RowsError::Png(error)) => Err(error),
+        Err(RowsError::Io(error)) => Err(PngError(format!("row sink failed: {error}"))),
+    }
+}
+
+/// The reader behind both entry points. With a sink, a non-interlaced
+/// image streams to it and the returned image is empty; an interlaced
+/// one comes back whole for the caller to hand over.
+fn read_png_inner(
+    reader: &mut dyn Read,
+    mut sink: Option<&mut (dyn RowSink + '_)>,
+) -> Result<(Image, PngNotes), RowsError> {
     let mut source = Source::new(reader);
     if source.exact(SIGNATURE.len())? != SIGNATURE {
-        return Err(PngError("not a PNG: bad signature".to_string()));
+        return Err(PngError("not a PNG: bad signature".to_string()).into());
     }
     let mut header: Option<Header> = None;
     let mut palette: Vec<[u8; 3]> = Vec::new();
@@ -97,13 +153,13 @@ pub fn read_png_from(reader: &mut dyn Read) -> Result<(Image, PngNotes), PngErro
         let length = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
         let kind: [u8; 4] = [head[4], head[5], head[6], head[7]];
         if !kind.iter().all(u8::is_ascii_alphabetic) {
-            return Err(PngError("bad chunk type".to_string()));
+            return Err(PngError("bad chunk type".to_string()).into());
         }
         let mut crc = crc32_update(0, &kind);
         match &kind {
             b"IHDR" => {
                 if header.is_some() {
-                    return Err(PngError("two IHDR chunks".to_string()));
+                    return Err(PngError("two IHDR chunks".to_string()).into());
                 }
                 let data = source.whole_chunk(length, &kind)?;
                 crc = crc32_update(crc, data);
@@ -113,7 +169,7 @@ pub fn read_png_from(reader: &mut dyn Read) -> Result<(Image, PngNotes), PngErro
                 let data = source.whole_chunk(length, &kind)?;
                 crc = crc32_update(crc, data);
                 if data.len() % 3 != 0 || data.is_empty() || data.len() > 768 {
-                    return Err(PngError("bad palette length".to_string()));
+                    return Err(PngError("bad palette length".to_string()).into());
                 }
                 palette = data.chunks(3).map(|rgb| [rgb[0], rgb[1], rgb[2]]).collect();
             }
@@ -132,25 +188,33 @@ pub fn read_png_from(reader: &mut dyn Read) -> Result<(Image, PngNotes), PngErro
                         if header.color == 3 && palette.is_empty() {
                             return Err(PngError(
                                 "a palette image without a PLTE chunk".to_string(),
-                            ));
+                            )
+                            .into());
                         }
-                        decoder.insert(Decoder::new(header, &palette, &transparency))
+                        let streams = sink.is_some() && !header.interlaced;
+                        if streams {
+                            let color = output_color(header, &transparency);
+                            if let Some(sink) = sink.as_deref_mut() {
+                                sink.start(header.width, header.height, color)?;
+                            }
+                        }
+                        decoder.insert(Decoder::new(header, &palette, &transparency, streams))
                     }
                 };
                 let mut remaining = length;
                 while remaining > 0 {
                     let piece = source.take(remaining)?;
                     if piece.is_empty() {
-                        return Err(PngError("chunk cut short".to_string()));
+                        return Err(PngError("chunk cut short".to_string()).into());
                     }
                     crc = crc32_update(crc, piece);
                     remaining -= piece.len();
-                    decoder.feed(piece)?;
+                    decoder.feed(piece, sink.as_deref_mut())?;
                 }
             }
             b"IEND" => {
                 if length != 0 {
-                    return Err(PngError("IEND chunk with data".to_string()));
+                    return Err(PngError("IEND chunk with data".to_string()).into());
                 }
                 source.check_crc(crc, &kind)?;
                 break;
@@ -160,7 +224,8 @@ pub fn read_png_from(reader: &mut dyn Read) -> Result<(Image, PngNotes), PngErro
                     return Err(PngError(format!(
                         "unknown critical chunk {}",
                         String::from_utf8_lossy(other)
-                    )));
+                    ))
+                    .into());
                 }
                 if !notes.dropped_chunks.contains(other) {
                     notes.dropped_chunks.push(*other);
@@ -169,7 +234,7 @@ pub fn read_png_from(reader: &mut dyn Read) -> Result<(Image, PngNotes), PngErro
                 while remaining > 0 {
                     let piece = source.take(remaining)?;
                     if piece.is_empty() {
-                        return Err(PngError("chunk cut short".to_string()));
+                        return Err(PngError("chunk cut short".to_string()).into());
                     }
                     crc = crc32_update(crc, piece);
                     remaining -= piece.len();
@@ -280,17 +345,21 @@ struct Decoder {
 }
 
 impl Decoder {
-    fn new(header: &Header, palette: &[[u8; 3]], transparency: &[u8]) -> Decoder {
+    fn new(header: &Header, palette: &[[u8; 3]], transparency: &[u8], streams: bool) -> Decoder {
         Decoder {
             zlib_header: Vec::with_capacity(2),
             inflater: Inflater::new(),
-            rows: Rows::new(header, palette, transparency),
+            rows: Rows::new(header, palette, transparency, streams),
             adler: 1,
             trailer: Vec::with_capacity(4),
         }
     }
 
-    fn feed(&mut self, mut piece: &[u8]) -> Result<(), PngError> {
+    fn feed(
+        &mut self,
+        mut piece: &[u8],
+        mut sink: Option<&mut (dyn RowSink + '_)>,
+    ) -> Result<(), RowsError> {
         while self.zlib_header.len() < 2 && !piece.is_empty() {
             self.zlib_header.push(piece[0]);
             piece = &piece[1..];
@@ -298,7 +367,7 @@ impl Decoder {
                 let (cmf, flg) = (self.zlib_header[0], self.zlib_header[1]);
                 let check = (u16::from(cmf) << 8) | u16::from(flg);
                 if cmf & 0x0f != 8 || check % 31 != 0 || flg & 0x20 != 0 {
-                    return Err(PngError("bad zlib header".to_string()));
+                    return Err(PngError("bad zlib header".to_string()).into());
                 }
             }
         }
@@ -315,7 +384,7 @@ impl Decoder {
                 .push(piece, want)
                 .map_err(|error| PngError(format!("bad deflate data: {error}")))?;
             piece = &piece[consumed..];
-            self.deliver()?;
+            self.deliver(sink.as_deref_mut())?;
             if matches!(progress, Progress::Done) {
                 let leftover = self.inflater.leftover();
                 self.trailer
@@ -326,12 +395,12 @@ impl Decoder {
     }
 
     /// Moves every complete row out of the inflater into the image.
-    fn deliver(&mut self) -> Result<(), PngError> {
+    fn deliver(&mut self, sink: Option<&mut (dyn RowSink + '_)>) -> Result<(), RowsError> {
         let output = self.inflater.output();
-        let used = self.rows.feed(output)?;
+        let used = self.rows.feed(output, sink)?;
         self.adler = adler32_update(self.adler, &output[..used]);
         if self.rows.done && used < output.len() {
-            return Err(PngError("more image data than the image holds".to_string()));
+            return Err(PngError("more image data than the image holds".to_string()).into());
         }
         self.inflater.drain(used);
         Ok(())
@@ -374,13 +443,16 @@ struct Rows {
     previous: Vec<u8>,
     current: Vec<u8>,
     expanded: Vec<u8>,
+    /// Rows go to a sink as they complete instead of into `image`.
+    streams: bool,
     done: bool,
 }
 
 impl Rows {
-    fn new(header: &Header, palette: &[[u8; 3]], transparency: &[u8]) -> Rows {
+    fn new(header: &Header, palette: &[[u8; 3]], transparency: &[u8], streams: bool) -> Rows {
         let color = output_color(header, transparency);
-        let image = Image::new(header.width, header.height, color);
+        let held_height = if streams { 0 } else { header.height };
+        let image = Image::new(header.width, held_height, color);
         let direct =
             header.depth == 8 && header.color != 3 && transparency.is_empty() && !header.interlaced;
         let mut rows = Rows {
@@ -398,6 +470,7 @@ impl Rows {
             previous: Vec::new(),
             current: Vec::new(),
             expanded: Vec::new(),
+            streams,
             done: false,
         };
         if header.interlaced {
@@ -436,14 +509,14 @@ impl Rows {
     }
 
     fn prepare_row_buffers(&mut self) {
-        if self.direct {
+        if self.direct && !self.streams {
             return;
         }
         self.previous.clear();
         self.previous.resize(self.row_bytes, 0);
         self.current.clear();
         self.current.resize(self.row_bytes, 0);
-        if self.header.interlaced {
+        if self.header.interlaced || self.streams {
             let channels = self.image.color.channels();
             self.expanded.clear();
             self.expanded.resize(self.pass_width as usize * channels, 0);
@@ -451,20 +524,51 @@ impl Rows {
     }
 
     /// Takes every complete row from `data`; returns the bytes used.
-    fn feed(&mut self, data: &[u8]) -> Result<usize, PngError> {
+    fn feed(
+        &mut self,
+        data: &[u8],
+        mut sink: Option<&mut (dyn RowSink + '_)>,
+    ) -> Result<usize, RowsError> {
         let mut used = 0;
         // The row length changes between interlace passes.
         while !self.done && data.len() - used >= self.row_len() {
             let row_len = self.row_len();
             let line = &data[used..used + row_len];
-            self.row(line[0], &line[1..])?;
+            self.row(line[0], &line[1..], sink.as_deref_mut())?;
             used += row_len;
         }
         Ok(used)
     }
 
-    fn row(&mut self, filter: u8, source: &[u8]) -> Result<(), PngError> {
-        if self.direct {
+    fn row(
+        &mut self,
+        filter: u8,
+        source: &[u8],
+        sink: Option<&mut (dyn RowSink + '_)>,
+    ) -> Result<(), RowsError> {
+        if self.streams {
+            // Straight to the sink: an 8-bit row in the hub's own layout
+            // unfilters in place and goes; any other expands first.
+            let previous: &[u8] = if self.row == 0 { &[] } else { &self.previous };
+            unfilter_row(filter, source, previous, self.unit, &mut self.current)?;
+            let pixels: &[u8] = if self.direct {
+                &self.current
+            } else {
+                expand_row(
+                    &self.header,
+                    &self.current,
+                    self.pass_width,
+                    &self.palette,
+                    &self.transparency,
+                    &mut self.expanded,
+                );
+                &self.expanded
+            };
+            if let Some(sink) = sink {
+                sink.row(pixels)?;
+            }
+            std::mem::swap(&mut self.previous, &mut self.current);
+        } else if self.direct {
             let stride = self.image.stride();
             let y = self.row as usize;
             let (before, rest) = self.image.pixels.split_at_mut(y * stride);
@@ -633,15 +737,15 @@ fn unfilter_sub<const N: usize>(source: &[u8], current: &mut [u8]) {
         let pairs = current.len() / pair;
         for index in 0..pairs {
             let at = index * pair;
-            let mut word: u64 = 0;
-            for (lane, byte) in source[at..at + pair].iter().enumerate() {
-                word |= u64::from(*byte) << (lane * 8);
-            }
+            // One load and one store per pair: the bytes go through a
+            // zero-padded eight-byte array the compiler turns into a
+            // single unaligned move when the pair is eight bytes.
+            let mut bytes = [0u8; 8];
+            bytes[..pair].copy_from_slice(&source[at..at + pair]);
+            let word = u64::from_le_bytes(bytes);
             let stepped = add(word, word << shift);
             let sum = add(stepped, left | (left << shift));
-            for (lane, byte) in current[at..at + pair].iter_mut().enumerate() {
-                *byte = (sum >> (lane * 8)) as u8;
-            }
+            current[at..at + pair].copy_from_slice(&sum.to_le_bytes()[..pair]);
             left = (sum >> shift) & ((1u64 << shift) - 1);
         }
         done = pairs * pair;

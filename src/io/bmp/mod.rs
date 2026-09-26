@@ -232,12 +232,13 @@ const WRITE_CHUNK: usize = 1 << 20;
 
 /// Writes the image: 24-bit for opaque images, 32-bit BGRA with a V4
 /// header for images with alpha. Gray becomes RGB, as BMP has no gray.
-pub fn write_bmp(image: &Image, sink: &mut dyn Write) -> io::Result<()> {
-    let with_alpha = image.color.has_alpha();
+/// The file and info headers. A negative `height_field` declares a
+/// top-down file, the form the row writer uses.
+fn headers(width: u32, height_field: i32, rows: u32, with_alpha: bool) -> (Vec<u8>, usize) {
     let bits: u32 = if with_alpha { 32 } else { 24 };
     let header_size: u32 = if with_alpha { 108 } else { 40 };
-    let row_bytes = (image.width as usize * bits as usize).div_ceil(32) * 4;
-    let pixel_bytes = row_bytes * image.height as usize;
+    let row_bytes = (width as usize * bits as usize).div_ceil(32) * 4;
+    let pixel_bytes = row_bytes * rows as usize;
     let pixel_offset = 14 + header_size;
     let file_size = pixel_offset as usize + pixel_bytes;
     let mut header = Vec::with_capacity(pixel_offset as usize);
@@ -246,8 +247,8 @@ pub fn write_bmp(image: &Image, sink: &mut dyn Write) -> io::Result<()> {
     header.extend_from_slice(&[0, 0, 0, 0]);
     header.extend_from_slice(&pixel_offset.to_le_bytes());
     header.extend_from_slice(&header_size.to_le_bytes());
-    header.extend_from_slice(&(image.width as i32).to_le_bytes());
-    header.extend_from_slice(&(image.height as i32).to_le_bytes());
+    header.extend_from_slice(&(width as i32).to_le_bytes());
+    header.extend_from_slice(&height_field.to_le_bytes());
     header.extend_from_slice(&1u16.to_le_bytes());
     header.extend_from_slice(&(bits as u16).to_le_bytes());
     let compression: u32 = if with_alpha { 3 } else { 0 };
@@ -263,6 +264,116 @@ pub fn write_bmp(image: &Image, sink: &mut dyn Write) -> io::Result<()> {
         header.extend_from_slice(b"sRGB");
         header.extend_from_slice(&[0; 48]);
     }
+    (header, row_bytes)
+}
+
+/// Turns one hub row into a BMP row (BGR or BGRA) at the end of `out`.
+fn append_row(
+    color: ColorType,
+    with_alpha: bool,
+    source: &[u8],
+    row_bytes: usize,
+    out: &mut Vec<u8>,
+) {
+    let start = out.len();
+    out.resize(start + row_bytes, 0);
+    let target = &mut out[start..];
+    match color {
+        ColorType::Rgb if !with_alpha => {
+            for (bgr, rgb) in target.chunks_exact_mut(3).zip(source.chunks_exact(3)) {
+                bgr[0] = rgb[2];
+                bgr[1] = rgb[1];
+                bgr[2] = rgb[0];
+            }
+        }
+        ColorType::Rgba if with_alpha => {
+            for (bgra, rgba) in target.chunks_exact_mut(4).zip(source.chunks_exact(4)) {
+                bgra[0] = rgba[2];
+                bgra[1] = rgba[1];
+                bgra[2] = rgba[0];
+                bgra[3] = rgba[3];
+            }
+        }
+        _ => {
+            let channels = color.channels();
+            let width = source.len() / channels;
+            for x in 0..width {
+                let cell = &source[x * channels..(x + 1) * channels];
+                let (r, g, b, a) = match color {
+                    ColorType::Gray => (cell[0], cell[0], cell[0], 255),
+                    ColorType::GrayAlpha => (cell[0], cell[0], cell[0], cell[1]),
+                    ColorType::Rgb => (cell[0], cell[1], cell[2], 255),
+                    ColorType::Rgba => (cell[0], cell[1], cell[2], cell[3]),
+                };
+                if with_alpha {
+                    target[x * 4..x * 4 + 4].copy_from_slice(&[b, g, r, a]);
+                } else {
+                    target[x * 3..x * 3 + 3].copy_from_slice(&[b, g, r]);
+                }
+            }
+        }
+    }
+}
+
+/// Writes a BMP row by row as a `RowSink`, top-down (a negative height
+/// in the header, which every reader since Windows 95 takes), so a
+/// decoder can hand rows over as it produces them and no image is held.
+pub struct BmpRows<'a> {
+    sink: &'a mut dyn Write,
+    color: ColorType,
+    with_alpha: bool,
+    row_bytes: usize,
+    rows_left: u32,
+    pending: Vec<u8>,
+}
+
+impl<'a> BmpRows<'a> {
+    pub fn new(sink: &'a mut dyn Write) -> BmpRows<'a> {
+        BmpRows {
+            sink,
+            color: ColorType::Rgb,
+            with_alpha: false,
+            row_bytes: 0,
+            rows_left: 0,
+            pending: Vec::new(),
+        }
+    }
+}
+
+impl crate::io::png::RowSink for BmpRows<'_> {
+    fn start(&mut self, width: u32, height: u32, color: ColorType) -> io::Result<()> {
+        self.color = color;
+        self.with_alpha = color.has_alpha();
+        let (header, row_bytes) = headers(width, -(height as i32), height, self.with_alpha);
+        self.row_bytes = row_bytes;
+        self.rows_left = height;
+        self.pending = Vec::with_capacity(WRITE_CHUNK + row_bytes);
+        self.sink.write_all(&header)
+    }
+
+    fn row(&mut self, pixels: &[u8]) -> io::Result<()> {
+        append_row(
+            self.color,
+            self.with_alpha,
+            pixels,
+            self.row_bytes,
+            &mut self.pending,
+        );
+        self.rows_left = self.rows_left.saturating_sub(1);
+        if self.pending.len() >= WRITE_CHUNK || self.rows_left == 0 {
+            self.sink.write_all(&self.pending)?;
+            self.pending.clear();
+            if self.rows_left == 0 {
+                self.sink.flush()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn write_bmp(image: &Image, sink: &mut dyn Write) -> io::Result<()> {
+    let with_alpha = image.color.has_alpha();
+    let (header, row_bytes) = headers(image.width, image.height as i32, image.height, with_alpha);
     sink.write_all(&header)?;
     let channels = image.color.channels();
     let mut row = vec![0u8; row_bytes];
