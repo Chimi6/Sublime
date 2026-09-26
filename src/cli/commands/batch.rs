@@ -499,6 +499,20 @@ fn walk_glob(dir: &Path, segments: &[&str], matches: &mut Vec<PathBuf>) {
         }
         return;
     }
+    // A literal segment is joined, not matched against a listing, so the
+    // OS resolves case and short names (`RUNNER~1`) the way it does for
+    // any path.
+    if !has_glob(segment) {
+        let path = dir.join(segment);
+        if rest.is_empty() {
+            if path.is_file() {
+                matches.push(path);
+            }
+        } else if path.is_dir() {
+            walk_glob(&path, rest, matches);
+        }
+        return;
+    }
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
