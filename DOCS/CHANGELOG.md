@@ -6,6 +6,12 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-25
+
+The bridge between rows and documents: spreadsheets reach every
+document format as tables, and document tables come out as rows; the
+paths list doubles.
+
 ### Added
 
 - The bridge between rows and documents (`src/io/csv/table.rs`, `src/converters/rows_document.rs`): `csv -> markdown` and `tsv -> markdown` turn rows into a Markdown table (first row the header, rows padded or cut to its width, line breaks in cells folded to spaces, everything GFM would misread escaped), so a spreadsheet reaches HTML, Word, text, Markdown JSON, and every document path through the planner; `markdown -> csv` and `markdown -> tsv` take a document's first table out as rows, so Word, Pages, and HTML tables reach every row and hub format. The paths list doubled (88 -> 184). Oracles in `tests/rows_document.rs`.
