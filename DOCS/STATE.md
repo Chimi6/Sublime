@@ -129,6 +129,7 @@ The document category's one-way streets are closed (0.8.0 to 0.10.0) and the dat
 
 ## Done
 
+- 2026-09-26: The image category released as 0.19.0: the pixel hub, PNG and BMP both ways streaming rows in both directions, the resumable inflater, the faster CRC-32 and deflate matcher, every `png-bmp` line passing against the png and image crates on the generated shapes and a stock photograph.
 - 2026-09-26: Batch conversion released as 0.18.0.
 - 2026-09-25: The rows-to-document bridge released as 0.17.0, with the Markdown pairs re-validated.
 - 2026-09-25: Excel workbooks one sheet at a time released as 0.16.0.

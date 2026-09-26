@@ -30,6 +30,19 @@ a comparison. Startup is implemented in `bench/src/startup.rs`.
 
 ## Results
 
+### 2026-09-26, 0.19.0 with the image category
+
+commit: 611f7ca (the merge of the streaming BMP reader, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 1960208 | <= 2000000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 2060960 | recorded | n/a |
+| WebAssembly module (bytes) | 937689 | <= 1000000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 386563 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.229 (spawn 0.530, floor 0.301) | < 1 | PASS |
+
 ### 2026-09-26, 0.18.0 with batch conversion
 
 commit: b222f32 (the merge of the batch branch, before the version bump)
@@ -285,3 +298,4 @@ read as "under a millisecond", not as a trend.
 | 0.16.0 | 1,786,840 | 1,888,928 | 1,800,000 | 863,102 | 900,000 |
 | 0.17.0 | 1,796,800 | 1,897,120 | 1,800,000 | 867,742 | 900,000 |
 | 0.18.0 | 1,868,064 | 1,966,752 | 1,900,000 | 867,813 | 900,000 |
+| 0.19.0 | 1,960,208 | 2,060,960 | 2,000,000 | 937,689 | 1,000,000 |
