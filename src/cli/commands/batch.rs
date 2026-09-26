@@ -451,12 +451,20 @@ fn has_glob(text: &str) -> bool {
 /// `**` for any depth of directories.
 fn expand_glob(pattern: &str) -> Result<Vec<PathBuf>, CliError> {
     let normalized = pattern.replace('\\', "/");
-    let segments: Vec<&str> = normalized
+    let mut segments: Vec<&str> = normalized
         .split('/')
         .filter(|segment| !segment.is_empty())
         .collect();
+    // The walk starts at the root of an absolute pattern: `/` on Unix, the
+    // drive (`C:`) on Windows; otherwise at the current directory.
+    let is_drive = segments
+        .first()
+        .is_some_and(|first| first.len() == 2 && first.ends_with(':'));
     let start = if normalized.starts_with('/') {
         PathBuf::from("/")
+    } else if is_drive {
+        let drive = segments.remove(0);
+        PathBuf::from(format!("{drive}/"))
     } else {
         PathBuf::from(".")
     };
