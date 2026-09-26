@@ -2,6 +2,7 @@
 //! match arm in `run`; the pair's run script lives in `bench/pairs/`.
 
 pub mod csv_json;
+pub mod csv_markdown;
 pub mod docx_html;
 pub mod docx_markdown;
 pub mod docx_text;
@@ -26,6 +27,7 @@ pub mod yaml_json;
 
 pub const NAMES: &[&str] = &[
     "csv-json",
+    "csv-markdown",
     "tsv-json",
     "jsonl-json",
     "docx-markdown",
@@ -53,6 +55,7 @@ pub const NAMES: &[&str] = &[
 pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
     match pair {
         "csv-json" => csv_json::run(mode, args),
+        "csv-markdown" => csv_markdown::run(mode, args),
         "tsv-json" => csv_json::run(mode, args),
         "jsonl-json" => jsonl_json::run(mode, args),
         "docx-markdown" => docx_markdown::run(mode, args),
