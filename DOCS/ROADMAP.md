@@ -138,10 +138,10 @@ lossless and universal.
 
 | Format | Extensions | Status | Tier | Effort | Directions and notes |
 |---|---|---|---|---|---|
-| PNG | png | [ ] | S | M | Keystone. Inflate, filters, palettes, 16-bit, APNG frames. |
+| PNG | png | [x] | S | M | Keystone. Shipped 0.19.0 (`DOCS/formats/png.md`): every depth, color type, palette, transparency, and interlace read; 8-bit written. APNG frames are not read. |
 | JPEG | jpg, jpeg | [ ] | S | L | Baseline and progressive decode; baseline encode with quality. Exif passthrough. |
 | GIF | gif | [ ] | A | S | LZW both ways; animation frames. |
-| BMP | bmp | [ ] | A | S | Trivial; still asked for. |
+| BMP | bmp | [x] | A | S | Shipped 0.19.0 (`DOCS/formats/bmp.md`): 1 to 32 bits with masks read; 24-bit and 32-bit with alpha written. RLE is refused. |
 | TIFF | tif, tiff | [ ] | A | M | Strips and tiles, common compressions (none, PackBits, LZW, deflate). Also the base of DNG and GeoTIFF. |
 | WebP | webp | [ ] | B | L | VP8 lossy decode is a real codec; lossless WebP is its own codec. Encode is XL. Consider External. |
 | AVIF, HEIC, JPEG XL | avif, heic, jxl | [ ] | D | XL | AV1, HEVC, and JXL codecs: External tier. |

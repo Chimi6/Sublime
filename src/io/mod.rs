@@ -1,6 +1,7 @@
 //! Our own format readers and writers. Zero dependencies.
 
 pub mod base64;
+pub mod bmp;
 pub mod csv;
 pub mod deflate;
 pub mod docx;
@@ -9,6 +10,7 @@ pub mod iwa;
 pub mod json;
 pub mod markdown;
 pub mod pages;
+pub mod png;
 pub mod protobuf;
 pub mod scan;
 pub mod snappy;

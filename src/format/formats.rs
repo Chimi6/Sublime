@@ -34,6 +34,22 @@ pub static XLSX: Format = Format {
     category: Category::Data,
 };
 
+pub static PNG: Format = Format {
+    id: "png",
+    display_name: "PNG image",
+    extensions: &["png"],
+    magic: Some(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']),
+    category: Category::Image,
+};
+
+pub static BMP: Format = Format {
+    id: "bmp",
+    display_name: "Windows bitmap",
+    extensions: &["bmp", "dib"],
+    magic: Some(b"BM"),
+    category: Category::Image,
+};
+
 pub static JSON: Format = Format {
     id: "json",
     display_name: "JSON",
