@@ -10,7 +10,8 @@ use std::collections::HashMap;
 use super::package::{Entry, Object, ObjectMessage, Package, PackageError, Stream};
 use super::schema::SCHEMA;
 use crate::document::{
-    Block, Document, Id, Inline, ListItem, ListLabel, MediaId, NumberKind, Paragraph, RunProperties,
+    Block, Color, Document, Id, Inline, ListItem, ListLabel, MediaId, NumberKind, Paragraph,
+    RunProperties,
 };
 use crate::io::protobuf::schema::MessageRef;
 use crate::io::protobuf::tree::{Chain, Entry as TreeEntry, NONE, Node, Tree, TreeError};
@@ -30,6 +31,7 @@ const DRAWABLE_ATTACHMENT: u32 = 2003;
 const HYPERLINK_FIELD: u32 = 2032;
 const IMAGE_ARCHIVE: u32 = 3005;
 const PACKAGE_METADATA: u32 = 11006;
+const STYLESHEET: u32 = 401;
 /// The object-replacement character that stands for an anchored drawable
 /// (a table here) in the body text.
 const ATTACHMENT: char = '\u{FFFC}';
@@ -187,6 +189,8 @@ fn rebuild_body(
     // Identifiers are unique across the whole package, so a new hyperlink
     // object takes the next id after the highest any stream already uses.
     let mut next_id = max_identifier(package) + 1;
+    let stylesheet_id = stylesheet_identifier(package);
+    let base_style = base_char_style(package);
 
     let stream = document_stream(package)?;
     let body_id = body_storage_identifier(stream)?;
@@ -202,6 +206,33 @@ fn rebuild_body(
         _ => return Err(malformed("body storage is not a StorageArchive")),
     };
 
+    // A run whose formatting goes beyond bold and italic (a colour, size, font,
+    // or underline) gets a character style synthesised with all of it, added to
+    // the document stream and merged into the style map the storage looks up.
+    let mut all_formats = formats.clone();
+    let mut style_refs: Vec<u64> = Vec::new();
+    if let (Some(parent), Some(sheet)) = (base_style, stylesheet_id) {
+        let mut seen: std::collections::HashSet<Format> = std::collections::HashSet::new();
+        for mark in &body.char_marks {
+            if mark.format.has_direct() && seen.insert(mark.format) {
+                let id = next_id;
+                next_id += 1;
+                let (message, info) =
+                    build_char_style(&mut stream.tree, id, mark.format, document, parent, sheet)?;
+                stream.objects.push(Object {
+                    identifier: id,
+                    info,
+                    messages: vec![ObjectMessage {
+                        message_type: CHARACTER_STYLE,
+                        first: message,
+                    }],
+                });
+                all_formats.insert(mark.format, id);
+                style_refs.push(id);
+            }
+        }
+    }
+
     // Each link range becomes a hyperlink field object the body anchors by a
     // smart-field attribute table (like the character styles, offset-keyed).
     let (link_objects, smart_entries) =
@@ -213,7 +244,7 @@ fn rebuild_body(
         document,
         &body,
         styles,
-        formats,
+        &all_formats,
         lists,
         &anchors,
         &smart_entries,
@@ -223,6 +254,7 @@ fn rebuild_body(
     let mut references: Vec<u64> = list_refs;
     references.extend(anchors.iter().map(|(_, id)| *id));
     references.extend(link_objects.iter().map(|object| object.identifier));
+    references.extend(style_refs);
     stream.objects.extend(link_objects);
     add_object_references(&mut stream.tree, info, &references)?;
     Ok(())
@@ -365,6 +397,198 @@ fn build_archive_info(
         Node::Message(header.first),
     )?;
     Ok(chain.first)
+}
+
+/// Builds a `TSP.Color` message for an RGB colour (channels are 0..1 floats).
+fn build_color(tree: &mut Tree, color: Color) -> Result<u32, PackageError> {
+    let message = message_ref("TSP.Color")?;
+    let mut chain = Chain::new();
+    push_field(tree, &mut chain, message, "model", Node::Uint(1))?;
+    push_field(
+        tree,
+        &mut chain,
+        message,
+        "r",
+        Node::Float(f32::from(color.red) / 255.0),
+    )?;
+    push_field(
+        tree,
+        &mut chain,
+        message,
+        "g",
+        Node::Float(f32::from(color.green) / 255.0),
+    )?;
+    push_field(
+        tree,
+        &mut chain,
+        message,
+        "b",
+        Node::Float(f32::from(color.blue) / 255.0),
+    )?;
+    push_field(tree, &mut chain, message, "a", Node::Float(1.0))?;
+    push_field(tree, &mut chain, message, "rgbspace", Node::Uint(1))?;
+    Ok(chain.first)
+}
+
+/// Synthesises a character style carrying a run's direct formatting (bold,
+/// italic, size, font, underline, colour) as a variation of the theme's base
+/// style, returning its message and header chains. The object is registered in
+/// the document stream by the caller under `identifier`.
+fn build_char_style(
+    tree: &mut Tree,
+    identifier: u64,
+    format: Format,
+    document: &Document,
+    parent: u64,
+    stylesheet: u64,
+) -> Result<(u32, u32), PackageError> {
+    let style = message_ref("TSWP.CharacterStyleArchive")?;
+    let base = message_ref("TSS.StyleArchive")?;
+    let properties = message_ref("TSWP.CharacterStylePropertiesArchive")?;
+
+    let mut super_chain = Chain::new();
+    push_field(
+        tree,
+        &mut super_chain,
+        base,
+        "parent",
+        Node::Reference(parent),
+    )?;
+    push_field(
+        tree,
+        &mut super_chain,
+        base,
+        "is_variation",
+        Node::Bool(true),
+    )?;
+    push_field(
+        tree,
+        &mut super_chain,
+        base,
+        "stylesheet",
+        Node::Reference(stylesheet),
+    )?;
+
+    let mut props = Chain::new();
+    let mut count = 0u64;
+    if format.bold {
+        push_field(tree, &mut props, properties, "bold", Node::Bool(true))?;
+        count += 1;
+    }
+    if format.italic {
+        push_field(tree, &mut props, properties, "italic", Node::Bool(true))?;
+        count += 1;
+    }
+    if let Some(half_points) = format.size {
+        push_field(
+            tree,
+            &mut props,
+            properties,
+            "font_size",
+            Node::Float(f32::from(half_points) / 2.0),
+        )?;
+        count += 1;
+    }
+    if let Some(font) = format.font {
+        let span = tree
+            .push_bytes(document.string(font).as_bytes())
+            .map_err(tree_error)?;
+        push_field(tree, &mut props, properties, "font_name", Node::Str(span))?;
+        count += 1;
+    }
+    if format.underline {
+        push_field(tree, &mut props, properties, "underline", Node::Uint(1))?;
+        count += 1;
+    }
+    if let Some(color) = format.color {
+        let color_first = build_color(tree, color)?;
+        push_field(
+            tree,
+            &mut props,
+            properties,
+            "font_color",
+            Node::Message(color_first),
+        )?;
+        // Pages renders the text colour from the character fill, not
+        // `font_color` alone, so the same colour goes in `tsd_fill.color`.
+        let fill_kind = properties
+            .field_named("tsd_fill")
+            .ok_or_else(|| malformed("char properties have no tsd_fill"))?
+            .kind;
+        let fill = message_of(fill_kind)?;
+        let fill_color = build_color(tree, color)?;
+        let mut fill_chain = Chain::new();
+        push_field(
+            tree,
+            &mut fill_chain,
+            fill,
+            "color",
+            Node::Message(fill_color),
+        )?;
+        push_field(
+            tree,
+            &mut props,
+            properties,
+            "tsd_fill",
+            Node::Message(fill_chain.first),
+        )?;
+        count += 1;
+    }
+
+    let mut chain = Chain::new();
+    push_field(
+        tree,
+        &mut chain,
+        style,
+        "super",
+        Node::Message(super_chain.first),
+    )?;
+    push_field(tree, &mut chain, style, "override_count", Node::Uint(count))?;
+    push_field(
+        tree,
+        &mut chain,
+        style,
+        "char_properties",
+        Node::Message(props.first),
+    )?;
+
+    let info = build_archive_info(tree, identifier, CHARACTER_STYLE)?;
+    add_object_references(tree, info, &[parent, stylesheet])?;
+    Ok((chain.first, info))
+}
+
+/// The document's stylesheet object identifier (`TSS.StylesheetArchive`).
+fn stylesheet_identifier(package: &Package) -> Option<u64> {
+    for entry in &package.entries {
+        let Entry::Stream(stream) = entry else {
+            continue;
+        };
+        for object in &stream.objects {
+            if first_type(object) == Some(STYLESHEET) {
+                return Some(object.identifier);
+            }
+        }
+    }
+    None
+}
+
+/// The theme's base ("None") character style, used as the parent of a
+/// synthesised direct-formatting variation.
+fn base_char_style(package: &Package) -> Option<u64> {
+    for entry in &package.entries {
+        let Entry::Stream(stream) = entry else {
+            continue;
+        };
+        for object in &stream.objects {
+            if first_type(object) == Some(CHARACTER_STYLE)
+                && let Some(first) = object.messages.first().map(|message| message.first)
+                && style_name(&stream.tree, first).as_deref() == Some("None")
+            {
+                return Some(object.identifier);
+            }
+        }
+    }
+    None
 }
 
 /// A table the template carries, by the identifiers of the objects a rewrite
@@ -2110,15 +2334,15 @@ fn char_style_for(format: Format, formats: &HashMap<Format, u64>) -> Option<u64>
     if format.bold
         && let Some(id) = formats.get(&Format {
             bold: true,
-            italic: false,
+            ..Format::default()
         })
     {
         return Some(*id);
     }
     if format.italic
         && let Some(id) = formats.get(&Format {
-            bold: false,
             italic: true,
+            ..Format::default()
         })
     {
         return Some(*id);
@@ -2126,17 +2350,31 @@ fn char_style_for(format: Format, formats: &HashMap<Format, u64>) -> Option<u64>
     None
 }
 
-/// Character formatting the writer can carry, reused from the template's own
-/// styles. Kept to bold and italic, which every theme provides.
+/// Character formatting the writer carries. Bold and italic reuse the theme's
+/// own styles (they need its weighted faces to render); a run that also sets a
+/// colour, size, font, or underline gets a character style synthesised with all
+/// of them, so a document's direct formatting reaches Pages.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 struct Format {
     bold: bool,
     italic: bool,
+    underline: bool,
+    /// Font size in half-points (so it stays hashable), e.g. 24 for 12 pt.
+    size: Option<u16>,
+    /// The font name, interned in `Document::strings`.
+    font: Option<Id>,
+    color: Option<Color>,
 }
 
 impl Format {
     fn is_plain(&self) -> bool {
         *self == Format::default()
+    }
+
+    /// Whether the run carries formatting beyond bold and italic, which the
+    /// theme's own styles cannot express and so must be synthesised.
+    fn has_direct(&self) -> bool {
+        self.underline || self.size.is_some() || self.font.is_some() || self.color.is_some()
     }
 }
 
@@ -2406,6 +2644,12 @@ fn run_format(document: &Document, run: &crate::document::Run) -> Format {
     Format {
         bold: properties.bold.unwrap_or(false),
         italic: properties.italic.unwrap_or(false),
+        underline: properties.underline.unwrap_or(false),
+        size: properties
+            .size
+            .map(|points| (points * 2.0).round().clamp(1.0, 65535.0) as u16),
+        font: properties.font,
+        color: properties.color,
     }
 }
 
@@ -2991,6 +3235,68 @@ mod tests {
         assert_eq!(effective("italic words").italic, Some(true));
         assert_ne!(effective("Plain ").bold, Some(true));
         assert_ne!(effective("Plain ").italic, Some(true));
+    }
+
+    /// A run's direct formatting — colour, size, and font — comes back intact:
+    /// the writer synthesises a character style carrying it, which the reader
+    /// resolves to effective run properties the way Pages does.
+    #[test]
+    fn writes_direct_formatting() {
+        use crate::document::{Block, Color, Inline, Run, RunProperties};
+
+        let markdown = "Plain and formatted text.\n";
+        let mut builder = crate::document::from_events::DocumentBuilder::new();
+        crate::io::markdown::parse_into(markdown, Default::default(), &mut builder);
+        let mut document = builder.finish();
+
+        let font = document.intern_string("Georgia");
+        let red = Color {
+            red: 200,
+            green: 20,
+            blue: 20,
+        };
+        let properties = document.intern_run_properties(RunProperties {
+            size: Some(18.0),
+            font: Some(font),
+            color: Some(red),
+            underline: Some(true),
+            ..RunProperties::default()
+        });
+        let span = document.push_text("styled");
+        let Some(Block::Paragraph(paragraph)) = document.sections[0].blocks.first_mut() else {
+            panic!("a paragraph");
+        };
+        paragraph.runs.push(Run {
+            style: None,
+            properties,
+            link: None,
+            revision: None,
+            content: Inline::Text(span),
+        });
+
+        let bytes = write(&document).expect("write the package");
+        let package = Package::read_scope(&bytes, Scope::Document).expect("read it back");
+        let round = read_document(&package);
+
+        let paragraph = round.sections[0]
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                Block::Paragraph(paragraph) => Some(paragraph),
+                Block::Table(_) => None,
+            })
+            .expect("a paragraph");
+        let run = paragraph
+            .runs
+            .iter()
+            .find(|run| matches!(run.content, Inline::Text(s) if round.text(s).contains("styled")))
+            .expect("the styled run");
+        let effective = round.effective_run(paragraph, run);
+        assert_eq!(effective.color, Some(red), "colour round-trips");
+        assert_eq!(effective.size, Some(18.0), "size round-trips");
+        assert_eq!(effective.underline, Some(true), "underline round-trips");
+        let font_name = effective.font.map(|id| round.string(id).to_string());
+        assert_eq!(font_name.as_deref(), Some("Georgia"), "font round-trips");
     }
 
     /// A link comes back as a run carrying its target URL: the writer emits a
