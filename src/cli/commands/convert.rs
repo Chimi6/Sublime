@@ -43,6 +43,7 @@ pub fn run(
     let convert_options = ConvertOptions {
         strict: args.strict,
         sheet: args.sheet.clone(),
+        quality: args.quality,
     };
     let mut collector = CollectingSink::new();
     let mut multi = MultiSink::new(vec![renderer, &mut collector]);

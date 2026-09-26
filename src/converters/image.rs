@@ -10,6 +10,9 @@ use crate::format::Format;
 use crate::format::formats;
 use crate::image::Image;
 use crate::io::bmp::{BmpError, BmpRows, BmpRowsError, read_bmp, read_bmp_rows, write_bmp};
+use crate::io::jpeg::{
+    DEFAULT_QUALITY, JpegError, JpegNotes, JpegRows, read_jpeg_from, read_jpeg_rows, write_jpeg,
+};
 use crate::io::png::{
     PngError, PngNotes, PngRows, RowsError, read_png_from, read_png_rows, write_png,
 };
@@ -18,6 +21,7 @@ use crate::io::png::{
 pub enum ImageFormat {
     Png,
     Bmp,
+    Jpeg,
 }
 
 pub struct ImagePair {
@@ -56,6 +60,52 @@ impl Converter for ImagePair {
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
+        let quality = context.options.quality.unwrap_or(DEFAULT_QUALITY);
+        // Row by row wherever the reader can hand rows over and the
+        // writer can take them; no image is held on these paths.
+        if let ImageFormat::Jpeg = self.read {
+            let notes = match self.write {
+                ImageFormat::Png => {
+                    let mut rows = PngRows::new(output);
+                    read_jpeg_rows(&mut input, &mut rows)
+                }
+                ImageFormat::Bmp => {
+                    let mut rows = BmpRows::new(output);
+                    read_jpeg_rows(&mut input, &mut rows)
+                }
+                ImageFormat::Jpeg => {
+                    let mut rows = JpegRows::new(output, quality);
+                    read_jpeg_rows(&mut input, &mut rows)
+                }
+            };
+            let notes = match notes {
+                Ok(notes) => notes,
+                Err(RowsError::Png(error)) => return Err(error.into()),
+                Err(RowsError::Io(error)) => return Err(error.into()),
+            };
+            report_jpeg_notes(notes, context);
+            return Ok(());
+        }
+        if let ImageFormat::Jpeg = self.write {
+            let mut rows = JpegRows::new(output, quality);
+            return match self.read {
+                ImageFormat::Png => {
+                    let notes = match read_png_rows(&mut input, &mut rows) {
+                        Ok(notes) => notes,
+                        Err(RowsError::Png(error)) => return Err(error.into()),
+                        Err(RowsError::Io(error)) => return Err(error.into()),
+                    };
+                    report_png_notes(notes, self.name, context);
+                    Ok(())
+                }
+                ImageFormat::Bmp => match read_bmp_rows(&mut input, &mut rows) {
+                    Ok(()) => Ok(()),
+                    Err(BmpRowsError::Bmp(error)) => Err(error.into()),
+                    Err(BmpRowsError::Io(error)) => Err(error.into()),
+                },
+                ImageFormat::Jpeg => unreachable!("handled above"),
+            };
+        }
         if matches!(
             (self.read, self.write),
             (ImageFormat::Png, ImageFormat::Bmp)
@@ -110,6 +160,11 @@ fn read(
             input.read_to_end(&mut bytes)?;
             Ok(read_bmp(&bytes)?)
         }
+        ImageFormat::Jpeg => {
+            let (image, notes) = read_jpeg_from(input)?;
+            report_jpeg_notes(notes, context);
+            Ok(image)
+        }
     }
 }
 
@@ -127,12 +182,38 @@ fn report_png_notes(notes: PngNotes, name: &'static str, context: &mut Context<'
     }
 }
 
+fn report_jpeg_notes(notes: JpegNotes, context: &mut Context<'_>) {
+    for name in notes.dropped {
+        context.warning(format!("{name} segment dropped (metadata is not carried)"));
+    }
+    if let Some(orientation) = notes.orientation {
+        context.warning(format!(
+            "Exif orientation {orientation} is not applied: the pixels are as stored, and a viewer would rotate them"
+        ));
+    }
+}
+
 fn write(format: ImageFormat, image: &Image, output: &mut dyn Write) -> Result<(), ConvertError> {
     match format {
         ImageFormat::Png => write_png(image, output)?,
         ImageFormat::Bmp => write_bmp(image, output)?,
+        ImageFormat::Jpeg => write_jpeg(image, output, DEFAULT_QUALITY)?,
     }
     Ok(())
+}
+
+impl From<JpegError> for ConvertError {
+    fn from(error: JpegError) -> Self {
+        let unsupported = error.0.contains("not supported");
+        if unsupported {
+            ConvertError::Unsupported(error.0)
+        } else {
+            ConvertError::Malformed {
+                location: Location::default(),
+                message: error.0,
+            }
+        }
+    }
 }
 
 impl From<PngError> for ConvertError {
@@ -176,6 +257,45 @@ pub static BMP_TO_PNG: ImagePair = ImagePair {
     read: ImageFormat::Bmp,
     write: ImageFormat::Png,
     fidelity: Fidelity::Lossless,
+};
+
+const JPEG_LOSS: &str = "JPEG is lossy: the image is re-encoded at the quality given (85 by default, 4:2:0 chroma below 90), alpha is flattened onto white, and metadata is dropped";
+const JPEG_DECODE_NOTE: &str = "pixels as decoded (Exif orientation is reported, not applied); metadata (Exif, ICC, comments) is dropped";
+
+pub static JPEG_TO_PNG: ImagePair = ImagePair {
+    name: "jpeg-to-png",
+    from: &formats::JPEG,
+    to: &formats::PNG,
+    read: ImageFormat::Jpeg,
+    write: ImageFormat::Png,
+    fidelity: Fidelity::Conditional(JPEG_DECODE_NOTE),
+};
+
+pub static JPEG_TO_BMP: ImagePair = ImagePair {
+    name: "jpeg-to-bmp",
+    from: &formats::JPEG,
+    to: &formats::BMP,
+    read: ImageFormat::Jpeg,
+    write: ImageFormat::Bmp,
+    fidelity: Fidelity::Conditional(JPEG_DECODE_NOTE),
+};
+
+pub static PNG_TO_JPEG: ImagePair = ImagePair {
+    name: "png-to-jpeg",
+    from: &formats::PNG,
+    to: &formats::JPEG,
+    read: ImageFormat::Png,
+    write: ImageFormat::Jpeg,
+    fidelity: Fidelity::Lossy(JPEG_LOSS),
+};
+
+pub static BMP_TO_JPEG: ImagePair = ImagePair {
+    name: "bmp-to-jpeg",
+    from: &formats::BMP,
+    to: &formats::JPEG,
+    read: ImageFormat::Bmp,
+    write: ImageFormat::Jpeg,
+    fidelity: Fidelity::Lossy(JPEG_LOSS),
 };
 
 #[cfg(test)]
