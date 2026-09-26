@@ -6,39 +6,30 @@ section under a version heading.
 
 ## [Unreleased]
 
-The photo decode line passes: `png -> bmp` streams rows into a
-top-down BMP with no image held, and the inflater and checksums take
-their shape from what the fastest safe decoders do.
-
-### Added
-
-- `bmp -> png` streams: `read_bmp_rows` decodes rows from the stream into `PngRows`, a `RowSink` that filters and deflates each row as it comes. A top-down BMP is never held (4 MB peak on a 418 MB image, where the crates hold 908); a bottom-up one, stored last row first, is held once as file bytes and handed over from the end (66 MB on a 61 MB image, was 125; the crates 164).
-- `png -> bmp` streams: `read_png_rows` hands each unfiltered row to a `RowSink`, and `BmpRows` writes them as a top-down BMP (a negative height, which every common reader takes) in one-megabyte pieces, so the conversion holds no image: 5 MB peak on a 61 MB image where it held 65, and 438 MB/s of decoded pixels against the `png` and `image` crates' 412 on the photo shape (the flat shape 1011 against 714). An interlaced PNG is decoded whole first and handed over row by row. Every pass line of the pair now passes.
-
-### Changed
-
-- The `png-bmp` benchmark runs its lines on a stock photograph when one is placed at `bench/data/stock.png` (marked `[stock]`, never committed); on an 11220 by 9775 RGBA photograph the decode runs at 458 against the crates' 413 MB/s holding 5.5 MB against 424, and the encode at 233 against 176 MB/s writing 29 MB against 44.
-- The inflater decodes up to three table entries, nine literals, from one refill: the second and third lookups take their bits from the unchanged buffer through the code lengths of the entries before them, so one consume and refill serve the group and the fourth lookup starts the next (fdeflate's loop shape, in safe code like theirs).
-- CRC-32 runs as four interleaved streams joined by one zero-carry operator built per call; Adler-32 sums even and odd byte lanes over 64-byte blocks and weights them with two 64-bit multiplies per block. Both are about half their earlier cost on the photo's 33 MB of chunks and 61 MB of rows.
-- The Sub unfilter loads and stores each pixel pair as one word.
+## [0.19.0] - 2026-09-26
 
 The image category opens: an 8-bit pixel hub, PNG in and out, BMP in
-and out, and a streaming inflater that decodes as the file arrives.
+and out, both directions streaming rows so no image is held, on a
+resumable inflater and a faster CRC-32 and deflate. Every line of the
+`png-bmp` pair passes against the `png` and `image` crates, on the
+generated shapes and on a stock photograph.
 
 ### Added
 
-- The image hub (`src/image`): an 8-bit pixel buffer in gray, gray+alpha, RGB, or RGBA that every raster format reads into and writes from.
-- PNG (`src/io/png`): a reader for every bit depth, color type, palette, transparency key, and interlace the specification allows, fed in pieces so memory is the image plus a few hundred kilobytes; a writer of 8-bit images with per-row adaptive filters and deflated IDAT chunks. `png -> bmp` (conditional: 16-bit samples become 8-bit, gray becomes RGB, metadata dropped) and `bmp -> png` (lossless). Map in `DOCS/formats/png.md`; oracles in `tests/png_suite.rs` (116 PngSuite images against Pillow's pixels, 14 corrupt images refused) and `tests/png_bmp.rs`.
-- BMP (`src/io/bmp`): a reader for 1-, 4-, 8-, 16-, 24-, and 32-bit files with palettes, channel masks, top-down rows, and V4 and V5 headers (RLE is refused), and a writer of 24-bit BGR or 32-bit BGRA with an alpha mask. Map in `DOCS/formats/bmp.md`.
-- Benchmark pair `png-bmp` against the `png` and `image` crates on 4000 by 4000 RGBA images in two shapes (a gradient with independent per-channel noise, and flat blocks), with the png crate's fast level as context.
+- The image hub (`src/image`): an 8-bit pixel buffer in gray, gray+alpha, RGB, or RGBA that every raster format reads into and writes from, and `RowSink`, the row-at-a-time contract a reader hands rows to and a writer takes them from.
+- PNG (`src/io/png`): a reader for every bit depth, color type, palette, transparency key, and interlace the specification allows, fed in pieces as the file arrives; a writer of 8-bit images with per-row adaptive filters and deflated IDAT chunks; `read_png_rows` and `PngRows` as the streaming forms of both. Map in `DOCS/formats/png.md`; oracles in `tests/png_suite.rs` (116 PngSuite images against Pillow's pixels, 14 corrupt images refused) and `tests/png_bmp.rs`.
+- BMP (`src/io/bmp`): a reader for 1-, 4-, 8-, 16-, 24-, and 32-bit files with palettes, channel masks, top-down rows, and V4 and V5 headers (RLE is refused), a writer of 24-bit BGR or 32-bit BGRA with an alpha mask, and `read_bmp_rows` and `BmpRows` as their streaming forms. Map in `DOCS/formats/bmp.md`.
+- `png -> bmp` (conditional: 16-bit samples become 8-bit, gray becomes RGB, metadata dropped) streams rows from the unfilter into a top-down BMP (a negative height, which every common reader takes), holding no image: 5 MB peak on a 61 MB image, 438 MB/s of decoded pixels against the crates' 412 on the photo shape and 1011 against 714 on the flat one. An interlaced PNG is decoded whole first and handed over row by row.
+- `bmp -> png` (lossless) streams rows from the BMP reader into the PNG writer, which needs only the row above. A top-down BMP is never held (4 MB peak on a 418 MB image, where the crates hold 887); a bottom-up one, stored last row first, is held once as file bytes and handed over from the end (65 MB on a 61 MB image against the crates' 160). 150 MB/s of input plus pixels against 145 on the photo, 996 against 619 on the flat image, writing a smaller file than the crates on the flat image and a 4% larger one on the incompressible photo.
+- Benchmark pair `png-bmp` against the `png` and `image` crates on 4000 by 4000 RGBA images in two shapes (a gradient with independent per-channel noise, and flat blocks), the png crate's fast level as context, and `[stock]` rows on a photograph placed at `bench/data/stock.png` (never committed): on an 11220 by 9775 RGBA photo, decode 458 against 413 MB/s at 5.5 MB against 424, encode 233 against 176 MB/s writing 29 MB against 44. The benchmark standard's README defines the `[stock]` marker.
 - The binary size budget is raised 1.9 -> 2.0 MB and the WebAssembly budget 0.9 -> 1.0 MB for the image category (the PNG and BMP codecs, the streaming inflater, and the sixteen CRC tables).
 
 ### Changed
 
-- The inflater (`src/io/deflate/inflate.rs`) is resumable: it takes input in pieces of any size, hands output back in slabs, and keeps a 32 KiB window, so the PNG reader (and later the ZIP readers) never hold a compressed stream whole. Its literal path reads a 12-bit table that packs up to three short literal codes per entry, looks the next entry up before refilling, and writes through an index into a reused slab; the one-shot `inflate` is the same code and decodes the benchmark's 61 MB of pixels in 69 ms where it took 310.
-- CRC-32 (`src/io/zip/crc32.rs`) folds sixteen bytes per step over sixteen tables and checks a long input as two interleaved halves joined with zlib's combine, five times faster than the byte loop; every ZIP-based reader and writer gets it.
+- The inflater (`src/io/deflate/inflate.rs`) is resumable: it takes input in pieces of any size, hands output back in slabs, and keeps a 32 KiB window, so the PNG reader (and later the ZIP readers) never hold a compressed stream whole. Its literal path reads a 12-bit table that packs up to three short literal codes per entry and decodes up to three entries, nine literals, from one refill, the second and third lookups taking their bits from the unchanged buffer (fdeflate's loop shape, in safe code like theirs); output goes through an index into a reused slab. The one-shot `inflate` is the same code and decodes the benchmark's 61 MB of pixels in 49 ms where it took 310.
+- CRC-32 (`src/io/zip/crc32.rs`) folds sixteen bytes per step over sixteen tables as four interleaved streams joined by one zero-carry operator built per call (zlib's combine), about six times faster than the byte loop; every ZIP-based reader and writer gets it. The tables are statics, since a runtime index on a `const` copies it onto the stack in unoptimized builds and overflowed the Windows main thread.
 - Deflate (`src/io/deflate/compress.rs`): the hash chain is a ring of 16-bit back-distances (in cache where the old position array was not), length and distance codes come from tables instead of a scan, the interior of a maximal match is not re-indexed, and the chain budget drops to a twelfth while recent matches have been short (noise, where a long walk finds nothing) and comes back as they lengthen. The 8 MiB words benchmark keeps its 14.2% ratio and runs 116 -> 93 ms; a noisy 61 MB image encodes in 0.73 s where it took 2.35.
-- Adler-32 runs in 32-byte blocks with lane sums.
+- Adler-32 sums even and odd byte lanes over 64-byte blocks and weights them with two 64-bit multiplies per block; the Sub unfilter runs two pixels per word.
 
 ## [0.18.0] - 2026-09-26
 
