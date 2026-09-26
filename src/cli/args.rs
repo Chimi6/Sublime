@@ -1,12 +1,14 @@
 //! Hand-written argument parser. Five commands, a handful of flags.
 
 use std::fmt;
+use std::path::Path;
 
 pub const HELP: &str = "\
 sublime: universal efficient file conversion
 
 USAGE
   sublime convert <input> [output] [--to <format>] [--from <format>] [--strict] [--via <format>] [--sheet <name|number>]
+  sublime convert <inputs...> [out-dir/] --to <format> [--out-dir <dir>] [-r] [--jobs <n>] [--dry-run]
   sublime check <from> <to> [--strict]
   sublime formats
   sublime paths [--markdown]
@@ -24,6 +26,10 @@ COMMANDS
 FLAGS
   --strict            Refuse any path that is lossy or conditional.
   --sheet <name|n>    The worksheet to read from a workbook (a name or a 1-based number; the first when absent), or the name to give the sheet written.
+  --out-dir <dir>     Batch: write outputs into this directory (created if needed), keeping each input's name with the new extension. A trailing positional ending in / does the same. Without it, outputs go beside their inputs.
+  -r, --recursive     Batch: descend into directories given as inputs, mirroring their structure under --out-dir.
+  --jobs <n>          Batch: files converted at once (default: the CPU count).
+  --dry-run           Batch: list what would be written and how, without converting.
   --via <format>      Force the path through a format.
   -q                  Errors only.
   -v                  Steps and timings.
@@ -76,8 +82,15 @@ pub struct GlobalArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConvertArgs {
-    pub input: String,
+    /// Files, directories, or glob patterns; one file may be `-` for stdin.
+    pub inputs: Vec<String>,
+    /// The output file, when exactly one input converts to one file.
     pub output: Option<String>,
+    /// The directory batch outputs go into; beside their inputs when absent.
+    pub out_dir: Option<String>,
+    pub recursive: bool,
+    pub jobs: Option<usize>,
+    pub dry_run: bool,
     pub to: Option<String>,
     pub from: Option<String>,
     pub strict: bool,
@@ -261,6 +274,10 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
     let mut from: Option<String> = None;
     let mut via: Option<String> = None;
     let mut sheet: Option<String> = None;
+    let mut out_dir: Option<String> = None;
+    let mut jobs: Option<usize> = None;
+    let mut recursive = false;
+    let mut dry_run = false;
     let mut strict = false;
     let mut iterator = rest.into_iter();
     while let Some(arg) = iterator.next() {
@@ -269,23 +286,51 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
             "--from" => from = Some(take_value(&mut iterator, "--from")?),
             "--via" => via = Some(take_value(&mut iterator, "--via")?),
             "--sheet" => sheet = Some(take_value(&mut iterator, "--sheet")?),
+            "--out-dir" => out_dir = Some(take_value(&mut iterator, "--out-dir")?),
+            "--jobs" => {
+                let value = take_value(&mut iterator, "--jobs")?;
+                let count = value.parse::<usize>().ok().filter(|count| *count > 0);
+                match count {
+                    Some(count) => jobs = Some(count),
+                    None => {
+                        return Err(ArgsError::InvalidValue {
+                            flag: "--jobs".to_string(),
+                            value,
+                        });
+                    }
+                }
+            }
+            "-r" | "--recursive" => recursive = true,
+            "--dry-run" => dry_run = true,
             "--strict" => strict = true,
             other if is_flag(other) => return Err(ArgsError::UnknownFlag(other.to_string())),
             _ => positionals.push(arg),
         }
     }
-    if positionals.len() > 2 {
-        return Err(ArgsError::TooManyPositionals(positionals[2].clone()));
+    if positionals.is_empty() {
+        return Err(ArgsError::MissingPositional("input"));
     }
-    let mut positionals = positionals.into_iter();
-    let input = match positionals.next() {
-        Some(input) => input,
-        None => return Err(ArgsError::MissingPositional("input")),
-    };
-    let output = positionals.next();
+    // `a.csv b.csv out/`: a trailing directory is the output directory.
+    let trailing_is_directory = positionals.len() >= 2
+        && positionals.last().is_some_and(|last| {
+            last.ends_with('/') || last.ends_with('\\') || Path::new(last).is_dir()
+        });
+    let mut output = None;
+    if trailing_is_directory {
+        let last = positionals.pop().unwrap_or_default();
+        if out_dir.is_none() {
+            out_dir = Some(last);
+        }
+    } else if positionals.len() == 2 && out_dir.is_none() {
+        output = positionals.pop();
+    }
     Ok(ConvertArgs {
-        input,
+        inputs: positionals,
         output,
+        out_dir,
+        recursive,
+        jobs,
+        dry_run,
         to,
         from,
         strict,
@@ -427,7 +472,7 @@ mod tests {
         .unwrap();
         match parsed.command {
             Command::Convert(args) => {
-                assert_eq!(args.input, "in.csv");
+                assert_eq!(args.inputs, vec!["in.csv".to_string()]);
                 assert_eq!(args.output.as_deref(), Some("out.json"));
                 assert_eq!(args.to.as_deref(), Some("json"));
                 assert_eq!(args.from.as_deref(), Some("csv"));
@@ -444,7 +489,7 @@ mod tests {
         let parsed = parse_strs(&["convert", "-", "--to", "json"]).unwrap();
         match parsed.command {
             Command::Convert(args) => {
-                assert_eq!(args.input, "-");
+                assert_eq!(args.inputs, vec!["-".to_string()]);
                 assert!(args.output.is_none());
             }
             other => panic!("wrong command {other:?}"),
@@ -458,9 +503,29 @@ mod tests {
     }
 
     #[test]
-    fn convert_rejects_third_positional() {
-        let error = parse_strs(&["convert", "a", "b", "c"]).unwrap_err();
-        assert_eq!(error, ArgsError::TooManyPositionals("c".to_string()));
+    fn convert_takes_several_inputs_and_a_trailing_directory() {
+        let parsed = parse_strs(&["convert", "a.csv", "b.csv", "c.csv", "--to", "json"]).unwrap();
+        match parsed.command {
+            Command::Convert(args) => {
+                assert_eq!(args.inputs.len(), 3);
+                assert!(args.output.is_none());
+                assert!(args.out_dir.is_none());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let parsed = parse_strs(&[
+            "convert", "a.csv", "b.csv", "out/", "--to", "json", "-r", "--jobs", "2",
+        ])
+        .unwrap();
+        match parsed.command {
+            Command::Convert(args) => {
+                assert_eq!(args.inputs.len(), 2);
+                assert_eq!(args.out_dir.as_deref(), Some("out/"));
+                assert!(args.recursive);
+                assert_eq!(args.jobs, Some(2));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
