@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use super::package::{Entry, Object, ObjectMessage, Package, PackageError, Stream};
 use super::schema::SCHEMA;
 use crate::document::{
-    Block, Document, Id, Inline, ListItem, ListLabel, NumberKind, Paragraph, RunProperties,
+    Block, Document, Id, Inline, ListItem, ListLabel, MediaId, NumberKind, Paragraph, RunProperties,
 };
 use crate::io::protobuf::schema::MessageRef;
 use crate::io::protobuf::tree::{Chain, NONE, Node, Tree, TreeError};
@@ -28,6 +28,8 @@ const CHARACTER_STYLE: u32 = 2021;
 const LIST_STYLE: u32 = 2023;
 const DRAWABLE_ATTACHMENT: u32 = 2003;
 const HYPERLINK_FIELD: u32 = 2032;
+const IMAGE_ARCHIVE: u32 = 3005;
+const PACKAGE_METADATA: u32 = 11006;
 /// The object-replacement character that stands for an anchored drawable
 /// (a table here) in the body text.
 const ATTACHMENT: char = '\u{FFFC}';
@@ -155,6 +157,16 @@ fn rebuild_body(
         reuse_table(package, table, mark)?;
         anchors.push((mark.offset, table.attach_id));
     }
+    // Each model image reuses one template image (its bytes, size, and inline
+    // anchor), up to the number the template carries; extras are flattened.
+    let template_images = collect_template_images(package);
+    for (mark, image) in body.images.iter().zip(&template_images) {
+        let bytes = document.media[mark.media].bytes.clone();
+        reuse_image(package, image, mark, &bytes)?;
+        anchors.push((mark.offset, image.attach_id));
+    }
+    // Attachments anchor by ascending character offset in one table.
+    anchors.sort_by_key(|(offset, _)| *offset);
 
     // Identifiers are unique across the whole package, so a new hyperlink
     // object takes the next id after the highest any stream already uses.
@@ -412,6 +424,18 @@ fn object_message(package: &Package, id: u64) -> Option<(&Tree, u32)> {
     None
 }
 
+/// The object with `id` in whatever stream holds it.
+fn package_object(package: &Package, id: u64) -> Option<&Object> {
+    for entry in &package.entries {
+        if let Entry::Stream(stream) = entry
+            && let Some(object) = stream.objects.iter().find(|object| object.identifier == id)
+        {
+            return Some(object);
+        }
+    }
+    None
+}
+
 /// A reference field of an object anywhere in the package.
 fn object_reference(package: &Package, id: u64, field: &str) -> Option<u64> {
     let (tree, first) = object_message(package, id)?;
@@ -588,6 +612,490 @@ fn update_model_dims(
         }
     }
     Err(malformed("table model to rewrite is missing"))
+}
+
+/// An image the template carries, by the identifiers a rewrite touches: the
+/// drawable attachment the body anchors, the image archive whose size and
+/// bytes change, and the data references naming its full and thumbnail files.
+struct TemplateImage {
+    attach_id: u64,
+    image_id: u64,
+    data_id: u64,
+    thumb_id: Option<u64>,
+}
+
+/// Every image the template carries, found from its drawable attachments (the
+/// ones whose drawable is an image, not a table).
+fn collect_template_images(package: &Package) -> Vec<TemplateImage> {
+    let mut images = Vec::new();
+    for entry in &package.entries {
+        let Entry::Stream(stream) = entry else {
+            continue;
+        };
+        for object in &stream.objects {
+            if first_type(object) == Some(DRAWABLE_ATTACHMENT)
+                && let Some(image) = traverse_template_image(package, object.identifier)
+            {
+                images.push(image);
+            }
+        }
+    }
+    images
+}
+
+/// Follows a drawable attachment to an image and its data references, or
+/// `None` if the attachment's drawable is not an image.
+fn traverse_template_image(package: &Package, attach_id: u64) -> Option<TemplateImage> {
+    let image_id = object_reference(package, attach_id, "drawable")?;
+    let image_object = package_object(package, image_id)?;
+    if first_type(image_object) != Some(IMAGE_ARCHIVE) {
+        return None;
+    }
+    let (tree, image_first) = object_message(package, image_id)?;
+    let data = message_field(tree, image_first, "data")?;
+    let data_id = match field_value(tree, data, "identifier")? {
+        Node::Uint(id) => id,
+        _ => return None,
+    };
+    let thumb_id = message_field(tree, image_first, "thumbnailData")
+        .and_then(|thumb| field_value(tree, thumb, "identifier"))
+        .and_then(|value| match value {
+            Node::Uint(id) => Some(id),
+            _ => None,
+        });
+    Some(TemplateImage {
+        attach_id,
+        image_id,
+        data_id,
+        thumb_id,
+    })
+}
+
+/// Rewrites the template image to carry the model image: its bytes replace the
+/// template's data files, its size replaces the image archive's, and the
+/// attachment is made inline so it anchors at the body's `U+FFFC`.
+fn reuse_image(
+    package: &mut Package,
+    image: &TemplateImage,
+    mark: &ImageMark,
+    bytes: &[u8],
+) -> Result<(), PackageError> {
+    // The display size: the model's if it gave one, else the image's own
+    // pixels fitted to the body width; the natural size is the pixel size.
+    let pixels = image_dimensions(bytes);
+    let (width, height) = display_size(mark, pixels);
+    let (natural_w, natural_h) = pixels.map_or((width, height), |(w, h)| (w as f32, h as f32));
+
+    rewrite_object_with(package, image.image_id, |tree, old_first| {
+        rebuild_image(tree, old_first, width, height, natural_w, natural_h, mark)
+    })?;
+    // Make the attachment inline: an inline drawable carries no offsets (Pages
+    // and the reader both read the missing offset as "in the text line").
+    rewrite_object_with(package, image.attach_id, |tree, old_first| {
+        rebuild_inline_attachment(tree, old_first)
+    })?;
+
+    // Replace the bytes of the full and thumbnail data files with the model
+    // image, keeping the template's file names and data-reference ids. The
+    // digest must be recomputed: Pages keys its asset cache by it, so a stale
+    // digest makes it render the template's original image, not the new one.
+    let digest = sha1(bytes);
+    for data_id in [Some(image.data_id), image.thumb_id].into_iter().flatten() {
+        if let Some(name) = data_file_name(package, data_id) {
+            replace_data_file(package, &name, bytes);
+        }
+        update_data_digest(package, data_id, &digest)?;
+    }
+    Ok(())
+}
+
+/// Recomputes the digest of a data reference in the package metadata, so Pages
+/// treats the replaced bytes as new rather than serving a cached original.
+fn update_data_digest(
+    package: &mut Package,
+    data_id: u64,
+    digest: &[u8],
+) -> Result<(), PackageError> {
+    let Some(metadata) = package
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Stream(stream) => Some(stream),
+            _ => None,
+        })
+        .flat_map(|stream| &stream.objects)
+        .find(|object| first_type(object) == Some(PACKAGE_METADATA))
+    else {
+        return Ok(());
+    };
+    let metadata_id = metadata.identifier;
+    rewrite_object_with(package, metadata_id, |tree, old_first| {
+        rebuild_datas_digest(tree, old_first, data_id, digest)
+    })
+}
+
+/// Rebuilds the package metadata, replacing the digest of the one data entry
+/// whose identifier matches, keeping every other field and entry as they were.
+fn rebuild_datas_digest(
+    tree: &mut Tree,
+    old_first: u32,
+    data_id: u64,
+    digest: &[u8],
+) -> Result<u32, PackageError> {
+    let metadata = message_ref("TSP.PackageMetadata")?;
+    let data_info = message_ref("TSP.DataInfo")?;
+    let datas_number = metadata
+        .field_named("datas")
+        .ok_or_else(|| malformed("metadata has no datas field"))?
+        .number;
+    let fields: Vec<(u32, Node)> = tree
+        .chain(old_first)
+        .map(|(_, entry)| (entry.number, entry.value))
+        .collect();
+    let digest_span = tree.push_bytes(digest).map_err(tree_error)?;
+
+    let mut items: Vec<(u32, Node)> = Vec::new();
+    for (number, value) in fields {
+        if number == datas_number
+            && let Node::Message(datas_first) = value
+            && field_value(tree, datas_first, "identifier") == Some(Node::Uint(data_id))
+        {
+            let new_first = rebuild_message(
+                tree,
+                data_info,
+                datas_first,
+                vec![("digest", Node::Bytes(digest_span))],
+            )?;
+            items.push((number, Node::Message(new_first)));
+            continue;
+        }
+        items.push((number, value));
+    }
+
+    let mut chain = Chain::new();
+    for (number, value) in items {
+        let slot = metadata
+            .slot(number)
+            .ok_or_else(|| malformed("metadata field without a schema slot"))?;
+        let field = metadata
+            .field_at(slot)
+            .ok_or_else(|| malformed("metadata field slot out of range"))?;
+        tree.push_known(&mut chain, metadata, slot, field, number, value)
+            .map_err(tree_error)?;
+    }
+    Ok(chain.first)
+}
+
+/// The SHA-1 digest of `data`, as Pages stores it for a data reference.
+fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    let mut message = data.to_vec();
+    message.push(0x80);
+    while message.len() % 64 != 56 {
+        message.push(0);
+    }
+    message.extend_from_slice(&bit_len.to_be_bytes());
+    let mut words = [0u32; 80];
+    for block in message.chunks_exact(64) {
+        for (index, word) in words.iter_mut().take(16).enumerate() {
+            let start = index * 4;
+            *word = u32::from_be_bytes([
+                block[start],
+                block[start + 1],
+                block[start + 2],
+                block[start + 3],
+            ]);
+        }
+        for index in 16..80 {
+            words[index] =
+                (words[index - 3] ^ words[index - 8] ^ words[index - 14] ^ words[index - 16])
+                    .rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = h;
+        for (index, word) in words.iter().enumerate() {
+            let (f, k) = match index {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*word);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+    let mut digest = [0u8; 20];
+    for (index, word) in h.iter().enumerate() {
+        digest[index * 4..index * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    }
+    digest
+}
+
+/// The display size for a reused image: the model's, when it carried one;
+/// otherwise the pixel size scaled to fit the body text width.
+fn display_size(mark: &ImageMark, pixels: Option<(u32, u32)>) -> (f32, f32) {
+    if mark.width > 0.0 && mark.height > 0.0 {
+        return (mark.width, mark.height);
+    }
+    match pixels {
+        Some((w, h)) if w > 0 && h > 0 => {
+            let (w, h) = (w as f32, h as f32);
+            const MAX_WIDTH: f32 = 460.0;
+            if w > MAX_WIDTH {
+                (MAX_WIDTH, h * MAX_WIDTH / w)
+            } else {
+                (w, h)
+            }
+        }
+        _ => (mark.width.max(1.0), mark.height.max(1.0)),
+    }
+}
+
+/// Rebuilds an image archive, replacing its geometry size, original size, and
+/// natural size (and its accessibility description), keeping everything else —
+/// the style, captions, parent, data references, and traced path.
+#[allow(clippy::too_many_arguments)]
+fn rebuild_image(
+    tree: &mut Tree,
+    old_first: u32,
+    width: f32,
+    height: f32,
+    natural_w: f32,
+    natural_h: f32,
+    mark: &ImageMark,
+) -> Result<u32, PackageError> {
+    let image = message_ref("TSD.ImageArchive")?;
+    let super_first =
+        message_field(tree, old_first, "super").ok_or_else(|| malformed("image has no super"))?;
+    let new_super = rebuild_image_super(tree, super_first, width, height, mark)?;
+    let original = build_size(tree, width, height)?;
+    let natural = build_size(tree, natural_w, natural_h)?;
+    let overrides = vec![
+        ("super", Node::Message(new_super)),
+        ("originalSize", Node::Message(original)),
+        ("naturalSize", Node::Message(natural)),
+    ];
+    rebuild_message(tree, image, old_first, overrides)
+}
+
+/// Rebuilds the image's drawable base, replacing the geometry's size (so the
+/// frame matches the image) and the accessibility description.
+fn rebuild_image_super(
+    tree: &mut Tree,
+    super_first: u32,
+    width: f32,
+    height: f32,
+    mark: &ImageMark,
+) -> Result<u32, PackageError> {
+    let drawable = message_ref("TSD.DrawableArchive")?;
+    let geometry_first = message_field(tree, super_first, "geometry")
+        .ok_or_else(|| malformed("image drawable has no geometry"))?;
+    let new_geometry = rebuild_geometry(tree, geometry_first, width, height)?;
+    let mut overrides = vec![("geometry", Node::Message(new_geometry))];
+    if let Some(description) = &mark.description {
+        let span = tree
+            .push_bytes(description.as_bytes())
+            .map_err(tree_error)?;
+        overrides.push(("accessibility_description", Node::Str(span)));
+    }
+    rebuild_message(tree, drawable, super_first, overrides)
+}
+
+/// Rebuilds a geometry, replacing only its size.
+fn rebuild_geometry(
+    tree: &mut Tree,
+    geometry_first: u32,
+    width: f32,
+    height: f32,
+) -> Result<u32, PackageError> {
+    let geometry = message_ref("TSD.GeometryArchive")?;
+    let size = build_size(tree, width, height)?;
+    rebuild_message(
+        tree,
+        geometry,
+        geometry_first,
+        vec![("size", Node::Message(size))],
+    )
+}
+
+/// A `TSP.Size` message.
+fn build_size(tree: &mut Tree, width: f32, height: f32) -> Result<u32, PackageError> {
+    let size = message_ref("TSP.Size")?;
+    let mut chain = Chain::new();
+    push_field(tree, &mut chain, size, "width", Node::Float(width))?;
+    push_field(tree, &mut chain, size, "height", Node::Float(height))?;
+    Ok(chain.first)
+}
+
+/// Rebuilds a drawable attachment as inline: only the drawable reference, no
+/// wrap offsets, so the image sits in the text line at its `U+FFFC`.
+fn rebuild_inline_attachment(tree: &mut Tree, old_first: u32) -> Result<u32, PackageError> {
+    let attachment = message_ref("TSWP.DrawableAttachmentArchive")?;
+    let drawable = field_value(tree, old_first, "drawable")
+        .ok_or_else(|| malformed("attachment has no drawable"))?;
+    let mut chain = Chain::new();
+    push_field(tree, &mut chain, attachment, "drawable", drawable)?;
+    Ok(chain.first)
+}
+
+/// Rebuilds a message chain, keeping every field except those named in
+/// `overrides`, which are appended with the given nodes (replacing the kept
+/// ones). Nodes referencing nested chains must be built before the call.
+fn rebuild_message(
+    tree: &mut Tree,
+    message: MessageRef,
+    old_first: u32,
+    overrides: Vec<(&str, Node)>,
+) -> Result<u32, PackageError> {
+    let mut kept: Vec<(u32, Node)> = Vec::new();
+    for (_, entry) in tree.chain(old_first) {
+        let name = tree.field(entry).map(|field| field.name);
+        if name.is_some_and(|name| overrides.iter().any(|(over, _)| *over == name)) {
+            continue;
+        }
+        kept.push((entry.number, entry.value));
+    }
+    let mut chain = Chain::new();
+    for (number, value) in kept {
+        let slot = message
+            .slot(number)
+            .ok_or_else(|| malformed("field without a schema slot"))?;
+        let field = message
+            .field_at(slot)
+            .ok_or_else(|| malformed("field slot out of range"))?;
+        tree.push_known(&mut chain, message, slot, field, number, value)
+            .map_err(tree_error)?;
+    }
+    for (name, node) in overrides {
+        push_field(tree, &mut chain, message, name, node)?;
+    }
+    Ok(chain.first)
+}
+
+/// Runs `builder` over the message chain of the object with `id`, passing the
+/// old chain start and storing the new one.
+fn rewrite_object_with(
+    package: &mut Package,
+    id: u64,
+    builder: impl FnOnce(&mut Tree, u32) -> Result<u32, PackageError>,
+) -> Result<(), PackageError> {
+    for entry in &mut package.entries {
+        if let Entry::Stream(stream) = entry
+            && let Some(position) = stream
+                .objects
+                .iter()
+                .position(|object| object.identifier == id)
+        {
+            let old_first = stream.objects[position].messages[0].first;
+            let new_first = builder(&mut stream.tree, old_first)?;
+            stream.objects[position].messages[0].first = new_first;
+            return Ok(());
+        }
+    }
+    Err(malformed("object to rewrite is missing"))
+}
+
+/// The `Data/` file name a data reference names, from the package metadata.
+fn data_file_name(package: &Package, data_id: u64) -> Option<String> {
+    for entry in &package.entries {
+        let Entry::Stream(stream) = entry else {
+            continue;
+        };
+        for object in &stream.objects {
+            if first_type(object) != Some(PACKAGE_METADATA) {
+                continue;
+            }
+            let first = object.messages.first()?.first;
+            for (_, field_entry) in stream.tree.chain(first) {
+                if stream.tree.field(field_entry).map(|field| field.name) == Some("datas")
+                    && let Node::Message(data_first) = field_entry.value
+                    && field_value(&stream.tree, data_first, "identifier")
+                        == Some(Node::Uint(data_id))
+                    && let Some(name) = str_field(&stream.tree, data_first, "file_name")
+                    && !name.is_empty()
+                {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Replaces the bytes of the `Data/<name>` file with the model image's.
+fn replace_data_file(package: &mut Package, name: &str, bytes: &[u8]) {
+    let path = format!("Data/{name}");
+    for entry in &mut package.entries {
+        if let Entry::File {
+            name: file_name,
+            bytes: file_bytes,
+        } = entry
+            && *file_name == path
+        {
+            *file_bytes = bytes.to_vec();
+            return;
+        }
+    }
+}
+
+/// The pixel width and height of a PNG or JPEG, read from its header.
+fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) && bytes.len() >= 24 {
+        let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
+        let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
+        return Some((width, height));
+    }
+    if bytes.starts_with(&[0xFF, 0xD8]) {
+        return jpeg_dimensions(bytes);
+    }
+    None
+}
+
+/// The pixel size of a JPEG, from its first start-of-frame marker.
+fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    let mut index = 2;
+    while index + 9 < bytes.len() {
+        if bytes[index] != 0xFF {
+            index += 1;
+            continue;
+        }
+        let marker = bytes[index + 1];
+        // Start-of-frame markers carry the size; skip the rest by their length.
+        let is_sof = matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF);
+        if is_sof {
+            let height = u16::from_be_bytes([bytes[index + 5], bytes[index + 6]]);
+            let width = u16::from_be_bytes([bytes[index + 7], bytes[index + 8]]);
+            return Some((u32::from(width), u32::from(height)));
+        }
+        // Standalone markers (no length) versus segments with a length word.
+        if matches!(marker, 0xD0..=0xD9 | 0x01) {
+            index += 2;
+        } else {
+            let length = u16::from_be_bytes([bytes[index + 2], bytes[index + 3]]) as usize;
+            index += 2 + length;
+        }
+    }
+    None
 }
 
 fn rebuild_model_dims(
@@ -1051,14 +1559,26 @@ struct TableMark {
     heights: Vec<f32>,
 }
 
+/// An inline image anchored at a `U+FFFC` character: its offset, the media
+/// index whose bytes it carries, its display size in points, and its
+/// accessibility description.
+struct ImageMark {
+    offset: u32,
+    media: MediaId,
+    width: f32,
+    height: f32,
+    description: Option<String>,
+}
+
 /// The document flattened for the storage: the text, the paragraph and
-/// character marks, and the anchored tables.
+/// character marks, and the anchored tables and images.
 struct Body {
     text: String,
     paragraphs: Vec<ParagraphMark>,
     char_marks: Vec<CharMark>,
     link_marks: Vec<LinkMark>,
     tables: Vec<TableMark>,
+    images: Vec<ImageMark>,
 }
 
 /// Flattens the document into one text string (paragraphs joined by `\n`)
@@ -1071,6 +1591,7 @@ fn flatten(document: &Document) -> Body {
         char_marks: Vec::new(),
         link_marks: Vec::new(),
         tables: Vec::new(),
+        images: Vec::new(),
         offset: 0,
         current: Format::default(),
         current_link: None,
@@ -1084,6 +1605,7 @@ fn flatten(document: &Document) -> Body {
         char_marks: walk.char_marks,
         link_marks: walk.link_marks,
         tables: walk.tables,
+        images: walk.images,
     }
 }
 
@@ -1093,6 +1615,7 @@ struct Walk {
     char_marks: Vec<CharMark>,
     link_marks: Vec<LinkMark>,
     tables: Vec<TableMark>,
+    images: Vec<ImageMark>,
     offset: u32,
     current: Format,
     current_link: Option<Id>,
@@ -1173,6 +1696,12 @@ impl Walk {
             if document.is_deleted(run) {
                 continue;
             }
+            if let Inline::Image(id) = run.content {
+                if let Some(image) = document.image(id) {
+                    self.image(image);
+                }
+                continue;
+            }
             let piece = match run.content {
                 Inline::Text(span) => document.text(span),
                 Inline::Tab => "\t",
@@ -1186,6 +1715,23 @@ impl Walk {
             self.text.push_str(piece);
             self.offset += utf16_len(piece);
         }
+    }
+
+    /// An inline image anchors as one `U+FFFC` run in the text flow (unlike a
+    /// table, it needs no paragraph of its own). Its bytes and size are
+    /// recorded for the rewrite that carries them into a reused template image.
+    fn image(&mut self, image: &crate::document::InlineImage) {
+        self.mark(Format::default());
+        self.link_mark(None);
+        self.images.push(ImageMark {
+            offset: self.offset,
+            media: image.media,
+            width: image.width,
+            height: image.height,
+            description: image.description.clone(),
+        });
+        self.text.push(ATTACHMENT);
+        self.offset += 1;
     }
 
     fn mark(&mut self, format: Format) {
@@ -1248,53 +1794,85 @@ fn run_format(document: &Document, run: &crate::document::Run) -> Format {
     }
 }
 
-/// Maps the template's registered bold and italic character styles to a
-/// formatting, so a run can point at one by reference. Only styles whose
-/// only formatting is bold and italic are taken, so a colored preset like
-/// "Red Bold" is not mistaken for plain bold.
+/// Maps bold and italic formatting to the character styles the template's own
+/// body already uses, so a run can point at one by reference. These are the
+/// theme's live emphasis variations — the styles Pages renders and the body
+/// references — not the stylesheet's like-named definitions, which open but do
+/// not render (the same live-versus-preset split as the list styles).
 fn collect_char_formats(package: &Package) -> HashMap<Format, u64> {
     let mut formats = HashMap::new();
+    let Some((tree, body_first)) = body_storage_message(package) else {
+        return formats;
+    };
+    let Some(table) = message_field(tree, body_first, "table_char_style") else {
+        return formats;
+    };
+    for object_id in table_object_refs(tree, table) {
+        if let Some(format) = char_format_of(package, object_id) {
+            formats.entry(format).or_insert(object_id);
+        }
+    }
+    formats
+}
+
+/// The bold/italic formatting a character style carries, or `None` if it is
+/// plain or carries any other visual override (a colored preset like "Red
+/// Bold" or a heading style is not the plain emphasis the writer reuses).
+fn char_format_of(package: &Package, id: u64) -> Option<Format> {
+    let (tree, first) = object_message(package, id)?;
+    let properties = message_field(tree, first, "char_properties")?;
+    let mut format = Format::default();
+    let mut has_other = false;
+    for (_, field_entry) in tree.chain(properties) {
+        match tree.field(field_entry).map(|field| field.name) {
+            Some("bold") => format.bold = matches!(field_entry.value, Node::Bool(true)),
+            Some("italic") => format.italic = matches!(field_entry.value, Node::Bool(true)),
+            // The bold or italic font name is the weighted face and is welcome;
+            // every other visual property disqualifies it.
+            Some("font_name")
+            | Some("compatibility_font_name_null")
+            | Some("tsd_fill_should_fill_text_container") => {}
+            Some(_) => has_other = true,
+            None => {}
+        }
+    }
+    (!format.is_plain() && !has_other).then_some(format)
+}
+
+/// The object identifiers an attribute table's entries point at, in order.
+fn table_object_refs(tree: &Tree, table_first: u32) -> Vec<u64> {
+    let mut refs = Vec::new();
+    for (_, entry) in tree.chain(table_first) {
+        if tree.field(entry).map(|field| field.name) == Some("entries")
+            && let Node::Message(entry_first) = entry.value
+            && let Some(Node::Reference(id)) = field_value(tree, entry_first, "object")
+        {
+            refs.push(id);
+        }
+    }
+    refs
+}
+
+/// The tree and first message chain of the document's body storage (what
+/// `DocumentArchive.body_storage` points at), read-only.
+fn body_storage_message(package: &Package) -> Option<(&Tree, u32)> {
     for entry in &package.entries {
         let Entry::Stream(stream) = entry else {
             continue;
         };
-        for object in &stream.objects {
-            let Some(message) = object.messages.first() else {
-                continue;
-            };
-            if message.message_type != CHARACTER_STYLE {
-                continue;
-            }
-            let Some(properties) = message_field(&stream.tree, message.first, "char_properties")
-            else {
-                continue;
-            };
-            let mut format = Format::default();
-            // Other overrides that would change a run's look beyond emphasis;
-            // a style that carries them is a preset ("Red Bold", a heading),
-            // not the plain bold or italic the writer wants to reuse.
-            let mut has_other = false;
-            for (_, field_entry) in stream.tree.chain(properties) {
-                match stream.tree.field(field_entry).map(|field| field.name) {
-                    Some("bold") => format.bold = matches!(field_entry.value, Node::Bool(true)),
-                    Some("italic") => format.italic = matches!(field_entry.value, Node::Bool(true)),
-                    // The bold or italic font name is the weighted face and is
-                    // welcome; every other visual property disqualifies it.
-                    Some("font_name")
-                    | Some("compatibility_font_name_null")
-                    | Some("tsd_fill_should_fill_text_container") => {}
-                    Some(_) => has_other = true,
-                    None => {}
-                }
-            }
-            // A char style whose only look is bold or italic: the theme's own
-            // emphasis style, which Pages renders when a run points at it.
-            if !format.is_plain() && !has_other {
-                formats.entry(format).or_insert(object.identifier);
-            }
+        let Some(object) = stream
+            .objects
+            .iter()
+            .find(|object| first_type(object) == Some(DOCUMENT_ARCHIVE))
+        else {
+            continue;
+        };
+        let first = object.messages.first()?.first;
+        if let Some(Node::Reference(body_id)) = field_value(&stream.tree, first, "body_storage") {
+            return object_message(package, body_id);
         }
     }
-    formats
+    None
 }
 
 fn utf16_len(text: &str) -> u32 {
@@ -1839,6 +2417,103 @@ mod tests {
             Some("https://example.com/path")
         );
         assert_eq!(link_of("Visit "), None);
+    }
+
+    #[test]
+    fn sha1_matches_known_vectors() {
+        let hex = |bytes: [u8; 20]| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        assert_eq!(hex(sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+        assert_eq!(
+            hex(sha1(b"abc")),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        assert_eq!(
+            hex(sha1(b"The quick brown fox jumps over the lazy dog")),
+            "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12"
+        );
+    }
+
+    /// A minimal PNG: a valid signature and `IHDR` (so `image_dimensions`
+    /// reads its size) with a stub `IEND`. The bytes are stored and read back
+    /// verbatim; they are never decoded by the writer or our reader.
+    fn fake_png(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        bytes.extend_from_slice(&13u32.to_be_bytes());
+        bytes.extend_from_slice(b"IHDR");
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(b"IEND");
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes
+    }
+
+    /// An inline image comes back as an image run carrying the same bytes and,
+    /// since the model gave no size, the picture's own pixel dimensions: the
+    /// writer reuses the template's image, swapping its bytes and size.
+    #[test]
+    fn writes_an_image() {
+        use crate::document::{Block, Inline, InlineImage, Media, Placement, Run};
+
+        let markdown = "Here is an image below.\n";
+        let mut builder = crate::document::from_events::DocumentBuilder::new();
+        crate::io::markdown::parse_into(markdown, Default::default(), &mut builder);
+        let mut document = builder.finish();
+
+        let png = fake_png(120, 60);
+        let media = document.media.len();
+        document.media.push(Media {
+            name: "test.png".into(),
+            bytes: png.clone(),
+        });
+        let image = document.push_image(InlineImage {
+            media,
+            width: 0.0,
+            height: 0.0,
+            description: Some("a test image".into()),
+            placement: Placement::Inline,
+        });
+        let Some(Block::Paragraph(paragraph)) = document.sections[0].blocks.first_mut() else {
+            panic!("a paragraph");
+        };
+        paragraph.runs.push(Run {
+            style: None,
+            properties: None,
+            link: None,
+            revision: None,
+            content: Inline::Image(image),
+        });
+
+        let bytes = write(&document).expect("write the package");
+        let package = Package::read_scope(&bytes, Scope::Document).expect("read it back");
+        let round = read_document(&package);
+
+        let image = round
+            .sections
+            .iter()
+            .flat_map(|section| &section.blocks)
+            .find_map(|block| match block {
+                Block::Paragraph(paragraph) => {
+                    paragraph.runs.iter().find_map(|run| match run.content {
+                        Inline::Image(id) => round.image(id),
+                        _ => None,
+                    })
+                }
+                Block::Table(_) => None,
+            })
+            .expect("an image run");
+        assert_eq!(
+            round.media[image.media].bytes, png,
+            "image bytes round-trip"
+        );
+        assert_eq!(image.width, 120.0, "width is the pixel width");
+        assert_eq!(image.height, 60.0, "height is the pixel height");
     }
 
     /// A bullet list and a numbered list come back as list paragraphs with the
