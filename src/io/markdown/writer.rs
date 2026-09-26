@@ -63,6 +63,8 @@ struct CodeBlock {
 /// Renders events to Markdown. As an [`EventSink`] it consumes events
 /// straight from a parser; in streaming mode it flushes to its sink at
 /// line ends once the buffer is large enough.
+const MAY_NEED_ESCAPE: [bool; 256] = MarkdownWriter::may_need_escape_table();
+
 pub struct MarkdownWriter<'o> {
     out: String,
     sink: Option<&'o mut dyn io::Write>,
@@ -664,6 +666,19 @@ impl<'o> MarkdownWriter<'o> {
 
     // ----- text escaping -----
 
+    /// The text bytes that `text` may escape or treat specially; every
+    /// other byte (non-ASCII included) is copied as it is.
+    const fn may_need_escape_table() -> [bool; 256] {
+        let mut table = [false; 256];
+        let specials = b"\\*_`[]<~&@!#|:.\n";
+        let mut index = 0;
+        while index < specials.len() {
+            table[specials[index] as usize] = true;
+            index += 1;
+        }
+        table
+    }
+
     fn text(&mut self, text: &str) {
         if text.is_empty() {
             return;
@@ -677,24 +692,30 @@ impl<'o> MarkdownWriter<'o> {
         } else if self.line_digits > 0 && is_marker_delimiter(bytes) {
             self.out.push('\\');
         }
-        let all_digits = bytes.iter().all(u8::is_ascii_digit);
+        // Digits at a line's start could open a list; the count only
+        // matters there, so most text never scans for it.
         let digits_so_far = if line_fresh { 0 } else { self.line_digits };
-        self.line_digits = if all_digits && (line_fresh || digits_so_far > 0) {
+        let may_open_list = line_fresh || digits_so_far > 0;
+        self.line_digits = if may_open_list && bytes.iter().all(u8::is_ascii_digit) {
             (digits_so_far + bytes.len()).min(10)
         } else {
             0
         };
         while index < bytes.len() {
-            let byte = bytes[index];
-            if byte >= 0x80 {
-                let mut next = index + 1;
-                while next < bytes.len() && (bytes[next] & 0xC0) == 0x80 {
-                    next += 1;
+            // Plain bytes are copied in one run up to the next byte that
+            // might need an escape; only those go through the match.
+            let run = bytes[index..]
+                .iter()
+                .take_while(|byte| !MAY_NEED_ESCAPE[**byte as usize])
+                .count();
+            if run > 0 {
+                self.out.push_str(&text[index..index + run]);
+                index += run;
+                if index == bytes.len() {
+                    break;
                 }
-                self.out.push_str(&text[index..next]);
-                index = next;
-                continue;
             }
+            let byte = bytes[index];
             if byte == b'\n' {
                 // A literal newline in text (from `&#10;`) must not end the line.
                 self.out.push_str("&#10;");

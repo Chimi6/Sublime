@@ -200,17 +200,39 @@ fn render_mermaid() -> String {
     if current_category.is_some() {
         text.push_str("  end\n");
     }
+    // An edge inside a category joins two formats. An edge between
+    // categories joins a format to the other category's box, since the
+    // hub behind that box carries it on to every format there; the box
+    // stands for the endpoint in the later category, and equal edges
+    // are drawn once.
+    let mut drawn: Vec<String> = Vec::new();
     for converter in registry::all_converters() {
         let arrow = match converter.fidelity().kind() {
             FidelityKind::Lossless => " --> ",
             FidelityKind::Conditional => " -- conditional --> ",
             FidelityKind::Lossy => " -. lossy .-> ",
         };
-        text.push_str("  ");
-        push_mermaid_id(&mut text, converter.from().id);
-        text.push_str(arrow);
-        push_mermaid_id(&mut text, converter.to().id);
-        text.push('\n');
+        let from = converter.from();
+        let to = converter.to();
+        let mut line = String::from("  ");
+        if from.category == to.category {
+            push_mermaid_id(&mut line, from.id);
+            line.push_str(arrow);
+            push_mermaid_id(&mut line, to.id);
+        } else if from.category < to.category {
+            push_mermaid_id(&mut line, from.id);
+            line.push_str(arrow);
+            line.push_str(to.category.label());
+        } else {
+            line.push_str(from.category.label());
+            line.push_str(arrow);
+            push_mermaid_id(&mut line, to.id);
+        }
+        line.push('\n');
+        if !drawn.contains(&line) {
+            text.push_str(&line);
+            drawn.push(line);
+        }
     }
     text.push_str("```\n");
     text

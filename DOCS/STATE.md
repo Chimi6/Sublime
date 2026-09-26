@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-09-25: The rows-to-document bridge: CSV and TSV become a Markdown table and so reach every document format; a document's first table comes out as rows. Oracles in `tests/rows_document.rs`, pair `csv-markdown` against Miller.
 - 2026-09-25: Excel workbooks, one sheet at a time: a reader that turns a chosen sheet into rows (shared strings, styles for dates, the 1904 epoch, gaps and dimension) and a writer that streams rows into a one-sheet workbook; `--sheet` on `convert`. Map in `DOCS/formats/xlsx.md`, oracles in `tests/xlsx_rows.rs`, pair `xlsx-csv` against `calamine` and `rust_xlsxwriter`.
 - 2026-09-25: TSV and JSON Lines, and every row path among CSV, TSV, JSON, and JSON Lines, all streamed in constant memory. Oracles in `tests/rows.rs`, pairs `tsv-json` and `jsonl-json`.
 - 2026-09-25: Direct pairs between TOML, YAML, and XML (`src/converters/hub.rs`), so the planner no longer routes them through JSON; infinities and NaN survive as floats. Oracle in `tests/hub_pairs.rs`.
@@ -28,7 +29,7 @@ The document category's one-way streets are closed (0.8.0 to 0.10.0) and the dat
   - **Apple Numbers** (`.numbers`, Mac session): IWA package like Pages, so the Snappy and protobuf readers and the Pages fixtures pipeline apply; tables of the first sheet to rows first, then sheet and table selection through `--sheet`. Needs Numbers-made fixtures with Numbers' own CSV exports as references, which only the Mac can produce. Reader before writer; a writer needs the same object-graph work as the Pages writer and waits on that decision.
   - **OpenDocument spreadsheet** (`.ods`): the same keystones as XLSX (ZIP, XML) with `content.xml` rows and `table:table-cell` repeats; LibreOffice's own CSV exports as references. Reader and writer, a week.
   - **Google Sheets** is not a file format: it lives in Google's cloud and exports as XLSX, CSV, or ODS, which we read. Nothing to build; the docs should say so.
-  - **Spreadsheet to document**: a sheet as a Markdown, HTML, or Word table through the document model's tables (`rows -> events`), so a workbook reaches every document format; and a whole workbook as one JSON object of sheets (or one CSV per sheet) instead of one sheet per run.
+  - **Spreadsheet to document** (done 2026-09-25): rows become a Markdown table and reach every document format; a document's first table comes back as rows. Still open: a whole workbook as one JSON object of sheets (or one CSV per sheet) instead of one sheet per run, and a document's every table (not only the first) when the target can hold them.
   - **Excel-made fixtures** for the XLSX reader (Mac session, Excel or Numbers export), and number formats beyond dates.
 - 2026-09-25, the cheap hub batch: INI, plist (XML and binary), MessagePack, CBOR, each a day on the value tree.
 - Then the document category: ODT and EPUB, which reuse the Word and HTML work almost entirely; RTF; then PDF write as its own plan.
@@ -116,6 +117,7 @@ The document category's one-way streets are closed (0.8.0 to 0.10.0) and the dat
 
 ## Done
 
+- 2026-09-25: The rows-to-document bridge (unreleased, branch `rows-document-bridge`).
 - 2026-09-25: Excel workbooks one sheet at a time released as 0.16.0.
 - 2026-09-25: TSV and JSON Lines with every row path released as 0.15.0.
 - 2026-09-25: Direct TOML, YAML, and XML pairs released as 0.14.0.
