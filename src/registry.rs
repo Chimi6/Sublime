@@ -11,6 +11,7 @@ use crate::converters::html_to_docx::HtmlToDocx;
 use crate::converters::html_to_markdown::HtmlToMarkdown;
 use crate::converters::html_to_text::HtmlToText;
 use crate::converters::hub;
+use crate::converters::image;
 use crate::converters::json_to_csv;
 use crate::converters::json_to_pages::JsonToPages;
 use crate::converters::json_to_toml::JsonToToml;
@@ -37,7 +38,7 @@ use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 52] = [
+static CONVERTERS: [&dyn Converter; 54] = [
     &csv_to_json::CSV_TO_JSON,
     &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
@@ -90,6 +91,8 @@ static CONVERTERS: [&dyn Converter; 52] = [
     &rows_document::TSV_TO_MARKDOWN,
     &rows_document::MARKDOWN_TO_CSV,
     &rows_document::MARKDOWN_TO_TSV,
+    &image::PNG_TO_BMP,
+    &image::BMP_TO_PNG,
 ];
 
 pub fn all_converters() -> &'static [&'static dyn Converter] {
@@ -161,6 +164,7 @@ mod tests {
         assert_eq!(
             ids,
             vec![
+                "bmp",
                 "csv",
                 "docx",
                 "html",
@@ -170,6 +174,7 @@ mod tests {
                 "markdown-json",
                 "pages",
                 "pages-json",
+                "png",
                 "text",
                 "toml",
                 "tsv",

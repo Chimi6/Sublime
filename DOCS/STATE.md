@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-09-26: The image category opens with an 8-bit pixel hub (`src/image`), PNG both ways (`src/io/png`: every depth, color type, palette, transparency, and interlace read in pieces as the file arrives; 8-bit written with adaptive filters), and BMP both ways (`src/io/bmp`). Maps in `DOCS/formats/png.md` and `bmp.md`, oracles in `tests/png_suite.rs` (PngSuite against Pillow) and `tests/png_bmp.rs`, pair `png-bmp` against the `png` and `image` crates. Underneath: a resumable inflater, a faster CRC-32, and a deflate matcher that spends its chain budget where matches pay.
 - 2026-09-25: Batch conversion on the command line: many inputs, directories, globs, parallel workers, atomic `.part` writes, dry runs, per-file failure isolation.
 - 2026-09-25: The rows-to-document bridge: CSV and TSV become a Markdown table and so reach every document format; a document's first table comes out as rows. Oracles in `tests/rows_document.rs`, pair `csv-markdown` against Miller.
 - 2026-09-25: Excel workbooks, one sheet at a time: a reader that turns a chosen sheet into rows (shared strings, styles for dates, the 1904 epoch, gaps and dimension) and a writer that streams rows into a one-sheet workbook; `--sheet` on `convert`. Map in `DOCS/formats/xlsx.md`, oracles in `tests/xlsx_rows.rs`, pair `xlsx-csv` against `calamine` and `rust_xlsxwriter`.
@@ -32,6 +33,7 @@ The document category's one-way streets are closed (0.8.0 to 0.10.0) and the dat
   - **Google Sheets** is not a file format: it lives in Google's cloud and exports as XLSX, CSV, or ODS, which we read. Nothing to build; the docs should say so.
   - **Spreadsheet to document** (done 2026-09-25): rows become a Markdown table and reach every document format; a document's first table comes back as rows. Still open: a whole workbook as one JSON object of sheets (or one CSV per sheet) instead of one sheet per run, and a document's every table (not only the first) when the target can hold them.
   - **Excel-made fixtures** for the XLSX reader (Mac session, Excel or Numbers export), and number formats beyond dates.
+- 2026-09-26, the image category after PNG and BMP: GIF read (LZW, the first frame) then JPEG baseline decode and encode with `--quality`, progressive decode after; GIF write (quantization) later. Every codec lands in the pixel hub and ships with a pair against a real crate.
 - 2026-09-25, the cheap hub batch: INI, plist (XML and binary), MessagePack, CBOR, each a day on the value tree.
 - Then the document category: ODT and EPUB, which reuse the Word and HTML work almost entirely; RTF; then PDF write as its own plan.
 - The Pages writer decision stays with the Mac session.
@@ -49,11 +51,18 @@ The document category's one-way streets are closed (0.8.0 to 0.10.0) and the dat
 
 ## Blockers
 
+- 2026-09-26: `png -> bmp` on the photo shape misses the pass line against the `png` crate: 358 against 433 MB/s of decoded pixels in the recorded block, 2 to 17% behind across the session's runs (`DOCS/benchmarks/png-bmp.md`); the other seven lines pass, the flat decode and both encodes with margin. No tag until it passes or the pair is left out. In-process the decode is 95 ms against the crate's 78 on 61 MB of pixels: the inflater's literal path (69 ms, a table lookup per one to three literals with an 8-cycle dependent chain) against fdeflate, and the checksums and unfilter, which the crate does with SIMD intrinsics the main crate cannot use (`unsafe` is forbidden; only auto-vectorization is open, and the Adler-32 loop does not vectorize on the baseline x86-64 target, which has no 32-bit vector multiply). Levers left: a 13-bit table (measured 3%), Adler-32 as 16-bit lanes the baseline can multiply, and a `target-cpu` baseline decision (x86-64-v2 would open SSE4.1 to the compiler for every hot loop; it is a distribution decision, not a code change).
 - 2026-09-24: The Pages document paths fail the shared Pages goals of 50 MB/s of input and 64 MB peak (`DOCS/benchmarks/pages-docx.md`, `pages-markdown.md`, `pages-html.md`, `pages-text.md`). After the typed decode of the attribute tables and the interned Word styles (on top of the slim model, the streamed Word body, and the reachable decode): memory passes on every document row (28 to 46 MB), Word passes throughput under the standard's compressed-output measure (150 MB/s of input plus uncompressed output), and the text paths fail throughput at 32 to 40 MB/s against 50. A real resume converts in 3 ms at 4.8 MB, inside both goals. What remains on the dense shape, in-process: package decode 10 ms (7.5 of it Snappy), document build 25 ms, the text writers 11 ms; wall clock adds about 10 ms of process start, file I/O, and first-touch page faults (13,000 pages). The text paths are 5 to 8 ms from the line; levers under Spikes. Causes measured: a 224-byte run struct with cloned font and language strings (48 MB of model for 170,000 runs), the Word body held whole before Deflate (30 MB), and the package decoding 570 objects to use 70. Fix for 0.6.1: intern strings in the style table and slim the run, stream the Word body through the compressor, decode objects on lookup.
 - 2026-09-24: `pages -> pages-json` misses the 50 MB/s goal at 28 and 40 MB/s of package bytes (`DOCS/benchmarks/pages-json.md`); the reverse direction passes at 330 MB/s. Levers: the typed decode of the attribute tables written as JSON directly (the Spikes entry below), then `Tree::decode` itself and the JSON writer's per-field work.
 
 ## Tech Debt
 
+- 2026-09-26: Image leftovers:
+  - The hub is 8-bit: 16-bit PNG samples lose their low byte (reported as a loss). A 16-bit hub is the change if a lossless 16-bit path is ever wanted.
+  - No metadata is carried (gamma, ICC, text, physical size); APNG frames are not read; BMP RLE is refused.
+  - The PNG writer's filter heuristic (smallest sum of residual magnitudes, the standard) chooses Average on the synthetic photo where fixed Sub compressed 20% smaller under the first generator's mirrored noise; with independent noise both give the same size. An entropy estimate chose the same. A real-photo corpus would settle whether a bias toward Sub is worth it.
+  - Deflate is greedy (no lazy matching): 14.2% against zlib's 13.2% on 8 MiB of words; the PNG encode is level-6 speed with a level-5 class ratio on compressible images.
+  - The matcher's chain budget drops to a twelfth while recent matches average under five bytes; on the noisy photo that is 4% of output size (33.6 against 32.2 MB) for a three-times faster encode. A budget of a sixth gave the crate's size at 1.4 times its time.
 - 2026-09-25: Excel leftovers:
   - The reader inflates the sheet part whole before parsing (415 MB peak on a 39 MB workbook whose sheet inflates to 326 MB); a windowed inflate feeding the XML reader would make it constant. The writer already streams.
   - One sheet per run; a whole-workbook form (a JSON object of sheets, or one CSV per sheet) is not offered.

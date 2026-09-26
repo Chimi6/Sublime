@@ -203,11 +203,19 @@ fn crates_tsv_to_json(input: &str, output: &str) -> Result<(), String> {
     let headers = reader.headers().map_err(|error| error.to_string())?.clone();
     let out = File::create(output).map_err(|error| error.to_string())?;
     let mut serializer = serde_json::Serializer::new(BufWriter::new(out));
-    let mut sequence = serializer.serialize_seq(None).map_err(|error| error.to_string())?;
+    let mut sequence = serializer
+        .serialize_seq(None)
+        .map_err(|error| error.to_string())?;
     let mut record = csv::StringRecord::new();
-    while reader.read_record(&mut record).map_err(|error| error.to_string())? {
-        let map: std::collections::BTreeMap<&str, &str> = headers.iter().zip(record.iter()).collect();
-        sequence.serialize_element(&map).map_err(|error| error.to_string())?;
+    while reader
+        .read_record(&mut record)
+        .map_err(|error| error.to_string())?
+    {
+        let map: std::collections::BTreeMap<&str, &str> =
+            headers.iter().zip(record.iter()).collect();
+        sequence
+            .serialize_element(&map)
+            .map_err(|error| error.to_string())?;
     }
     sequence.end().map_err(|error| error.to_string())?;
     Ok(())
@@ -219,7 +227,9 @@ fn crates_json_to_tsv(input: &str, output: &str) -> Result<(), String> {
     let rows: Vec<serde_json::Map<String, serde_json::Value>> =
         serde_json::from_reader(BufReader::new(file)).map_err(|error| error.to_string())?;
     let out = File::create(output).map_err(|error| error.to_string())?;
-    let mut writer = csv::WriterBuilder::new().delimiter(b'\t').from_writer(BufWriter::new(out));
+    let mut writer = csv::WriterBuilder::new()
+        .delimiter(b'\t')
+        .from_writer(BufWriter::new(out));
     let mut keys: Vec<String> = Vec::new();
     for row in &rows {
         for key in row.keys() {
@@ -228,7 +238,9 @@ fn crates_json_to_tsv(input: &str, output: &str) -> Result<(), String> {
             }
         }
     }
-    writer.write_record(&keys).map_err(|error| error.to_string())?;
+    writer
+        .write_record(&keys)
+        .map_err(|error| error.to_string())?;
     for row in &rows {
         let cells: Vec<String> = keys
             .iter()
@@ -238,7 +250,9 @@ fn crates_json_to_tsv(input: &str, output: &str) -> Result<(), String> {
                 Some(other) => other.to_string(),
             })
             .collect();
-        writer.write_record(&cells).map_err(|error| error.to_string())?;
+        writer
+            .write_record(&cells)
+            .map_err(|error| error.to_string())?;
     }
     writer.flush().map_err(|error| error.to_string())
 }
