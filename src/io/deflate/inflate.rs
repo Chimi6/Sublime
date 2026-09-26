@@ -792,7 +792,7 @@ impl Inflater {
         let slab = want.saturating_sub(held).min(SLAB);
         let mut at = self.filled;
         let stop_at = at + slab;
-        self.reserve_room(slab + MAX_MATCH + 4);
+        self.reserve_room(slab + MAX_MATCH + 16);
         let mut out = std::mem::take(&mut self.out);
         // Locals, not fields: the compiler keeps a local slice's pointer
         // and a local vector's length in registers across the loop,
@@ -833,17 +833,53 @@ impl Inflater {
             // zero.
             let packed_literals = (entry >> PACKED_COUNT_SHIFT) & 3;
             if packed_literals != 0 {
-                let total = entry & 15;
-                buffer >>= total;
-                count -= total;
-                // At least 44 bits remain, enough for the next lookup.
-                let next = literals[(buffer as usize) & (PRIMARY_SIZE - 1)];
-                // One four-byte store of the one to three literals; the
+                // Up to three entries decode from the buffer as it stands:
+                // each lookup depends on the one before only through a
+                // code length feeding a shift, never through a buffer
+                // update, and the buffer holds at least 56 bits, enough
+                // for three entries (36 bits at most) and the lookup of a
+                // fourth, which the next round starts from. One consume
+                // and one refill cover the whole group. (The shape of
+                // fdeflate's loop, with three literals per entry rather
+                // than two.)
+                let bits_1 = entry & 15;
+                let entry_2 = literals[((buffer >> bits_1) as usize) & (PRIMARY_SIZE - 1)];
+                let bits_2 = entry_2 & 15;
+                let entry_3 =
+                    literals[((buffer >> (bits_1 + bits_2)) as usize) & (PRIMARY_SIZE - 1)];
+                let bits_3 = entry_3 & 15;
+                let entry_4 = literals
+                    [((buffer >> (bits_1 + bits_2 + bits_3)) as usize) & (PRIMARY_SIZE - 1)];
+                // Four-byte stores of one to three literals each; the
                 // slab has room for the bytes past the count.
                 out[at..at + 4].copy_from_slice(&(entry >> 8).to_le_bytes());
                 at += packed_literals as usize;
+                let literals_2 = (entry_2 >> PACKED_COUNT_SHIFT) & 3;
+                if literals_2 == 0 {
+                    buffer >>= bits_1;
+                    count -= bits_1;
+                    refill_word(bytes, &mut position, &mut buffer, &mut count);
+                    entry = entry_2;
+                    continue;
+                }
+                out[at..at + 4].copy_from_slice(&(entry_2 >> 8).to_le_bytes());
+                at += literals_2 as usize;
+                let literals_3 = (entry_3 >> PACKED_COUNT_SHIFT) & 3;
+                if literals_3 == 0 {
+                    let taken = bits_1 + bits_2;
+                    buffer >>= taken;
+                    count -= taken;
+                    refill_word(bytes, &mut position, &mut buffer, &mut count);
+                    entry = entry_3;
+                    continue;
+                }
+                out[at..at + 4].copy_from_slice(&(entry_3 >> 8).to_le_bytes());
+                at += literals_3 as usize;
+                let taken = bits_1 + bits_2 + bits_3;
+                buffer >>= taken;
+                count -= taken;
                 refill_word(bytes, &mut position, &mut buffer, &mut count);
-                entry = next;
+                entry = entry_4;
                 continue;
             }
             // A refused symbol is handed back whole to the careful path.

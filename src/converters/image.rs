@@ -9,8 +9,8 @@ use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
 use crate::image::Image;
-use crate::io::bmp::{BmpError, read_bmp, write_bmp};
-use crate::io::png::{PngError, read_png_from, write_png};
+use crate::io::bmp::{BmpError, BmpRows, read_bmp, write_bmp};
+use crate::io::png::{PngError, PngNotes, RowsError, read_png_from, read_png_rows, write_png};
 
 #[derive(Clone, Copy)]
 pub enum ImageFormat {
@@ -54,6 +54,21 @@ impl Converter for ImagePair {
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
+        if matches!(
+            (self.read, self.write),
+            (ImageFormat::Png, ImageFormat::Bmp)
+        ) {
+            // Row by row: no image is held, and the BMP is written
+            // top-down as rows come out of the unfilter.
+            let mut rows = BmpRows::new(output);
+            let notes = match read_png_rows(&mut input, &mut rows) {
+                Ok(notes) => notes,
+                Err(RowsError::Png(error)) => return Err(error.into()),
+                Err(RowsError::Io(error)) => return Err(error.into()),
+            };
+            report_png_notes(notes, self.name, context);
+            return Ok(());
+        }
         let image = read(self.read, &mut input, self.name, context)?;
         write(self.write, &image, output)?;
         output.flush()?;
@@ -72,17 +87,7 @@ fn read(
     match format {
         ImageFormat::Png => {
             let (image, notes) = read_png_from(input)?;
-            if notes.sixteen_bit {
-                context.loss(
-                    name,
-                    Location::default(),
-                    "16-bit samples reduced to 8 bits",
-                );
-            }
-            for chunk in notes.dropped_chunks {
-                let kind = String::from_utf8_lossy(&chunk).to_string();
-                context.warning(format!("{kind} chunk dropped (metadata is not carried)"));
-            }
+            report_png_notes(notes, name, context);
             Ok(image)
         }
         ImageFormat::Bmp => {
@@ -90,6 +95,20 @@ fn read(
             input.read_to_end(&mut bytes)?;
             Ok(read_bmp(&bytes)?)
         }
+    }
+}
+
+fn report_png_notes(notes: PngNotes, name: &'static str, context: &mut Context<'_>) {
+    if notes.sixteen_bit {
+        context.loss(
+            name,
+            Location::default(),
+            "16-bit samples reduced to 8 bits",
+        );
+    }
+    for chunk in notes.dropped_chunks {
+        let kind = String::from_utf8_lossy(&chunk).to_string();
+        context.warning(format!("{kind} chunk dropped (metadata is not carried)"));
     }
 }
 

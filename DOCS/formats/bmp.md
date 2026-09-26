@@ -31,5 +31,9 @@ Rows are padded to four bytes; a file shorter than its rows is refused.
 Opaque images become 24-bit BGR with a 40-byte header; images with
 alpha become 32-bit BGRA with a V4 header carrying the four masks and
 an sRGB color space, so the alpha survives in readers that honor it.
-Gray and gray+alpha expand to RGB and RGBA. Rows are written
-bottom-up in one-megabyte pieces.
+Gray and gray+alpha expand to RGB and RGBA. Rows are written in
+one-megabyte pieces: bottom-up from a whole image (`write_bmp`), or
+top-down (a negative height in the header, the form Windows has read
+since 95 and every common decoder takes) when rows arrive one at a
+time from a decoder (`BmpRows`, the `png -> bmp` path), so nothing is
+held.
