@@ -1,6 +1,6 @@
 # HTML -> Markdown
 
-**Latest** (2026-09-24, first release of the HTML reader: html -> markdown 166.3 MB/s of input on the markup-dense shape and 227.7 on prose, at 29.7 and 15.3 MB peak; every line PASSES against htmd, which ran under 1 MB/s at 550 and 138 MB)
+**Latest** (2026-09-25, 0.17.0 Markdown speedups: html -> markdown 167.4 MB/s of input on the markup-dense shape and 234.9 on prose, at 29.6 and 15.0 MB peak; every line PASSES against htmd, whose throughput rounds to zero at one decimal)
 
 ## Purpose
 
@@ -55,6 +55,25 @@ follow `README.md`.
   design costs, not that it is slow at what it does.
 
 ## Results
+
+### 2026-09-25, 0.17.0 Markdown speedups
+
+commit: 0b33385 (the merge of the rows-to-document bridge, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| html -> markdown, markup-dense (26.6 MB): throughput (MB/s of input) | 167.4 | 0.1 (htmd) | PASS |
+| html -> markdown, markup-dense: peak memory (MB) | 29.6 | 550.8 (htmd) | PASS |
+| html -> markdown, prose (12.1 MB): throughput (MB/s of input) | 234.9 | 0.4 (htmd) | PASS |
+| html -> markdown, prose: peak memory (MB) | 15.0 | 139.4 (htmd) | PASS |
+
+Recorded at the 0.17.0 release because the Markdown writer (text
+copied in runs, digits scanned only where a list could open), the block
+parser (one cell vector per table), and inline rendering (a plain-text
+fast path) changed for the rows-to-document bridge. The 4.7 MB prose
+inputs run in about fifteen milliseconds, so their throughput medians
+swing between runs; the dense rows are the stable ones.
 
 ### 2026-09-24, first release of the HTML reader
 

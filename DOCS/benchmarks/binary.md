@@ -30,6 +30,24 @@ a comparison. Startup is implemented in `bench/src/startup.rs`.
 
 ## Results
 
+### 2026-09-25, 0.17.0 with the rows-to-document bridge
+
+commit: 0b33385 (the merge of the bridge branch, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 1796800 | <= 1800000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 1897120 | recorded | n/a |
+| WebAssembly module (bytes) | 867742 | <= 900000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 349443 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | -0.490 (spawn 0.823, floor 1.313) | < 1 | PASS |
+
+The bridge's two converter pairs and the Markdown changes cost 10 KB
+of binary and 5 KB of module; the binary sits 3 KB under its budget,
+so the next feature raises it. The startup row's negative value is the
+spawn floor swinging on a busy machine, not the binary.
+
 ### 2026-09-25, 0.16.0 with Excel workbooks
 
 commit: 8381f93 (the merge of the xlsx branch, before the version bump)
@@ -246,3 +264,4 @@ read as "under a millisecond", not as a trend.
 | 0.14.0 | 1,743,184 | 1,843,872 | 1,750,000 | 839,320 | 850,000 |
 | 0.15.0 | 1,755,616 | 1,856,160 | 1,800,000 | 845,902 | 850,000 |
 | 0.16.0 | 1,786,840 | 1,888,928 | 1,800,000 | 863,102 | 900,000 |
+| 0.17.0 | 1,796,800 | 1,897,120 | 1,800,000 | 867,742 | 900,000 |

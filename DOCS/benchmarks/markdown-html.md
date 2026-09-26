@@ -1,6 +1,6 @@
 # Markdown -> HTML
 
-**Latest** (2026-09-23, 0.2.0: markdown -> html 118 MB/s of input on the markup-dense shape and 370 MB/s on prose, at 304 and 83 MB peak; all lines PASS against pulldown-cmark)
+**Latest** (2026-09-25, 0.17.0 Markdown speedups: markdown -> html 112.9 MB/s of input on the markup-dense shape and 336.6 on prose, at 306 and 9.8 MB peak; all lines PASS against pulldown-cmark; the prose input is 4.7 MB and its median swings by tens of MB/s between runs)
 
 ## Purpose
 
@@ -96,6 +96,25 @@ differ between renderers.
   identical one.
 
 ## Results
+
+### 2026-09-25, 0.17.0 Markdown speedups
+
+commit: 0b33385 (the merge of the rows-to-document bridge, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| markdown -> html, markup-dense (73.8 MB): throughput (MB/s of input) | 112.9 | 4.1 | PASS |
+| markdown -> html, prose (4.7 MB): throughput (MB/s of input) | 336.6 | 321.4 | PASS |
+| markdown -> html, markup-dense: peak memory (MB) | 306.3 | 698.9 (reference) | PASS |
+| markdown -> html, prose: peak memory (MB) | 9.8 | 16.8 (reference) | PASS |
+
+Recorded at the 0.17.0 release because the Markdown writer (text
+copied in runs, digits scanned only where a list could open), the block
+parser (one cell vector per table), and inline rendering (a plain-text
+fast path) changed for the rows-to-document bridge. The 4.7 MB prose
+inputs run in about fifteen milliseconds, so their throughput medians
+swing between runs; the dense rows are the stable ones.
 
 2026-09-23, working tree after `d22f8b2` (release build, glibc, `-C
 target-cpu` default). Full run, medians of three:
