@@ -6,6 +6,12 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-26
+
+Batch conversion: directories, globs, parallel workers, atomic writes,
+and dry runs on the command line; the formats map as one graph per
+category.
+
 ### Added
 
 - Batch conversion: `sublime convert` takes several inputs, directories (`-r` to descend), and glob patterns (`*`, `?`, `**`, expanded by the tool where the shell does not), and writes each output named after its input with the target's extension, into `--out-dir` (or a trailing `dir/`) mirroring the input's structure, or beside the input. Files convert in parallel (`--jobs`, one per CPU by default); one file's failure does not stop the rest; files under a directory whose format is unknown are skipped and counted; `--dry-run` lists the plan without writing. Every output, batch or single, is written to a `.part` file and renamed into place, so a failed conversion leaves nothing behind and never disturbs an existing output. New events `file_started`, `file_failed`, and `batch_finished` in both log formats. Exit code is the worst outcome across the batch.
