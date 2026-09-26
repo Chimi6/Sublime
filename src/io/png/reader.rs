@@ -813,15 +813,22 @@ fn unfilter_lanes<const N: usize>(filter: u8, source: &[u8], previous: &[u8], cu
 }
 
 fn paeth(left: u8, up: u8, up_left: u8) -> u8 {
-    let (a, b, c) = (i16::from(left), i16::from(up), i16::from(up_left));
-    let p = a + b - c;
-    let (pa, pb, pc) = ((p - a).abs(), (p - b).abs(), (p - c).abs());
-    if pa <= pb && pa <= pc {
-        left
-    } else if pb <= pc {
-        up
+    // stb_image's formulation of the predictor: the same choice as the
+    // specification's, written as a threshold against three times the
+    // corner and two selects, which the compiler makes branch-free (a
+    // noisy row mispredicts the textbook form once per pixel).
+    let threshold = i16::from(up_left) * 3 - (i16::from(left) + i16::from(up));
+    let low = left.min(up);
+    let high = left.max(up);
+    let first = if i16::from(high) <= threshold {
+        low
     } else {
         up_left
+    };
+    if threshold <= i16::from(low) {
+        high
+    } else {
+        first
     }
 }
 
