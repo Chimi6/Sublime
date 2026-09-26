@@ -51,31 +51,39 @@ static TABLES: [[u32; 256]; SLICES] = make_tables();
 /// one interleaved loop (two independent chains keep the core busy where
 /// one waits on itself) and the halves are joined with `combine`.
 pub fn crc32_update(previous: u32, bytes: &[u8]) -> u32 {
-    const SPLIT_AT: usize = 4 * SLICES;
+    const SPLIT_AT: usize = 8 * SLICES;
     if bytes.len() < SPLIT_AT {
         return crc32_serial(previous, bytes);
     }
-    let half = (bytes.len() / 2) & !(SLICES - 1);
-    let (first, second) = bytes.split_at(half);
-    let mut first_value = !previous;
-    let mut second_value = !0u32;
-    let mut first_pieces = first.chunks_exact(SLICES);
-    let mut second_pieces = second.chunks_exact(SLICES);
-    for (piece_a, piece_b) in (&mut first_pieces).zip(&mut second_pieces) {
-        first_value = fold_piece(first_value, piece_a);
-        second_value = fold_piece(second_value, piece_b);
+    // Four equal parts (a multiple of a piece each) run interleaved in
+    // one loop, four independent chains, and join with `combine`.
+    let part = (bytes.len() / 4) & !(SLICES - 1);
+    let (head, tail) = bytes.split_at(part * 4);
+    let (stream_a, rest) = head.split_at(part);
+    let (stream_b, rest) = rest.split_at(part);
+    let (stream_c, stream_d) = rest.split_at(part);
+    let mut value_a = !previous;
+    let mut value_b = !0u32;
+    let mut value_c = !0u32;
+    let mut value_d = !0u32;
+    let pieces = stream_a
+        .chunks_exact(SLICES)
+        .zip(stream_b.chunks_exact(SLICES))
+        .zip(stream_c.chunks_exact(SLICES))
+        .zip(stream_d.chunks_exact(SLICES));
+    for (((piece_a, piece_b), piece_c), piece_d) in pieces {
+        value_a = fold_piece(value_a, piece_a);
+        value_b = fold_piece(value_b, piece_b);
+        value_c = fold_piece(value_c, piece_c);
+        value_d = fold_piece(value_d, piece_d);
     }
-    // The halves differ by up to a piece; whichever has one left folds
-    // it alone.
-    for piece in &mut first_pieces {
-        first_value = fold_piece(first_value, piece);
-    }
-    for piece in &mut second_pieces {
-        second_value = fold_piece(second_value, piece);
-    }
-    let first_crc = crc32_serial(!first_value, first_pieces.remainder());
-    let second_crc = crc32_serial(!second_value, second_pieces.remainder());
-    combine(first_crc, second_crc, second.len())
+    // The three joins carry a checksum over the same length, so the
+    // operator for that length is built once and applied three times.
+    let carry = zero_operator(part);
+    let mut crc = times(&carry, !value_a) ^ !value_b;
+    crc = times(&carry, crc) ^ !value_c;
+    crc = times(&carry, crc) ^ !value_d;
+    crc32_serial(crc, tail)
 }
 
 /// One chain over `bytes`, sixteen at a time.
@@ -124,6 +132,12 @@ pub fn combine(first: u32, second: u32, length: usize) -> u32 {
     if length == 0 {
         return first;
     }
+    times(&zero_operator(length), first) ^ second
+}
+
+/// The GF(2) matrix that carries a checksum over `length` zero bytes,
+/// by repeated squaring of the one-bit operator.
+fn zero_operator(length: usize) -> [u32; 32] {
     let mut odd = [0u32; 32];
     odd[0] = 0xEDB8_8320;
     for (bit, cell) in odd.iter_mut().enumerate().skip(1) {
@@ -131,12 +145,15 @@ pub fn combine(first: u32, second: u32, length: usize) -> u32 {
     }
     let mut even = square(&odd);
     odd = square(&even);
-    let mut carried = first;
+    let mut result = [0u32; 32];
+    for (bit, cell) in result.iter_mut().enumerate() {
+        *cell = 1 << bit;
+    }
     let mut remaining = length;
     loop {
         even = square(&odd);
         if remaining & 1 == 1 {
-            carried = times(&even, carried);
+            result = compose(&even, &result);
         }
         remaining >>= 1;
         if remaining == 0 {
@@ -144,14 +161,23 @@ pub fn combine(first: u32, second: u32, length: usize) -> u32 {
         }
         odd = square(&even);
         if remaining & 1 == 1 {
-            carried = times(&odd, carried);
+            result = compose(&odd, &result);
         }
         remaining >>= 1;
         if remaining == 0 {
             break;
         }
     }
-    carried ^ second
+    result
+}
+
+/// The matrix product `left * right` (apply `right`, then `left`).
+fn compose(left: &[u32; 32], right: &[u32; 32]) -> [u32; 32] {
+    let mut result = [0u32; 32];
+    for (cell, column) in result.iter_mut().zip(right) {
+        *cell = times(left, *column);
+    }
+    result
 }
 
 fn times(matrix: &[u32; 32], mut vector: u32) -> u32 {

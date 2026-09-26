@@ -12,7 +12,9 @@ handle, tied to the tests that prove it.
 ## Status
 
 - `png -> bmp`: shipped, conditional (16-bit samples become 8-bit, gray
-  becomes RGB in the BMP, and metadata is dropped).
+  becomes RGB in the BMP, and metadata is dropped). Streams: rows go to
+  the BMP writer as the unfilter produces them, top-down, and no image
+  is held (5 MB peak on a 61 MB image).
 - `bmp -> png`: shipped, lossless.
 
 Oracles (`tests/png_suite.rs`, the PngSuite images in
@@ -26,7 +28,9 @@ refused; every valid image survives our writer and reader; and every
 image survives PNG to BMP to PNG through the converters
 (`tests/png_bmp.rs`). The reader is fed in pieces by the converter, so
 memory is the image plus a few hundred kilobytes whatever the file
-size.
+size, and `read_png_rows` hands each row to a `RowSink` instead of
+holding an image at all (an interlaced image is decoded whole first,
+since its rows arrive out of order).
 
 ## What the reader does
 
@@ -39,6 +43,11 @@ size.
 | chunk CRCs | checked on every chunk |
 | ancillary chunks | skipped and reported as warnings by name (gamma, color profile, text, timing) |
 | unknown critical chunks | refused |
+
+The inflater decodes up to three table entries (nine literals) from
+one refill, the shape of fdeflate's loop; the chunk CRC runs as four
+interleaved streams joined by zlib's combine, and the Adler-32 as
+lane sums over 64-byte blocks, all in safe scalar code.
 
 Samples: 1, 2, and 4 bits scale to 8 (`0..3` to `0..255`); 16-bit
 samples keep their high byte, reported as a loss; palette indexes
