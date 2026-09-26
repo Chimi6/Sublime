@@ -7,7 +7,12 @@ since 0.19.0. See `png.md` for the hub and the pairs.
 
 ## Status
 
-- `bmp -> png`: shipped, lossless.
+- `bmp -> png`: shipped, lossless. Streams: rows go to the PNG writer
+  as they are decoded. A top-down file (ours, and any with a negative
+  height) is never held (4 MB peak on a 418 MB image); a bottom-up
+  file stores its last row first, so its pixel data is read once and
+  handed over from the end (66 MB peak on a 61 MB image, where an
+  image copy made it 125).
 - `png -> bmp`: shipped, conditional (gray becomes RGB, 16-bit becomes
   8-bit, metadata dropped).
 
@@ -25,6 +30,10 @@ its `BM` magic on the command line.
 | compression | none and bit fields; RLE and JPEG are refused as unsupported |
 
 Rows are padded to four bytes; a file shorter than its rows is refused.
+`read_bmp_rows` reads the headers and palette (at most 1178 bytes) from
+a stream, starts its `RowSink`, and then either streams rows or holds
+the pixel data once, as above; `read_bmp` reads a whole buffer into an
+image through the same row decoder.
 
 ## What the writer does
 

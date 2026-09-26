@@ -8,6 +8,7 @@ use std::io::{self, Write};
 use crate::image::{ColorType, Image};
 use crate::io::deflate::Level;
 use crate::io::deflate::compress::deflate_part;
+use crate::io::png::RowSink;
 use crate::io::png::adler32_update;
 use crate::io::zip::crc32::crc32;
 
@@ -15,60 +16,113 @@ const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
 const PART_SIZE: usize = 256 * 1024;
 
 pub fn write_png(image: &Image, sink: &mut dyn Write) -> io::Result<()> {
-    sink.write_all(&SIGNATURE)?;
-    let mut header = Vec::with_capacity(13);
-    header.extend_from_slice(&image.width.to_be_bytes());
-    header.extend_from_slice(&image.height.to_be_bytes());
-    header.push(8);
-    header.push(match image.color {
-        ColorType::Gray => 0,
-        ColorType::GrayAlpha => 4,
-        ColorType::Rgb => 2,
-        ColorType::Rgba => 6,
-    });
-    header.extend_from_slice(&[0, 0, 0]);
-    write_chunk(sink, b"IHDR", &header)?;
-
-    let stride = image.stride();
-    let unit = image.color.channels();
-    let mut filtered: Vec<u8> = Vec::with_capacity(PART_SIZE + stride + 1);
-    let mut scratch: Vec<u8> = vec![0; stride];
-    let mut deflated: Vec<u8> = Vec::new();
-    let mut adler: u32 = 1;
-    let mut first = true;
-    let mut previous: &[u8] = &[];
-    let zero_row = vec![0u8; stride];
+    let mut rows = PngRows::new(sink);
+    rows.start(image.width, image.height, image.color)?;
     for y in 0..image.height {
-        let row = image.row(y);
-        let above = if y == 0 {
-            zero_row.as_slice()
-        } else {
-            previous
-        };
-        filter_row(row, above, unit, &mut scratch, &mut filtered);
-        previous = row;
-        if filtered.len() >= PART_SIZE {
-            adler = adler32_update(adler, &filtered);
-            deflated.clear();
-            if first {
-                deflated.extend_from_slice(&[0x78, 0x9c]);
-                first = false;
-            }
-            deflate_part(&filtered, &mut deflated, Level::Default, false);
-            write_chunk(sink, b"IDAT", &deflated)?;
-            filtered.clear();
+        rows.row(image.row(y))?;
+    }
+    Ok(())
+}
+
+/// Writes a PNG row by row as a `RowSink`: each row is filtered against
+/// the one before and deflated into IDAT chunks of about 256 KiB, so a
+/// decoder can hand rows over as it produces them and no image is held.
+pub struct PngRows<'a> {
+    sink: &'a mut dyn Write,
+    stride: usize,
+    unit: usize,
+    rows_left: u32,
+    filtered: Vec<u8>,
+    scratch: Vec<u8>,
+    deflated: Vec<u8>,
+    previous: Vec<u8>,
+    adler: u32,
+    first_part: bool,
+}
+
+impl<'a> PngRows<'a> {
+    pub fn new(sink: &'a mut dyn Write) -> PngRows<'a> {
+        PngRows {
+            sink,
+            stride: 0,
+            unit: 1,
+            rows_left: 0,
+            filtered: Vec::new(),
+            scratch: Vec::new(),
+            deflated: Vec::new(),
+            previous: Vec::new(),
+            adler: 1,
+            first_part: true,
         }
     }
-    adler = adler32_update(adler, &filtered);
-    deflated.clear();
-    if first {
-        deflated.extend_from_slice(&[0x78, 0x9c]);
+
+    fn part(&mut self, is_final: bool) -> io::Result<()> {
+        self.adler = adler32_update(self.adler, &self.filtered);
+        self.deflated.clear();
+        if self.first_part {
+            self.deflated.extend_from_slice(&[0x78, 0x9c]);
+            self.first_part = false;
+        }
+        deflate_part(&self.filtered, &mut self.deflated, Level::Default, is_final);
+        if is_final {
+            self.deflated.extend_from_slice(&self.adler.to_be_bytes());
+        }
+        write_chunk(self.sink, b"IDAT", &self.deflated)?;
+        self.filtered.clear();
+        Ok(())
     }
-    deflate_part(&filtered, &mut deflated, Level::Default, true);
-    deflated.extend_from_slice(&adler.to_be_bytes());
-    write_chunk(sink, b"IDAT", &deflated)?;
-    write_chunk(sink, b"IEND", &[])?;
-    sink.flush()
+}
+
+impl RowSink for PngRows<'_> {
+    fn start(&mut self, width: u32, height: u32, color: ColorType) -> io::Result<()> {
+        self.sink.write_all(&SIGNATURE)?;
+        let mut header = Vec::with_capacity(13);
+        header.extend_from_slice(&width.to_be_bytes());
+        header.extend_from_slice(&height.to_be_bytes());
+        header.push(8);
+        header.push(match color {
+            ColorType::Gray => 0,
+            ColorType::GrayAlpha => 4,
+            ColorType::Rgb => 2,
+            ColorType::Rgba => 6,
+        });
+        header.extend_from_slice(&[0, 0, 0]);
+        write_chunk(self.sink, b"IHDR", &header)?;
+        self.stride = width as usize * color.channels();
+        self.unit = color.channels();
+        self.rows_left = height;
+        self.filtered = Vec::with_capacity(PART_SIZE + self.stride + 1);
+        self.scratch = vec![0; self.stride];
+        // The row above the first is zeros, as the filters define it.
+        self.previous = vec![0; self.stride];
+        if height == 0 {
+            self.part(true)?;
+            write_chunk(self.sink, b"IEND", &[])?;
+            self.sink.flush()?;
+        }
+        Ok(())
+    }
+
+    fn row(&mut self, pixels: &[u8]) -> io::Result<()> {
+        filter_row(
+            pixels,
+            &self.previous,
+            self.unit,
+            &mut self.scratch,
+            &mut self.filtered,
+        );
+        self.previous.copy_from_slice(pixels);
+        self.rows_left = self.rows_left.saturating_sub(1);
+        if self.rows_left == 0 {
+            self.part(true)?;
+            write_chunk(self.sink, b"IEND", &[])?;
+            return self.sink.flush();
+        }
+        if self.filtered.len() >= PART_SIZE {
+            self.part(false)?;
+        }
+        Ok(())
+    }
 }
 
 /// Appends the row under the filter with the smallest sum of absolute

@@ -9,8 +9,10 @@ use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
 use crate::image::Image;
-use crate::io::bmp::{BmpError, BmpRows, read_bmp, write_bmp};
-use crate::io::png::{PngError, PngNotes, RowsError, read_png_from, read_png_rows, write_png};
+use crate::io::bmp::{BmpError, BmpRows, BmpRowsError, read_bmp, read_bmp_rows, write_bmp};
+use crate::io::png::{
+    PngError, PngNotes, PngRows, RowsError, read_png_from, read_png_rows, write_png,
+};
 
 #[derive(Clone, Copy)]
 pub enum ImageFormat {
@@ -68,6 +70,19 @@ impl Converter for ImagePair {
             };
             report_png_notes(notes, self.name, context);
             return Ok(());
+        }
+        if matches!(
+            (self.read, self.write),
+            (ImageFormat::Bmp, ImageFormat::Png)
+        ) {
+            // Row by row: a top-down BMP streams, a bottom-up one is held
+            // once as file bytes; the PNG writer needs only the row above.
+            let mut rows = PngRows::new(output);
+            return match read_bmp_rows(&mut input, &mut rows) {
+                Ok(()) => Ok(()),
+                Err(BmpRowsError::Bmp(error)) => Err(error.into()),
+                Err(BmpRowsError::Io(error)) => Err(error.into()),
+            };
         }
         let image = read(self.read, &mut input, self.name, context)?;
         write(self.write, &image, output)?;

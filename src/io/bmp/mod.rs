@@ -57,7 +57,29 @@ impl Mask {
     }
 }
 
-pub fn read_bmp(bytes: &[u8]) -> Result<Image, BmpError> {
+/// Everything the pixel rows need, read from the headers and palette.
+struct Layout {
+    width: u32,
+    height: u32,
+    top_down: bool,
+    bits: u16,
+    pixel_offset: usize,
+    row_bytes: usize,
+    color: ColorType,
+    has_alpha: bool,
+    plain_bgr: bool,
+    plain_alpha: bool,
+    masks: [Option<Mask>; 4],
+    palette: Vec<[u8; 3]>,
+}
+
+/// The byte count the headers and palette can take at most: the file
+/// header, a V5 info header, four masks, and a 256-entry palette.
+const MAX_PREAMBLE: usize = 14 + 124 + 16 + 1024;
+
+/// Parses the headers and palette at the front of `bytes`, which must
+/// hold at least the pixel offset's worth of the file.
+fn layout(bytes: &[u8]) -> Result<Layout, BmpError> {
     if bytes.len() < 54 || &bytes[..2] != b"BM" {
         return Err(BmpError(
             "not a BMP: bad signature or too short".to_string(),
@@ -128,10 +150,6 @@ pub fn read_bmp(bytes: &[u8]) -> Result<Image, BmpError> {
         palette.push([bytes[at + 2], bytes[at + 1], bytes[at]]);
     }
     let row_bytes = (width as usize * bits as usize).div_ceil(32) * 4;
-    let needed = pixel_offset + row_bytes * height as usize;
-    if bytes.len() < needed {
-        return Err(BmpError("pixel data cut short".to_string()));
-    }
     let has_alpha = bits == 32 && alpha != 0;
     let color = match bits {
         1 | 4 | 8 | 16 | 24 => ColorType::Rgb,
@@ -144,87 +162,169 @@ pub fn read_bmp(bytes: &[u8]) -> Result<Image, BmpError> {
         }
         other => return Err(BmpError(format!("{other} bits per pixel is not supported"))),
     };
-    let masks = [
-        Mask::from_bits(red),
-        Mask::from_bits(green),
-        Mask::from_bits(blue),
-        Mask::from_bits(alpha),
-    ];
-    let mut image = Image::new(width, height, color);
-    let channels = color.channels();
-    let stride = image.stride();
-    for file_row in 0..height as usize {
-        let y = if top_down {
-            file_row
-        } else {
-            height as usize - 1 - file_row
-        };
-        let source =
-            &bytes[pixel_offset + file_row * row_bytes..pixel_offset + (file_row + 1) * row_bytes];
-        let target = &mut image.pixels[y * stride..(y + 1) * stride];
-        // The common depths as row loops with no per-pixel dispatch.
-        if bits == 24 {
-            for (cell, bgr) in target.chunks_exact_mut(3).zip(source.chunks_exact(3)) {
-                cell[0] = bgr[2];
-                cell[1] = bgr[1];
-                cell[2] = bgr[0];
-            }
-            continue;
+    let plain_bgr = bits == 32 && red == 0x00ff_0000 && green == 0x0000_ff00 && blue == 0x0000_00ff;
+    Ok(Layout {
+        width,
+        height,
+        top_down,
+        bits,
+        pixel_offset,
+        row_bytes,
+        color,
+        has_alpha,
+        plain_bgr,
+        plain_alpha: plain_bgr && has_alpha && alpha == 0xff00_0000,
+        masks: [
+            Mask::from_bits(red),
+            Mask::from_bits(green),
+            Mask::from_bits(blue),
+            Mask::from_bits(alpha),
+        ],
+        palette,
+    })
+}
+
+/// Turns one file row into hub pixels.
+fn decode_row(layout: &Layout, source: &[u8], target: &mut [u8]) {
+    let bits = layout.bits;
+    let channels = layout.color.channels();
+    // The common depths as row loops with no per-pixel dispatch.
+    if bits == 24 {
+        for (cell, bgr) in target.chunks_exact_mut(3).zip(source.chunks_exact(3)) {
+            cell[0] = bgr[2];
+            cell[1] = bgr[1];
+            cell[2] = bgr[0];
         }
-        let plain_bgr =
-            bits == 32 && red == 0x00ff_0000 && green == 0x0000_ff00 && blue == 0x0000_00ff;
-        if plain_bgr && has_alpha && alpha == 0xff00_0000 {
-            for (cell, bgra) in target.chunks_exact_mut(4).zip(source.chunks_exact(4)) {
-                cell[0] = bgra[2];
-                cell[1] = bgra[1];
-                cell[2] = bgra[0];
-                cell[3] = bgra[3];
-            }
-            continue;
+        return;
+    }
+    if layout.plain_alpha {
+        for (cell, bgra) in target.chunks_exact_mut(4).zip(source.chunks_exact(4)) {
+            cell[0] = bgra[2];
+            cell[1] = bgra[1];
+            cell[2] = bgra[0];
+            cell[3] = bgra[3];
         }
-        if plain_bgr && !has_alpha {
-            for (cell, bgra) in target.chunks_exact_mut(3).zip(source.chunks_exact(4)) {
-                cell[0] = bgra[2];
-                cell[1] = bgra[1];
-                cell[2] = bgra[0];
-            }
-            continue;
+        return;
+    }
+    if layout.plain_bgr && !layout.has_alpha {
+        for (cell, bgra) in target.chunks_exact_mut(3).zip(source.chunks_exact(4)) {
+            cell[0] = bgra[2];
+            cell[1] = bgra[1];
+            cell[2] = bgra[0];
         }
-        for x in 0..width as usize {
-            let cell = &mut target[x * channels..(x + 1) * channels];
-            match bits {
-                24 => {
-                    cell[0] = source[x * 3 + 2];
-                    cell[1] = source[x * 3 + 1];
-                    cell[2] = source[x * 3];
+        return;
+    }
+    let masks = &layout.masks;
+    for x in 0..layout.width as usize {
+        let cell = &mut target[x * channels..(x + 1) * channels];
+        match bits {
+            32 => {
+                let pixel = u32_at(source, x * 4);
+                cell[0] = masks[0].map_or(0, |mask| mask.extract(pixel));
+                cell[1] = masks[1].map_or(0, |mask| mask.extract(pixel));
+                cell[2] = masks[2].map_or(0, |mask| mask.extract(pixel));
+                if layout.has_alpha {
+                    cell[3] = masks[3].map_or(255, |mask| mask.extract(pixel));
                 }
-                32 => {
-                    let pixel = u32_at(source, x * 4);
-                    cell[0] = masks[0].map_or(0, |mask| mask.extract(pixel));
-                    cell[1] = masks[1].map_or(0, |mask| mask.extract(pixel));
-                    cell[2] = masks[2].map_or(0, |mask| mask.extract(pixel));
-                    if has_alpha {
-                        cell[3] = masks[3].map_or(255, |mask| mask.extract(pixel));
-                    }
-                }
-                16 => {
-                    let pixel = u32::from(u16_at(source, x * 2));
-                    cell[0] = masks[0].map_or(0, |mask| mask.extract(pixel));
-                    cell[1] = masks[1].map_or(0, |mask| mask.extract(pixel));
-                    cell[2] = masks[2].map_or(0, |mask| mask.extract(pixel));
-                }
-                _ => {
-                    let per_byte = 8 / bits as usize;
-                    let byte = source[x / per_byte];
-                    let shift = 8 - bits as usize * (x % per_byte + 1);
-                    let index = ((byte >> shift) & ((1u16 << bits) - 1) as u8) as usize;
-                    let rgb = palette.get(index).copied().unwrap_or([0, 0, 0]);
-                    cell[..3].copy_from_slice(&rgb);
-                }
+            }
+            16 => {
+                let pixel = u32::from(u16_at(source, x * 2));
+                cell[0] = masks[0].map_or(0, |mask| mask.extract(pixel));
+                cell[1] = masks[1].map_or(0, |mask| mask.extract(pixel));
+                cell[2] = masks[2].map_or(0, |mask| mask.extract(pixel));
+            }
+            _ => {
+                let per_byte = 8 / bits as usize;
+                let byte = source[x / per_byte];
+                let shift = 8 - bits as usize * (x % per_byte + 1);
+                let index = ((byte >> shift) & ((1u16 << bits) - 1) as u8) as usize;
+                let rgb = layout.palette.get(index).copied().unwrap_or([0, 0, 0]);
+                cell[..3].copy_from_slice(&rgb);
             }
         }
     }
+}
+
+pub fn read_bmp(bytes: &[u8]) -> Result<Image, BmpError> {
+    let layout = layout(bytes)?;
+    let needed = layout.pixel_offset + layout.row_bytes * layout.height as usize;
+    if bytes.len() < needed {
+        return Err(BmpError("pixel data cut short".to_string()));
+    }
+    let mut image = Image::new(layout.width, layout.height, layout.color);
+    let stride = image.stride();
+    for file_row in 0..layout.height as usize {
+        let y = if layout.top_down {
+            file_row
+        } else {
+            layout.height as usize - 1 - file_row
+        };
+        let start = layout.pixel_offset + file_row * layout.row_bytes;
+        let source = &bytes[start..start + layout.row_bytes];
+        let target = &mut image.pixels[y * stride..(y + 1) * stride];
+        decode_row(&layout, source, target);
+    }
     Ok(image)
+}
+
+/// What can go wrong reading rows into a sink: the file, or the sink.
+#[derive(Debug)]
+pub enum BmpRowsError {
+    Bmp(BmpError),
+    Io(io::Error),
+}
+
+impl From<BmpError> for BmpRowsError {
+    fn from(error: BmpError) -> Self {
+        BmpRowsError::Bmp(error)
+    }
+}
+
+impl From<io::Error> for BmpRowsError {
+    fn from(error: io::Error) -> Self {
+        BmpRowsError::Io(error)
+    }
+}
+
+/// Reads a BMP from a stream into a row sink, top to bottom. A top-down
+/// file streams a row at a time and nothing is held; a bottom-up file
+/// (the common kind) stores its last row first, so its pixel data is
+/// read once into memory and handed over from the end, one copy where
+/// an image would be a second.
+pub fn read_bmp_rows(
+    reader: &mut dyn std::io::Read,
+    sink: &mut dyn crate::io::png::RowSink,
+) -> Result<(), BmpRowsError> {
+    let mut preamble = vec![0u8; 54];
+    reader.read_exact(&mut preamble)?;
+    let pixel_offset = u32_at(&preamble, 10) as usize;
+    if !(54..=MAX_PREAMBLE).contains(&pixel_offset) {
+        return Err(BmpError("bad pixel offset".to_string()).into());
+    }
+    preamble.resize(pixel_offset, 0);
+    reader.read_exact(&mut preamble[54..])?;
+    let layout = layout(&preamble)?;
+    let stride = layout.width as usize * layout.color.channels();
+    sink.start(layout.width, layout.height, layout.color)?;
+    let mut pixels = vec![0u8; stride];
+    if layout.top_down {
+        let mut file_row = vec![0u8; layout.row_bytes];
+        for _ in 0..layout.height {
+            reader.read_exact(&mut file_row)?;
+            decode_row(&layout, &file_row, &mut pixels);
+            sink.row(&pixels)?;
+        }
+        return Ok(());
+    }
+    let total = layout.row_bytes * layout.height as usize;
+    let mut data = vec![0u8; total];
+    reader.read_exact(&mut data)?;
+    for file_row in (0..layout.height as usize).rev() {
+        let start = file_row * layout.row_bytes;
+        decode_row(&layout, &data[start..start + layout.row_bytes], &mut pixels);
+        sink.row(&pixels)?;
+    }
+    Ok(())
 }
 
 /// Rows are written in pieces of about this size.

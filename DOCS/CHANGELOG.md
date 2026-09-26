@@ -12,6 +12,7 @@ their shape from what the fastest safe decoders do.
 
 ### Added
 
+- `bmp -> png` streams: `read_bmp_rows` decodes rows from the stream into `PngRows`, a `RowSink` that filters and deflates each row as it comes. A top-down BMP is never held (4 MB peak on a 418 MB image, where the crates hold 908); a bottom-up one, stored last row first, is held once as file bytes and handed over from the end (66 MB on a 61 MB image, was 125; the crates 164).
 - `png -> bmp` streams: `read_png_rows` hands each unfiltered row to a `RowSink`, and `BmpRows` writes them as a top-down BMP (a negative height, which every common reader takes) in one-megabyte pieces, so the conversion holds no image: 5 MB peak on a 61 MB image where it held 65, and 438 MB/s of decoded pixels against the `png` and `image` crates' 412 on the photo shape (the flat shape 1011 against 714). An interlaced PNG is decoded whole first and handed over row by row. Every pass line of the pair now passes.
 
 ### Changed
