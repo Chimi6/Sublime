@@ -41,7 +41,10 @@ const fn make_tables() -> [[u32; 256]; SLICES] {
     tables
 }
 
-const TABLES: [[u32; 256]; SLICES] = make_tables();
+// A static, not a const: indexing a const at runtime copies the whole table
+// onto the stack in unoptimized builds (sixteen copies of 16 KB in one
+// function overflowed the 1 MB main-thread stack on Windows).
+static TABLES: [[u32; 256]; SLICES] = make_tables();
 
 /// Continues a checksum: pass `0` to start, and the previous result to
 /// extend it over more bytes. A long input is checked as two halves in

@@ -400,8 +400,8 @@ const fn distance_codes() -> [u8; 512] {
     table
 }
 
-const LENGTH_CODES: [u8; MAX_MATCH + 1] = length_codes();
-const DISTANCE_CODES: [u8; 512] = distance_codes();
+static LENGTH_CODES: [u8; MAX_MATCH + 1] = length_codes();
+static DISTANCE_CODES: [u8; 512] = distance_codes();
 
 fn length_symbol(length: u16) -> (u16, u8, u16) {
     let index = usize::from(LENGTH_CODES[usize::from(length)]);
