@@ -6,6 +6,20 @@ section under a version heading.
 
 ## [Unreleased]
 
+The photo decode line passes: `png -> bmp` streams rows into a
+top-down BMP with no image held, and the inflater and checksums take
+their shape from what the fastest safe decoders do.
+
+### Added
+
+- `png -> bmp` streams: `read_png_rows` hands each unfiltered row to a `RowSink`, and `BmpRows` writes them as a top-down BMP (a negative height, which every common reader takes) in one-megabyte pieces, so the conversion holds no image: 5 MB peak on a 61 MB image where it held 65, and 438 MB/s of decoded pixels against the `png` and `image` crates' 412 on the photo shape (the flat shape 1011 against 714). An interlaced PNG is decoded whole first and handed over row by row. Every pass line of the pair now passes.
+
+### Changed
+
+- The inflater decodes up to three table entries, nine literals, from one refill: the second and third lookups take their bits from the unchanged buffer through the code lengths of the entries before them, so one consume and refill serve the group and the fourth lookup starts the next (fdeflate's loop shape, in safe code like theirs).
+- CRC-32 runs as four interleaved streams joined by one zero-carry operator built per call; Adler-32 sums even and odd byte lanes over 64-byte blocks and weights them with two 64-bit multiplies per block. Both are about half their earlier cost on the photo's 33 MB of chunks and 61 MB of rows.
+- The Sub unfilter loads and stores each pixel pair as one word.
+
 The image category opens: an 8-bit pixel hub, PNG in and out, BMP in
 and out, and a streaming inflater that decodes as the file arrives.
 
