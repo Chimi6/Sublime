@@ -15,7 +15,9 @@ handle, tied to the tests that prove it.
   becomes RGB in the BMP, and metadata is dropped). Streams: rows go to
   the BMP writer as the unfilter produces them, top-down, and no image
   is held (5 MB peak on a 61 MB image).
-- `bmp -> png`: shipped, lossless.
+- `bmp -> png`: shipped, lossless. Streams too: `PngRows` is a
+  `RowSink` that filters each row against the one before and deflates
+  as it goes, so the BMP reader hands rows over and nothing is held.
 
 Oracles (`tests/png_suite.rs`, the PngSuite images in
 `tests/fixtures/png` with the pixels Pillow decodes beside each as
@@ -60,7 +62,8 @@ to four bytes per pixel.
 
 ## What the writer does
 
-One IHDR (8-bit, the hub's color type, no interlace), IDAT chunks of
+`PngRows` takes rows one at a time (`write_png` feeds it an image's
+rows); it writes one IHDR (8-bit, the hub's color type, no interlace), IDAT chunks of
 about 256 KiB of deflated rows each (our deflate at its default level,
 one zlib stream across them, Adler-32 at the end), IEND. Each row
 takes the filter whose residuals have the smallest sum of magnitudes

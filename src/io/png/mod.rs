@@ -4,7 +4,7 @@ pub mod reader;
 pub mod writer;
 
 pub use reader::{PngError, PngNotes, RowSink, RowsError, read_png, read_png_from, read_png_rows};
-pub use writer::write_png;
+pub use writer::{PngRows, write_png};
 
 /// The zlib stream around PNG's deflate data: a two-byte header and an
 /// Adler-32 trailer. `adler32_update` carries the sum across pieces;

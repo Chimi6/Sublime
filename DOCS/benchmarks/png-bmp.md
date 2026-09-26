@@ -1,6 +1,6 @@
 # PNG <-> BMP
 
-**Latest** (2026-09-26, with a stock photograph: every generated line PASSES; on the 418 MB stock photo png -> bmp 458.0 MB/s at 5.5 MB against 412.7 at 424.0, bmp -> png 232.8 MB/s writing 29.0 MB against 176.3 writing 44.2)
+**Latest** (2026-09-26, both directions stream rows: every line PASSES; photo png -> bmp 423.0 MB/s at 5.9 MB against 375.3 at 66.4, bmp -> png 153.6 MB/s at 64.8 MB against 145.6 at 159.7; the 418 MB stock photo decodes in 5.6 MB and encodes in 3.6 MB against the crates' 424.3 and 886.8)
 
 ## Purpose
 
@@ -85,6 +85,33 @@ median wall clock of the whole process, peak resident memory from GNU
   is one run of three-run medians.
 
 ## Results
+
+### 2026-09-26, bmp -> png streams rows into the PNG writer
+
+commit: 5b31fc0 (on the `bmp-rows-stream` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| png -> bmp, photo (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 423.0 | 375.3 (png + image) | PASS |
+| png -> bmp, photo (32.8 MB on disk): throughput (MB/s of file bytes) [extra] | 227.3 | 201.7 (png + image) | n/a |
+| png -> bmp, photo: peak memory (MB) | 5.9 | 66.4 (png + image) | PASS |
+| bmp -> png, photo (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 153.6 | 145.6 (image + png) | PASS |
+| bmp -> png, photo: peak memory (MB) | 64.8 | 159.7 (image + png) | PASS |
+| bmp -> png, photo: output size (MB) [extra] | 33.6 | 32.2 (png) | n/a |
+| bmp -> png, photo: the png crate's fast level, throughput and size [extra] | - | 513.6 MB/s, 32.8 MB (png fast) | n/a |
+| png -> bmp, flat (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 976.1 | 707.6 (png + image) | PASS |
+| png -> bmp, flat (1.7 MB on disk): throughput (MB/s of file bytes) [extra] | 27.1 | 19.7 (png + image) | n/a |
+| png -> bmp, flat: peak memory (MB) | 5.3 | 66.8 (png + image) | PASS |
+| bmp -> png, flat (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 1170.5 | 595.8 (image + png) | PASS |
+| bmp -> png, flat: peak memory (MB) | 64.4 | 128.0 (image + png) | PASS |
+| bmp -> png, flat: output size (MB) [extra] | 0.3 | 0.4 (png) | n/a |
+| bmp -> png, flat: the png crate's fast level, throughput and size [extra] | - | 766.5 MB/s, 1.7 MB (png fast) | n/a |
+| png -> bmp, stock (418.4 MB of pixels, 24.2 MB on disk): throughput (MB/s of decoded pixels) [stock] | 515.9 | 514.9 (png + image) | PASS |
+| png -> bmp, stock: peak memory (MB) [stock] | 5.6 | 424.3 (png + image) | PASS |
+| bmp -> png, stock (418.4 MB in + 418.4 MB of pixels): throughput (MB/s of input plus pixels) [stock] | 242.1 | 177.0 (image + png) | PASS |
+| bmp -> png, stock: peak memory (MB) [stock] | 3.6 | 886.8 (image + png) | PASS |
+| bmp -> png, stock: output size (MB) [stock] | 29.0 | 44.2 (png) | n/a |
 
 ### 2026-09-26, with a stock photograph beside the generated shapes
 
@@ -176,7 +203,7 @@ unchanged buffer per refill) is now ours too, and the checksums run as
 interleaved streams and lane sums, but phase timers showed the gap
 was the pipeline, not the loop.
 
-The encodes pass with the same margins as before: the photo at 150
+The encodes stream too: the BMP reader hands rows to the PNG writer, so a top-down BMP (ours) is never held (3.6 MB on the 418 MB stock image against the crates' 886.8) and a bottom-up one is held once as file bytes (64.8 MB on the photo, where an image copy made it 125). They pass with the same speed margins as before: the photo at 150
 against 143 MB/s with a 4% larger output on this incompressible image
 (the matcher's payoff-adaptive chain budget, `STATE.md` Tech Debt),
 the flat image smaller than the crate's output at 1.6 times its speed.
