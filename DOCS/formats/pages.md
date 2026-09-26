@@ -47,10 +47,13 @@ the reader; `STATE.md` records what is being built now.
   rewrites a template table's tile, string table, header buckets, and
   column/row UID map with the model table's cells and grid, then anchors it
   inline with a `U+FFFC` and a `table_attachment` entry; a document with
-  more tables than the template holds flattens the extras. `markdown`,
-  `text`, `html`, `docx` -> `pages`, lossy: paragraphs, headings,
-  bold/italic, lists, and tables reach Pages; links and images are not yet
-  written. Output opens in Pages 12. The template is a Pages 12 document
+  more tables than the template holds flattens the extras. Links become
+  clickable hyperlinks: a `TSWP.HyperlinkFieldArchive` object per link range
+  (added to `Index/Document.iwa`) holds the URL, and a `table_smartfield`
+  attribute table anchors each over its run. `markdown`, `text`, `html`,
+  `docx` -> `pages`, lossy: paragraphs, headings, bold/italic, lists,
+  tables, and links reach Pages; images are not yet written. Output opens in
+  Pages 12 (an exported PDF carries every link's URI). The template is a Pages 12 document
   carrying those named styles, list styles, and a reference table with its
   calculation-engine registration, with the preview thumbnails stripped,
   compiled in (`style_template.pages`).
