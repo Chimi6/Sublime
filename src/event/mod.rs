@@ -42,6 +42,25 @@ pub enum Event {
     Debug {
         message: String,
     },
+    /// A batch has moved on to one file.
+    FileStarted {
+        input: String,
+        output: String,
+    },
+    /// One file of a batch failed; the batch goes on.
+    FileFailed {
+        input: String,
+        message: String,
+    },
+    /// The batch is over; on a dry run nothing was written and
+    /// `converted` counts what would have been.
+    BatchFinished {
+        converted: u64,
+        lossy: u64,
+        failed: u64,
+        skipped: u64,
+        dry_run: bool,
+    },
 }
 
 pub trait Sink {

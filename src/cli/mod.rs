@@ -32,16 +32,22 @@ impl ExitCode {
 #[derive(Debug)]
 pub enum CliError {
     Args(ArgsError),
+    /// A usage error the argument parser cannot see (a batch without --to).
+    Usage(String),
     Format(FormatError),
     Plan(PlanError),
     Convert(ConvertError),
-    Io { action: String, error: io::Error },
+    Io {
+        action: String,
+        error: io::Error,
+    },
 }
 
 impl CliError {
     pub fn exit_code(&self) -> ExitCode {
         match self {
             CliError::Args(_) => ExitCode::Usage,
+            CliError::Usage(_) => ExitCode::Usage,
             CliError::Format(_) => ExitCode::Usage,
             CliError::Plan(PlanError::SameFormat(_)) => ExitCode::Usage,
             CliError::Plan(PlanError::NoPath { .. }) => ExitCode::NoPath,
@@ -55,6 +61,7 @@ impl fmt::Display for CliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CliError::Args(error) => write!(formatter, "{error}"),
+            CliError::Usage(message) => write!(formatter, "{message}"),
             CliError::Format(error) => write!(formatter, "{error}"),
             CliError::Plan(error) => write!(formatter, "{error}"),
             CliError::Convert(error) => write!(formatter, "{error}"),

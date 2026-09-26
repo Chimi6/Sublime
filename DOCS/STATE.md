@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-09-25: Batch conversion on the command line: many inputs, directories, globs, parallel workers, atomic `.part` writes, dry runs, per-file failure isolation.
 - 2026-09-25: The rows-to-document bridge: CSV and TSV become a Markdown table and so reach every document format; a document's first table comes out as rows. Oracles in `tests/rows_document.rs`, pair `csv-markdown` against Miller.
 - 2026-09-25: Excel workbooks, one sheet at a time: a reader that turns a chosen sheet into rows (shared strings, styles for dates, the 1904 epoch, gaps and dimension) and a writer that streams rows into a one-sheet workbook; `--sheet` on `convert`. Map in `DOCS/formats/xlsx.md`, oracles in `tests/xlsx_rows.rs`, pair `xlsx-csv` against `calamine` and `rust_xlsxwriter`.
 - 2026-09-25: TSV and JSON Lines, and every row path among CSV, TSV, JSON, and JSON Lines, all streamed in constant memory. Oracles in `tests/rows.rs`, pairs `tsv-json` and `jsonl-json`.
@@ -87,7 +88,7 @@ The document category's one-way streets are closed (0.8.0 to 0.10.0) and the dat
   - Vendor extensions (math, wiki links, description lists, front matter, heading attributes, superscript, emoji): each needs its own corpus; add one when a path needs it.
   - Dense-input parse speed is level with `pulldown-cmark`, not ahead; the arena-shrinking spike under Spikes is the known lever.
 - 2026-09-22: Review minors deferred from the foundation build, none blocking:
-  - CLI: a failed `convert` removes a pre-existing output file (it was already truncated by create); write-to-temp-then-rename would be non-destructive. Argument-parse errors are always human-formatted even with `--log-format json`. A stdout flush error is reported ahead of the command's own error. Markdown tables from `paths --markdown` do not escape `|`.
+  - CLI: (done 2026-09-25) every output is written to a `.part` file and renamed into place. Argument-parse errors are always human-formatted even with `--log-format json`. A stdout flush error is reported ahead of the command's own error. Markdown tables from `paths --markdown` do not escape `|`.
   - Planner: strict mode runs both Dijkstra passes even when the lossless one succeeds; a `--via` plus `--strict` failure names the waypoint as the destination in the error.
   - Execution: a converter thread panic is reported as `Unsupported`; `PipeReader::read` blocks on a zero-length buffer; partial output can reach stdout before a mid-chain error is reported (inherent to streaming, needs a doc note on `execute`).
   - JSON tokenizer: `skip_value` does not check bracket type agreement (`[1}` skips); a high surrogate followed by a non-escape consumes one extra byte before erroring.
@@ -117,6 +118,7 @@ The document category's one-way streets are closed (0.8.0 to 0.10.0) and the dat
 
 ## Done
 
+- 2026-09-25: Batch conversion (unreleased, branch `batch-convert`).
 - 2026-09-25: The rows-to-document bridge released as 0.17.0, with the Markdown pairs re-validated.
 - 2026-09-25: Excel workbooks one sheet at a time released as 0.16.0.
 - 2026-09-25: TSV and JSON Lines with every row path released as 0.15.0.
