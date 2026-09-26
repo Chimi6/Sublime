@@ -7,10 +7,10 @@
 
 use std::collections::HashMap;
 
-use super::package::{Entry, Object, Package, PackageError, Stream};
+use super::package::{Entry, Object, ObjectMessage, Package, PackageError, Stream};
 use super::schema::SCHEMA;
 use crate::document::{
-    Block, Document, Inline, ListItem, ListLabel, NumberKind, Paragraph, RunProperties,
+    Block, Document, Id, Inline, ListItem, ListLabel, NumberKind, Paragraph, RunProperties,
 };
 use crate::io::protobuf::schema::MessageRef;
 use crate::io::protobuf::tree::{Chain, NONE, Node, Tree, TreeError};
@@ -27,6 +27,7 @@ const PARAGRAPH_STYLE: u32 = 2022;
 const CHARACTER_STYLE: u32 = 2021;
 const LIST_STYLE: u32 = 2023;
 const DRAWABLE_ATTACHMENT: u32 = 2003;
+const HYPERLINK_FIELD: u32 = 2032;
 /// The object-replacement character that stands for an anchored drawable
 /// (a table here) in the body text.
 const ATTACHMENT: char = '\u{FFFC}';
@@ -155,6 +156,10 @@ fn rebuild_body(
         anchors.push((mark.offset, table.attach_id));
     }
 
+    // Identifiers are unique across the whole package, so a new hyperlink
+    // object takes the next id after the highest any stream already uses.
+    let mut next_id = max_identifier(package) + 1;
+
     let stream = document_stream(package)?;
     let body_id = body_storage_identifier(stream)?;
     let Some(index) = stream
@@ -168,6 +173,12 @@ fn rebuild_body(
         Some(message) if message.message_type == STORAGE_ARCHIVE => message.first,
         _ => return Err(malformed("body storage is not a StorageArchive")),
     };
+
+    // Each link range becomes a hyperlink field object the body anchors by a
+    // smart-field attribute table (like the character styles, offset-keyed).
+    let (link_objects, smart_entries) =
+        build_link_objects(&mut stream.tree, document, &body.link_marks, &mut next_id)?;
+
     let (new_first, list_refs) = build_storage(
         &mut stream.tree,
         old_first,
@@ -177,13 +188,155 @@ fn rebuild_body(
         formats,
         lists,
         &anchors,
+        &smart_entries,
     )?;
     stream.objects[index].messages[0].first = new_first;
     let info = stream.objects[index].info;
     let mut references: Vec<u64> = list_refs;
     references.extend(anchors.iter().map(|(_, id)| *id));
+    references.extend(link_objects.iter().map(|object| object.identifier));
+    stream.objects.extend(link_objects);
     add_object_references(&mut stream.tree, info, &references)?;
     Ok(())
+}
+
+/// The highest object identifier any stream uses; a new object takes the
+/// next one, since identifiers are unique across the whole package.
+fn max_identifier(package: &Package) -> u64 {
+    let mut max = 0;
+    for entry in &package.entries {
+        if let Entry::Stream(stream) = entry {
+            for object in &stream.objects {
+                max = max.max(object.identifier);
+            }
+        }
+    }
+    max
+}
+
+/// An offset-keyed object-attribute table: at each offset, the object that
+/// applies there, or `None` for a gap.
+type AttrEntries = Vec<(u32, Option<u64>)>;
+
+/// Builds a `TSWP.HyperlinkFieldArchive` object per contiguous link range,
+/// returning the new objects (for the document stream) and the smart-field
+/// entries that anchor them: `(offset, Some(object))` where a link starts,
+/// `(offset, None)` where the text is unlinked again.
+fn build_link_objects(
+    tree: &mut Tree,
+    document: &Document,
+    marks: &[LinkMark],
+    next_id: &mut u64,
+) -> Result<(Vec<Object>, AttrEntries), PackageError> {
+    let mut objects = Vec::new();
+    let mut entries = Vec::new();
+    for mark in marks {
+        match mark.link.and_then(|id| document.links.get(id as usize)) {
+            Some(url) => {
+                let identifier = *next_id;
+                *next_id += 1;
+                objects.push(build_hyperlink_object(tree, identifier, url)?);
+                entries.push((mark.offset, Some(identifier)));
+            }
+            None => entries.push((mark.offset, None)),
+        }
+    }
+    Ok((objects, entries))
+}
+
+/// One hyperlink field object: the target URL, with a per-field UUID the way
+/// Pages tags each link occurrence. Its `ArchiveInfo` header carries the
+/// registry type so the reader (and Pages) decode it as a hyperlink.
+fn build_hyperlink_object(
+    tree: &mut Tree,
+    identifier: u64,
+    url: &str,
+) -> Result<Object, PackageError> {
+    let hyperlink = message_ref("TSWP.HyperlinkFieldArchive")?;
+    let smart = message_ref("TSWP.SmartFieldArchive")?;
+    let mut base = Chain::new();
+    let uuid = link_uuid(identifier);
+    let uuid_span = tree.push_bytes(uuid.as_bytes()).map_err(tree_error)?;
+    push_field(
+        tree,
+        &mut base,
+        smart,
+        "text_attribute_uuid_string",
+        Node::Str(uuid_span),
+    )?;
+    let mut message = Chain::new();
+    push_field(
+        tree,
+        &mut message,
+        hyperlink,
+        "super",
+        Node::Message(base.first),
+    )?;
+    let url_span = tree.push_bytes(url.as_bytes()).map_err(tree_error)?;
+    push_field(
+        tree,
+        &mut message,
+        hyperlink,
+        "url_ref",
+        Node::Str(url_span),
+    )?;
+    let info = build_archive_info(tree, identifier, HYPERLINK_FIELD)?;
+    Ok(Object {
+        identifier,
+        info,
+        messages: vec![ObjectMessage {
+            message_type: HYPERLINK_FIELD,
+            first: message.first,
+        }],
+    })
+}
+
+/// A UUID-shaped string, unique per object identifier. Pages tags each link
+/// occurrence with one; the exact value is not referenced elsewhere.
+fn link_uuid(identifier: u64) -> String {
+    format!("00000000-0000-4000-8000-{identifier:012X}")
+}
+
+/// Builds a `TSP.ArchiveInfo` header for a new single-message object: its
+/// identifier and one `MessageInfo` giving the registry type and the version
+/// triple Pages writes for text objects. `MessageInfo.length` is filled in by
+/// the encoder from the message's size, but the field must be present for it
+/// to patch.
+fn build_archive_info(
+    tree: &mut Tree,
+    identifier: u64,
+    message_type: u32,
+) -> Result<u32, PackageError> {
+    let archive = message_ref("TSP.ArchiveInfo")?;
+    let info = message_ref("TSP.MessageInfo")?;
+    let mut header = Chain::new();
+    push_field(
+        tree,
+        &mut header,
+        info,
+        "type",
+        Node::Uint(u64::from(message_type)),
+    )?;
+    for version in [1u64, 0, 5] {
+        push_field(tree, &mut header, info, "version", Node::Uint(version))?;
+    }
+    push_field(tree, &mut header, info, "length", Node::Uint(0))?;
+    let mut chain = Chain::new();
+    push_field(
+        tree,
+        &mut chain,
+        archive,
+        "identifier",
+        Node::Uint(identifier),
+    )?;
+    push_field(
+        tree,
+        &mut chain,
+        archive,
+        "message_infos",
+        Node::Message(header.first),
+    )?;
+    Ok(chain.first)
 }
 
 /// A table the template carries, by the identifiers of the objects a rewrite
@@ -618,12 +771,14 @@ fn build_storage(
     formats: &HashMap<Format, u64>,
     lists: &HashMap<String, u64>,
     anchors: &[(u32, u64)],
+    smart_entries: &[(u32, Option<u64>)],
 ) -> Result<(u32, Vec<u64>), PackageError> {
     let storage = message_ref("TSWP.StorageArchive")?;
     // The list tables are only rewritten when the document has a list;
     // otherwise the template's own defaults (no list, level 0) are kept.
     let has_lists = body.paragraphs.iter().any(|mark| mark.list.is_some());
     let has_tables = !anchors.is_empty();
+    let has_links = smart_entries.iter().any(|(_, object)| object.is_some());
     // Fields the writer owns; everything else is copied from the template.
     let mut owned = vec!["text", "table_para_style", "table_char_style"];
     if has_lists {
@@ -631,6 +786,9 @@ fn build_storage(
     }
     if has_tables {
         owned.push("table_attachment");
+    }
+    if has_links {
+        owned.push("table_smartfield");
     }
     // Collect the kept fields before touching the tree (an immutable borrow).
     let mut kept: Vec<(u32, Node)> = Vec::new();
@@ -780,6 +938,17 @@ fn build_storage(
         )?;
     }
 
+    // The smart-field table anchors each hyperlink object over its run. Like
+    // the character table it must begin at offset 0, so an unlinked lead-in
+    // gets an explicit gap entry there.
+    if has_links {
+        let mut link_entries = smart_entries.to_vec();
+        if link_entries.first().is_none_or(|(offset, _)| *offset != 0) {
+            link_entries.insert(0, (0, None));
+        }
+        emit_reference_table(tree, &mut chain, storage, "table_smartfield", &link_entries)?;
+    }
+
     Ok((chain.first, references))
 }
 
@@ -862,6 +1031,13 @@ struct CharMark {
     format: Format,
 }
 
+/// A point in the text where the link target changes: the interned link id
+/// (an index into `Document::links`), or `None` for unlinked text.
+struct LinkMark {
+    offset: u32,
+    link: Option<Id>,
+}
+
 /// A table anchored at a `U+FFFC` character: its offset and its grid of cell
 /// text, with the column widths, row heights, and header-row count.
 struct TableMark {
@@ -881,6 +1057,7 @@ struct Body {
     text: String,
     paragraphs: Vec<ParagraphMark>,
     char_marks: Vec<CharMark>,
+    link_marks: Vec<LinkMark>,
     tables: Vec<TableMark>,
 }
 
@@ -892,9 +1069,11 @@ fn flatten(document: &Document) -> Body {
         text: String::new(),
         paragraphs: Vec::new(),
         char_marks: Vec::new(),
+        link_marks: Vec::new(),
         tables: Vec::new(),
         offset: 0,
         current: Format::default(),
+        current_link: None,
     };
     for section in &document.sections {
         walk.blocks(document, &section.blocks);
@@ -903,6 +1082,7 @@ fn flatten(document: &Document) -> Body {
         text: walk.text,
         paragraphs: walk.paragraphs,
         char_marks: walk.char_marks,
+        link_marks: walk.link_marks,
         tables: walk.tables,
     }
 }
@@ -911,9 +1091,11 @@ struct Walk {
     text: String,
     paragraphs: Vec<ParagraphMark>,
     char_marks: Vec<CharMark>,
+    link_marks: Vec<LinkMark>,
     tables: Vec<TableMark>,
     offset: u32,
     current: Format,
+    current_link: Option<Id>,
 }
 
 impl Walk {
@@ -934,6 +1116,7 @@ impl Walk {
         }
         if !self.paragraphs.is_empty() {
             self.mark(Format::default());
+            self.link_mark(None);
             self.text.push('\n');
             self.offset += 1;
         }
@@ -966,6 +1149,7 @@ impl Walk {
             heights,
         });
         self.mark(Format::default());
+        self.link_mark(None);
         self.text.push(ATTACHMENT);
         self.offset += 1;
     }
@@ -973,6 +1157,7 @@ impl Walk {
     fn paragraph(&mut self, document: &Document, paragraph: &Paragraph) {
         if !self.paragraphs.is_empty() {
             self.mark(Format::default());
+            self.link_mark(None);
             self.text.push('\n');
             self.offset += 1;
         }
@@ -997,6 +1182,7 @@ impl Walk {
                 continue;
             }
             self.mark(run_format(document, run));
+            self.link_mark(run.link);
             self.text.push_str(piece);
             self.offset += utf16_len(piece);
         }
@@ -1009,6 +1195,16 @@ impl Walk {
                 format,
             });
             self.current = format;
+        }
+    }
+
+    fn link_mark(&mut self, link: Option<Id>) {
+        if link != self.current_link {
+            self.link_marks.push(LinkMark {
+                offset: self.offset,
+                link,
+            });
+            self.current_link = link;
         }
     }
 }
@@ -1602,6 +1798,47 @@ mod tests {
         assert_eq!(effective("italic words").italic, Some(true));
         assert_ne!(effective("Plain ").bold, Some(true));
         assert_ne!(effective("Plain ").italic, Some(true));
+    }
+
+    /// A link comes back as a run carrying its target URL: the writer emits a
+    /// hyperlink field object and a smart-field table, and the reader resolves
+    /// the run's link the same way Pages does. Plain text keeps no link.
+    #[test]
+    fn writes_links() {
+        use crate::document::{Block, Inline};
+
+        let markdown = "Visit [the site](https://example.com/path) today.\n";
+        let mut builder = crate::document::from_events::DocumentBuilder::new();
+        crate::io::markdown::parse_into(markdown, Default::default(), &mut builder);
+        let document = builder.finish();
+
+        let bytes = write(&document).expect("write the package");
+        let package = Package::read_scope(&bytes, Scope::Document).expect("read it back");
+        let round = read_document(&package);
+
+        let paragraph = round.sections[0]
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                Block::Paragraph(paragraph) => Some(paragraph),
+                Block::Table(_) => None,
+            })
+            .expect("a paragraph");
+        let link_of = |needle: &str| {
+            let run = paragraph
+                .runs
+                .iter()
+                .find(|run| {
+                    matches!(run.content, Inline::Text(span) if round.text(span).contains(needle))
+                })
+                .unwrap_or_else(|| panic!("no run containing {needle:?}"));
+            round.link(run).map(str::to_string)
+        };
+        assert_eq!(
+            link_of("the site").as_deref(),
+            Some("https://example.com/path")
+        );
+        assert_eq!(link_of("Visit "), None);
     }
 
     /// A bullet list and a numbered list come back as list paragraphs with the

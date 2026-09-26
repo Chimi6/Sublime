@@ -12,7 +12,7 @@ use crate::io::docx::read_docx;
 use crate::io::pages::write_package;
 
 const NAME: &str = "docx-to-pages";
-const FIDELITY_NOTE: &str = "paragraphs, headings, bulleted and numbered lists, and tables reach Pages with its named styles, and bold and italic runs reuse its character styles; links and images are not yet written";
+const FIDELITY_NOTE: &str = "paragraphs, headings, bulleted and numbered lists, and tables reach Pages with its named styles, bold and italic runs reuse its character styles, and links become clickable hyperlinks; images are not yet written";
 
 pub struct DocxToPages;
 
