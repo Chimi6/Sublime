@@ -1,6 +1,6 @@
 # PNG <-> BMP
 
-**Latest** (2026-09-26, `png -> bmp` streams rows into a top-down BMP: png -> bmp 438.2 MB/s of decoded pixels on the photo at 5.4 MB peak, 1011.0 on the flat image; bmp -> png 149.9 and 999.9 MB/s of input plus pixels at 125 MB peak; every line PASSES against the png and image crates)
+**Latest** (2026-09-26, with a stock photograph: every generated line PASSES; on the 418 MB stock photo png -> bmp 458.0 MB/s at 5.5 MB against 412.7 at 424.0, bmp -> png 232.8 MB/s writing 29.0 MB against 176.3 writing 44.2)
 
 ## Purpose
 
@@ -44,6 +44,16 @@ which LZ77 sees through the Sub filter and not through Average, and
 was replaced); `flat`, 64-pixel blocks of five colors with hard edges
 (1.7 MB on disk). The BMP inputs are our conversions of the two.
 
+**Stock image.** When `bench/data/stock.png` (or `$SUBLIME_STOCK_PNG`)
+exists, the same lines run on it, marked `[stock]`. The file is a
+photograph from the web and is not committed, so the rows are
+reproducible only where the owner put the image; they are recorded
+because a real photograph, saved by a real encoder with its Paeth
+filters and profile chunks, is the case the generated shapes cannot
+stand in for. The image behind the block below: 11220 by 9775 RGBA,
+418.4 MB of pixels in a 24.2 MB file, Paeth on 7557 of 9775 rows and
+Up on the rest, with pHYs, iCCP, and cHRM chunks.
+
 **Statistics.** `bench/run.sh png-bmp`: three runs per command,
 median wall clock of the whole process, peak resident memory from GNU
 `time`. Rows and units follow `README.md`.
@@ -67,11 +77,41 @@ median wall clock of the whole process, peak resident memory from GNU
   inflater, checksums, and unfilters are what auto-vectorization gives
   the baseline x86-64 target. That is the gap the photo decode line
   measures.
+- The `[stock]` rows come from one image nobody else can fetch from
+  the repository; they say how the pair behaves on a real photograph,
+  not what a reader of this document can re-run.
 - The machine ran a game client's helper process at about half a core
   during the session; runs moved by up to 10%, and the recorded block
   is one run of three-run medians.
 
 ## Results
+
+### 2026-09-26, with a stock photograph beside the generated shapes
+
+commit: e15be6b (on the `bench-stock-image` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| png -> bmp, photo (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 443.7 | 441.4 (png + image) | PASS |
+| png -> bmp, photo (32.8 MB on disk): throughput (MB/s of file bytes) [extra] | 238.4 | 237.2 (png + image) | n/a |
+| png -> bmp, photo: peak memory (MB) | 5.7 | 66.3 (png + image) | PASS |
+| bmp -> png, photo (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 151.3 | 143.7 (image + png) | PASS |
+| bmp -> png, photo: peak memory (MB) | 124.7 | 159.6 (image + png) | PASS |
+| bmp -> png, photo: output size (MB) [extra] | 33.6 | 32.2 (png) | n/a |
+| bmp -> png, photo: the png crate's fast level, throughput and size [extra] | - | 512.7 MB/s, 32.8 MB (png fast) | n/a |
+| png -> bmp, flat (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 963.3 | 724.4 (png + image) | PASS |
+| png -> bmp, flat (1.7 MB on disk): throughput (MB/s of file bytes) [extra] | 26.8 | 20.1 (png + image) | n/a |
+| png -> bmp, flat: peak memory (MB) | 5.4 | 66.6 (png + image) | PASS |
+| bmp -> png, flat (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 983.2 | 606.9 (image + png) | PASS |
+| bmp -> png, flat: peak memory (MB) | 124.9 | 127.8 (image + png) | PASS |
+| bmp -> png, flat: output size (MB) [extra] | 0.3 | 0.4 (png) | n/a |
+| bmp -> png, flat: the png crate's fast level, throughput and size [extra] | - | 762.9 MB/s, 1.7 MB (png fast) | n/a |
+| png -> bmp, stock (418.4 MB of pixels, 24.2 MB on disk): throughput (MB/s of decoded pixels) [stock] | 458.0 | 412.7 (png + image) | PASS |
+| png -> bmp, stock: peak memory (MB) [stock] | 5.5 | 424.0 (png + image) | PASS |
+| bmp -> png, stock (418.4 MB in + 418.4 MB of pixels): throughput (MB/s of input plus pixels) [stock] | 232.8 | 176.3 (image + png) | PASS |
+| bmp -> png, stock: peak memory (MB) [stock] | 839.5 | 886.6 (image + png) | PASS |
+| bmp -> png, stock: output size (MB) [stock] | 29.0 | 44.2 (png) | n/a |
 
 ### 2026-09-26, png -> bmp streams rows into a top-down BMP
 
@@ -119,7 +159,7 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(
 
 ## Conclusions
 
-Every pass line passes. The photo decode went from 358 to 438 MB/s
+Every pass line passes, and the stock photograph (a real encoder's Paeth rows and profile chunks, 418 MB of pixels) agrees: decode 458.0 against 412.7 MB/s in 5.5 MB against 424.0, encode 232.8 against 176.3 MB/s writing 29.0 MB against 44.2, pixels identical when the crates read our file back. The photo decode went from 358 to 438 MB/s
 against the crates' 412, and its memory from 65 MB to 5, when the
 conversion stopped holding an image: rows go from the unfilter into a
 top-down BMP as they complete, which drops the 61 MB buffer, its
