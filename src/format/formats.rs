@@ -42,6 +42,14 @@ pub static PNG: Format = Format {
     category: Category::Image,
 };
 
+pub static JPEG: Format = Format {
+    id: "jpeg",
+    display_name: "JPEG image",
+    extensions: &["jpg", "jpeg", "jpe"],
+    magic: Some(&[0xFF, 0xD8, 0xFF]),
+    category: Category::Image,
+};
+
 pub static BMP: Format = Format {
     id: "bmp",
     display_name: "Windows bitmap",

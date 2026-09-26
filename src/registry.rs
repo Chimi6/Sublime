@@ -38,7 +38,7 @@ use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 54] = [
+static CONVERTERS: [&dyn Converter; 58] = [
     &csv_to_json::CSV_TO_JSON,
     &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
@@ -93,6 +93,10 @@ static CONVERTERS: [&dyn Converter; 54] = [
     &rows_document::MARKDOWN_TO_TSV,
     &image::PNG_TO_BMP,
     &image::BMP_TO_PNG,
+    &image::JPEG_TO_PNG,
+    &image::JPEG_TO_BMP,
+    &image::PNG_TO_JPEG,
+    &image::BMP_TO_JPEG,
 ];
 
 pub fn all_converters() -> &'static [&'static dyn Converter] {
@@ -168,6 +172,7 @@ mod tests {
                 "csv",
                 "docx",
                 "html",
+                "jpeg",
                 "json",
                 "jsonl",
                 "markdown",

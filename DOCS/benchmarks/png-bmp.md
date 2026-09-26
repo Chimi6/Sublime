@@ -1,6 +1,6 @@
 # PNG <-> BMP
 
-**Latest** (2026-09-26, both directions stream rows: every line PASSES; photo png -> bmp 423.0 MB/s at 5.9 MB against 375.3 at 66.4, bmp -> png 153.6 MB/s at 64.8 MB against 145.6 at 159.7; the 418 MB stock photo decodes in 5.6 MB and encodes in 3.6 MB against the crates' 424.3 and 886.8)
+**Latest** (2026-09-26, with the JPEG release's deflate and filter changes: every line PASSES, the stock rows included; photo png -> bmp 528.1 against 443.4 MB/s, bmp -> png 167.8 against 146.3; flat 1040.4 against 742.3 and 1915.8 against 615.0; stock 537.2 against 521.8 and 294.4 against 177.0; memory 4 to 65 MB against 66 to 887)
 
 ## Purpose
 
@@ -85,6 +85,33 @@ median wall clock of the whole process, peak resident memory from GNU
   is one run of three-run medians.
 
 ## Results
+
+### 2026-09-26, with the JPEG release's deflate and filter changes
+
+commit: c9683c4 (on the `jpeg` branch, before its merge; deflate's payoff threshold at eight, filter trials on every fourth row, stb's Paeth)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| png -> bmp, photo (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 528.1 | 443.4 (png + image) | PASS |
+| png -> bmp, photo (32.8 MB on disk): throughput (MB/s of file bytes) [extra] | 283.8 | 238.3 (png + image) | n/a |
+| png -> bmp, photo: peak memory (MB) | 5.5 | 66.2 (png + image) | PASS |
+| bmp -> png, photo (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 167.8 | 146.3 (image + png) | PASS |
+| bmp -> png, photo: peak memory (MB) | 64.7 | 160.1 (image + png) | PASS |
+| bmp -> png, photo: output size (MB) [extra] | 33.6 | 32.2 (png) | n/a |
+| bmp -> png, photo: the png crate's fast level, throughput and size [extra] | - | 524.3 MB/s, 32.8 MB (png fast) | n/a |
+| png -> bmp, flat (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 1040.4 | 742.3 (png + image) | PASS |
+| png -> bmp, flat (1.7 MB on disk): throughput (MB/s of file bytes) [extra] | 28.9 | 20.6 (png + image) | n/a |
+| png -> bmp, flat: peak memory (MB) | 5.2 | 66.4 (png + image) | PASS |
+| bmp -> png, flat (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 1915.8 | 615.0 (image + png) | PASS |
+| bmp -> png, flat: peak memory (MB) | 64.7 | 127.8 (image + png) | PASS |
+| bmp -> png, flat: output size (MB) [extra] | 0.3 | 0.4 (png) | n/a |
+| bmp -> png, flat: the png crate's fast level, throughput and size [extra] | - | 766.5 MB/s, 1.7 MB (png fast) | n/a |
+| png -> bmp, stock (418.4 MB of pixels, 24.2 MB on disk): throughput (MB/s of decoded pixels) [stock] | 537.2 | 521.8 (png + image) | PASS |
+| png -> bmp, stock: peak memory (MB) [stock] | 5.4 | 423.7 (png + image) | PASS |
+| bmp -> png, stock (418.4 MB in + 418.4 MB of pixels): throughput (MB/s of input plus pixels) [stock] | 294.4 | 177.0 (image + png) | PASS |
+| bmp -> png, stock: peak memory (MB) [stock] | 4.0 | 886.8 (image + png) | PASS |
+| bmp -> png, stock: output size (MB) [stock] | 29.8 | 44.2 (png) | n/a |
 
 ### 2026-09-26, bmp -> png streams rows into the PNG writer
 
@@ -186,7 +213,7 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(
 
 ## Conclusions
 
-Every pass line passes, and the stock photograph (a real encoder's Paeth rows and profile chunks, 418 MB of pixels) agrees: decode 458.0 against 412.7 MB/s in 5.5 MB against 424.0, encode 232.8 against 176.3 MB/s writing 29.0 MB against 44.2, pixels identical when the crates read our file back. The photo decode went from 358 to 438 MB/s
+Every pass line passes, the stock rows included since the deflate matcher's payoff threshold moved to eight bytes and the filter trials to every fourth row (flat encode 1915.8 against 615.0 MB/s), and the stock photograph (a real encoder's Paeth rows and profile chunks, 418 MB of pixels) agrees: decode 458.0 against 412.7 MB/s in 5.5 MB against 424.0, encode 232.8 against 176.3 MB/s writing 29.0 MB against 44.2, pixels identical when the crates read our file back. The photo decode went from 358 to 438 MB/s
 against the crates' 412, and its memory from 65 MB to 5, when the
 conversion stopped holding an image: rows go from the unfilter into a
 top-down BMP as they complete, which drops the 61 MB buffer, its

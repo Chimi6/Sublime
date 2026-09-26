@@ -7,7 +7,7 @@ pub const HELP: &str = "\
 sublime: universal efficient file conversion
 
 USAGE
-  sublime convert <input> [output] [--to <format>] [--from <format>] [--strict] [--via <format>] [--sheet <name|number>]
+  sublime convert <input> [output] [--to <format>] [--from <format>] [--strict] [--via <format>] [--sheet <name|number>] [--quality <1-100>]
   sublime convert <inputs...> [out-dir/] --to <format> [--out-dir <dir>] [-r] [--jobs <n>] [--dry-run]
   sublime check <from> <to> [--strict]
   sublime formats
@@ -26,6 +26,7 @@ COMMANDS
 FLAGS
   --strict            Refuse any path that is lossy or conditional.
   --sheet <name|n>    The worksheet to read from a workbook (a name or a 1-based number; the first when absent), or the name to give the sheet written.
+  --quality <1-100>   The quality a lossy image (JPEG) is written at; 85 when absent.
   --out-dir <dir>     Batch: write outputs into this directory (created if needed), keeping each input's name with the new extension. A trailing positional ending in / does the same. Without it, outputs go beside their inputs.
   -r, --recursive     Batch: descend into directories given as inputs, mirroring their structure under --out-dir.
   --jobs <n>          Batch: files converted at once (default: the CPU count).
@@ -95,6 +96,7 @@ pub struct ConvertArgs {
     pub from: Option<String>,
     pub strict: bool,
     pub sheet: Option<String>,
+    pub quality: Option<u8>,
     pub via: Option<String>,
 }
 
@@ -274,6 +276,7 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
     let mut from: Option<String> = None;
     let mut via: Option<String> = None;
     let mut sheet: Option<String> = None;
+    let mut quality: Option<u8> = None;
     let mut out_dir: Option<String> = None;
     let mut jobs: Option<usize> = None;
     let mut recursive = false;
@@ -286,6 +289,18 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
             "--from" => from = Some(take_value(&mut iterator, "--from")?),
             "--via" => via = Some(take_value(&mut iterator, "--via")?),
             "--sheet" => sheet = Some(take_value(&mut iterator, "--sheet")?),
+            "--quality" => {
+                let value = take_value(&mut iterator, "--quality")?;
+                quality = Some(match value.parse::<u8>() {
+                    Ok(number) if (1..=100).contains(&number) => number,
+                    _ => {
+                        return Err(ArgsError::InvalidValue {
+                            flag: "--quality".to_string(),
+                            value,
+                        });
+                    }
+                });
+            }
             "--out-dir" => out_dir = Some(take_value(&mut iterator, "--out-dir")?),
             "--jobs" => {
                 let value = take_value(&mut iterator, "--jobs")?;
@@ -336,6 +351,7 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
         strict,
         via,
         sheet,
+        quality,
     })
 }
 

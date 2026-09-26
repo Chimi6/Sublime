@@ -2,8 +2,9 @@
 //! writes from. Eight bits per channel, rows top to bottom, no padding.
 
 /// The channels a pixel has.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorType {
+    #[default]
     Gray,
     GrayAlpha,
     Rgb,
@@ -35,7 +36,7 @@ impl ColorType {
 }
 
 /// A decoded image.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Image {
     pub width: u32,
     pub height: u32,

@@ -130,8 +130,11 @@ struct Matcher {
 
 /// The payoff average's scale (and its window, in finds).
 const PAYOFF_SCALE: u32 = 16;
-/// Below this average match length the chain budget shrinks.
-const SHORT_PAYOFF: u32 = 5;
+/// Below this average match length the chain budget shrinks. Eight
+/// keeps the words benchmark's ratio to the digit and halves the time on
+/// decoded photographs (matches of five to seven bytes everywhere) at
+/// the reference's own output size; five left those at full budget.
+const SHORT_PAYOFF: u32 = 8;
 
 impl Matcher {
     fn new(chain_limit: usize) -> Matcher {
