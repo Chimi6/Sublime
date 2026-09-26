@@ -1,5 +1,6 @@
 //! One module per command.
 
+pub mod batch;
 pub mod check;
 pub mod convert;
 pub mod formats;

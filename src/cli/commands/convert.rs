@@ -19,11 +19,16 @@ pub fn run(
     renderer: &mut dyn Sink,
     stdout: &mut dyn Write,
 ) -> Result<ExitCode, CliError> {
+    if super::batch::is_batch(args) {
+        return super::batch::run(args, renderer);
+    }
     let known = registry::all_formats();
-    let reads_stdin = args.input == "-";
+    let input_name = args.inputs.first().cloned().unwrap_or_default();
+    let reads_stdin = input_name == "-";
     let mut input_file = open_input_file(args, reads_stdin)?;
     let from = resolve_from(args, &known, reads_stdin, input_file.as_mut())?;
     let to = resolve_to(args, &known)?;
+    refuse_clobbering_another_format(args, to)?;
     let via = match &args.via {
         Some(id) => Some(format::find_by_id(id, &known)?),
         None => None,
@@ -70,10 +75,11 @@ fn open_input_file(args: &ConvertArgs, reads_stdin: bool) -> Result<Option<File>
     if reads_stdin {
         return Ok(None);
     }
-    match File::open(&args.input) {
+    let input_name = args.inputs.first().cloned().unwrap_or_default();
+    match File::open(&input_name) {
         Ok(file) => Ok(Some(file)),
         Err(error) => Err(CliError::Io {
-            action: format!("opening '{}'", args.input),
+            action: format!("opening '{input_name}'"),
             error,
         }),
     }
@@ -92,7 +98,8 @@ fn resolve_from(
     if reads_stdin {
         return Err(CliError::Format(format::FormatError::Undetectable));
     }
-    let by_extension = format::find_by_extension(Path::new(&args.input), known);
+    let input_name = args.inputs.first().cloned().unwrap_or_default();
+    let by_extension = format::find_by_extension(Path::new(&input_name), known);
     let extension_error = match by_extension {
         Ok(found) => return Ok(found),
         Err(error) => error,
@@ -103,10 +110,10 @@ fn resolve_from(
     };
     let mut head = [0u8; SNIFF_SIZE];
     let read_count = file.read(&mut head).map_err(|error| CliError::Io {
-        action: format!("reading '{}'", args.input),
+        action: format!("reading '{input_name}'"),
         error,
     })?;
-    rewind_file(file, &args.input)?;
+    rewind_file(file, &input_name)?;
     let by_magic = format::find_by_magic(&head[..read_count], known);
     match by_magic {
         Ok(found) => Ok(found),
@@ -121,6 +128,36 @@ fn rewind_file(file: &mut File, name: &str) -> Result<(), CliError> {
         action: format!("rewinding '{name}'"),
         error,
     })
+}
+
+/// `a.csv b.csv --to json` reads as two inputs to a person and as
+/// "write a.csv's JSON over b.csv" to the parser; when the output exists
+/// and its extension names a format other than the target, refuse and
+/// point at the batch spelling.
+fn refuse_clobbering_another_format(
+    args: &ConvertArgs,
+    to: &'static Format,
+) -> Result<(), CliError> {
+    let Some(output) = &args.output else {
+        return Ok(());
+    };
+    let path = Path::new(output);
+    if to.extensions.is_empty() || !path.is_file() {
+        return Ok(());
+    }
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    let matches_target = to.extensions.iter().any(|known| *known == extension);
+    if matches_target {
+        return Ok(());
+    }
+    Err(CliError::Usage(format!(
+        "'{output}' exists and is not a {} file; to convert both files, add --out-dir <dir>",
+        to.id
+    )))
 }
 
 fn resolve_to(args: &ConvertArgs, known: &[&'static Format]) -> Result<&'static Format, CliError> {
@@ -160,22 +197,5 @@ fn convert_to_file(
     path: &Path,
     context: &mut Context<'_>,
 ) -> Result<(), CliError> {
-    let file = File::create(path).map_err(|error| CliError::Io {
-        action: format!("creating '{}'", path.display()),
-        error,
-    })?;
-    let mut writer = BufWriter::new(file);
-    let executed = planner::execute(plan, input, &mut writer, context);
-    let flushed = match executed {
-        Ok(()) => writer.flush().map_err(|error| CliError::Io {
-            action: format!("writing '{}'", path.display()),
-            error,
-        }),
-        Err(error) => Err(CliError::Convert(error)),
-    };
-    if flushed.is_err() {
-        drop(writer);
-        let _ = std::fs::remove_file(path);
-    }
-    flushed
+    super::batch::write_via_part(plan, input, path, context)
 }

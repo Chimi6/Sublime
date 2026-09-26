@@ -58,6 +58,39 @@ fn write_event(writer: &mut JsonWriter<&mut Vec<u8>>, event: &Event) -> std::io:
             writer.key("converter")?;
             writer.string(converter)?;
         }
+        Event::FileStarted { input, output } => {
+            writer.string("file_started")?;
+            writer.key("input")?;
+            writer.string(input)?;
+            writer.key("output")?;
+            writer.string(output)?;
+        }
+        Event::FileFailed { input, message } => {
+            writer.string("file_failed")?;
+            writer.key("input")?;
+            writer.string(input)?;
+            writer.key("message")?;
+            writer.string(message)?;
+        }
+        Event::BatchFinished {
+            converted,
+            lossy,
+            failed,
+            skipped,
+            dry_run,
+        } => {
+            writer.string("batch_finished")?;
+            writer.key("dry_run")?;
+            writer.raw(if *dry_run { "true" } else { "false" })?;
+            writer.key("converted")?;
+            writer.raw(&converted.to_string())?;
+            writer.key("lossy")?;
+            writer.raw(&lossy.to_string())?;
+            writer.key("failed")?;
+            writer.raw(&failed.to_string())?;
+            writer.key("skipped")?;
+            writer.raw(&skipped.to_string())?;
+        }
         Event::StepFinished { converter, elapsed } => {
             writer.string("step_finished")?;
             writer.key("converter")?;

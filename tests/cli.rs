@@ -1,5 +1,6 @@
 //! Runs the built binary as a subprocess and checks stdout, stderr, and exit codes.
 
+use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -481,4 +482,150 @@ fn pages_to_docx_via_extension() {
     assert!(bytes.starts_with(b"PK"));
     assert!(bytes.len() > 2_000);
     std::fs::remove_file(output_path).ok();
+}
+
+// ---- batch conversion ----
+
+fn batch_dir(name: &str) -> PathBuf {
+    let dir = temp_path(name);
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("in/sub")).unwrap();
+    fs::write(dir.join("in/a.csv"), "x,y\n1,2\n").unwrap();
+    fs::write(dir.join("in/b.csv"), "x,y\n3,4\n").unwrap();
+    fs::write(dir.join("in/sub/c.toml"), "k = 1\n").unwrap();
+    fs::write(dir.join("in/notes.zzz"), "not a format").unwrap();
+    dir
+}
+
+#[test]
+fn batch_converts_a_directory_recursively_into_an_out_dir() {
+    let dir = batch_dir("batch-dir");
+    let out = run(&[
+        "convert",
+        dir.join("in").to_str().unwrap(),
+        "-r",
+        "--to",
+        "json",
+        "--out-dir",
+        dir.join("out").to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(
+        fs::read_to_string(dir.join("out/a.json")).unwrap(),
+        r#"[{"x":"1","y":"2"}]"#
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("out/b.json")).unwrap(),
+        r#"[{"x":"3","y":"4"}]"#
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("out/sub/c.json")).unwrap(),
+        r#"{"k":1}"#
+    );
+    assert!(!dir.join("out/notes.json").exists());
+    assert!(
+        stderr(&out).contains("3 converted, 1 skipped"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!dir.join("out/a.json.part").exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn two_inputs_are_not_mistaken_for_an_output_and_a_trailing_directory_is_a_batch() {
+    let dir = batch_dir("batch-beside");
+    let a = dir.join("in/a.csv");
+    let b = dir.join("in/b.csv");
+    // The old reading, "write a.csv's TSV over b.csv", is refused.
+    let out = run(&[
+        "convert",
+        a.to_str().unwrap(),
+        b.to_str().unwrap(),
+        "--to",
+        "tsv",
+    ]);
+    assert_eq!(code(&out), 4, "{}", stderr(&out));
+    assert!(stderr(&out).contains("--out-dir"), "{}", stderr(&out));
+    assert_eq!(fs::read_to_string(&b).unwrap(), "x,y\n3,4\n");
+    let mut target = dir.join("target").into_os_string();
+    target.push("/");
+    let out = run(&[
+        "convert",
+        a.to_str().unwrap(),
+        b.to_str().unwrap(),
+        target.to_str().unwrap(),
+        "--to",
+        "yaml",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(
+        fs::read_to_string(dir.join("target/b.yaml")).unwrap(),
+        "- x: \"3\"\n  y: \"4\"\n"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn batch_expands_a_quoted_glob_and_dry_run_writes_nothing() {
+    let dir = batch_dir("batch-glob");
+    let pattern = format!("{}/in/*.csv", dir.display());
+    let out = run(&["convert", &pattern, "--to", "json", "--dry-run"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stderr(&out);
+    assert!(
+        text.contains("a.csv ->") && text.contains("b.csv ->"),
+        "{text}"
+    );
+    assert!(text.contains("2 would be written (dry run)"), "{text}");
+    assert!(!dir.join("in/a.json").exists());
+    let out = run(&["convert", &pattern, "--to", "json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(dir.join("in/a.json").exists() && dir.join("in/b.json").exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn batch_goes_on_after_a_bad_file_and_refuses_collisions_and_missing_to() {
+    let dir = batch_dir("batch-errors");
+    fs::write(dir.join("in/bad.csv"), "\"never closed\n").unwrap();
+    let out = run(&[
+        "convert",
+        dir.join("in").to_str().unwrap(),
+        "--to",
+        "json",
+        "--out-dir",
+        dir.join("out").to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(stderr(&out).contains("failed: "), "{}", stderr(&out));
+    assert!(dir.join("out/a.json").exists());
+    assert!(!dir.join("out/bad.json").exists());
+    assert!(!dir.join("out/bad.json.part").exists());
+    fs::write(dir.join("in/a.tsv"), "x\ty\n").unwrap();
+    let out = run(&[
+        "convert",
+        dir.join("in/a.csv").to_str().unwrap(),
+        dir.join("in/a.tsv").to_str().unwrap(),
+        "--to",
+        "json",
+        "--out-dir",
+        dir.join("out").to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 4, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("would both write"),
+        "{}",
+        stderr(&out)
+    );
+    let out = run(&[
+        "convert",
+        dir.join("in/a.csv").to_str().unwrap(),
+        dir.join("in/b.csv").to_str().unwrap(),
+        "--out-dir",
+        dir.join("out").to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 4, "{}", stderr(&out));
+    assert!(stderr(&out).contains("--to"), "{}", stderr(&out));
+    let _ = fs::remove_dir_all(&dir);
 }
