@@ -62,7 +62,8 @@ fn crates_markdown_to_json(input: &str, output: &str) -> Result<(), String> {
 fn crates_markdown_to_markdown(input: &str, output: &str) -> Result<(), String> {
     use pulldown_cmark::Event;
     let json = std::fs::read(input).map_err(|error| error.to_string())?;
-    let events: Vec<Event<'_>> = serde_json::from_slice(&json).map_err(|error| error.to_string())?;
+    let events: Vec<Event<'_>> =
+        serde_json::from_slice(&json).map_err(|error| error.to_string())?;
     let mut rendered = String::with_capacity(json.len() / 2);
     pulldown_cmark_to_cmark::cmark(events.into_iter(), &mut rendered)
         .map_err(|error| error.to_string())?;

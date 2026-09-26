@@ -58,7 +58,7 @@ pub fn deflate_part(input: &[u8], out: &mut Vec<u8>, level: Level, is_final: boo
         Level::Default => MAX_CHAIN,
     };
     let mut writer = BitWriter::new(out);
-    let mut matcher = Matcher::new(input.len(), chain_limit);
+    let mut matcher = Matcher::new(chain_limit);
     let mut symbols: Vec<Symbol> = Vec::with_capacity(BLOCK_SYMBOLS);
     let mut position = 0usize;
     let mut block_start = 0usize;
@@ -69,10 +69,17 @@ pub fn deflate_part(input: &[u8], out: &mut Vec<u8>, level: Level, is_final: boo
                 length: length as u16,
                 distance: distance as u16,
             });
-            // The fast level does not index the inside of long matches,
-            // as zlib's fast strategy does not; the next match starts
-            // after them anyway.
-            if level == Level::Default || length <= 8 {
+            // The inside of a long match is not indexed: the fast level
+            // skips anything past eight bytes, as zlib's fast strategy
+            // does, and the default level skips maximal matches, which
+            // are runs and long repeats whose interior the earlier copy
+            // already indexes. Indexing 61 MB of run interior cost more
+            // than everything else in a flat image's encode.
+            let index_inside = match level {
+                Level::Fast => length <= 8,
+                Level::Default => length < MAX_MATCH,
+            };
+            if index_inside {
                 matcher.insert_range(input, position + 1, position + length);
             }
             position += length;
@@ -107,18 +114,32 @@ enum Symbol {
     Match { length: u16, distance: u16 },
 }
 
+/// Finds earlier occurrences through hash chains. The chain links are a
+/// ring of sixteen-bit distances, one slot per window position, so the
+/// walk (a dependent load per step) stays in cache; an array of
+/// positions the size of the input missed on every step.
 struct Matcher {
     head: Vec<u32>,
-    prev: Vec<u32>,
+    /// Distance from a position to the previous one with the same hash,
+    /// indexed by position modulo the window; zero ends the chain.
+    prev: Vec<u16>,
     chain_limit: usize,
+    /// A running average of match lengths, times `PAYOFF_SCALE`.
+    payoff: u32,
 }
 
+/// The payoff average's scale (and its window, in finds).
+const PAYOFF_SCALE: u32 = 16;
+/// Below this average match length the chain budget shrinks.
+const SHORT_PAYOFF: u32 = 5;
+
 impl Matcher {
-    fn new(length: usize, chain_limit: usize) -> Matcher {
+    fn new(chain_limit: usize) -> Matcher {
         Matcher {
             head: vec![u32::MAX; HASH_SIZE],
-            prev: vec![u32::MAX; length],
+            prev: vec![0; WINDOW],
             chain_limit,
+            payoff: PAYOFF_SCALE * SHORT_PAYOFF,
         }
     }
 
@@ -129,13 +150,25 @@ impl Matcher {
         (word.wrapping_mul(0x9E37_79B1) >> (32 - HASH_BITS)) as usize
     }
 
+    /// Links `position` into its chain; returns the previous head.
+    fn link(&mut self, hash: usize, position: usize) -> u32 {
+        let previous = self.head[hash];
+        let step = if previous == u32::MAX || position - previous as usize >= WINDOW {
+            0
+        } else {
+            (position - previous as usize) as u16
+        };
+        self.prev[position & (WINDOW - 1)] = step;
+        self.head[hash] = position as u32;
+        previous
+    }
+
     fn insert(&mut self, input: &[u8], position: usize) {
         if position + MIN_MATCH > input.len() {
             return;
         }
         let hash = Self::hash(input, position);
-        self.prev[position] = self.head[hash];
-        self.head[hash] = position as u32;
+        self.link(hash, position);
     }
 
     fn insert_range(&mut self, input: &[u8], from: usize, to: usize) {
@@ -151,22 +184,30 @@ impl Matcher {
             return (0, 0);
         }
         let hash = Self::hash(input, position);
-        let mut candidate = self.head[hash];
-        self.prev[position] = candidate;
-        self.head[hash] = position as u32;
+        let candidate = self.link(hash, position);
+        if candidate == u32::MAX {
+            return (0, 0);
+        }
+        let mut start = candidate as usize;
         let limit = (input.len() - position).min(MAX_MATCH);
+        // Effort follows payoff: while recent matches have been short
+        // (noise, where a long walk finds nothing better), the chain
+        // budget drops to a twelfth; it comes back as matches lengthen.
+        let budget = if self.payoff < PAYOFF_SCALE * SHORT_PAYOFF {
+            (self.chain_limit / 12).max(1)
+        } else {
+            self.chain_limit
+        };
         let mut best_length = 0usize;
         let mut best_distance = 0usize;
         let mut chain = 0usize;
-        while candidate != u32::MAX && chain < self.chain_limit {
-            let start = candidate as usize;
+        loop {
             let distance = position - start;
-            if distance > WINDOW {
+            if distance >= WINDOW {
                 break;
             }
-            if input[start + best_length.min(limit - 1)]
-                == input[position + best_length.min(limit - 1)]
-            {
+            let probe = best_length.min(limit - 1);
+            if input[start + probe] == input[position + probe] {
                 let length = common_prefix(input, start, position, limit);
                 if length > best_length {
                     best_length = length;
@@ -176,9 +217,14 @@ impl Matcher {
                     }
                 }
             }
-            candidate = self.prev[start];
             chain += 1;
+            let step = usize::from(self.prev[start & (WINDOW - 1)]);
+            if step == 0 || step > start || chain >= budget {
+                break;
+            }
+            start -= step;
         }
+        self.payoff = self.payoff - self.payoff / PAYOFF_SCALE + best_length as u32;
         (best_length, best_distance)
     }
 }
@@ -308,22 +354,76 @@ fn reverse(code: u16, length: u8) -> u16 {
 
 // ----- blocks -----
 
+/// Length to length-code index, for every length 0 to 258.
+const fn length_codes() -> [u8; MAX_MATCH + 1] {
+    let mut table = [0u8; MAX_MATCH + 1];
+    let mut length = MIN_MATCH;
+    while length <= MAX_MATCH {
+        let mut index = 0;
+        while index + 1 < LENGTH_BASE.len() && LENGTH_BASE[index + 1] as usize <= length {
+            index += 1;
+        }
+        table[length] = index as u8;
+        length += 1;
+    }
+    table
+}
+
+/// Distance to distance-code index: distances 1 to 256 directly, and
+/// beyond that by 128s, since every code boundary past 256 falls on one.
+const fn distance_codes() -> [u8; 512] {
+    let mut table = [0u8; 512];
+    let mut index = 0;
+    while index < DISTANCE_BASE.len() {
+        let first = DISTANCE_BASE[index] as usize;
+        let last = if index + 1 < DISTANCE_BASE.len() {
+            DISTANCE_BASE[index + 1] as usize - 1
+        } else {
+            WINDOW
+        };
+        if last <= 256 {
+            let mut distance = first;
+            while distance <= last {
+                table[distance - 1] = index as u8;
+                distance += 1;
+            }
+        } else {
+            let mut slot = 256 + ((first - 1) >> 7);
+            let end = 256 + ((last - 1) >> 7);
+            while slot <= end {
+                table[slot] = index as u8;
+                slot += 1;
+            }
+        }
+        index += 1;
+    }
+    table
+}
+
+const LENGTH_CODES: [u8; MAX_MATCH + 1] = length_codes();
+const DISTANCE_CODES: [u8; 512] = distance_codes();
+
 fn length_symbol(length: u16) -> (u16, u8, u16) {
-    let index = LENGTH_BASE
-        .iter()
-        .rposition(|base| *base <= length)
-        .unwrap_or(0);
-    let extra_bits = LENGTH_EXTRA[index];
-    (257 + index as u16, extra_bits, length - LENGTH_BASE[index])
+    let index = usize::from(LENGTH_CODES[usize::from(length)]);
+    (
+        257 + index as u16,
+        LENGTH_EXTRA[index],
+        length - LENGTH_BASE[index],
+    )
 }
 
 fn distance_symbol(distance: u16) -> (u16, u8, u16) {
-    let index = DISTANCE_BASE
-        .iter()
-        .rposition(|base| *base <= distance)
-        .unwrap_or(0);
-    let extra_bits = DISTANCE_EXTRA[index];
-    (index as u16, extra_bits, distance - DISTANCE_BASE[index])
+    let slot = if distance <= 256 {
+        usize::from(distance) - 1
+    } else {
+        256 + ((usize::from(distance) - 1) >> 7)
+    };
+    let index = usize::from(DISTANCE_CODES[slot]);
+    (
+        index as u16,
+        DISTANCE_EXTRA[index],
+        distance - DISTANCE_BASE[index],
+    )
 }
 
 fn write_block(writer: &mut BitWriter<'_>, raw: &[u8], symbols: &[Symbol], is_final: bool) {

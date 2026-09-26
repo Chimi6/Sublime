@@ -55,7 +55,10 @@ fn crates_csv_to_markdown(input: &str, output: &str) -> Result<(), String> {
     let mut line = String::new();
     let mut width = 0;
     let mut first = true;
-    while reader.read_record(&mut record).map_err(|error| error.to_string())? {
+    while reader
+        .read_record(&mut record)
+        .map_err(|error| error.to_string())?
+    {
         line.clear();
         if first {
             width = record.len();
@@ -75,7 +78,9 @@ fn crates_csv_to_markdown(input: &str, output: &str) -> Result<(), String> {
             line.push('\n');
             first = false;
         }
-        writer.write_all(line.as_bytes()).map_err(|error| error.to_string())?;
+        writer
+            .write_all(line.as_bytes())
+            .map_err(|error| error.to_string())?;
     }
     writer.flush().map_err(|error| error.to_string())
 }
@@ -107,7 +112,9 @@ fn crates_markdown_to_csv(input: &str, output: &str) -> Result<(), String> {
             Event::Start(Tag::TableCell) => current.clear(),
             Event::End(TagEnd::TableCell) => cells.push(std::mem::take(&mut current)),
             Event::End(TagEnd::TableHead) | Event::End(TagEnd::TableRow) => {
-                writer.write_record(&cells).map_err(|error| error.to_string())?;
+                writer
+                    .write_record(&cells)
+                    .map_err(|error| error.to_string())?;
                 cells.clear();
             }
             Event::Text(text) | Event::Code(text) => current.push_str(&text),

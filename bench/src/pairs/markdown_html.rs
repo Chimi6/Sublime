@@ -124,7 +124,9 @@ fn generate(units: &str, path: &str, plain: bool) -> Result<(), String> {
 fn parse_loop(input: &str, seconds: &str) -> Result<(), String> {
     use std::time::Instant;
     let text = std::fs::read_to_string(input).map_err(|error| error.to_string())?;
-    let budget = seconds.parse::<f64>().map_err(|_| "bad seconds".to_string())?;
+    let budget = seconds
+        .parse::<f64>()
+        .map_err(|_| "bad seconds".to_string())?;
     let started = Instant::now();
     let mut iterations = 0u64;
     let mut html: Vec<u8> = Vec::with_capacity(text.len() * 2);

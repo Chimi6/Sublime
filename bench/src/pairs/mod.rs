@@ -19,6 +19,7 @@ pub mod pages_html;
 pub mod pages_json;
 pub mod pages_markdown;
 pub mod pages_text;
+pub mod png_bmp;
 pub mod text_markdown;
 pub mod toml_json;
 pub mod xlsx_csv;
@@ -49,6 +50,7 @@ pub const NAMES: &[&str] = &[
     "toml-json",
     "xml-json",
     "xlsx-csv",
+    "png-bmp",
     "yaml-json",
 ];
 
@@ -77,6 +79,7 @@ pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
         "toml-json" => toml_json::run(mode, args),
         "xml-json" => xml_json::run(mode, args),
         "xlsx-csv" => xlsx_csv::run(mode, args),
+        "png-bmp" => png_bmp::run(mode, args),
         "yaml-json" => yaml_json::run(mode, args),
         other => Err(format!(
             "unknown pair '{other}'; known: {}",
