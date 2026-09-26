@@ -50,12 +50,18 @@ the reader; `STATE.md` records what is being built now.
   more tables than the template holds flattens the extras. Links become
   clickable hyperlinks: a `TSWP.HyperlinkFieldArchive` object per link range
   (added to `Index/Document.iwa`) holds the URL, and a `table_smartfield`
-  attribute table anchors each over its run. `markdown`, `text`, `html`,
-  `docx` -> `pages`, lossy: paragraphs, headings, bold/italic, lists,
-  tables, and links reach Pages; images are not yet written. Output opens in
-  Pages 12 (an exported PDF carries every link's URI). The template is a Pages 12 document
-  carrying those named styles, list styles, and a reference table with its
-  calculation-engine registration, with the preview thumbnails stripped,
+  attribute table anchors each over its run. Inline images reuse the
+  template's own image the way tables reuse its table: the model image's bytes
+  replace the template's data files, the frame and natural sizes are rewritten
+  (the pixel size read from the PNG or JPEG header when the source gave none),
+  the SHA-1 digest in the package metadata is recomputed (Pages keys its asset
+  cache by it), and the attachment is made inline. `markdown`, `text`, `html`,
+  `docx` -> `pages`, lossy: paragraphs, headings, bold/italic, lists, tables,
+  and links reach Pages, and `docx` also carries inline images. Output opens
+  in Pages 12 (an exported PDF carries every link's URI, and the image renders
+  inline). The template is a Pages 12 document carrying those named styles,
+  list styles, a reference table with its calculation-engine registration, and
+  a reference image, with its picture bytes and preview thumbnails stripped,
   compiled in (`style_template.pages`).
 
 On the largest fixture (733 KB, 87 KB of object streams, the rest images)
