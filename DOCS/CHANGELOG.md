@@ -6,6 +6,16 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- The bridge between rows and documents (`src/io/csv/table.rs`, `src/converters/rows_document.rs`): `csv -> markdown` and `tsv -> markdown` turn rows into a Markdown table (first row the header, rows padded or cut to its width, line breaks in cells folded to spaces, everything GFM would misread escaped), so a spreadsheet reaches HTML, Word, text, Markdown JSON, and every document path through the planner; `markdown -> csv` and `markdown -> tsv` take a document's first table out as rows, so Word, Pages, and HTML tables reach every row and hub format. The paths list doubled (88 -> 184). Oracles in `tests/rows_document.rs`.
+- Benchmark pair `csv-markdown` against Miller (`mlr --icsv --omd`, a real tool) with the csv crate and a bespoke table printer as context, and pulldown-cmark with the csv crate for the reverse, every line passing.
+
+### Changed
+
+- The formats map's Mermaid diagram draws an edge between categories to the other category's box (`csv -- conditional --> document`), since the hub behind the box carries it on to every format there; edges inside a category are unchanged.
+- Markdown, for every path through it: the writer copies plain text in runs and scans for list-opening digits only where they can matter; the block parser keeps a table's cells in one vector with row ends instead of one vector per row (markdown -> csv on a million-row table 295 -> 215 MB); inline rendering hands plain text (no inline syntax, no autolink start) through as one event without the node machinery (markdown -> csv 108 -> 121 MB/s).
+
 ## [0.16.0] - 2026-09-25
 
 Excel workbooks: a chosen sheet to CSV, TSV, JSON, and JSON Lines, and

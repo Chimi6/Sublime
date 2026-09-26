@@ -5,7 +5,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use super::block::{Cell, Document, Kind, Line, Node, Reference, join_lines};
+use super::block::{Cell, Document, Kind, Line, Node, Reference, TableData, join_lines};
 use crate::io::scan::find_any_of3;
 
 use super::scan::{
@@ -13,7 +13,7 @@ use super::scan::{
     is_unicode_whitespace, normalize_label, scan_autolink, scan_inline_html, scan_link_destination,
     scan_link_label, scan_link_title, unescape_and_decode_cow,
 };
-use super::{Alignment, CodeBlockKind, Event, EventSink, Options, Tag, TagEnd};
+use super::{CodeBlockKind, Event, EventSink, Options, Tag, TagEnd};
 
 /// Events for one top-level block (and everything inside it).
 pub fn render_block<'a>(
@@ -197,7 +197,7 @@ impl<'a> Renderer<'_, 'a> {
                 }
                 self.sink.event(Event::End(TagEnd::HtmlBlock));
             }
-            Kind::Table(data) => self.table(&data.alignments, &data.rows),
+            Kind::Table(data) => self.table(data),
             Kind::FootnoteDefinition { label } => {
                 self.sink
                     .event(Event::Start(Tag::FootnoteDefinition(owned(label))));
@@ -259,11 +259,11 @@ impl<'a> Renderer<'_, 'a> {
         }
     }
 
-    fn table(&mut self, alignments: &[Alignment], rows: &[Vec<Cell>]) {
-        let column_count = alignments.len();
+    fn table(&mut self, data: &TableData) {
+        let column_count = data.alignments.len();
         self.sink
-            .event(Event::Start(Tag::Table(alignments.to_vec())));
-        let mut rows = rows.iter();
+            .event(Event::Start(Tag::Table(data.alignments.to_vec())));
+        let mut rows = data.rows();
         if let Some(header) = rows.next() {
             self.sink.event(Event::Start(Tag::TableHead));
             self.table_cells(header, column_count);
@@ -295,6 +295,13 @@ impl<'a> Renderer<'_, 'a> {
         match content {
             Cow::Borrowed(text) => {
                 let trimmed = text.trim_end_matches(['\n', ' ', '\t']);
+                if is_plain_inline(trimmed) {
+                    // Nothing to parse: one text event, no node machinery.
+                    if !trimmed.is_empty() {
+                        sink.event(Event::Text(Cow::Borrowed(trimmed)));
+                    }
+                    return;
+                }
                 let mut parser =
                     InlineParser::new(trimmed, self.document, self.options, self.scratch);
                 parser.parse();
@@ -309,6 +316,15 @@ impl<'a> Renderer<'_, 'a> {
             }
         }
     }
+}
+
+/// Text the inline parser would hand back as one text event: no inline
+/// syntax bytes, and nothing that could start an autolink literal (an
+/// email's `@`, a scheme's `:`, or `www`). Table cells of plain data
+/// take this path; prose rarely does, and need not.
+fn is_plain_inline(text: &str) -> bool {
+    text.bytes()
+        .all(|byte| !SPECIAL[byte as usize] && !matches!(byte, b'@' | b':' | b'w' | b'W'))
 }
 
 fn split_task_marker(content: &str) -> Option<(bool, &str)> {
