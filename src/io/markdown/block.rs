@@ -58,8 +58,22 @@ pub struct ItemData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableData {
     pub alignments: Vec<Alignment>,
-    /// Header row first. Cells are already split and trimmed.
-    pub rows: Vec<Vec<Cell>>,
+    /// Every row's cells in one vector, header row first, already split
+    /// and trimmed; `row_ends[i]` is where row `i` stops.
+    pub cells: Vec<Cell>,
+    pub row_ends: Vec<u32>,
+}
+
+impl TableData {
+    /// The rows, header first.
+    pub fn rows(&self) -> impl Iterator<Item = &[Cell]> {
+        let mut start = 0usize;
+        self.row_ends.iter().map(move |end| {
+            let row = &self.cells[start..*end as usize];
+            start = *end as usize;
+            row
+        })
+    }
 }
 
 /// A table cell: a trimmed range of the source, or an owned string when a
@@ -1094,9 +1108,9 @@ impl<'s> BlockParser<'s> {
                 if !self.blank {
                     let cell_start = self.first_nonspace.min(line.len());
                     let rest = &raw_line[cell_start..];
-                    let cells = split_table_row(rest, Some(line_start + cell_start));
                     if let Kind::Table(data) = &mut self.nodes[container].kind {
-                        data.rows.push(cells);
+                        split_table_row_into(rest, Some(line_start + cell_start), &mut data.cells);
+                        data.row_ends.push(data.cells.len() as u32);
                     }
                 }
             }
@@ -1169,9 +1183,11 @@ impl<'s> BlockParser<'s> {
             self.nodes[paragraph].open = false;
             self.nodes[paragraph].deleted = true;
         }
+        let header_end = header.len() as u32;
         let table = Kind::Table(Box::new(TableData {
             alignments,
-            rows: vec![header],
+            cells: header,
+            row_ends: vec![header_end],
         }));
         let index = self.add_child(parent, table);
         self.try_open_table_result = index;
@@ -1401,8 +1417,15 @@ fn parse_delimiter_row(line: &str) -> Option<Vec<Alignment>> {
 /// (GFM requires escaping them). With `base`, plain cells are ranges of the
 /// source starting there; without it, every cell is owned.
 pub fn split_table_row(line: &str, base: Option<usize>) -> Vec<Cell> {
-    let bytes = line.as_bytes();
     let mut cells: Vec<Cell> = Vec::new();
+    split_table_row_into(line, base, &mut cells);
+    cells
+}
+
+/// `split_table_row` appending to `cells`, so a table's rows share one
+/// vector instead of one allocation each.
+pub fn split_table_row_into(line: &str, base: Option<usize>, cells: &mut Vec<Cell>) {
+    let bytes = line.as_bytes();
     let mut index = 0usize;
     // Skip leading whitespace and one leading pipe.
     while index < bytes.len() && (bytes[index] == b' ' || bytes[index] == b'\t') {
@@ -1457,7 +1480,7 @@ pub fn split_table_row(line: &str, base: Option<usize>) -> Vec<Cell> {
             continue;
         }
         if byte == b'|' {
-            push_cell(&mut cells, cell_start, cursor, needs_unescape);
+            push_cell(cells, cell_start, cursor, needs_unescape);
             needs_unescape = false;
             cursor += 1;
             cell_start = cursor;
@@ -1468,7 +1491,6 @@ pub fn split_table_row(line: &str, base: Option<usize>) -> Vec<Cell> {
     }
     let trailing_is_blank = line[cell_start..end].trim_matches([' ', '\t']).is_empty();
     if !(ended_with_pipe && trailing_is_blank) {
-        push_cell(&mut cells, cell_start, end, needs_unescape);
+        push_cell(cells, cell_start, end, needs_unescape);
     }
-    cells
 }
