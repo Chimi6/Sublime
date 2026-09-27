@@ -14,7 +14,8 @@ use std::io;
 use crate::document::{
     Alignment, Anchor, AnchorBase, Baseline, Block, Caps, Document, FloatingContent, Inline,
     InlineImage, LineSpacing, ListLabel, Merge, NumberKind, Paragraph, ParagraphProperties,
-    Placement, RevisionKind, Run, RunProperties, Section, SectionStart, Table, mathml_text,
+    Placement, RevisionKind, Run, RunProperties, Section, SectionStart, Table, VerticalAlignment,
+    mathml_text,
 };
 use crate::io::deflate::Level;
 use crate::io::xml::{escape_attribute, escape_text};
@@ -341,8 +342,37 @@ impl DocxWriter {
         let total: i64 = (0..column_count).map(column_width).sum();
         let _ = write!(
             out,
-            "<w:tbl><w:tblPr><w:tblStyle w:val=\"TableGrid\"/><w:tblW w:w=\"{total}\" w:type=\"dxa\"/><w:tblLayout w:type=\"fixed\"/></w:tblPr><w:tblGrid>"
+            "<w:tbl><w:tblPr><w:tblStyle w:val=\"TableGrid\"/><w:tblW w:w=\"{total}\" w:type=\"dxa\"/>"
         );
+        // The table's own lines and margins, over the grid style's.
+        if let Some(borders) = table.borders {
+            out.push_str("<w:tblBorders>");
+            for (name, line) in [
+                ("top", borders.top),
+                ("left", borders.left),
+                ("bottom", borders.bottom),
+                ("right", borders.right),
+                ("insideH", borders.inside_horizontal),
+                ("insideV", borders.inside_vertical),
+            ] {
+                border_xml(name, Some(line), out);
+            }
+            out.push_str("</w:tblBorders>");
+        }
+        out.push_str("<w:tblLayout w:type=\"fixed\"/>");
+        if let Some(margins) = table.cell_margins {
+            out.push_str("<w:tblCellMar>");
+            for (name, points) in [
+                ("top", margins.top),
+                ("left", margins.left),
+                ("bottom", margins.bottom),
+                ("right", margins.right),
+            ] {
+                let _ = write!(out, "<w:{name} w:w=\"{}\" w:type=\"dxa\"/>", twips(points));
+            }
+            out.push_str("</w:tblCellMar>");
+        }
+        out.push_str("</w:tblPr><w:tblGrid>");
         for column in 0..column_count {
             let _ = write!(out, "<w:gridCol w:w=\"{}\"/>", column_width(column));
         }
@@ -380,12 +410,49 @@ impl DocxWriter {
                     Merge::Above => out.push_str("<w:vMerge/>"),
                     _ => {}
                 }
+                let sides = [
+                    ("top", cell.borders.top),
+                    ("left", cell.borders.left),
+                    ("bottom", cell.borders.bottom),
+                    ("right", cell.borders.right),
+                ];
+                if sides.iter().any(|(_, side)| side.is_some()) {
+                    out.push_str("<w:tcBorders>");
+                    for (name, side) in sides {
+                        border_xml(name, side, out);
+                    }
+                    out.push_str("</w:tcBorders>");
+                }
                 if let Some(background) = cell.background {
                     let _ = write!(
                         out,
                         "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{}\"/>",
                         background.hex()
                     );
+                }
+                let [top, bottom, left, right] = cell.margins;
+                if cell.margins.iter().any(Option::is_some) {
+                    out.push_str("<w:tcMar>");
+                    for (name, points) in [
+                        ("top", top),
+                        ("left", left),
+                        ("bottom", bottom),
+                        ("right", right),
+                    ] {
+                        if let Some(points) = points {
+                            let _ =
+                                write!(out, "<w:{name} w:w=\"{}\" w:type=\"dxa\"/>", twips(points));
+                        }
+                    }
+                    out.push_str("</w:tcMar>");
+                }
+                if let Some(vertical) = cell.vertical_alignment {
+                    let value = match vertical {
+                        VerticalAlignment::Top => "top",
+                        VerticalAlignment::Center => "center",
+                        VerticalAlignment::Bottom => "bottom",
+                    };
+                    let _ = write!(out, "<w:vAlign w:val=\"{value}\"/>");
                 }
                 out.push_str("</w:tcPr>");
                 // A cell holds at least one paragraph, and ends with one.
@@ -1460,5 +1527,26 @@ mod tests {
         assert_eq!(font_family("Nonexistent Sans"), "Nonexistent Sans");
         assert_eq!(font_family("AvenirNext-DemiBold"), "Avenir Next");
         assert_eq!(font_family("STHeitiSC-Light"), "ST Heiti SC");
+    }
+}
+
+/// One border side: a line, `nil` for a stated "no line", or nothing when
+/// unstated.
+fn border_xml(name: &str, side: Option<Option<crate::document::Border>>, out: &mut String) {
+    match side {
+        Some(Some(line)) => {
+            let color = line
+                .color
+                .map_or_else(|| "auto".to_string(), |color| color.hex());
+            let _ = write!(
+                out,
+                "<w:{name} w:val=\"single\" w:sz=\"{}\" w:space=\"0\" w:color=\"{color}\"/>",
+                ((line.width * 8.0).round() as i64).clamp(2, 96)
+            );
+        }
+        Some(None) => {
+            let _ = write!(out, "<w:{name} w:val=\"nil\"/>");
+        }
+        None => {}
     }
 }

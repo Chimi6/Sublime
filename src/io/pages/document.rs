@@ -1779,12 +1779,17 @@ impl Reader<'_> {
         lists: &TableLists,
         default_text_style: Option<u64>,
     ) {
+        // The cell's own style decides its fill (an empty one is none, over
+        // the table's) and where its text sits.
         if let Some(style) = record
             .cell_style
             .and_then(|id| lists.styles.get(&id))
-            .and_then(|object| self.cell_fill(*object))
+            .copied()
         {
-            cell.background = Some(style);
+            if let Some(fill) = self.cell_fill_stated(style) {
+                cell.background = fill;
+            }
+            cell.vertical_alignment = self.cell_vertical_alignment(style);
         }
         let text = match record.kind {
             // Rich text: a storage of its own.
@@ -1837,6 +1842,41 @@ impl Reader<'_> {
             content: Inline::Text(span),
         });
         cell.blocks = vec![Block::Paragraph(paragraph)];
+    }
+
+    /// The fill a `TST.CellStyleArchive` states, through its parents: `None`
+    /// when none does, `Some(None)` for a stated empty fill.
+    fn cell_fill_stated(&self, style: u64) -> Option<Option<Color>> {
+        self.cell_property(style, |properties| {
+            properties
+                .message("cell_fill")
+                .map(|fill| fill.message("color").and_then(color))
+        })
+    }
+
+    /// Where a `TST.CellStyleArchive` sets its text: centre (1) or bottom (2);
+    /// top otherwise.
+    fn cell_vertical_alignment(&self, style: u64) -> Option<crate::document::VerticalAlignment> {
+        match self.cell_property(style, |properties| properties.integer("vertical_alignment"))? {
+            1 => Some(crate::document::VerticalAlignment::Center),
+            2 => Some(crate::document::VerticalAlignment::Bottom),
+            _ => None,
+        }
+    }
+
+    /// The first value `read` finds in a cell style's properties, through its
+    /// parents.
+    fn cell_property<T>(&self, style: u64, read: impl Fn(View<'_>) -> Option<T>) -> Option<T> {
+        let mut current = Some(style);
+        for _ in 0..64 {
+            let message = self.graph.object(current?)?;
+            let view = View::of(message);
+            if let Some(value) = view.message("cell_properties").and_then(&read) {
+                return Some(value);
+            }
+            current = view.message("super").and_then(|s| s.reference("parent"));
+        }
+        None
     }
 
     /// The fill color of a `TST.CellStyleArchive`, through its parents.
