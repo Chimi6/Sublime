@@ -2811,6 +2811,28 @@ impl Walk {
         if table.rows.is_empty() || table.columns.is_empty() {
             return;
         }
+        // Pages cannot break a table row across pages: a row taller than the
+        // page is clipped. Such a table (often a whole section wrapped in one
+        // layout cell) is unwrapped into body content, row by row, where Pages
+        // paginates freely; tables nested in it become tables in their own right.
+        let page = document.sections.first().map(|section| section.page.clone()).unwrap_or_default();
+        let body_height = (page.height - page.margin_top - page.margin_bottom).max(144.0);
+        // A table wider than the text area is shrunk to fit it, as Pages would
+        // draw it anyway; its rows are estimated at those widths.
+        let text_width = (page.width - page.margin_left - page.margin_right).max(72.0);
+        let total: f32 = table.columns.iter().sum();
+        let scale = if total > text_width { text_width / total } else { 1.0 };
+        let widths: Vec<f32> = table.columns.iter().map(|width| width * scale).collect();
+        if max_row_height(document, table, &widths) > body_height * 1.1 {
+            for row in &table.rows {
+                for cell in &row.cells {
+                    if cell.merge == crate::document::Merge::Origin {
+                        self.blocks(document, &cell.blocks);
+                    }
+                }
+            }
+            return;
+        }
         if !self.paragraphs.is_empty() {
             self.mark(Format::default());
             self.link_mark(None);
@@ -2843,7 +2865,6 @@ impl Walk {
                 }
             }
         }
-        let widths = table.columns.clone();
         let heights = table
             .rows
             .iter()
@@ -2970,33 +2991,98 @@ impl Walk {
 /// a newline. Only text runs contribute; nested tables and other inlines are
 /// skipped (an MVP that carries the words).
 fn flatten_cell(document: &Document, cell: &crate::document::Cell) -> CellContent {
-    let paragraphs: Vec<&Paragraph> = cell
-        .blocks
-        .iter()
-        .filter_map(|block| match block {
-            Block::Paragraph(paragraph) => Some(paragraph),
-            _ => None,
-        })
-        .collect();
-    flatten_paragraphs(document, &paragraphs)
+    flatten_lines(document, &block_lines(&cell.blocks))
 }
 
-/// Flattens paragraphs into one text with its formatting runs, one paragraph
-/// per line; page-number and page-count fields become U+FFFC attachments.
-fn flatten_paragraphs(document: &Document, paragraphs: &[&Paragraph]) -> CellContent {
+/// One line of flattened text: segments joined by tabs, each segment's
+/// paragraphs joined by soft line breaks.
+type Line<'a> = Vec<Vec<&'a Paragraph>>;
+
+/// The lines a run of blocks flattens to. A paragraph is a line of its own; a
+/// table (Pages has no tables inside table cells or headers) becomes one line
+/// per row with its cells separated by tabs, so its text and reading order
+/// survive. A cell's content, nested tables included, collapses into one
+/// segment.
+fn block_lines(blocks: &[Block]) -> Vec<Line<'_>> {
+    let mut lines = Vec::new();
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => lines.push(vec![vec![paragraph]]),
+            Block::Table(table) => {
+                for row in &table.rows {
+                    let segments: Line<'_> = row
+                        .cells
+                        .iter()
+                        .filter(|cell| cell.merge == crate::document::Merge::Origin)
+                        .map(|cell| {
+                            let mut paragraphs = Vec::new();
+                            collect_paragraphs(&cell.blocks, &mut paragraphs);
+                            paragraphs
+                        })
+                        .collect();
+                    if segments.iter().any(|segment| !segment.is_empty()) {
+                        lines.push(segments);
+                    }
+                }
+            }
+        }
+    }
+    lines
+}
+
+/// Every paragraph in `blocks`, depth first through nested tables.
+fn collect_paragraphs<'a>(blocks: &'a [Block], out: &mut Vec<&'a Paragraph>) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => out.push(paragraph),
+            Block::Table(table) => {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        collect_paragraphs(&cell.blocks, out);
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+/// Flattens lines (see `block_lines`) into one text with its formatting runs:
+/// lines end with a paragraph break, segments with a tab, and a segment's
+/// paragraphs with a soft line break.
+fn flatten_lines(document: &Document, lines: &[Line<'_>]) -> CellContent {
     let mut text = String::new();
     let mut marks: Vec<(u32, Format)> = Vec::new();
     let mut fields: Vec<(u32, u64)> = Vec::new();
     let mut current = Format::default();
     let mut offset = 0u32;
-    for paragraph in paragraphs {
-        if !text.is_empty() {
-            text.push('\n');
-            offset += 1;
-            if current != Format::default() {
-                marks.push((offset - 1, Format::default()));
-                current = Format::default();
-            }
+    let separator = |text: &mut String, offset: &mut u32, marks: &mut Vec<(u32, Format)>, current: &mut Format, character: char| {
+        if *current != Format::default() {
+            marks.push((*offset, Format::default()));
+            *current = Format::default();
+        }
+        text.push(character);
+        *offset += 1;
+    };
+    let paragraphs = lines.iter().enumerate().flat_map(|(line_index, line)| {
+        line.iter().enumerate().flat_map(move |(segment_index, segment)| {
+            segment.iter().enumerate().map(move |(paragraph_index, paragraph)| {
+                let lead = if paragraph_index > 0 {
+                    Some('\u{2028}')
+                } else if segment_index > 0 {
+                    Some('\t')
+                } else if line_index > 0 {
+                    Some('\n')
+                } else {
+                    None
+                };
+                (lead, *paragraph)
+            })
+        })
+    });
+    for (lead, paragraph) in paragraphs {
+        if let Some(character) = lead {
+            separator(&mut text, &mut offset, &mut marks, &mut current, character);
         }
         for run in &paragraph.runs {
             if document.is_deleted(run) {
@@ -5736,9 +5822,11 @@ fn page_areas(document: &Document, section: &crate::document::Section) -> Vec<Pa
             let Some(blocks) = blocks else {
                 continue;
             };
-            let mut buckets: [Vec<&Paragraph>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+            let mut buckets: [Vec<Line<'_>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
             for block in blocks {
                 let Block::Paragraph(paragraph) = block else {
+                    // A table in a header keeps its text, row by row, left.
+                    buckets[0].extend(block_lines(std::slice::from_ref(block)));
                     continue;
                 };
                 let position = match document.paragraph_properties(paragraph).alignment {
@@ -5746,10 +5834,10 @@ fn page_areas(document: &Document, section: &crate::document::Section) -> Vec<Pa
                     Some(crate::document::Alignment::Right) => 2,
                     _ => 0,
                 };
-                buckets[position].push(paragraph);
+                buckets[position].push(vec![vec![paragraph]]);
             }
-            for (position, paragraphs) in buckets.iter().enumerate() {
-                let content = flatten_paragraphs(document, paragraphs);
+            for (position, lines) in buckets.iter().enumerate() {
+                let content = flatten_lines(document, lines);
                 if content.text.trim().is_empty() && content.fields.is_empty() {
                     continue;
                 }
@@ -5920,4 +6008,46 @@ fn add_data_user(package: &mut Package, data_id: u64, object_id: u64) -> Result<
     let reference_ref = child_message(components, "data_references")?;
     append_message_field(tree, reference_ref, reference, "object_reference_list", copy)?;
     Ok(())
+}
+
+/// A rough upper-bound estimate of a table's tallest row, in points: each
+/// cell's paragraphs wrapped to the cell's width at their font size.
+fn max_row_height(document: &Document, table: &crate::document::Table, widths: &[f32]) -> f32 {
+    let mut tallest: f32 = 0.0;
+    for row in &table.rows {
+        let mut row_height: f32 = row.height.unwrap_or(0.0);
+        let mut column = 0usize;
+        for cell in &row.cells {
+            let span = cell.column_span.max(1) as usize;
+            let width: f32 = widths.iter().skip(column).take(span).sum::<f32>().max(24.0);
+            column += 1;
+            if cell.merge != crate::document::Merge::Origin {
+                continue;
+            }
+            let mut paragraphs = Vec::new();
+            collect_paragraphs(&cell.blocks, &mut paragraphs);
+            let mut height = 0.0;
+            for paragraph in paragraphs {
+                let mut characters = 0usize;
+                let mut size: f32 = 11.0;
+                for run in &paragraph.runs {
+                    if let Inline::Text(span) = run.content {
+                        characters += document.text(span).chars().count();
+                        if let Some(points) = document.effective_run(paragraph, run).size {
+                            size = size.max(points);
+                        }
+                    }
+                }
+                // Deliberately generous (wide average glyphs, the paragraph
+                // spacing Pages' styles add): unwrapping a table that would
+                // have fitted costs only its box, while a clipped row hides text.
+                let per_line = ((width - 12.0).max(16.0) / (size * 0.6)).max(1.0);
+                let lines = (characters as f32 / per_line).ceil().max(1.0);
+                height += lines * size * 1.35 + size * 1.6;
+            }
+            row_height = row_height.max(height);
+        }
+        tallest = tallest.max(row_height);
+    }
+    tallest
 }
