@@ -38,10 +38,14 @@ fn fail<T>(message: &str) -> Result<T, RowsError> {
 /// A pixel as `[r, g, b, a]`.
 type Pixel = [u8; 4];
 
+/// `(r * 3 + g * 5 + b * 7 + a * 11) % 64` in one multiply: the four
+/// bytes spread into 16-bit lanes of a word whose product with the
+/// weights sums them in the top byte (the qoi crate's form).
 #[inline]
 fn hash(pixel: Pixel) -> usize {
-    let [r, g, b, a] = pixel.map(usize::from);
-    (r * 3 + g * 5 + b * 7 + a * 11) % 64
+    let value = u64::from(u32::from_le_bytes(pixel));
+    let spread = ((value & 0xff00_ff00) << 32) | (value & 0x00ff_00ff);
+    (spread.wrapping_mul(0x0300_0700_0005_000b) >> 56) as usize & 63
 }
 
 /// The input, read a piece at a time.
@@ -361,4 +365,23 @@ pub fn write_qoi(image: &Image, sink: &mut dyn Write) -> io::Result<()> {
         rows.row(image.row(y))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_one_multiply_hash_is_the_spec_hash() {
+        for sample in 0..100_000u32 {
+            let pixel = (sample.wrapping_mul(2_654_435_761)).to_le_bytes();
+            let [r, g, b, a] = pixel.map(usize::from);
+            assert_eq!(
+                hash(pixel),
+                (r * 3 + g * 5 + b * 7 + a * 11) % 64,
+                "{pixel:?}"
+            );
+        }
+        assert_eq!(hash([255, 255, 255, 255]), (255 * 26) % 64);
+    }
 }
