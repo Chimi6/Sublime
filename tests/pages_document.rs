@@ -421,11 +421,18 @@ fn floating_text_boxes_and_images_are_collected() {
         (220.0, 130.0)
     );
     let document = read("native-scripted");
-    assert_eq!(document.floating.len(), 2);
-    assert!(matches!(
-        document.floating[0].content,
-        FloatingContent::Image(_)
-    ));
+    // The picture, the text box, and the table placed on the page.
+    assert_eq!(document.floating.len(), 3);
+    assert!(document.floating.iter().any(|floating| matches!(
+        &floating.content,
+        FloatingContent::TextBox { blocks, .. } if matches!(blocks.first(), Some(Block::Table(_)))
+    )));
+    assert!(
+        document
+            .floating
+            .iter()
+            .any(|floating| matches!(floating.content, FloatingContent::Image(_)))
+    );
 }
 
 #[test]
