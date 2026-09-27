@@ -16,7 +16,7 @@ USAGE
 
 COMMANDS
   convert   Convert a file. Formats come from extensions unless --from/--to are given.
-            Use '-' as input to read stdin. Omit output to write stdout.
+            Use '-' as input to read stdin, and '-' or no output to write stdout.
   check     Show the path and fidelity between two formats without converting.
   formats   List every known format.
   paths     List every conversion path. --markdown emits DOCS/FORMATS.md.
@@ -337,7 +337,8 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
             out_dir = Some(last);
         }
     } else if positionals.len() == 2 && out_dir.is_none() {
-        output = positionals.pop();
+        // `-` as the output is stdout, as it is stdin as the input.
+        output = positionals.pop().filter(|path| path != "-");
     }
     Ok(ConvertArgs {
         inputs: positionals,
@@ -506,6 +507,18 @@ mod tests {
         match parsed.command {
             Command::Convert(args) => {
                 assert_eq!(args.inputs, vec!["-".to_string()]);
+                assert!(args.output.is_none());
+            }
+            other => panic!("wrong command {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_dash_output_means_stdout() {
+        let parsed = parse_strs(&["convert", "in.png", "-", "--to", "webp"]).unwrap();
+        match parsed.command {
+            Command::Convert(args) => {
+                assert_eq!(args.inputs, vec!["in.png".to_string()]);
                 assert!(args.output.is_none());
             }
             other => panic!("wrong command {other:?}"),
