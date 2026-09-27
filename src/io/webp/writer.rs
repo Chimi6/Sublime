@@ -241,25 +241,46 @@ struct Histograms {
     distance: [u32; 40],
 }
 
-/// One symbol of an image: a literal pixel (written as its color cache
-/// index when `cached`), or a copy of `length` pixels from `distance`
-/// back.
-enum Token {
-    Literal {
-        pixel: u32,
-        cached: bool,
-        index: usize,
-    },
-    Copy(usize, usize),
+/// The first pass's decisions, kept for the writing pass so it neither
+/// searches for runs nor hashes again: a bit per pixel for a cache hit,
+/// a bit per pixel for the start of a copy, and each copy's length
+/// (shifted left one, the low bit set for a copy of the pixel above).
+struct Decisions {
+    cached_bits: Vec<u64>,
+    copy_bits: Vec<u64>,
+    copies: Vec<u32>,
 }
 
-/// One image's symbols, from the same decisions in both passes; `emit`
-/// counts them in the first pass and writes them in the second.
-fn tokenize(pixels: &[u32], width: usize, cache_bits: u32, mut emit: impl FnMut(Token)) {
+/// Chooses each symbol of an image (runs copying the pixel to the left
+/// or above, color cache hits, literals), counting them into
+/// `histograms` and recording the choices. One function with its state
+/// in locals: behind a closure's captured references the position and
+/// the bit words were reloaded from memory on every pixel.
+fn analyze(
+    pixels: &[u32],
+    width: usize,
+    cache_bits: u32,
+    histograms: &mut Histograms,
+) -> Decisions {
     let total = pixels.len();
+    let words = total.div_ceil(64);
+    let mut cached_bits = vec![0u64; words];
+    let mut copy_bits = vec![0u64; words];
+    let mut copies: Vec<u32> = Vec::new();
     let mut cache = vec![0u32; if cache_bits > 0 { 1 << cache_bits } else { 0 }];
+    let green = &mut histograms.green[..];
+    let red = &mut histograms.red;
+    let blue = &mut histograms.blue;
+    let alpha = &mut histograms.alpha;
+    let mut word = 0u64;
+    let mut word_index = 0usize;
     let mut at = 0;
     while at < total {
+        if at >> 6 != word_index {
+            cached_bits[word_index] = word;
+            word_index = at >> 6;
+            word = 0;
+        }
         let pixel = pixels[at];
         // Runs copying the pixel to the left or the pixel above, tried
         // only when that neighbor matches this pixel at all.
@@ -276,41 +297,55 @@ fn tokenize(pixels: &[u32], width: usize, cache_bits: u32, mut emit: impl FnMut(
             };
             let left_run = if left_matches { run(1) } else { 0 };
             let above_run = if above_matches { run(width) } else { 0 };
-            let (best_length, best_distance) = if above_run > left_run {
+            let (length, distance) = if above_run > left_run {
                 (above_run, width)
             } else {
                 (left_run, 1)
             };
-            if best_length >= MIN_COPY {
-                emit(Token::Copy(best_length, best_distance));
+            if length >= MIN_COPY {
+                copy_bits[at >> 6] |= 1 << (at & 63);
+                copies.push(((length as u32) << 1) | u32::from(distance != 1));
+                green[256 + prefix_encode(length).0] += 1;
+                histograms.distance[prefix_encode(distance_code(distance, width)).0] += 1;
                 if cache_bits > 0 {
-                    for value in &pixels[at..at + best_length] {
+                    for value in &pixels[at..at + length] {
                         cache[cache_index_bits(*value, cache_bits)] = *value;
                     }
                 }
-                at += best_length;
+                at += length;
                 continue;
             }
         }
-        if cache_bits > 0 {
-            // A photo's cache hits are unpredictable: store every time
-            // (a hit stores the same value) and pass the hit on as a flag.
+        // A photo's cache hits come at no pattern: store every time (a
+        // hit stores the same value) and count by selects, not branches.
+        let (cached, index) = if cache_bits > 0 {
             let index = cache_index_bits(pixel, cache_bits);
             let cached = cache[index] == pixel;
             cache[index] = pixel;
-            emit(Token::Literal {
-                pixel,
-                cached,
-                index,
-            });
+            (cached, index)
         } else {
-            emit(Token::Literal {
-                pixel,
-                cached: false,
-                index: 0,
-            });
-        }
+            (false, 0)
+        };
+        word |= u64::from(cached) << (at & 63);
+        let green_symbol = if cached {
+            280 + index
+        } else {
+            ((pixel >> 8) & 0xff) as usize
+        };
+        let spare = |symbol: u32| if cached { 256 } else { symbol as usize };
+        green[green_symbol] += 1;
+        red[spare((pixel >> 16) & 0xff)] += 1;
+        blue[spare(pixel & 0xff)] += 1;
+        alpha[spare(pixel >> 24)] += 1;
         at += 1;
+    }
+    if let Some(last) = cached_bits.get_mut(word_index) {
+        *last = word;
+    }
+    Decisions {
+        cached_bits,
+        copy_bits,
+        copies,
     }
 }
 
@@ -356,43 +391,11 @@ fn write_image(bits: &mut BitWriter, pixels: &[u32], width: usize, main: bool, c
         alpha: [0; 257],
         distance: [0; 40],
     };
-    // The decisions, kept for the writing pass so it neither searches for
-    // runs nor hashes again: a bit per pixel for a cache hit, a bit per
-    // pixel for the start of a copy, and each copy's length (shifted
-    // left one, the low bit set for a copy of the pixel above).
-    let words = pixels.len().div_ceil(64);
-    let mut cached_bits = vec![0u64; words];
-    let mut copy_bits = vec![0u64; words];
-    let mut copies: Vec<u32> = Vec::new();
-    let mut at = 0usize;
-    tokenize(pixels, width, cache_bits, |token| match token {
-        Token::Literal {
-            pixel,
-            cached,
-            index,
-        } => {
-            cached_bits[at >> 6] |= u64::from(cached) << (at & 63);
-            at += 1;
-            let green_symbol = if cached {
-                280 + index
-            } else {
-                ((pixel >> 8) & 0xff) as usize
-            };
-            let spare = |symbol: u32| if cached { 256 } else { symbol as usize };
-            histograms.green[green_symbol] += 1;
-            histograms.red[spare((pixel >> 16) & 0xff)] += 1;
-            histograms.blue[spare(pixel & 0xff)] += 1;
-            histograms.alpha[spare(pixel >> 24)] += 1;
-        }
-        Token::Copy(length, distance) => {
-            copy_bits[at >> 6] |= 1 << (at & 63);
-            at += length;
-            let above = distance != 1;
-            copies.push(((length as u32) << 1) | u32::from(above));
-            histograms.green[256 + prefix_encode(length).0] += 1;
-            histograms.distance[prefix_encode(distance_code(distance, width)).0] += 1;
-        }
-    });
+    let Decisions {
+        cached_bits,
+        copy_bits,
+        copies,
+    } = analyze(pixels, width, cache_bits, &mut histograms);
     let codes = [
         Code::from_histogram(&histograms.green),
         Code::from_histogram(&histograms.red[..256]),
