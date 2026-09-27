@@ -1,6 +1,6 @@
 # TGA <-> PNG
 
-**Latest** (2026-09-27, first TGA: every line PASSES; decode 145.0 against 73.0 MB/s on the photo, 468.4 against 466.1 on the flat image (thin), 159.6 against 99.0 on the stock photo; encode 517.7 against 428.8, 607.1 against 425.8, 394.8 against 333.1; memory 4 to 5 MB for encode and for top-down files, the file's own size for bottom-up ones (5 MB on the flat image, 156 on the stock photo) against the crates' 52 to 842)
+**Latest** (2026-09-27, 0.22.0 release: every line PASSES)
 
 ## Purpose
 
@@ -39,6 +39,29 @@ outputs are removed before each run.
 - The flat decode line is within 1% and can flip with load.
 
 ## Results
+
+### 2026-09-27, 0.22.0 release
+
+commit: 89d3694 (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| tga -> png, photo (45.8 MB of pixels, 45.9 MB on disk): throughput (MB/s of decoded pixels) | 143.0 | 70.2 (image + png) | PASS |
+| tga -> png, photo: peak memory (MB) | 50.8 | 96.1 (image + png) | PASS |
+| tga -> png, photo: output size (MB) [extra] | 25.0 | 27.1 (png) | n/a |
+| png -> tga, photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 525.1 | 421.1 (png + image) | PASS |
+| png -> tga, photo: peak memory (MB) | 4.8 | 97.2 (png + image) | PASS |
+| tga -> png, flat (45.8 MB of pixels, 1.0 MB on disk): throughput (MB/s of decoded pixels) | 458.8 | 454.0 (image + png) | PASS |
+| tga -> png, flat: peak memory (MB) | 5.4 | 51.8 (image + png) | PASS |
+| tga -> png, flat: output size (MB) [extra] | 0.1 | 0.3 (png) | n/a |
+| png -> tga, flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 584.3 | 414.6 (png + image) | PASS |
+| png -> tga, flat: peak memory (MB) | 4.3 | 97.3 (png + image) | PASS |
+| tga -> png, stock (418.4 MB of pixels, 151.1 MB on disk): throughput (MB/s of decoded pixels) [stock] | 153.2 | 99.1 (image + png) | PASS |
+| tga -> png, stock: peak memory (MB) [stock] | 155.9 | 574.2 (image + png) | PASS |
+| tga -> png, stock: output size (MB) [extra] | 28.9 | 44.2 (png) | n/a |
+| png -> tga, stock (24.2 MB in + 418.4 MB of pixels): throughput (MB/s of input plus pixels) [stock] | 402.3 | 336.0 (png + image) | PASS |
+| png -> tga, stock: peak memory (MB) [stock] | 5.0 | 842.2 (png + image) | PASS |
 
 ### 2026-09-27, first TGA
 
