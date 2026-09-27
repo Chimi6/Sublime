@@ -1,6 +1,8 @@
 //! The image hub: one pixel buffer every raster format reads into and
 //! writes from. Eight bits per channel, rows top to bottom, no padding.
 
+pub mod resize;
+
 /// The channels a pixel has.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorType {

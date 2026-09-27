@@ -174,8 +174,10 @@ mod tests {
             vec![
                 "bmp",
                 "csv",
+                "cur",
                 "docx",
                 "html",
+                "ico",
                 "jpeg",
                 "json",
                 "jsonl",
