@@ -475,6 +475,17 @@ pub struct Table {
     /// The table's grid lines, when the source states them (`None` leaves a
     /// writer's own default).
     pub borders: Option<TableBorders>,
+    /// The space between a cell's edges and its text, when the source states it.
+    pub cell_margins: Option<CellMargins>,
+}
+
+/// Cell padding in points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellMargins {
+    pub top: f32,
+    pub bottom: f32,
+    pub left: f32,
+    pub right: f32,
 }
 
 /// A table's outer edges and inner grid lines; `None` on a side is no line.

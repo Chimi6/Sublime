@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::document::{
-    Alignment, Anchor, AnchorBase, Baseline, Block, Border, Caps, Cell, CellBorders,
+    Alignment, Anchor, AnchorBase, Baseline, Block, Border, Caps, Cell, CellBorders, CellMargins,
     CharacterStyle, Color, Document, FloatingContent, FloatingObject, Inline, InlineImage,
     LineSpacing, ListItem, ListLabel, ListLevel, ListStyle, Media, MediaId, Merge, NoteId,
     NumberFormat, NumberKind, PageSetup, PageVariants, Paragraph, ParagraphProperties,
@@ -81,14 +81,16 @@ pub fn read_docx(bytes: &[u8]) -> Result<Document, DocxError> {
         even_headers: false,
         pending_floating: Vec::new(),
         theme_colors: HashMap::new(),
+        theme_fonts: [None, None],
         table_style_borders: HashMap::new(),
         after_note_mark: false,
     };
+    // The theme first: styles name its fonts and colours.
+    reader.rels = reader.relationships(&document_part);
+    reader.read_theme();
     reader.read_styles();
     reader.read_numbering();
     reader.read_settings();
-    reader.rels = reader.relationships(&document_part);
-    reader.read_theme();
     reader.read_notes("footnotes.xml", "w:footnote");
     reader.read_notes("endnotes.xml", "w:endnote");
     let body = reader
@@ -226,8 +228,10 @@ struct Reader<'a> {
     /// The theme's colour scheme (dk1, lt1, accent1, ...), for colours Word
     /// gives by scheme name.
     theme_colors: HashMap<String, Color>,
+    /// The theme's Latin heading (major) and body (minor) fonts.
+    theme_fonts: [Option<String>; 2],
     /// Table styles' borders by style id, with the style they are based on.
-    table_style_borders: HashMap<String, (BorderSides, Option<String>)>,
+    table_style_borders: HashMap<String, (TableSides, Option<String>)>,
     /// A note mark was just read; the space Word puts after it is not text.
     after_note_mark: bool,
 }
@@ -279,6 +283,7 @@ impl Reader<'_> {
         let mut reader = XmlReader::new(&text);
         let mut in_scheme = false;
         let mut slot: Option<String> = None;
+        let mut font_slot: Option<usize> = None;
         while let Some(event) = reader.next() {
             match event {
                 XmlEvent::Start {
@@ -287,6 +292,32 @@ impl Reader<'_> {
                 } => in_scheme = true,
                 XmlEvent::End {
                     name: "a:clrScheme",
+                } => in_scheme = false,
+                XmlEvent::Start {
+                    name: "a:majorFont",
+                    ..
+                } => font_slot = Some(0),
+                XmlEvent::Start {
+                    name: "a:minorFont",
+                    ..
+                } => font_slot = Some(1),
+                XmlEvent::End {
+                    name: "a:majorFont" | "a:minorFont",
+                } => font_slot = None,
+                XmlEvent::Start {
+                    name: "a:latin",
+                    attributes,
+                    ..
+                } if font_slot.is_some() => {
+                    if let (Some(index), Some(face)) =
+                        (font_slot, attribute(&attributes, "typeface"))
+                        && !face.is_empty()
+                    {
+                        self.theme_fonts[index] = Some(face.to_string());
+                    }
+                }
+                XmlEvent::End {
+                    name: "a:fontScheme",
                 } => break,
                 XmlEvent::Start {
                     name, attributes, ..
@@ -1372,11 +1403,20 @@ impl Reader<'_> {
                                 value.and_then(|id| self.character_styles.get(id)).copied();
                         }
                         "w:rFonts" => {
-                            let font = attribute(&attributes, "w:ascii")
-                                .or_else(|| attribute(&attributes, "w:hAnsi"))
-                                .or_else(|| attribute(&attributes, "w:cs"));
+                            // A theme font wins over a named one, as in Word. The complex-script
+                            // font (`w:cs`) is not the Latin text's, so it is left out.
+                            let theme = |key: &str| {
+                                attribute(&attributes, key).and_then(|slot| {
+                                    let index = if slot.starts_with("major") { 0 } else { 1 };
+                                    self.theme_fonts[index].clone()
+                                })
+                            };
+                            let font = theme("w:asciiTheme")
+                                .or_else(|| attribute(&attributes, "w:ascii").map(str::to_string))
+                                .or_else(|| theme("w:hAnsiTheme"))
+                                .or_else(|| attribute(&attributes, "w:hAnsi").map(str::to_string));
                             if let Some(font) = font {
-                                read.properties.font = Some(self.document.intern_string(font));
+                                read.properties.font = Some(self.document.intern_string(&font));
                             }
                         }
                         "w:sz" => {
@@ -1500,9 +1540,11 @@ impl Reader<'_> {
     fn read_table(&mut self, reader: &mut XmlReader<'_>) -> Table {
         let mut table = Table::default();
         let mut table_style: Option<String> = None;
-        let mut own_borders = BorderSides::default();
+        let mut own_borders = TableSides::default();
         // Per row, per cell as read: (cell, grid span, vertical merge)
         let mut rows: Vec<(Row, Vec<(u32, VerticalMerge)>)> = Vec::new();
+        // Per row, the grid columns its cells occupy: [skipped before, end).
+        let mut occupied: Vec<(usize, usize)> = Vec::new();
         let mut header_rows = 0u32;
         let mut leading = true;
         while let Some(event) = reader.next() {
@@ -1524,12 +1566,19 @@ impl Reader<'_> {
                         own_borders = borders;
                     }
                     "w:tr" if !self_closing => {
-                        let (row, spans, is_header) = self.read_row(reader);
+                        let (mut row, mut spans, is_header, before) = self.read_row(reader);
                         if is_header && leading {
                             header_rows += 1;
                         } else {
                             leading = false;
                         }
+                        // Grid columns a row skips (`w:gridBefore`) hold no cell.
+                        for _ in 0..before {
+                            row.cells.insert(0, ghost_cell());
+                            spans.insert(0, (1, VerticalMerge::None));
+                        }
+                        let end = spans.iter().map(|(span, _)| *span as usize).sum();
+                        occupied.push((before, end));
                         rows.push((row, spans));
                     }
                     _ => {}
@@ -1540,6 +1589,18 @@ impl Reader<'_> {
         }
         table.header_rows = header_rows;
         table.rows = resolve_merges(rows);
+        // A row may stop short of the grid (`w:gridAfter`, or simply fewer
+        // cells): the rest is empty space, not cells.
+        let width = table
+            .rows
+            .iter()
+            .map(|row| row.cells.len())
+            .max()
+            .unwrap_or(0);
+        for row in &mut table.rows {
+            row.cells
+                .resize_with(width.max(row.cells.len()), ghost_cell);
+        }
         // The table's own borders over its style's (and that style's bases');
         // with neither, Word draws none.
         let mut sides = own_borders;
@@ -1552,7 +1613,10 @@ impl Reader<'_> {
             sides = sides.or(*style_sides);
             next = based_on.clone();
         }
-        table.borders = Some(sides.resolve());
+        let borders = sides.resolve();
+        table.borders = Some(borders);
+        table.cell_margins = Some(sides.cell_margins());
+        outline_ghost_cells(&mut table.rows, &occupied, borders);
         // A grid may declare more columns than any row reaches (Google Docs and
         // some templates pad tblGrid); Word lays out only the occupied ones, so
         // the unused trailing columns are dropped rather than rendered empty.
@@ -1570,10 +1634,14 @@ impl Reader<'_> {
 
     /// A row's cells as read, with each cell's grid span and vertical
     /// merge, and whether the row repeats as a header.
-    fn read_row(&mut self, reader: &mut XmlReader<'_>) -> (Row, Vec<(u32, VerticalMerge)>, bool) {
+    fn read_row(
+        &mut self,
+        reader: &mut XmlReader<'_>,
+    ) -> (Row, Vec<(u32, VerticalMerge)>, bool, usize) {
         let mut row = Row::default();
         let mut spans = Vec::new();
         let mut is_header = false;
+        let mut before = 0usize;
         while let Some(event) = reader.next() {
             match event {
                 XmlEvent::Start {
@@ -1582,6 +1650,11 @@ impl Reader<'_> {
                     self_closing,
                 } => match name {
                     "w:tblHeader" => is_header = toggle(attribute(&attributes, "w:val")),
+                    "w:gridBefore" => {
+                        before = attribute(&attributes, "w:val")
+                            .and_then(|value| value.parse().ok())
+                            .unwrap_or(0);
+                    }
                     "w:trHeight" => {
                         row.height = attribute(&attributes, "w:val").and_then(twips_to_points);
                     }
@@ -1597,7 +1670,7 @@ impl Reader<'_> {
                 _ => {}
             }
         }
-        (row, spans, is_header)
+        (row, spans, is_header, before)
     }
 
     fn read_cell(&mut self, reader: &mut XmlReader<'_>) -> (Cell, u32, VerticalMerge) {
@@ -1859,7 +1932,7 @@ impl Reader<'_> {
 #[derive(Default)]
 struct StyleRead {
     /// A table style's own borders (its top-level `w:tblPr`).
-    table_borders: Option<BorderSides>,
+    table_borders: Option<TableSides>,
     name: Option<String>,
     based_on: Option<String>,
     paragraph: ParagraphProperties,
@@ -2105,6 +2178,56 @@ fn read_cell_properties(
     (span.max(1), merge, background, borders)
 }
 
+/// A grid position no cell occupies: empty, with no lines of its own.
+fn ghost_cell() -> Cell {
+    Cell {
+        column_span: 1,
+        row_span: 1,
+        borders: CellBorders {
+            top: Some(None),
+            bottom: Some(None),
+            left: Some(None),
+            right: Some(None),
+        },
+        ..Cell::default()
+    }
+}
+
+/// Word draws a row's real cells in full up to where the row stops: the
+/// edges they share with empty grid space keep the lines the table gives
+/// them (its outer lines at the row's ends), which the empty space's own
+/// "no line" would otherwise suppress.
+fn outline_ghost_cells(rows: &mut [Row], occupied: &[(usize, usize)], borders: TableBorders) {
+    let ghost = |row: usize, column: usize| {
+        occupied
+            .get(row)
+            .is_none_or(|(before, end)| column < *before || column >= *end)
+    };
+    // (Every row is as wide as the grid by now.)
+    let count = rows.len();
+    for (r, row) in rows.iter_mut().enumerate() {
+        let last = row.cells.len();
+        for (c, cell) in row.cells.iter_mut().enumerate() {
+            if ghost(r, c) {
+                continue;
+            }
+            let sides = &mut cell.borders;
+            if c > 0 && ghost(r, c - 1) {
+                sides.left.get_or_insert(borders.left);
+            }
+            if c + 1 < last && ghost(r, c + 1) {
+                sides.right.get_or_insert(borders.right);
+            }
+            if r > 0 && ghost(r - 1, c) {
+                sides.top.get_or_insert(borders.inside_horizontal);
+            }
+            if r + 1 < count && ghost(r + 1, c) {
+                sides.bottom.get_or_insert(borders.inside_horizontal);
+            }
+        }
+    }
+}
+
 /// Lays the cells as read onto the grid: a spanning cell is followed by
 /// covered cells, and vertically merged cells point up at their origin.
 fn resolve_merges(rows: Vec<(Row, Vec<(u32, VerticalMerge)>)>) -> Vec<Row> {
@@ -2330,6 +2453,47 @@ mod tests {
     }
 
     #[test]
+    fn rows_short_of_the_grid_leave_empty_undrawn_space() {
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let document = format!(
+            r#"<w:document {w}><w:body><w:tbl><w:tblPr><w:tblBorders>
+            <w:right w:val="single" w:sz="8"/><w:insideV w:val="single" w:sz="4"/></w:tblBorders>
+            <w:tblCellMar><w:top w:w="40" w:type="dxa"/><w:left w:w="200" w:type="dxa"/></w:tblCellMar></w:tblPr>
+            <w:tblGrid><w:gridCol w:w="100"/><w:gridCol w:w="100"/><w:gridCol w:w="100"/></w:tblGrid>
+            <w:tr><w:tc><w:p/></w:tc><w:tc><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr>
+            <w:tr><w:trPr><w:gridBefore w:val="1"/><w:gridAfter w:val="1"/></w:trPr><w:tc><w:p><w:r><w:t>mid</w:t></w:r></w:p></w:tc></w:tr>
+            </w:tbl></w:body></w:document>"#
+        );
+        let read = read_docx(&package(&document, &format!("<w:styles {w}/>"))).unwrap();
+        let Some(Block::Table(table)) = read.sections[0].blocks.first() else {
+            panic!("a table");
+        };
+        let row = &table.rows[1];
+        assert_eq!(row.cells.len(), 3, "the row spans the grid");
+        assert!(row.cells[0].blocks.is_empty() && row.cells[2].blocks.is_empty());
+        assert!(
+            !row.cells[1].blocks.is_empty(),
+            "the real cell sits in column 2"
+        );
+        assert_eq!(
+            row.cells[0].borders.right,
+            Some(None),
+            "empty space draws no line"
+        );
+        // The real cell keeps the lines the table gives it at the row's ends.
+        let width = |side: Option<Option<Border>>| side.flatten().map(|line| line.width);
+        assert_eq!(
+            width(row.cells[1].borders.left),
+            None,
+            "no left outer line stated"
+        );
+        assert_eq!(width(row.cells[1].borders.right), Some(1.0));
+        let margins = table.cell_margins.expect("margins");
+        assert_eq!((margins.top, margins.bottom), (2.0, 0.0));
+        assert_eq!((margins.left, margins.right), (10.0, 5.4));
+    }
+
+    #[test]
     fn table_borders_come_from_the_style_table_and_cells() {
         let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
         let styles = format!(
@@ -2473,22 +2637,42 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> Color {
     }
 }
 
-/// Each side of a table border as read: unstated, stated as no line, or a line.
+/// A table's sides as read: each border unstated, stated as no line, or a
+/// line; and each cell margin (top, bottom, left, right) unstated or stated.
 #[derive(Debug, Clone, Copy, Default)]
-struct BorderSides {
+struct TableSides {
     sides: [Option<Option<Border>>; 6],
+    margins: [Option<f32>; 4],
 }
 
-impl BorderSides {
+impl TableSides {
     /// These sides, with unstated ones taken from `base`.
-    fn or(self, base: BorderSides) -> BorderSides {
+    fn or(self, base: TableSides) -> TableSides {
         let mut sides = self.sides;
         for (side, fallback) in sides.iter_mut().zip(base.sides) {
             if side.is_none() {
                 *side = fallback;
             }
         }
-        BorderSides { sides }
+        let mut margins = self.margins;
+        for (margin, fallback) in margins.iter_mut().zip(base.margins) {
+            if margin.is_none() {
+                *margin = fallback;
+            }
+        }
+        TableSides { sides, margins }
+    }
+
+    /// The cell margins, with Word's defaults where nothing states them
+    /// (none above and below, 0.075" at the sides).
+    fn cell_margins(self) -> CellMargins {
+        let [top, bottom, left, right] = self.margins;
+        CellMargins {
+            top: top.unwrap_or(0.0),
+            bottom: bottom.unwrap_or(0.0),
+            left: left.unwrap_or(5.4),
+            right: right.unwrap_or(5.4),
+        }
     }
 
     fn resolve(self) -> TableBorders {
@@ -2506,10 +2690,11 @@ impl BorderSides {
 }
 
 /// A table's `w:tblPr`: its style id and its own borders.
-fn read_table_properties(reader: &mut XmlReader<'_>) -> (Option<String>, BorderSides) {
+fn read_table_properties(reader: &mut XmlReader<'_>) -> (Option<String>, TableSides) {
     let mut style = None;
-    let mut borders = BorderSides::default();
+    let mut borders = TableSides::default();
     let mut in_borders = false;
+    let mut in_margins = false;
     while let Some(event) = reader.next() {
         match event {
             XmlEvent::Start {
@@ -2519,6 +2704,21 @@ fn read_table_properties(reader: &mut XmlReader<'_>) -> (Option<String>, BorderS
             } => match name {
                 "w:tblStyle" => style = attribute(&attributes, "w:val").map(str::to_string),
                 "w:tblBorders" if !self_closing => in_borders = true,
+                "w:tblCellMar" if !self_closing => in_margins = true,
+                side if in_margins => {
+                    let index = match side {
+                        "w:top" => 0,
+                        "w:bottom" => 1,
+                        "w:left" | "w:start" => 2,
+                        "w:right" | "w:end" => 3,
+                        _ => continue,
+                    };
+                    // Only absolute widths (dxa, the default) are margins Pages can take.
+                    if matches!(attribute(&attributes, "w:type"), None | Some("dxa")) {
+                        borders.margins[index] =
+                            attribute(&attributes, "w:w").and_then(twips_to_points);
+                    }
+                }
                 side if in_borders => {
                     let index = match side {
                         "w:top" => 0,
@@ -2536,6 +2736,9 @@ fn read_table_properties(reader: &mut XmlReader<'_>) -> (Option<String>, BorderS
             XmlEvent::End {
                 name: "w:tblBorders",
             } => in_borders = false,
+            XmlEvent::End {
+                name: "w:tblCellMar",
+            } => in_margins = false,
             XmlEvent::End { name: "w:tblPr" } => break,
             _ => {}
         }

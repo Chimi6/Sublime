@@ -1719,6 +1719,7 @@ impl Reader<'_> {
             header_rows,
             columns,
             borders: None,
+            cell_margins: None,
         })
     }
 

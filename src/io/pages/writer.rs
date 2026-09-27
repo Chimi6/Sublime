@@ -39,6 +39,8 @@ const CELL_STYLE_KEY: u32 = 2;
 const CELL_STYLE: u32 = 6004;
 const TABLE_STYLE: u32 = 6003;
 const FORMAT_KEY: u32 = 1;
+/// The template's body cell padding (points, every side).
+const TEMPLATE_CELL_PADDING: f32 = 4.0;
 /// The fixed number of per-column offset slots a tile row allocates, as Pages
 /// writes them (a 510-byte `cell_offsets` array of u16).
 const TILE_COLUMN_SLOTS: usize = 255;
@@ -974,15 +976,27 @@ fn reuse_table(
         let mut fills: Vec<Option<crate::document::Color>> = mark.backgrounds.clone();
         fills.sort_by_key(|fill| fill.map(|color| (color.red, color.green, color.blue)));
         fills.dedup();
-        // An unshaded cell keeps the table's own body cell style.
-        fill_styles.insert((table.cell_style_id, None), table.cell_style_id);
+        // The cells' padding (left, top, right, bottom): the source's margins,
+        // else the template's own.
+        let padding = mark
+            .cell_margins
+            .map_or([TEMPLATE_CELL_PADDING; 4], |margins| {
+                [margins.left, margins.top, margins.right, margins.bottom]
+            });
+        let padding_key = padding.map(f32::to_bits);
+        // An unshaded cell with the template's padding keeps the table's own
+        // body cell style.
+        if padding == [TEMPLATE_CELL_PADDING; 4] {
+            fill_styles.insert(
+                (table.cell_style_id, None, padding_key),
+                table.cell_style_id,
+            );
+        }
         // Shared across tables: Pages merges identical variations on load, which
         // would leave a second table's copy dangling.
         let missing: Vec<Option<crate::document::Color>> = fills
             .iter()
-            .filter(|fill| {
-                fill.is_some() && !fill_styles.contains_key(&(table.cell_style_id, **fill))
-            })
+            .filter(|fill| !fill_styles.contains_key(&(table.cell_style_id, **fill, padding_key)))
             .copied()
             .collect();
         if !missing.is_empty() {
@@ -990,16 +1004,22 @@ fn reuse_table(
                 package,
                 table.cell_style_id,
                 &missing,
+                padding,
                 styles.stylesheet,
                 next_id,
             )?;
             for (fill, id) in created {
-                fill_styles.insert((table.cell_style_id, fill), id);
+                fill_styles.insert((table.cell_style_id, fill, padding_key), id);
             }
         }
         let variations: HashMap<Option<crate::document::Color>, u64> = fills
             .iter()
-            .map(|fill| (*fill, fill_styles[&(table.cell_style_id, *fill)]))
+            .map(|fill| {
+                (
+                    *fill,
+                    fill_styles[&(table.cell_style_id, *fill, padding_key)],
+                )
+            })
             .collect();
         // Refcounts are the number of cell records naming each key: Pages
         // decrements them as it restyles cells, and one that runs out leaves
@@ -2969,6 +2989,8 @@ struct TableMark {
     backgrounds: Vec<Option<crate::document::Color>>,
     /// The table's grid lines, when the source states them.
     borders: Option<crate::document::TableBorders>,
+    /// The cells' padding, when the source states it.
+    cell_margins: Option<crate::document::CellMargins>,
     /// Row-major cells' own edges, over the table's lines.
     cell_borders: Vec<crate::document::CellBorders>,
 }
@@ -3169,6 +3191,7 @@ impl Walk {
             merges,
             backgrounds,
             borders: table.borders,
+            cell_margins: table.cell_margins,
             cell_borders,
         });
         self.mark(Format::default());
@@ -4001,7 +4024,8 @@ fn build_rich_text_list(tree: &mut Tree, entries: &[(u32, u64)]) -> Result<u32, 
 }
 
 /// Cell-style variations by (parent cell style, fill), shared by all tables.
-type CellFillStyles = HashMap<(u64, Option<crate::document::Color>), u64>;
+/// Cell style variations by (parent, fill, padding as bits).
+type CellFillStyles = HashMap<(u64, Option<crate::document::Color>, [u32; 4]), u64>;
 
 /// Rebuilds the table's style data list (listType 4) from (key, style)
 /// entries: key 1 the paragraph (text) style every cell uses, then the cell
@@ -4060,6 +4084,7 @@ fn create_cell_styles(
     package: &mut Package,
     parent: u64,
     fills: &[Option<crate::document::Color>],
+    padding_sides: [f32; 4],
     stylesheet: u64,
     next_id: &mut u64,
 ) -> Result<HashMap<Option<crate::document::Color>, u64>, PackageError> {
@@ -4098,17 +4123,24 @@ fn create_cell_styles(
             )?;
         }
         let mut pad = Chain::new();
-        for side in ["left", "top", "right", "bottom"] {
-            push_field(tree, &mut pad, padding, side, Node::Float(4.0))?;
+        for (side, amount) in ["left", "top", "right", "bottom"]
+            .into_iter()
+            .zip(padding_sides)
+        {
+            push_field(tree, &mut pad, padding, side, Node::Float(amount))?;
         }
         let mut props = Chain::new();
-        push_field(
-            tree,
-            &mut props,
-            properties,
-            "cell_fill",
-            Node::Message(fill_chain.first),
-        )?;
+        // No fill is no fill override: an empty one is redundant, and Pages'
+        // clean-up of redundant overrides drops the style's references.
+        if color.is_some() {
+            push_field(
+                tree,
+                &mut props,
+                properties,
+                "cell_fill",
+                Node::Message(fill_chain.first),
+            )?;
+        }
         push_field(
             tree,
             &mut props,
@@ -4131,7 +4163,14 @@ fn create_cell_styles(
             "super",
             Node::Message(style.first),
         )?;
-        push_field(tree, &mut chain, archive, "override_count", Node::Uint(3))?;
+        let overrides = if color.is_some() { 3 } else { 2 };
+        push_field(
+            tree,
+            &mut chain,
+            archive,
+            "override_count",
+            Node::Uint(overrides),
+        )?;
         push_field(
             tree,
             &mut chain,
