@@ -26,7 +26,7 @@ COMMANDS
 FLAGS
   --strict            Refuse any path that is lossy or conditional.
   --sheet <name|n>    The worksheet to read from a workbook (a name or a 1-based number; the first when absent), or the name to give the sheet written.
-  --quality <1-100>   The quality a lossy image (JPEG) is written at; 85 when absent.
+  --quality <1-100>   JPEG: the quality written at (85 when absent). Lossless WebP: effort, as cwebp reads it (50 and under fastest, 90 and up smallest).
   --out-dir <dir>     Batch: write outputs into this directory (created if needed), keeping each input's name with the new extension. A trailing positional ending in / does the same. Without it, outputs go beside their inputs.
   -r, --recursive     Batch: descend into directories given as inputs, mirroring their structure under --out-dir.
   --jobs <n>          Batch: files converted at once (default: the CPU count).

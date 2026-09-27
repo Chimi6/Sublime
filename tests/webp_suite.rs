@@ -149,53 +149,70 @@ fn list_lossy_mismatches() {
 
 #[test]
 fn every_image_survives_our_lossless_writer_and_reader() {
-    use sublime::io::webp::write_webp;
+    use sublime::io::webp::{Effort, write_webp_with};
     let mut checked = 0;
     for (name, webp) in fixtures("") {
         let (image, _) = read_webp(&webp).unwrap_or_else(|error| panic!("{name}: {error}"));
-        let mut encoded = Vec::new();
-        write_webp(&image, &mut encoded).unwrap_or_else(|error| panic!("{name}: {error}"));
-        let (back, _) =
-            read_webp(&encoded).unwrap_or_else(|error| panic!("{name} (ours): {error}"));
-        assert_eq!(
-            (back.width, back.height),
-            (image.width, image.height),
-            "{name}"
-        );
-        let want: Vec<u8> = if back.color == image.color {
-            image.pixels.clone()
-        } else {
-            // Our writer marks alpha only when a pixel is not opaque.
-            image
-                .pixels
-                .chunks_exact(4)
-                .flat_map(|p| [p[0], p[1], p[2]])
-                .collect()
-        };
-        if back.pixels != want {
-            let count = back
-                .pixels
-                .iter()
-                .zip(&want)
-                .filter(|(a, b)| a != b)
-                .count();
-            let first = back
-                .pixels
-                .iter()
-                .zip(&want)
-                .position(|(a, b)| a != b)
-                .unwrap_or(0);
-            let channels = back.color.channels();
-            panic!(
-                "{name}: {count} of {} bytes changed through our writer, first at pixel ({}, {}): ours {:?} want {:?}",
-                want.len(),
-                first / channels % back.width as usize,
-                first / channels / back.width as usize,
-                &back.pixels[first / channels * channels..first / channels * channels + channels],
-                &want[first / channels * channels..first / channels * channels + channels]
+        for effort in [Effort::Fast, Effort::Default, Effort::Best] {
+            let name = format!("{name} at {effort:?}");
+            let mut encoded = Vec::new();
+            write_webp_with(&image, &mut encoded, effort)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            let (back, _) =
+                read_webp(&encoded).unwrap_or_else(|error| panic!("{name} (ours): {error}"));
+            assert_eq!(
+                (back.width, back.height),
+                (image.width, image.height),
+                "{name}"
             );
+            let want: Vec<u8> = if back.color == image.color {
+                image.pixels.clone()
+            } else {
+                // Our writer marks alpha only when a pixel is not opaque.
+                image
+                    .pixels
+                    .chunks_exact(4)
+                    .flat_map(|p| [p[0], p[1], p[2]])
+                    .collect()
+            };
+            if back.pixels != want {
+                let count = back
+                    .pixels
+                    .iter()
+                    .zip(&want)
+                    .filter(|(a, b)| a != b)
+                    .count();
+                let first = back
+                    .pixels
+                    .iter()
+                    .zip(&want)
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(0);
+                let channels = back.color.channels();
+                panic!(
+                    "{name}: {count} of {} bytes changed through our writer, first at pixel ({}, {}): ours {:?} want {:?}",
+                    want.len(),
+                    first / channels % back.width as usize,
+                    first / channels / back.width as usize,
+                    &back.pixels
+                        [first / channels * channels..first / channels * channels + channels],
+                    &want[first / channels * channels..first / channels * channels + channels]
+                );
+            }
+            checked += 1;
         }
-        checked += 1;
     }
-    assert!(checked > 200);
+    assert!(checked > 600);
+}
+
+#[test]
+fn quality_reads_as_lossless_effort_as_cwebp_reads_it() {
+    use sublime::io::webp::Effort;
+    assert_eq!(Effort::from_quality(None), Effort::Default);
+    assert_eq!(Effort::from_quality(Some(1)), Effort::Fast);
+    assert_eq!(Effort::from_quality(Some(50)), Effort::Fast);
+    assert_eq!(Effort::from_quality(Some(51)), Effort::Default);
+    assert_eq!(Effort::from_quality(Some(89)), Effort::Default);
+    assert_eq!(Effort::from_quality(Some(90)), Effort::Best);
+    assert_eq!(Effort::from_quality(Some(100)), Effort::Best);
 }
