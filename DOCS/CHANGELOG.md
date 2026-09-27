@@ -20,6 +20,8 @@ libwebp, and a lossless encoder.
 
 ### Changed
 
+- The lossless WebP encoder is faster, with the same output byte for byte except where noted: predictors computed as byte loops over whole rows, the first pass's choices (cache hits, copies) recorded in two bits per pixel so the writing pass replays them, each literal written in one call, and the palette built as rows arrive, a byte per pixel, so an image of up to 256 colors never holds ARGB words (flat encode 428 -> 659 MB/s at 52 MB where it held 96). Predictor tiles are scored on every other row with four candidates (top, average, select, gradient), within 0.3% of the six-candidate output. Photo encode 183 -> 248 MB/s.
+- The VP8 loop filter works on an eight-sample window, loaded whole across a vertical edge (about 3% of a lossy decode).
 - The Huffman code builder behind deflate (and now WebP) sorts once and merges from two queues, O(n log n) where it re-sorted per merge; large alphabets build in microseconds.
 
 ## [0.20.1] - 2026-09-26

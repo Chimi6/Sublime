@@ -23,9 +23,11 @@ const CACHE_BITS: u32 = 10;
 /// Copies shorter than this cost more than literals.
 const MIN_COPY: usize = 3;
 const MAX_COPY: usize = 4096;
-/// The predictor modes tried per tile: left, top, the average of the
-/// two, select, and the two gradient clamps.
-const CANDIDATES: [u32; 6] = [1, 2, 7, 11, 12, 13];
+/// The predictor modes tried per tile: top, the average of left and
+/// top, select, and the gradient clamp. Left (1) and the half-gradient
+/// (13) chose tiles that these four code within 0.3% of, for a third
+/// more scoring.
+const CANDIDATES: [u32; 4] = [2, 7, 11, 12];
 
 struct BitWriter {
     out: Vec<u8>,
@@ -45,13 +47,24 @@ impl BitWriter {
     /// Appends `length` bits (at most 32) of `value`, least significant first.
     #[inline]
     fn put(&mut self, value: u32, length: u32) {
-        self.buffer |= u64::from(value) << self.count;
-        self.count += length;
-        if self.count >= 32 {
-            self.out
-                .extend_from_slice(&(self.buffer as u32).to_le_bytes());
-            self.buffer >>= 32;
-            self.count -= 32;
+        self.put_wide(u64::from(value), length);
+    }
+
+    /// Appends `length` bits (at most 63) of `value`: a whole literal
+    /// pixel's four codes in one call. The buffer holds under 64 bits
+    /// between calls and goes out a word at a time.
+    #[inline]
+    fn put_wide(&mut self, value: u64, length: u32) {
+        self.buffer |= value << self.count;
+        let total = self.count + length;
+        if total >= 64 {
+            self.out.extend_from_slice(&self.buffer.to_le_bytes());
+            // What did not fit; `count` is not zero here, since a
+            // single value is under 64 bits.
+            self.buffer = value >> (64 - self.count);
+            self.count = total - 64;
+        } else {
+            self.count = total;
         }
     }
 
@@ -219,34 +232,57 @@ fn prefix_encode(value: usize) -> (usize, u32, u32) {
     )
 }
 
-#[inline]
-fn cache_index(argb: u32) -> usize {
-    (0x1e35_a7bd_u32.wrapping_mul(argb) >> (32 - CACHE_BITS)) as usize
-}
-
 /// The histograms of one entropy-coded image's symbols.
 struct Histograms {
     green: Vec<u32>,
-    red: [u32; 256],
-    blue: [u32; 256],
-    alpha: [u32; 256],
+    // One spare slot past the 256 symbols, counted for a pixel found in
+    // the color cache, so the count is a select and not a branch.
+    red: [u32; 257],
+    blue: [u32; 257],
+    alpha: [u32; 257],
     distance: [u32; 40],
 }
 
-/// One symbol of an image: a literal pixel (or its color cache index),
-/// or a copy of `length` pixels from `distance` back.
-enum Token {
-    Literal(u32, Option<usize>),
-    Copy(usize, usize),
+/// The first pass's decisions, kept for the writing pass so it neither
+/// searches for runs nor hashes again: a bit per pixel for a cache hit,
+/// a bit per pixel for the start of a copy, and each copy's length
+/// (shifted left one, the low bit set for a copy of the pixel above).
+struct Decisions {
+    cached_bits: Vec<u64>,
+    copy_bits: Vec<u64>,
+    copies: Vec<u32>,
 }
 
-/// One image's symbols, from the same decisions in both passes; `emit`
-/// counts them in the first pass and writes them in the second.
-fn tokenize(pixels: &[u32], width: usize, cache_bits: u32, mut emit: impl FnMut(Token)) {
+/// Chooses each symbol of an image (runs copying the pixel to the left
+/// or above, color cache hits, literals), counting them into
+/// `histograms` and recording the choices. One function with its state
+/// in locals: behind a closure's captured references the position and
+/// the bit words were reloaded from memory on every pixel.
+fn analyze(
+    pixels: &[u32],
+    width: usize,
+    cache_bits: u32,
+    histograms: &mut Histograms,
+) -> Decisions {
     let total = pixels.len();
+    let words = total.div_ceil(64);
+    let mut cached_bits = vec![0u64; words];
+    let mut copy_bits = vec![0u64; words];
+    let mut copies: Vec<u32> = Vec::new();
     let mut cache = vec![0u32; if cache_bits > 0 { 1 << cache_bits } else { 0 }];
+    let green = &mut histograms.green[..];
+    let red = &mut histograms.red;
+    let blue = &mut histograms.blue;
+    let alpha = &mut histograms.alpha;
+    let mut word = 0u64;
+    let mut word_index = 0usize;
     let mut at = 0;
     while at < total {
+        if at >> 6 != word_index {
+            cached_bits[word_index] = word;
+            word_index = at >> 6;
+            word = 0;
+        }
         let pixel = pixels[at];
         // Runs copying the pixel to the left or the pixel above, tried
         // only when that neighbor matches this pixel at all.
@@ -263,34 +299,55 @@ fn tokenize(pixels: &[u32], width: usize, cache_bits: u32, mut emit: impl FnMut(
             };
             let left_run = if left_matches { run(1) } else { 0 };
             let above_run = if above_matches { run(width) } else { 0 };
-            let (best_length, best_distance) = if above_run > left_run {
+            let (length, distance) = if above_run > left_run {
                 (above_run, width)
             } else {
                 (left_run, 1)
             };
-            if best_length >= MIN_COPY {
-                emit(Token::Copy(best_length, best_distance));
+            if length >= MIN_COPY {
+                copy_bits[at >> 6] |= 1 << (at & 63);
+                copies.push(((length as u32) << 1) | u32::from(distance != 1));
+                green[256 + prefix_encode(length).0] += 1;
+                histograms.distance[prefix_encode(distance_code(distance, width)).0] += 1;
                 if cache_bits > 0 {
-                    for value in &pixels[at..at + best_length] {
+                    for value in &pixels[at..at + length] {
                         cache[cache_index_bits(*value, cache_bits)] = *value;
                     }
                 }
-                at += best_length;
+                at += length;
                 continue;
             }
         }
-        if cache_bits > 0 {
+        // A photo's cache hits come at no pattern: store every time (a
+        // hit stores the same value) and count by selects, not branches.
+        let (cached, index) = if cache_bits > 0 {
             let index = cache_index_bits(pixel, cache_bits);
-            if cache[index] == pixel {
-                emit(Token::Literal(pixel, Some(index)));
-            } else {
-                emit(Token::Literal(pixel, None));
-                cache[index] = pixel;
-            }
+            let cached = cache[index] == pixel;
+            cache[index] = pixel;
+            (cached, index)
         } else {
-            emit(Token::Literal(pixel, None));
-        }
+            (false, 0)
+        };
+        word |= u64::from(cached) << (at & 63);
+        let green_symbol = if cached {
+            280 + index
+        } else {
+            ((pixel >> 8) & 0xff) as usize
+        };
+        let spare = |symbol: u32| if cached { 256 } else { symbol as usize };
+        green[green_symbol] += 1;
+        red[spare((pixel >> 16) & 0xff)] += 1;
+        blue[spare(pixel & 0xff)] += 1;
+        alpha[spare(pixel >> 24)] += 1;
         at += 1;
+    }
+    if let Some(last) = cached_bits.get_mut(word_index) {
+        *last = word;
+    }
+    Decisions {
+        cached_bits,
+        copy_bits,
+        copies,
     }
 }
 
@@ -331,29 +388,21 @@ fn write_image(bits: &mut BitWriter, pixels: &[u32], width: usize, main: bool, c
     };
     let mut histograms = Histograms {
         green: vec![0; 256 + 24 + cache_size],
-        red: [0; 256],
-        blue: [0; 256],
-        alpha: [0; 256],
+        red: [0; 257],
+        blue: [0; 257],
+        alpha: [0; 257],
         distance: [0; 40],
     };
-    tokenize(pixels, width, cache_bits, |token| match token {
-        Token::Literal(_, Some(index)) => histograms.green[280 + index] += 1,
-        Token::Literal(pixel, None) => {
-            histograms.green[((pixel >> 8) & 0xff) as usize] += 1;
-            histograms.red[((pixel >> 16) & 0xff) as usize] += 1;
-            histograms.blue[(pixel & 0xff) as usize] += 1;
-            histograms.alpha[(pixel >> 24) as usize] += 1;
-        }
-        Token::Copy(length, distance) => {
-            histograms.green[256 + prefix_encode(length).0] += 1;
-            histograms.distance[prefix_encode(distance_code(distance, width)).0] += 1;
-        }
-    });
+    let Decisions {
+        cached_bits,
+        copy_bits,
+        copies,
+    } = analyze(pixels, width, cache_bits, &mut histograms);
     let codes = [
         Code::from_histogram(&histograms.green),
-        Code::from_histogram(&histograms.red),
-        Code::from_histogram(&histograms.blue),
-        Code::from_histogram(&histograms.alpha),
+        Code::from_histogram(&histograms.red[..256]),
+        Code::from_histogram(&histograms.blue[..256]),
+        Code::from_histogram(&histograms.alpha[..256]),
         Code::from_histogram(&histograms.distance),
     ];
     for code in &codes {
@@ -363,9 +412,9 @@ fn write_image(bits: &mut BitWriter, pixels: &[u32], width: usize, main: bool, c
     let mut total_bits: u64 = 0;
     for (histogram, code) in [
         (&histograms.green[..], &codes[0]),
-        (&histograms.red[..], &codes[1]),
-        (&histograms.blue[..], &codes[2]),
-        (&histograms.alpha[..], &codes[3]),
+        (&histograms.red[..256], &codes[1]),
+        (&histograms.blue[..256], &codes[2]),
+        (&histograms.alpha[..256], &codes[3]),
         (&histograms.distance[..], &codes[4]),
     ] {
         for (count, length) in histogram.iter().zip(&code.lengths) {
@@ -373,11 +422,7 @@ fn write_image(bits: &mut BitWriter, pixels: &[u32], width: usize, main: bool, c
         }
     }
     // Extra bits of lengths and distances: at most thirty per copy.
-    let copies: u64 = histograms.green[256..280]
-        .iter()
-        .map(|count| u64::from(*count))
-        .sum();
-    total_bits += copies * 30;
+    total_bits += copies.len() as u64 * 30;
     bits.out.reserve((total_bits / 8) as usize + 64);
     // A code of one used symbol reads no bits: writing it with length
     // zero keeps the encoder in step without a branch per symbol.
@@ -396,8 +441,9 @@ fn write_image(bits: &mut BitWriter, pixels: &[u32], width: usize, main: bool, c
             .map(|(bits, length)| u32::from(*bits) | (u32::from(*length) << 16))
             .collect()
     };
-    let byte_table = |code: &Code| -> [u32; 256] {
-        let mut table = [0u32; 256];
+    // The spare 257th entry writes nothing, for a cached pixel.
+    let byte_table = |code: &Code| -> [u32; 257] {
+        let mut table = [0u32; 257];
         for (slot, value) in table.iter_mut().zip(pack(code)) {
             *slot = value;
         }
@@ -409,197 +455,264 @@ fn write_image(bits: &mut BitWriter, pixels: &[u32], width: usize, main: bool, c
     let alpha = byte_table(&codes[3]);
     let distances = pack(&codes[4]);
     let put_packed = |bits: &mut BitWriter, entry: u32| bits.put(entry & 0xffff, entry >> 16);
-    tokenize(pixels, width, cache_bits, |token| match token {
-        Token::Literal(_, Some(index)) => put_packed(bits, green[280 + index]),
-        Token::Literal(pixel, None) => {
-            // Two writes of at most thirty bits: green and red, blue and alpha.
-            let g = green[((pixel >> 8) & 0xff) as usize];
-            let r = red[((pixel >> 16) & 0xff) as usize];
-            let b = blue[(pixel & 0xff) as usize];
-            let a = alpha[(pixel >> 24) as usize];
-            let green_length = g >> 16;
-            bits.put(
-                (g & 0xffff) | ((r & 0xffff) << green_length),
-                green_length + (r >> 16),
-            );
-            let blue_length = b >> 16;
-            bits.put(
-                (b & 0xffff) | ((a & 0xffff) << blue_length),
-                blue_length + (a >> 16),
-            );
+    // One write of at most sixty bits per literal; a cached pixel is its
+    // index and three empty codes.
+    let cache_shift = cache_bits.max(1);
+    let literal = |bits: &mut BitWriter, pixel: u32, cached: bool| {
+        let green_symbol = if cached {
+            280 + cache_index_bits(pixel, cache_shift)
+        } else {
+            ((pixel >> 8) & 0xff) as usize
+        };
+        let spare = |symbol: u32| if cached { 256 } else { symbol as usize };
+        let g = green[green_symbol];
+        let r = red[spare((pixel >> 16) & 0xff)];
+        let b = blue[spare(pixel & 0xff)];
+        let a = alpha[spare(pixel >> 24)];
+        let mut value = u64::from(g & 0xffff);
+        let mut length = g >> 16;
+        value |= u64::from(r & 0xffff) << length;
+        length += r >> 16;
+        value |= u64::from(b & 0xffff) << length;
+        length += b >> 16;
+        value |= u64::from(a & 0xffff) << length;
+        length += a >> 16;
+        bits.put_wide(value, length);
+    };
+    let mut next_copy = 0;
+    let mut at = 0;
+    while at < pixels.len() {
+        let word = at >> 6;
+        let bit = at & 63;
+        // A whole word of literals (most of a photo): no copy tests, the
+        // cache bits shifted out of a register.
+        if bit == 0 && copy_bits[word] == 0 && at + 64 <= pixels.len() {
+            let mut cached_word = cached_bits[word];
+            for pixel in &pixels[at..at + 64] {
+                literal(bits, *pixel, cached_word & 1 != 0);
+                cached_word >>= 1;
+            }
+            at += 64;
+            continue;
         }
-        Token::Copy(length, distance) => {
+        if (copy_bits[word] >> bit) & 1 != 0 {
+            let copy = copies[next_copy];
+            next_copy += 1;
+            let length = (copy >> 1) as usize;
+            let distance = if copy & 1 != 0 { width } else { 1 };
             let (symbol, extra, extra_bits) = prefix_encode(length);
             put_packed(bits, green[256 + symbol]);
             bits.put(extra, extra_bits);
             let (symbol, extra, extra_bits) = prefix_encode(distance_code(distance, width));
             put_packed(bits, distances[symbol]);
             bits.put(extra, extra_bits);
+            at += length;
+            continue;
         }
-    });
+        literal(bits, pixels[at], (cached_bits[word] >> bit) & 1 != 0);
+        at += 1;
+    }
 }
 
 // ------------------------------------------------------------- transforms
 
-#[inline]
-fn channel(value: u32, shift: u32) -> i32 {
-    ((value >> shift) & 0xff) as i32
-}
-
-#[inline]
-fn average(a: u32, b: u32) -> u32 {
-    (((a ^ b) & 0xfefe_fefe) >> 1) + (a & b)
-}
-
+/// One byte's prediction under `MODE` from its left, top, and top-left
+/// neighbors (the same channel of the neighboring pixels). Select (11)
+/// looks at all four channels at once and is predicted per pixel.
 #[inline(always)]
-fn predict<const MODE: u32>(left: u32, top: u32, top_left: u32) -> u32 {
-    match MODE {
-        1 => left,
+fn predict_byte<const MODE: u32>(left: u8, top: u8, top_left: u8) -> u8 {
+    let (left, top, top_left) = (i16::from(left), i16::from(top), i16::from(top_left));
+    let value = match MODE {
         2 => top,
-        7 => average(left, top),
-        11 => {
-            let mut difference = 0i32;
-            for shift in [24, 16, 8, 0] {
-                difference += (channel(left, shift) - channel(top_left, shift)).abs()
-                    - (channel(top, shift) - channel(top_left, shift)).abs();
-            }
-            if difference <= 0 { top } else { left }
-        }
-        12 => {
-            let mut out = 0u32;
-            for shift in [24, 16, 8, 0] {
-                let value = (channel(left, shift) + channel(top, shift) - channel(top_left, shift))
-                    .clamp(0, 255);
-                out |= (value as u32) << shift;
-            }
-            out
-        }
-        _ => {
-            // 13: half the gradient from the average of left and top.
-            let mean = average(left, top);
-            let mut out = 0u32;
-            for shift in [24, 16, 8, 0] {
-                let x = channel(mean, shift);
-                let value = (x + (x - channel(top_left, shift)) / 2).clamp(0, 255);
-                out |= (value as u32) << shift;
-            }
-            out
-        }
-    }
+        7 => (left + top) >> 1,
+        _ => (left + top - top_left).clamp(0, 255),
+    };
+    value as u8
 }
 
-#[inline]
+/// Select (11): the top pixel when the image changes less across than
+/// down (summed over the four channels), the left pixel otherwise.
+#[inline(always)]
+fn select_pixel(left: &[u8], top: &[u8], top_left: &[u8]) -> bool {
+    let mut difference = 0i16;
+    for channel in 0..4 {
+        let corner = i16::from(top_left[channel]);
+        difference +=
+            (i16::from(left[channel]) - corner).abs() - (i16::from(top[channel]) - corner).abs();
+    }
+    difference <= 0
+}
+
 fn subtract_pixels(a: u32, b: u32) -> u32 {
     let alpha_green = (a | 0x00ff_00ff).wrapping_sub(b & 0xff00_ff00);
     let red_blue = (a | 0xff00_ff00).wrapping_sub(b & 0x00ff_00ff);
     (alpha_green & 0xff00_ff00) | (red_blue & 0x00ff_00ff)
 }
 
-#[inline(always)]
-fn residual_cost(residual: u32) -> u32 {
-    let mut cost = 0;
-    for shift in [24, 16, 8, 0] {
-        cost += u32::from(((residual >> shift) as u8 as i8).unsigned_abs());
+/// A row's pixels as bytes, blue first (the byte order of the
+/// little-endian words), so predictors run as byte loops.
+fn row_bytes(row: &[u32], bytes: &mut [u8]) {
+    for (cell, pixel) in bytes.chunks_exact_mut(4).zip(row) {
+        cell.copy_from_slice(&pixel.to_le_bytes());
     }
-    cost
 }
 
-/// The cost of predicting a tile with `MODE`, from every other row and
-/// column of it (the choice is a heuristic; a quarter of the samples
-/// chooses nearly as well).
-fn tile_cost<const MODE: u32>(
-    pixels: &[u32],
-    width: usize,
-    xs: (usize, usize),
-    ys: (usize, usize),
-    budget: u32,
-) -> u32 {
+/// The sum of residual magnitudes predicting the bytes `start..end` of
+/// `row` under `MODE` (`start` is past the first pixel).
+fn span_cost<const MODE: u32>(row: &[u8], above: &[u8], start: usize, end: usize) -> u32 {
+    let current = &row[start..end];
+    let left = &row[start - 4..end - 4];
+    let top = &above[start..end];
+    let top_left = &above[start - 4..end - 4];
+    if MODE == 11 {
+        let mut cost = 0u32;
+        for (((c, l), t), tl) in current
+            .chunks_exact(4)
+            .zip(left.chunks_exact(4))
+            .zip(top.chunks_exact(4))
+            .zip(top_left.chunks_exact(4))
+        {
+            let prediction = if select_pixel(l, t, tl) { t } else { l };
+            for channel in 0..4 {
+                let residual = c[channel].wrapping_sub(prediction[channel]);
+                cost += u32::from((residual as i8).unsigned_abs());
+            }
+        }
+        return cost;
+    }
     let mut cost = 0u32;
-    for y in (ys.0..ys.1).step_by(2) {
-        let row = y * width;
-        for x in (xs.0..xs.1).step_by(2) {
-            let at = row + x;
-            let prediction =
-                predict::<MODE>(pixels[at - 1], pixels[at - width], pixels[at - width - 1]);
-            cost += residual_cost(subtract_pixels(pixels[at], prediction));
-        }
-        if cost >= budget {
-            return cost;
-        }
+    for (((c, l), t), tl) in current.iter().zip(left).zip(top).zip(top_left) {
+        let residual = c.wrapping_sub(predict_byte::<MODE>(*l, *t, *tl));
+        cost += u32::from((residual as i8).unsigned_abs());
     }
     cost
 }
 
-/// Replaces one row segment's pixels with their residuals under `MODE`,
-/// right to left, so every prediction still sees original neighbors
-/// (the row above is replaced only after this one).
-fn residual_segment<const MODE: u32>(
-    pixels: &mut [u32],
-    width: usize,
-    row: usize,
-    xs: (usize, usize),
+/// Writes the residuals of the bytes `start..end` of `row` under `MODE`
+/// into `out`.
+fn span_residuals<const MODE: u32>(
+    row: &[u8],
+    above: &[u8],
+    out: &mut [u8],
+    start: usize,
+    end: usize,
 ) {
-    for x in (xs.0..xs.1).rev() {
-        let at = row + x;
-        let prediction =
-            predict::<MODE>(pixels[at - 1], pixels[at - width], pixels[at - width - 1]);
-        pixels[at] = subtract_pixels(pixels[at], prediction);
+    let current = &row[start..end];
+    let left = &row[start - 4..end - 4];
+    let top = &above[start..end];
+    let top_left = &above[start - 4..end - 4];
+    let out = &mut out[start..end];
+    if MODE == 11 {
+        for ((((o, c), l), t), tl) in out
+            .chunks_exact_mut(4)
+            .zip(current.chunks_exact(4))
+            .zip(left.chunks_exact(4))
+            .zip(top.chunks_exact(4))
+            .zip(top_left.chunks_exact(4))
+        {
+            let prediction = if select_pixel(l, t, tl) { t } else { l };
+            for channel in 0..4 {
+                o[channel] = c[channel].wrapping_sub(prediction[channel]);
+            }
+        }
+        return;
+    }
+    for ((((o, c), l), t), tl) in out.iter_mut().zip(current).zip(left).zip(top).zip(top_left) {
+        *o = c.wrapping_sub(predict_byte::<MODE>(*l, *t, *tl));
+    }
+}
+
+fn mode_cost(mode: u32, row: &[u8], above: &[u8], start: usize, end: usize) -> u32 {
+    match mode {
+        2 => span_cost::<2>(row, above, start, end),
+        7 => span_cost::<7>(row, above, start, end),
+        11 => span_cost::<11>(row, above, start, end),
+        _ => span_cost::<12>(row, above, start, end),
+    }
+}
+
+fn mode_residuals(mode: u32, row: &[u8], above: &[u8], out: &mut [u8], start: usize, end: usize) {
+    match mode {
+        2 => span_residuals::<2>(row, above, out, start, end),
+        7 => span_residuals::<7>(row, above, out, start, end),
+        11 => span_residuals::<11>(row, above, out, start, end),
+        _ => span_residuals::<12>(row, above, out, start, end),
     }
 }
 
 /// Chooses a predictor per tile, then turns the pixels into residuals in
-/// place (bottom row first, each row right to left). Returns the modes.
+/// place (bottom row first, so each row still sees the original row
+/// above). Returns the modes.
+///
+/// Rows are worked as bytes, a whole row per mode at a time, so every
+/// loop is a straight byte loop the compiler vectorizes; a tile is
+/// scored on every other row.
 fn predictor_residuals(pixels: &mut [u32], width: usize, height: usize) -> Vec<u32> {
     let tile = 1usize << PREDICTOR_BITS;
+    let tile_bytes = tile * 4;
+    let row_length = width * 4;
     let tiles_wide = width.div_ceil(tile);
     let tiles_high = height.div_ceil(tile);
+    // The byte span of each tile in a row, the first pixel left out (it
+    // predicts from the pixel above whatever the mode).
+    let spans: Vec<(usize, usize)> = (0..tiles_wide)
+        .map(|tile_x| {
+            let start = (tile_x * tile_bytes).max(4);
+            let end = ((tile_x + 1) * tile_bytes).min(row_length);
+            (start, end)
+        })
+        .filter(|(start, end)| start < end)
+        .collect();
+    let first_tile = tiles_wide - spans.len();
+    let mut row = vec![0u8; row_length];
+    let mut above = vec![0u8; row_length];
+    let mut out = vec![0u8; row_length];
+    let mut costs = vec![0u32; CANDIDATES.len() * spans.len()];
     let mut modes = vec![1u32; tiles_wide * tiles_high];
     for tile_y in 0..tiles_high {
-        let ys = ((tile_y * tile).max(1), ((tile_y + 1) * tile).min(height));
-        if ys.0 >= ys.1 {
+        let first_row = (tile_y * tile).max(1);
+        let last_row = ((tile_y + 1) * tile).min(height);
+        if first_row >= last_row {
             continue;
         }
-        for tile_x in 0..tiles_wide {
-            let xs = ((tile_x * tile).max(1), ((tile_x + 1) * tile).min(width));
-            if xs.0 >= xs.1 {
-                continue;
-            }
-            let mut best = (u32::MAX, 1u32);
-            for mode in CANDIDATES {
-                let cost = match mode {
-                    1 => tile_cost::<1>(pixels, width, xs, ys, best.0),
-                    2 => tile_cost::<2>(pixels, width, xs, ys, best.0),
-                    7 => tile_cost::<7>(pixels, width, xs, ys, best.0),
-                    11 => tile_cost::<11>(pixels, width, xs, ys, best.0),
-                    12 => tile_cost::<12>(pixels, width, xs, ys, best.0),
-                    _ => tile_cost::<13>(pixels, width, xs, ys, best.0),
-                };
-                if cost < best.0 {
-                    best = (cost, mode);
+        costs.fill(0);
+        for y in (first_row..last_row).step_by(2) {
+            row_bytes(&pixels[y * width..(y + 1) * width], &mut row);
+            row_bytes(&pixels[(y - 1) * width..y * width], &mut above);
+            for (candidate, mode) in CANDIDATES.iter().enumerate() {
+                let tile_costs = &mut costs[candidate * spans.len()..(candidate + 1) * spans.len()];
+                for (cost, (start, end)) in tile_costs.iter_mut().zip(&spans) {
+                    *cost += mode_cost(*mode, &row, &above, *start, *end);
                 }
             }
-            modes[tile_y * tiles_wide + tile_x] = best.1;
+        }
+        for (index, _) in spans.iter().enumerate() {
+            let mut best = (u32::MAX, 1u32);
+            for (candidate, mode) in CANDIDATES.iter().enumerate() {
+                let cost = costs[candidate * spans.len() + index];
+                if cost < best.0 {
+                    best = (cost, *mode);
+                }
+            }
+            modes[tile_y * tiles_wide + first_tile + index] = best.1;
         }
     }
     for y in (1..height).rev() {
-        let row = y * width;
+        let start_of_row = y * width;
+        row_bytes(&pixels[start_of_row..start_of_row + width], &mut row);
+        row_bytes(&pixels[start_of_row - width..start_of_row], &mut above);
         let tile_row = (y >> PREDICTOR_BITS) * tiles_wide;
-        for tile_x in (0..tiles_wide).rev() {
-            let xs = ((tile_x * tile).max(1), ((tile_x + 1) * tile).min(width));
-            if xs.0 >= xs.1 {
-                continue;
-            }
-            match modes[tile_row + tile_x] {
-                1 => residual_segment::<1>(pixels, width, row, xs),
-                2 => residual_segment::<2>(pixels, width, row, xs),
-                7 => residual_segment::<7>(pixels, width, row, xs),
-                11 => residual_segment::<11>(pixels, width, row, xs),
-                12 => residual_segment::<12>(pixels, width, row, xs),
-                _ => residual_segment::<13>(pixels, width, row, xs),
-            }
+        for (index, (start, end)) in spans.iter().enumerate() {
+            let mode = modes[tile_row + first_tile + index];
+            mode_residuals(mode, &row, &above, &mut out, *start, *end);
         }
         // The left column predicts from the pixel above.
-        pixels[row] = subtract_pixels(pixels[row], pixels[row - width]);
+        let first = subtract_pixels(pixels[start_of_row], pixels[start_of_row - width]);
+        let target = &mut pixels[start_of_row..start_of_row + width];
+        for (pixel, cell) in target.iter_mut().zip(out.chunks_exact(4)).skip(1) {
+            *pixel = u32::from_le_bytes([cell[0], cell[1], cell[2], cell[3]]);
+        }
+        target[0] = first;
     }
     // The top row predicts from the left, its first pixel from black.
     for x in (1..width).rev() {
@@ -611,67 +724,113 @@ fn predictor_residuals(pixels: &mut [u32], width: usize, height: usize) -> Vec<u
     modes.iter().map(|mode| 0xff00_0000 | (mode << 8)).collect()
 }
 
-/// The image's colors, sorted, when there are at most 256.
-fn palette(pixels: &[u32]) -> Option<Vec<u32>> {
-    let mut colors: Vec<u32> = Vec::with_capacity(257);
-    let mut last = None;
-    for pixel in pixels {
-        if last == Some(*pixel) {
-            continue;
-        }
-        last = Some(*pixel);
-        if !colors.contains(pixel) {
-            if colors.len() == 256 {
-                return None;
-            }
-            colors.push(*pixel);
-        }
-    }
-    colors.sort_unstable();
-    Some(colors)
+/// The colors seen so far, in the order met, while there are at most
+/// 256, with a color's index found by open addressing (1024 slots, so a
+/// probe rarely goes past its first).
+struct Palette {
+    colors: Vec<u32>,
+    slots: Vec<(u32, u8)>,
+    used: Vec<bool>,
 }
 
-/// Encodes ARGB pixels as a VP8L bitstream.
-pub(crate) fn encode(pixels: &mut [u32], width: usize, height: usize, has_alpha: bool) -> Vec<u8> {
+impl Palette {
+    const BITS: u32 = 10;
+
+    fn new() -> Palette {
+        let size = 1 << Self::BITS;
+        Palette {
+            colors: Vec::with_capacity(256),
+            slots: vec![(0, 0); size],
+            used: vec![false; size],
+        }
+    }
+
+    /// The index of `color`, added if new; `None` when it would be the
+    /// 257th color.
+    fn index(&mut self, color: u32) -> Option<u8> {
+        let mask = self.slots.len() - 1;
+        let mut slot = (0x1e35_a7bd_u32.wrapping_mul(color) >> (32 - Self::BITS)) as usize;
+        while self.used[slot] {
+            if self.slots[slot].0 == color {
+                return Some(self.slots[slot].1);
+            }
+            slot = (slot + 1) & mask;
+        }
+        if self.colors.len() == 256 {
+            return None;
+        }
+        let index = self.colors.len() as u8;
+        self.colors.push(color);
+        self.slots[slot] = (color, index);
+        self.used[slot] = true;
+        Some(index)
+    }
+}
+
+fn header(width: usize, height: usize, has_alpha: bool) -> BitWriter {
     let mut bits = BitWriter::new();
     bits.put(0x2f, 8);
     bits.put((width - 1) as u32, 14);
     bits.put((height - 1) as u32, 14);
     bits.put(u32::from(has_alpha), 1);
     bits.put(0, 3);
-    if let Some(colors) = palette(pixels) {
-        // Color indexing: the palette as deltas, then indices packed
-        // several to a pixel when there are few colors.
-        bits.put(1, 1);
-        bits.put(3, 2);
-        bits.put((colors.len() - 1) as u32, 8);
-        let mut deltas = colors.clone();
-        for index in (1..deltas.len()).rev() {
-            deltas[index] = subtract_pixels(colors[index], colors[index - 1]);
-        }
-        write_image(&mut bits, &deltas, deltas.len(), false, 0);
-        let width_bits = match colors.len() {
-            0..=2 => 3,
-            3..=4 => 2,
-            5..=16 => 1,
-            _ => 0,
-        };
-        let per_pixel = 8 >> width_bits;
-        let packed_width = width.div_ceil(1 << width_bits);
-        let mut packed = vec![0xff00_0000u32; packed_width * height];
-        for y in 0..height {
-            for x in 0..width {
-                let index = colors.binary_search(&pixels[y * width + x]).unwrap_or(0) as u32;
-                let slot = &mut packed[y * packed_width + (x >> width_bits)];
-                let shift = (x & ((1 << width_bits) - 1)) as u32 * per_pixel;
-                *slot |= index << (8 + shift);
-            }
-        }
-        bits.put(0, 1);
-        write_image(&mut bits, &packed, packed_width, true, 0);
-        return bits.finish();
+    bits
+}
+
+/// Encodes an image of at most 256 colors, given as indices into
+/// `colors`, as a VP8L bitstream: color indexing with the palette
+/// sorted and written as deltas, then the indices packed several to a
+/// pixel when there are few colors.
+fn encode_indexed(
+    indices: &[u8],
+    colors: &[u32],
+    width: usize,
+    height: usize,
+    has_alpha: bool,
+) -> Vec<u8> {
+    let mut bits = header(width, height, has_alpha);
+    let mut sorted = colors.to_vec();
+    sorted.sort_unstable();
+    // Each index as met to its place in the sorted palette.
+    let mut remap = [0u32; 256];
+    for (index, color) in colors.iter().enumerate() {
+        remap[index] = sorted.binary_search(color).unwrap_or(0) as u32;
     }
-    // Subtract green, then the predictor.
+    bits.put(1, 1);
+    bits.put(3, 2);
+    bits.put((sorted.len() - 1) as u32, 8);
+    let mut deltas = sorted.clone();
+    for index in (1..deltas.len()).rev() {
+        deltas[index] = subtract_pixels(sorted[index], sorted[index - 1]);
+    }
+    write_image(&mut bits, &deltas, deltas.len(), false, 0);
+    let width_bits = match sorted.len() {
+        0..=2 => 3,
+        3..=4 => 2,
+        5..=16 => 1,
+        _ => 0,
+    };
+    let per_pixel = 8 >> width_bits;
+    let packed_width = width.div_ceil(1 << width_bits);
+    let mut packed = vec![0xff00_0000u32; packed_width * height];
+    for (packed_row, row) in packed
+        .chunks_exact_mut(packed_width)
+        .zip(indices.chunks_exact(width))
+    {
+        for (x, index) in row.iter().enumerate() {
+            let shift = (x & ((1 << width_bits) - 1)) as u32 * per_pixel;
+            packed_row[x >> width_bits] |= remap[usize::from(*index)] << (8 + shift);
+        }
+    }
+    bits.put(0, 1);
+    write_image(&mut bits, &packed, packed_width, true, 0);
+    bits.finish()
+}
+
+/// Encodes ARGB pixels of more than 256 colors as a VP8L bitstream:
+/// subtract green, the predictor, then the residuals.
+fn encode(pixels: &mut [u32], width: usize, height: usize, has_alpha: bool) -> Vec<u8> {
+    let mut bits = header(width, height, has_alpha);
     bits.put(1, 1);
     bits.put(2, 2);
     for pixel in pixels.iter_mut() {
@@ -697,11 +856,19 @@ pub(crate) fn encode(pixels: &mut [u32], width: usize, height: usize, has_alpha:
 }
 
 /// Writes a lossless WebP from rows as a `RowSink`.
+///
+/// While the image has at most 256 colors its rows are held as a byte
+/// per pixel (the palette index); the 257th color turns what is held
+/// into ARGB words, and later rows are held that way.
 pub struct WebpRows<'a> {
     sink: &'a mut dyn Write,
     width: usize,
     height: usize,
     color: ColorType,
+    rows_seen: usize,
+    palette: Option<Palette>,
+    indices: Vec<u8>,
+    scratch: Vec<u32>,
     pixels: Vec<u32>,
     has_alpha: bool,
 }
@@ -713,14 +880,29 @@ impl<'a> WebpRows<'a> {
             width: 0,
             height: 0,
             color: ColorType::Rgb,
+            rows_seen: 0,
+            palette: None,
+            indices: Vec::new(),
+            scratch: Vec::new(),
             pixels: Vec::new(),
             has_alpha: false,
         }
     }
 
     fn finish(&mut self) -> io::Result<()> {
-        let mut pixels = std::mem::take(&mut self.pixels);
-        let stream = encode(&mut pixels, self.width, self.height, self.has_alpha);
+        let stream = match self.palette.take() {
+            Some(palette) => encode_indexed(
+                &self.indices,
+                &palette.colors,
+                self.width,
+                self.height,
+                self.has_alpha,
+            ),
+            None => {
+                let mut pixels = std::mem::take(&mut self.pixels);
+                encode(&mut pixels, self.width, self.height, self.has_alpha)
+            }
+        };
         let padded = stream.len() + (stream.len() & 1);
         let mut head = Vec::with_capacity(20);
         head.extend_from_slice(b"RIFF");
@@ -734,27 +916,9 @@ impl<'a> WebpRows<'a> {
         }
         self.sink.flush()
     }
-}
 
-impl RowSink for WebpRows<'_> {
-    fn start(&mut self, width: u32, height: u32, color: ColorType) -> io::Result<()> {
-        if width == 0 || height == 0 || width > 16_384 || height > 16_384 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "WebP holds 1 to 16384 pixels on a side",
-            ));
-        }
-        self.width = width as usize;
-        self.height = height as usize;
-        self.color = color;
-        self.pixels = Vec::with_capacity(self.width * self.height);
-        Ok(())
-    }
-
-    fn row(&mut self, pixels: &[u8]) -> io::Result<()> {
-        let start = self.pixels.len();
-        self.pixels.resize(start + self.width, 0);
-        let target = &mut self.pixels[start..];
+    /// Converts one row to ARGB words in `target`, noting alpha.
+    fn argb_row(&mut self, pixels: &[u8], target: &mut [u32]) {
         match self.color {
             ColorType::Gray => {
                 for (argb, value) in target.iter_mut().zip(pixels) {
@@ -793,7 +957,76 @@ impl RowSink for WebpRows<'_> {
                 self.has_alpha |= !opaque;
             }
         }
-        if self.pixels.len() == self.width * self.height {
+    }
+
+    /// Indexes a row held in `scratch` while the colors fit a palette;
+    /// on the 257th color, turns the rows held so far and this one into
+    /// ARGB words.
+    fn index_row(&mut self) {
+        let Some(palette) = self.palette.as_mut() else {
+            return;
+        };
+        let row_start = self.indices.len();
+        let mut last: Option<(u32, u8)> = None;
+        for pixel in &self.scratch {
+            let index = match last {
+                Some((color, index)) if color == *pixel => index,
+                _ => match palette.index(*pixel) {
+                    Some(index) => {
+                        last = Some((*pixel, index));
+                        index
+                    }
+                    None => {
+                        self.indices.truncate(row_start);
+                        let colors = &palette.colors;
+                        self.pixels = Vec::with_capacity(self.width * self.height);
+                        self.pixels
+                            .extend(self.indices.iter().map(|index| colors[usize::from(*index)]));
+                        self.pixels.extend_from_slice(&self.scratch);
+                        self.indices = Vec::new();
+                        self.palette = None;
+                        return;
+                    }
+                },
+            };
+            self.indices.push(index);
+        }
+    }
+}
+
+impl RowSink for WebpRows<'_> {
+    fn start(&mut self, width: u32, height: u32, color: ColorType) -> io::Result<()> {
+        if width == 0 || height == 0 || width > 16_384 || height > 16_384 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "WebP holds 1 to 16384 pixels on a side",
+            ));
+        }
+        self.width = width as usize;
+        self.height = height as usize;
+        self.color = color;
+        self.rows_seen = 0;
+        self.palette = Some(Palette::new());
+        self.indices = Vec::with_capacity(self.width * self.height);
+        self.scratch = vec![0; self.width];
+        Ok(())
+    }
+
+    fn row(&mut self, pixels: &[u8]) -> io::Result<()> {
+        if self.palette.is_some() {
+            let mut scratch = std::mem::take(&mut self.scratch);
+            self.argb_row(pixels, &mut scratch);
+            self.scratch = scratch;
+            self.index_row();
+        } else {
+            let start = self.pixels.len();
+            self.pixels.resize(start + self.width, 0);
+            let mut target = std::mem::take(&mut self.pixels);
+            self.argb_row(pixels, &mut target[start..]);
+            self.pixels = target;
+        }
+        self.rows_seen += 1;
+        if self.rows_seen == self.height {
             self.finish()?;
         }
         Ok(())
@@ -808,9 +1041,4 @@ pub fn write_webp(image: &crate::image::Image, sink: &mut dyn Write) -> io::Resu
         rows.row(image.row(y))?;
     }
     Ok(())
-}
-
-#[allow(dead_code)]
-fn unused_cache_index(argb: u32) -> usize {
-    cache_index(argb)
 }
