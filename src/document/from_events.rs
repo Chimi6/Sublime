@@ -675,6 +675,7 @@ impl<'s> DocumentBuilder<'s> {
                         background: None,
                         merge: crate::document::Merge::Origin,
                         borders: Default::default(),
+                        vertical_alignment: None,
                     });
                 }
             }
@@ -742,6 +743,7 @@ fn empty_cell() -> Cell {
         background: None,
         merge: crate::document::Merge::Origin,
         borders: Default::default(),
+        vertical_alignment: None,
     }
 }
 

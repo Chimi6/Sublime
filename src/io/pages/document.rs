@@ -1548,10 +1548,16 @@ impl Reader<'_> {
             .and_then(|drawable| drawable.string("accessibility_description"))
             .filter(|text| !text.is_empty())
             .map(str::to_string);
-        // Inline attachments carry no offsets (NaN); anchored ones do.
+        // An image sits in the text line when its wrap type is inline (0), as
+        // Pages decides; older files also mark inline attachments with NaN
+        // offsets.
+        let inline_wrap = drawable
+            .and_then(|drawable| drawable.message("exterior_text_wrap"))
+            .and_then(|wrap| wrap.integer("type"))
+            == Some(0);
         let horizontal = attachment
             .float("h_offset")
-            .filter(|value| value.is_finite());
+            .filter(|value| value.is_finite() && !inline_wrap);
         let placement = match horizontal {
             Some(offset) => Placement::Floating {
                 horizontal: Anchor {

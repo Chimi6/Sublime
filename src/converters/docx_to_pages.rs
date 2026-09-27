@@ -12,7 +12,7 @@ use crate::io::docx::read_docx;
 use crate::io::pages::write_package;
 
 const NAME: &str = "docx-to-pages";
-const FIDELITY_NOTE: &str = "paragraphs, headings, bulleted and numbered lists, page size and margins, page and line breaks, and any number of tables (with merged cells and per-run formatting in cells) reach Pages with its named styles; a run's bold, italic, colour, size, font, and underline carry over; headers and footers (first-page and odd/even variants, left/center/right by alignment, live page numbers) are native; links become clickable hyperlinks; inline images are placed with their bytes and size";
+const FIDELITY_NOTE: &str = "paragraphs, headings, bulleted and numbered lists, page size and margins, page and line breaks, and paragraph alignment, spacing, and indents reach Pages with its named styles; a run's bold, italic, colour, size, font (theme fonts included), and underline carry over; any number of tables keep merged cells, shading, borders, cell margins, vertical alignment, and per-run formatting, with list labels as text; nested tables flatten to tab-separated lines; headers and footers (first-page and odd/even variants, live page numbers) are native; links become clickable hyperlinks; inline images are placed with their bytes and size; text boxes (each one of a group) become positioned shapes with their fill; form checkboxes become box characters; shapes without text and charts are not drawn";
 
 pub struct DocxToPages;
 

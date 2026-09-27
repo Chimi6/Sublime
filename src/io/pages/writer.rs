@@ -973,9 +973,21 @@ fn reuse_table(
         // Each cell's own cell style, as Pages writes a Word table: a variation
         // of the body cell style that sets its fill (empty for none, which also
         // switches off the table style's banded rows).
-        let mut fills: Vec<Option<crate::document::Color>> = mark.backgrounds.clone();
-        fills.sort_by_key(|fill| fill.map(|color| (color.red, color.green, color.blue)));
-        fills.dedup();
+        // Each cell's look: its fill and its vertical alignment.
+        let looks: Vec<CellLook> = mark
+            .backgrounds
+            .iter()
+            .zip(&mark.alignments)
+            .map(|(fill, alignment)| (*fill, *alignment))
+            .collect();
+        let mut distinct = looks.clone();
+        distinct.sort_by_key(|(fill, alignment)| {
+            (
+                fill.map(|color| (color.red, color.green, color.blue)),
+                *alignment,
+            )
+        });
+        distinct.dedup();
         // The cells' padding (left, top, right, bottom): the source's margins,
         // else the template's own.
         let padding = mark
@@ -984,19 +996,19 @@ fn reuse_table(
                 [margins.left, margins.top, margins.right, margins.bottom]
             });
         let padding_key = padding.map(f32::to_bits);
-        // An unshaded cell with the template's padding keeps the table's own
-        // body cell style.
+        // A plain cell with the template's padding keeps the table's own body
+        // cell style.
         if padding == [TEMPLATE_CELL_PADDING; 4] {
             fill_styles.insert(
-                (table.cell_style_id, None, padding_key),
+                (table.cell_style_id, (None, ALIGN_UNSTATED), padding_key),
                 table.cell_style_id,
             );
         }
         // Shared across tables: Pages merges identical variations on load, which
         // would leave a second table's copy dangling.
-        let missing: Vec<Option<crate::document::Color>> = fills
+        let missing: Vec<CellLook> = distinct
             .iter()
-            .filter(|fill| !fill_styles.contains_key(&(table.cell_style_id, **fill, padding_key)))
+            .filter(|look| !fill_styles.contains_key(&(table.cell_style_id, **look, padding_key)))
             .copied()
             .collect();
         if !missing.is_empty() {
@@ -1008,19 +1020,10 @@ fn reuse_table(
                 styles.stylesheet,
                 next_id,
             )?;
-            for (fill, id) in created {
-                fill_styles.insert((table.cell_style_id, fill, padding_key), id);
+            for (look, id) in created {
+                fill_styles.insert((table.cell_style_id, look, padding_key), id);
             }
         }
-        let variations: HashMap<Option<crate::document::Color>, u64> = fills
-            .iter()
-            .map(|fill| {
-                (
-                    *fill,
-                    fill_styles[&(table.cell_style_id, *fill, padding_key)],
-                )
-            })
-            .collect();
         // Refcounts are the number of cell records naming each key: Pages
         // decrements them as it restyles cells, and one that runs out leaves
         // the table's other cells with dangling keys.
@@ -1028,20 +1031,20 @@ fn reuse_table(
         let cells = mark.rows * mark.columns;
         let mut style_entries: Vec<(u32, u64, u64)> =
             vec![(TEXT_STYLE_KEY, styles.paragraph, cells as u64)];
-        let mut fill_keys: HashMap<Option<crate::document::Color>, u32> = HashMap::new();
-        for fill in &fills {
+        let mut look_keys: HashMap<CellLook, u32> = HashMap::new();
+        for look in &distinct {
             let key = style_entries.len() as u32 + 1;
-            let users = mark
-                .backgrounds
+            let users = looks
                 .iter()
                 .enumerate()
-                .filter(|(index, background)| *background == fill && !covered.contains(index))
+                .filter(|(index, other)| *other == look && !covered.contains(index))
                 .count() as u64;
-            style_entries.push((key, variations[fill], users.max(1)));
-            fill_keys.insert(*fill, key);
+            let variation = fill_styles[&(table.cell_style_id, *look, padding_key)];
+            style_entries.push((key, variation, users.max(1)));
+            look_keys.insert(*look, key);
         }
-        for (index, fill) in mark.backgrounds.iter().enumerate() {
-            cell_style_keys.insert(index, fill_keys[fill]);
+        for (index, look) in looks.iter().enumerate() {
+            cell_style_keys.insert(index, look_keys[look]);
         }
         let references: Vec<u64> = style_entries.iter().map(|(_, id, _)| *id).collect();
         rewrite_object(package, table.style_id, |tree| {
@@ -1725,6 +1728,26 @@ fn clone_image(
     {
         let stream = document_stream(package)?;
         let (image_message, image_info) = clone_object(stream, proto.image_id, new_image_id)?;
+        // Its own (empty) title and caption: Pages repairs a caption shared by
+        // two drawables on load.
+        if let Some(super_first) = message_field(&stream.tree, image_message, "super") {
+            for name in ["title", "caption"] {
+                let Some(index) = field_entry(&stream.tree, super_first, name) else {
+                    continue;
+                };
+                let Node::Reference(old) = stream.tree.entries[index as usize].value else {
+                    continue;
+                };
+                if !stream.objects.iter().any(|object| object.identifier == old) {
+                    continue;
+                }
+                let new = *next_object_id;
+                *next_object_id += 1;
+                clone_object(stream, old, new)?;
+                stream.tree.entries[index as usize].value = Node::Reference(new);
+                remap_info_reference(&mut stream.tree, image_info, "object_references", old, new);
+            }
+        }
         set_message_data_id(&mut stream.tree, image_message, "data", new_full);
         remap_info_reference(
             &mut stream.tree,
@@ -1852,6 +1875,10 @@ fn clone_data_metadata(
         component_data_reference(tree, meta_first, proto_data_id)
     {
         let new_reference = clone_chain(tree, source_reference, &mut |_| {})?;
+        // Only the new image uses the new data: the prototype's entry may list
+        // other images that share its data, and a clone naming them makes
+        // Pages count references those images never make.
+        keep_first_field(tree, new_reference, "object_reference_list");
         set_field_uint(tree, new_reference, "data_identifier", new_data_id);
         if let Some(list) = message_field(tree, new_reference, "object_reference_list") {
             set_field_uint(tree, list, "object_identifier", object_id);
@@ -1865,6 +1892,24 @@ fn clone_data_metadata(
         )?;
     }
     Ok(())
+}
+
+/// Unlinks every occurrence of a repeated field after its first from a chain.
+fn keep_first_field(tree: &mut Tree, first: u32, name: &str) {
+    let mut seen = false;
+    let mut previous = NONE;
+    let mut cursor = first;
+    while cursor != NONE {
+        let entry = tree.entries[cursor as usize];
+        let matches = tree.field(&entry).is_some_and(|field| field.name == name);
+        if matches && seen && previous != NONE {
+            tree.entries[previous as usize].next = entry.next;
+        } else {
+            seen |= matches;
+            previous = cursor;
+        }
+        cursor = entry.next;
+    }
 }
 
 /// Sets a named uint field in a chain, in place, if present.
@@ -2244,24 +2289,13 @@ fn rebuild_inline_attachment(tree: &mut Tree, old_first: u32) -> Result<u32, Pac
         .ok_or_else(|| malformed("attachment has no drawable"))?;
     let mut chain = Chain::new();
     push_field(tree, &mut chain, attachment, "drawable", drawable)?;
-    // An inline attachment carries the offset fields with a not-a-number value
-    // (as Pages writes them); the reader reads NaN as "in the text line".
+    // An inline attachment (its drawable's wrap type is inline) carries zero
+    // offsets: older Pages wrote NaN, which the current one rewrites to zero
+    // on load and reports as a file modified while being read.
     push_field(tree, &mut chain, attachment, "h_offset_type", Node::Uint(0))?;
-    push_field(
-        tree,
-        &mut chain,
-        attachment,
-        "h_offset",
-        Node::Float(f32::NAN),
-    )?;
+    push_field(tree, &mut chain, attachment, "h_offset", Node::Float(0.0))?;
     push_field(tree, &mut chain, attachment, "v_offset_type", Node::Uint(0))?;
-    push_field(
-        tree,
-        &mut chain,
-        attachment,
-        "v_offset",
-        Node::Float(f32::NAN),
-    )?;
+    push_field(tree, &mut chain, attachment, "v_offset", Node::Float(0.0))?;
     Ok(chain.first)
 }
 
@@ -2987,6 +3021,8 @@ struct TableMark {
     merges: Vec<(usize, usize, usize, usize)>,
     /// Row-major cell background colours (shading), `None` for none.
     backgrounds: Vec<Option<crate::document::Color>>,
+    /// Row-major cells' vertical alignment, as Pages codes it.
+    alignments: Vec<u64>,
     /// The table's grid lines, when the source states them.
     borders: Option<crate::document::TableBorders>,
     /// The cells' padding, when the source states it.
@@ -3050,6 +3086,7 @@ fn flatten(document: &Document) -> Body {
         current: Format::default(),
         current_link: None,
         pending_break: false,
+        list_counters: ListCounters::default(),
     };
     for (index, section) in document.sections.iter().enumerate() {
         // A section that starts a new page breaks the page before it.
@@ -3081,6 +3118,8 @@ struct Walk {
     /// A page break waiting to open the next paragraph (Pages writes one as
     /// U+0005 at the start of the paragraph that follows it).
     pending_break: bool,
+    /// Numbering for list items inside table cells, continuing across cells.
+    list_counters: ListCounters,
 }
 
 /// Pages' page-break character, which opens the paragraph after the break.
@@ -3152,15 +3191,22 @@ impl Walk {
             .collect();
         for (r, row) in table.rows.iter().enumerate() {
             for (c, cell) in row.cells.iter().enumerate().take(columns) {
-                cells[r * columns + c] = flatten_cell(document, cell);
+                cells[r * columns + c] = flatten_cell(document, cell, &mut self.list_counters);
             }
         }
         let mut backgrounds = vec![None; rows * columns];
         let mut cell_borders = vec![crate::document::CellBorders::default(); rows * columns];
+        let mut alignments = vec![ALIGN_UNSTATED; rows * columns];
         for (r, row) in table.rows.iter().enumerate() {
             for (c, cell) in row.cells.iter().enumerate().take(columns) {
                 backgrounds[r * columns + c] = cell.background;
                 cell_borders[r * columns + c] = cell.borders;
+                alignments[r * columns + c] = match cell.vertical_alignment {
+                    Some(crate::document::VerticalAlignment::Top) => 0,
+                    Some(crate::document::VerticalAlignment::Center) => 1,
+                    Some(crate::document::VerticalAlignment::Bottom) => 2,
+                    None => ALIGN_UNSTATED,
+                };
             }
         }
         let mut merges = Vec::new();
@@ -3190,6 +3236,7 @@ impl Walk {
             heights,
             merges,
             backgrounds,
+            alignments,
             borders: table.borders,
             cell_margins: table.cell_margins,
             cell_borders,
@@ -3336,8 +3383,12 @@ impl Walk {
 /// A table cell's text: its paragraphs' runs joined, paragraphs separated by
 /// a newline. Only text runs contribute; nested tables and other inlines are
 /// skipped (an MVP that carries the words).
-fn flatten_cell(document: &Document, cell: &crate::document::Cell) -> CellContent {
-    flatten_lines(document, &block_lines(&cell.blocks))
+fn flatten_cell(
+    document: &Document,
+    cell: &crate::document::Cell,
+    counters: &mut ListCounters,
+) -> CellContent {
+    flatten_lines(document, &block_lines(&cell.blocks), counters)
 }
 
 /// One line of flattened text: segments joined by tabs, each segment's
@@ -3395,7 +3446,51 @@ fn collect_paragraphs<'a>(blocks: &'a [Block], out: &mut Vec<&'a Paragraph>) {
 /// Flattens lines (see `block_lines`) into one text with its formatting runs:
 /// lines end with a paragraph break, segments with a tab, and a segment's
 /// paragraphs with a soft line break.
-fn flatten_lines(document: &Document, lines: &[Line<'_>]) -> CellContent {
+/// List numbering for text Pages holds without list styles (table cells,
+/// headers, text boxes): each (list style, level)'s current number.
+#[derive(Default)]
+struct ListCounters {
+    counts: HashMap<(usize, u8), u32>,
+}
+
+impl ListCounters {
+    /// The label a list paragraph shows, advancing its list's count.
+    fn label(&mut self, document: &Document, item: &crate::document::ListItem) -> Option<String> {
+        if item.starts_list {
+            self.counts.retain(|(style, _), _| *style != item.style);
+        }
+        // An item ends the numbering of the levels below it.
+        self.counts
+            .retain(|(style, level), _| *style != item.style || *level <= item.level);
+        let count = self
+            .counts
+            .entry((item.style, item.level))
+            .and_modify(|count| *count += 1)
+            .or_insert(if item.starts_list {
+                item.start.max(1)
+            } else {
+                1
+            });
+        let level = document
+            .styles
+            .list
+            .get(item.style)?
+            .levels
+            .get(item.level as usize)?;
+        match &level.label {
+            crate::document::ListLabel::None => None,
+            crate::document::ListLabel::Text(text) => Some(text.clone()),
+            crate::document::ListLabel::Number(format) => Some(format.label(*count)),
+        }
+        .filter(|label| !label.is_empty())
+    }
+}
+
+fn flatten_lines(
+    document: &Document,
+    lines: &[Line<'_>],
+    counters: &mut ListCounters,
+) -> CellContent {
     let mut text = String::new();
     let mut marks: Vec<(u32, Format)> = Vec::new();
     let mut fields: Vec<(u32, u64)> = Vec::new();
@@ -3442,6 +3537,25 @@ fn flatten_lines(document: &Document, lines: &[Line<'_>]) -> CellContent {
         // A line (not a tab or soft break) begins a Pages paragraph.
         if matches!(lead, None | Some('\n')) {
             starts.push((offset, para_format(document, paragraph)));
+        }
+        // A list item's label, as text: Pages keeps no list styles here.
+        if let Some(label) = paragraph
+            .list
+            .as_ref()
+            .and_then(|item| counters.label(document, item))
+        {
+            let format = paragraph
+                .runs
+                .iter()
+                .find(|run| !document.is_deleted(run))
+                .map_or(current, |run| run_format(document, paragraph, run));
+            if format != current {
+                marks.push((offset, format));
+                current = format;
+            }
+            let piece = format!("{} ", without_attachments(&label));
+            text.push_str(&piece);
+            offset += utf16_len(&piece);
         }
         for run in &paragraph.runs {
             if document.is_deleted(run) {
@@ -3922,6 +4036,17 @@ fn build_text_storage(
     emit_data_table(tree, &mut chain, storage, "table_para_data", &[(0, 0, 0)])?;
     emit_data_table(tree, &mut chain, storage, "table_para_starts", &[(0, 0, 0)])?;
     emit_data_table(tree, &mut chain, storage, "table_para_bidi", &[(0, 0, 0)])?;
+    // A shape's text takes drop caps: Pages expects its (empty) drop-cap table
+    // and adds one on load, as a modification, when it is missing.
+    if kind.is_none() {
+        emit_reference_table(
+            tree,
+            &mut chain,
+            storage,
+            "table_drop_cap_style",
+            &[(0, None)],
+        )?;
+    }
     Ok((chain.first, refs))
 }
 
@@ -4024,8 +4149,15 @@ fn build_rich_text_list(tree: &mut Tree, entries: &[(u32, u64)]) -> Result<u32, 
 }
 
 /// Cell-style variations by (parent cell style, fill), shared by all tables.
-/// Cell style variations by (parent, fill, padding as bits).
-type CellFillStyles = HashMap<(u64, Option<crate::document::Color>, [u32; 4]), u64>;
+/// A cell's look in Pages: its fill and its vertical alignment code.
+type CellLook = (Option<crate::document::Color>, u64);
+
+/// Cell style variations by (parent, look, padding as bits).
+type CellFillStyles = HashMap<(u64, CellLook, [u32; 4]), u64>;
+
+/// Pages' vertical alignment for a cell whose source states none (as Pages
+/// writes a Word cell without one; it lays out at the top).
+const ALIGN_UNSTATED: u64 = 3;
 
 /// Rebuilds the table's style data list (listType 4) from (key, style)
 /// entries: key 1 the paragraph (text) style every cell uses, then the cell
@@ -4083,11 +4215,11 @@ fn build_style_list(tree: &mut Tree, entries: &[(u32, u64, u64)]) -> Result<u32,
 fn create_cell_styles(
     package: &mut Package,
     parent: u64,
-    fills: &[Option<crate::document::Color>],
+    looks: &[CellLook],
     padding_sides: [f32; 4],
     stylesheet: u64,
     next_id: &mut u64,
-) -> Result<HashMap<Option<crate::document::Color>, u64>, PackageError> {
+) -> Result<HashMap<CellLook, u64>, PackageError> {
     let archive = message_ref("TST.CellStyleArchive")?;
     let base = child_message(archive, "super")?;
     let properties = child_message(archive, "cell_properties")?;
@@ -4097,7 +4229,7 @@ fn create_cell_styles(
     // In the stylesheet's own stream, where Pages keeps style variations; one
     // elsewhere is swapped out on load (and a table's cell references with it).
     let stream = stream_containing(package, stylesheet)?;
-    for color in fills {
+    for &(color, alignment) in looks {
         let id = *next_id;
         *next_id += 1;
         let tree = &mut stream.tree;
@@ -4113,7 +4245,7 @@ fn create_cell_styles(
         )?;
         let mut fill_chain = Chain::new();
         if let Some(color) = color {
-            let color_first = build_color(tree, *color)?;
+            let color_first = build_color(tree, color)?;
             push_field(
                 tree,
                 &mut fill_chain,
@@ -4146,7 +4278,7 @@ fn create_cell_styles(
             &mut props,
             properties,
             "vertical_alignment",
-            Node::Uint(3),
+            Node::Uint(alignment),
         )?;
         push_field(
             tree,
@@ -4188,7 +4320,7 @@ fn create_cell_styles(
                 first: chain.first,
             }],
         });
-        out.insert(*color, id);
+        out.insert((color, alignment), id);
     }
     let pairs: Vec<(u64, u64)> = out.values().map(|id| (parent, *id)).collect();
     register_in_stylesheet(package, stylesheet, &pairs)?;
@@ -6792,7 +6924,7 @@ fn page_areas(document: &Document, section: &crate::document::Section) -> Vec<Pa
                 buckets[position].push(vec![vec![paragraph]]);
             }
             for (position, lines) in buckets.iter().enumerate() {
-                let content = flatten_lines(document, lines);
+                let content = flatten_lines(document, lines, &mut ListCounters::default());
                 if content.text.trim().is_empty() && content.fields.is_empty() {
                     continue;
                 }
@@ -7440,7 +7572,8 @@ fn text_boxes(document: &Document) -> Vec<TextBox> {
         .iter()
         .filter_map(|floating| match &floating.content {
             crate::document::FloatingContent::TextBox { blocks, fill } => {
-                let content = flatten_lines(document, &block_lines(blocks));
+                let content =
+                    flatten_lines(document, &block_lines(blocks), &mut ListCounters::default());
                 (!content.text.trim().is_empty() || !content.fields.is_empty()).then(|| TextBox {
                     fill: *fill,
                     page: floating.page,
