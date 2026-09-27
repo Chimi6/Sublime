@@ -145,7 +145,7 @@ lossless and universal.
 | TIFF | tif, tiff | [ ] | A | M | Strips and tiles, common compressions (none, PackBits, LZW, deflate). Also the base of DNG and GeoTIFF. |
 | WebP | webp | [x] | S | L | Shipped 0.21.0 (`DOCS/formats/webp.md`): lossless and lossy decode bit-exact with libwebp, lossless encode. Lossy encode and animation are not written. |
 | AVIF, HEIC, JPEG XL | avif, heic, jxl | [ ] | D | XL | AV1, HEVC, and JXL codecs: External tier. |
-| Netpbm | ppm, pgm, pbm, pam | [ ] | A | S | Trivial and beloved by tooling. |
+| Netpbm | ppm, pgm, pbm, pam | [x] | A | S | Shipped 0.22.0 (`DOCS/formats/netpbm.md`): every form read, each kind written. |
 | QOI | qoi | [x] | B | S | Shipped 0.22.0 (`DOCS/formats/qoi.md`): both ways, streaming, `qoi.h`'s bytes. |
 | farbfeld | ff | [ ] | B | S | Tiny format. |
 | TGA | tga | [ ] | B | S | Games and textures; RLE. |

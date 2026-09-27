@@ -8,10 +8,12 @@ section under a version heading.
 
 ### Added
 
+- Netpbm (`src/io/netpbm.rs`): PBM, PGM, PPM in plain and raw forms and PAM, one streaming reader for every form and a writer for each kind, to and from every image format. Pair `ppm-png` against the image and png crates. Map in `DOCS/formats/netpbm.md`.
 - QOI both ways (`src/io/qoi.rs`): a streaming reader and a writer that produces `qoi.h`'s bytes, to and from every image format. Pair `qoi-png` against the qoi and png crates. Map in `DOCS/formats/qoi.md`.
 
 ### Changed
 
+- The benchmark harness removes an `out-*` output before each timed run, so both sides write a fresh file (a rename over an existing file costs a writeback on btrfs and ext4 that a truncate does not).
 - The PNG reader relies on each chunk's CRC-32 and no longer sums Adler-32 over the decoded data (the png crate skips it by default too): 7% faster on a large photo, 20% on flat images.
 - Image pairs are generated from one table of codecs, each saying what its reader and its writer lose: every reader reaches every writer, and each pair's fidelity carries both texts (a new raster format is one table row).
 

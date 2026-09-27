@@ -80,3 +80,17 @@ impl Image {
                 <= MAX_PIXELS
     }
 }
+
+/// A color value over white at `alpha`, rounded (the JPEG, PPM, and PGM
+/// writers flatten alpha this way).
+#[inline]
+pub(crate) fn flatten(value: u8, alpha: u8) -> u8 {
+    let (value, alpha) = (u32::from(value), u32::from(alpha));
+    ((value * alpha + 255 * (255 - alpha) + 127) / 255) as u8
+}
+
+/// Luma with libjpeg's constants (Pillow's `convert("L")` too).
+#[inline]
+pub(crate) fn luma_of(r: u8, g: u8, b: u8) -> u8 {
+    ((19_595 * i32::from(r) + 38_470 * i32::from(g) + 7_471 * i32::from(b) + (1 << 15)) >> 16) as u8
+}
