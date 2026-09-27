@@ -1691,6 +1691,7 @@ impl Reader<'_> {
                         cell.background = read.2;
                         cell.borders = read.3;
                         cell.vertical_alignment = read.4;
+                        cell.margins = read.5;
                     }
                     "w:p" => {
                         if self_closing {
@@ -2374,6 +2375,7 @@ fn read_cell_properties(
     Option<Color>,
     CellBorders,
     Option<VerticalAlignment>,
+    [Option<f32>; 4],
 ) {
     let mut span = 1u32;
     let mut merge = VerticalMerge::None;
@@ -2381,6 +2383,8 @@ fn read_cell_properties(
     let mut borders = CellBorders::default();
     let mut in_borders = false;
     let mut vertical = None;
+    let mut margins = [None; 4];
+    let mut in_margins = false;
     while let Some(event) = reader.next() {
         match event {
             XmlEvent::Start {
@@ -2401,6 +2405,19 @@ fn read_cell_properties(
                 }
                 "w:shd" => background = attribute(&attributes, "w:fill").and_then(parse_color),
                 "w:tcBorders" if !self_closing => in_borders = true,
+                "w:tcMar" if !self_closing => in_margins = true,
+                side if in_margins => {
+                    let index = match side {
+                        "w:top" => 0,
+                        "w:bottom" => 1,
+                        "w:left" | "w:start" => 2,
+                        "w:right" | "w:end" => 3,
+                        _ => continue,
+                    };
+                    if matches!(attribute(&attributes, "w:type"), None | Some("dxa")) {
+                        margins[index] = attribute(&attributes, "w:w").and_then(twips_to_points);
+                    }
+                }
                 "w:vAlign" => {
                     vertical = match attribute(&attributes, "w:val") {
                         Some("top") => Some(VerticalAlignment::Top),
@@ -2418,11 +2435,12 @@ fn read_cell_properties(
             XmlEvent::End {
                 name: "w:tcBorders",
             } => in_borders = false,
+            XmlEvent::End { name: "w:tcMar" } => in_margins = false,
             XmlEvent::End { name: "w:tcPr" } => break,
             _ => {}
         }
     }
-    (span.max(1), merge, background, borders, vertical)
+    (span.max(1), merge, background, borders, vertical, margins)
 }
 
 /// A grid position no cell occupies: empty, with no lines of its own.

@@ -631,6 +631,9 @@ pub struct Cell {
     /// Where the cell's content sits between its top and bottom edges, when
     /// the source says.
     pub vertical_alignment: Option<VerticalAlignment>,
+    /// The cell's own margins (top, bottom, left, right) in points, over the
+    /// table's.
+    pub margins: [Option<f32>; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
