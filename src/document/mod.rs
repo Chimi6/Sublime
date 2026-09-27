@@ -430,6 +430,10 @@ pub struct Paragraph {
     /// Direct character formatting set on the whole paragraph, under
     /// each run's own (`Document::run_properties`).
     pub run_properties: Option<Id>,
+    /// The paragraph mark's own character formatting (Word's `pPr/rPr`),
+    /// over the paragraph's: it sizes the paragraph's end (an empty
+    /// paragraph's whole line) and does not apply to its text.
+    pub mark: Option<Id>,
     pub list: Option<ListItem>,
     pub runs: Vec<Run>,
 }
@@ -913,6 +917,11 @@ impl Document {
     /// A paragraph's direct character formatting, under its runs' own.
     pub fn paragraph_run_properties(&self, paragraph: &Paragraph) -> RunProperties {
         self.run_properties_at(paragraph.run_properties)
+    }
+
+    /// A paragraph mark's own formatting (`Paragraph::mark`).
+    pub fn paragraph_mark_properties(&self, paragraph: &Paragraph) -> RunProperties {
+        self.run_properties_at(paragraph.mark)
     }
 
     fn run_properties_at(&self, id: Option<Id>) -> RunProperties {

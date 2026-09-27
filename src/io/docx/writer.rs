@@ -534,11 +534,9 @@ impl DocxWriter {
             &mut properties,
         );
         let mut mark = String::new();
-        run_properties_xml(
-            document,
-            &document.paragraph_run_properties(paragraph),
-            &mut mark,
-        );
+        let mut mark_properties = document.paragraph_run_properties(paragraph);
+        mark_properties.overlay(&document.paragraph_mark_properties(paragraph));
+        run_properties_xml(document, &mark_properties, &mut mark);
         if !mark.is_empty() {
             let _ = write!(properties, "<w:rPr>{mark}</w:rPr>");
         }

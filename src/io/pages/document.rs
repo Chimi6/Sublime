@@ -1327,10 +1327,11 @@ impl Reader<'_> {
                         content: Inline::LineBreak,
                     });
                     if mark.size.is_some() || mark.font.is_some() {
-                        let mut own = self.document.paragraph_run_properties(&paragraph);
-                        own.size = mark.size.or(own.size);
-                        own.font = mark.font.or(own.font);
-                        paragraph.run_properties = self.document.intern_run_properties(own);
+                        paragraph.mark = self.document.intern_run_properties(RunProperties {
+                            size: mark.size,
+                            font: mark.font,
+                            ..RunProperties::default()
+                        });
                     }
                 }
             }
