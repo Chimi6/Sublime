@@ -638,6 +638,7 @@ impl<'s> DocumentBuilder<'s> {
                     rows,
                     header_rows: table.header_rows,
                     columns: vec![width; columns],
+                    borders: None,
                 }));
             }
             TagEnd::TableHead => {
@@ -672,6 +673,7 @@ impl<'s> DocumentBuilder<'s> {
                         row_span: 1,
                         background: None,
                         merge: crate::document::Merge::Origin,
+                        borders: Default::default(),
                     });
                 }
             }
@@ -738,6 +740,7 @@ fn empty_cell() -> Cell {
         row_span: 1,
         background: None,
         merge: crate::document::Merge::Origin,
+        borders: Default::default(),
     }
 }
 
