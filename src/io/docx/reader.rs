@@ -2155,6 +2155,13 @@ impl Reader<'_> {
                 }
                 _ => [0.0, 0.0, width, height],
             };
+            // A lone shape in the text line stays there; the shapes of an
+            // inline group keep their places, apart from the text.
+            let wrap = match (anchored, shapes.len()) {
+                (true, _) => wrap,
+                (false, 1) => crate::document::TextWrap::Inline,
+                (false, _) => crate::document::TextWrap::TopAndBottom,
+            };
             return shapes
                 .into_iter()
                 .map(|shape| {
