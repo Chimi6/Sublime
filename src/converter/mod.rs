@@ -244,8 +244,9 @@ pub struct ConvertOptions {
     /// The worksheet to read or the name to give the one written: a sheet
     /// name or a 1-based number; the first sheet when absent.
     pub sheet: Option<String>,
-    /// The quality a lossy image writer encodes at, 1 to 100; the
-    /// writer's default (85 for JPEG) when absent.
+    /// 1 to 100: the quality a lossy image writer encodes at (85 for
+    /// JPEG when absent), or a lossless writer's effort (WebP: 50 and
+    /// under fastest, 90 and up smallest).
     pub quality: Option<u8>,
 }
 

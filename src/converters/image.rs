@@ -11,7 +11,7 @@ use crate::format::formats;
 use crate::io::bmp::{BmpError, BmpRows, BmpRowsError, read_bmp_rows};
 use crate::io::jpeg::{DEFAULT_QUALITY, JpegError, JpegNotes, JpegRows, read_jpeg_rows};
 use crate::io::png::{PngError, PngNotes, PngRows, RowSink, RowsError, read_png_rows};
-use crate::io::webp::{WebpNotes, WebpRows, read_webp_rows};
+use crate::io::webp::{Effort, WebpNotes, WebpRows, read_webp_rows};
 
 #[derive(Clone, Copy)]
 pub enum ImageFormat {
@@ -58,6 +58,7 @@ impl Converter for ImagePair {
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
         let quality = context.options.quality.unwrap_or(DEFAULT_QUALITY);
+        let effort = Effort::from_quality(context.options.quality);
         // Every pair streams: the reader hands rows to the writer and no
         // image is held beyond what a format itself needs (a bottom-up
         // BMP's pixel data, a WebP's bitstream, an interlaced PNG).
@@ -75,7 +76,7 @@ impl Converter for ImagePair {
                 read_rows(self.read, &mut input, &mut rows, self.name, context)
             }
             ImageFormat::Webp => {
-                let mut rows = WebpRows::new(output);
+                let mut rows = WebpRows::new(output).with_effort(effort);
                 read_rows(self.read, &mut input, &mut rows, self.name, context)
             }
         }
