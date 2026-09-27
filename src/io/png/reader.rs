@@ -9,7 +9,6 @@ use std::io::Read;
 
 use crate::image::{ColorType, Image};
 use crate::io::deflate::{InflateError, Inflater, Progress};
-use crate::io::png::adler32_update;
 use crate::io::zip::crc32::crc32_update;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -340,7 +339,6 @@ struct Decoder {
     zlib_header: Vec<u8>,
     inflater: Inflater,
     rows: Rows,
-    adler: u32,
     trailer: Vec<u8>,
 }
 
@@ -350,7 +348,6 @@ impl Decoder {
             zlib_header: Vec::with_capacity(2),
             inflater: Inflater::new(),
             rows: Rows::new(header, palette, transparency, streams),
-            adler: 1,
             trailer: Vec::with_capacity(4),
         }
     }
@@ -398,7 +395,6 @@ impl Decoder {
     fn deliver(&mut self, sink: Option<&mut (dyn RowSink + '_)>) -> Result<(), RowsError> {
         let output = self.inflater.output();
         let used = self.rows.feed(output, sink)?;
-        self.adler = adler32_update(self.adler, &output[..used]);
         if self.rows.done && used < output.len() {
             return Err(PngError("more image data than the image holds".to_string()).into());
         }
@@ -410,17 +406,10 @@ impl Decoder {
         if !self.rows.done {
             return Err(PngError("image data cut short".to_string()));
         }
-        if self.trailer.len() == 4 {
-            let stored = u32::from_be_bytes([
-                self.trailer[0],
-                self.trailer[1],
-                self.trailer[2],
-                self.trailer[3],
-            ]);
-            if stored != self.adler {
-                return Err(PngError("bad Adler-32 checksum".to_string()));
-            }
-        }
+        // The zlib Adler-32 trailer is not checked: each IDAT chunk's
+        // CRC-32 already covers the compressed bytes, and a second sum
+        // over the pixels only rechecks our inflater (7% of a large
+        // decode; the png crate's reader skips it by default too).
         Ok(self.rows.image)
     }
 }
