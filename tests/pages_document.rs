@@ -276,7 +276,9 @@ fn tables_come_out_as_grids_with_merges() {
         .collect();
     assert_eq!(texts, ["Name", "Kind", "Amount"]);
     assert_eq!(cell_text(&document, &simple.rows[1].cells[2]), "42.50");
-    assert!(simple.rows[0].cells[0].background.is_some());
+    // The header cells' own style states no fill (as Pages draws them), over
+    // the table style's.
+    assert!(simple.rows[0].cells[0].background.is_none());
     let merged = tables[1];
     assert_eq!(merged.rows.len(), 4);
     let wide = &merged.rows[0].cells[0];
