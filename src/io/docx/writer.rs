@@ -1511,25 +1511,6 @@ fn emu(points: f32) -> i64 {
     (points * 12_700.0).round() as i64
 }
 
-#[cfg(test)]
-mod tests {
-    use super::font_family;
-
-    #[test]
-    fn postscript_names_become_families() {
-        assert_eq!(font_family("HelveticaNeue-Bold"), "Helvetica Neue");
-        assert_eq!(font_family("ComicSansMS"), "Comic Sans MS");
-        assert_eq!(font_family("TimesNewRomanPSMT"), "Times New Roman");
-        assert_eq!(font_family("ArialMT"), "Arial");
-        assert_eq!(font_family("Menlo-Regular"), "Menlo");
-        assert_eq!(font_family("CourierNewPSMT"), "Courier New");
-        assert_eq!(font_family("Georgia"), "Georgia");
-        assert_eq!(font_family("Nonexistent Sans"), "Nonexistent Sans");
-        assert_eq!(font_family("AvenirNext-DemiBold"), "Avenir Next");
-        assert_eq!(font_family("STHeitiSC-Light"), "ST Heiti SC");
-    }
-}
-
 /// One border side: a line, `nil` for a stated "no line", or nothing when
 /// unstated.
 fn border_xml(name: &str, side: Option<Option<crate::document::Border>>, out: &mut String) {
@@ -1548,5 +1529,24 @@ fn border_xml(name: &str, side: Option<Option<crate::document::Border>>, out: &m
             let _ = write!(out, "<w:{name} w:val=\"nil\"/>");
         }
         None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::font_family;
+
+    #[test]
+    fn postscript_names_become_families() {
+        assert_eq!(font_family("HelveticaNeue-Bold"), "Helvetica Neue");
+        assert_eq!(font_family("ComicSansMS"), "Comic Sans MS");
+        assert_eq!(font_family("TimesNewRomanPSMT"), "Times New Roman");
+        assert_eq!(font_family("ArialMT"), "Arial");
+        assert_eq!(font_family("Menlo-Regular"), "Menlo");
+        assert_eq!(font_family("CourierNewPSMT"), "Courier New");
+        assert_eq!(font_family("Georgia"), "Georgia");
+        assert_eq!(font_family("Nonexistent Sans"), "Nonexistent Sans");
+        assert_eq!(font_family("AvenirNext-DemiBold"), "Avenir Next");
+        assert_eq!(font_family("STHeitiSC-Light"), "ST Heiti SC");
     }
 }
