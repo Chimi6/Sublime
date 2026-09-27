@@ -1,6 +1,6 @@
 # XLSX <-> CSV
 
-**Latest** (2026-09-25, first release of Excel workbooks: xlsx -> csv 133.6 MB/s of uncompressed input (16.2 of file bytes) at 415 MB peak; csv -> xlsx 284.3 MB/s of input plus uncompressed output at 4.7 MB peak; every line PASSES against calamine and rust_xlsxwriter with the csv crate)
+**Latest** (2026-09-27, the lazy deflate and the faster bit writer: csv -> xlsx 634.1 MB/s (from 284.3) at 3.8 MB; xlsx -> csv 155.4 against 117.1 MB/s; the xlsx -> csv memory line FAILS at 928 MB against 593, a regression that is in main before this change (950 MB there) and is in STATE.md)
 
 ## Purpose
 
@@ -64,6 +64,21 @@ median wall clock of the whole process, peak resident memory from GNU
   scales with the sheet; that is the row to watch.
 
 ## Results
+
+### 2026-09-27, the lazy deflate and the faster bit writer
+
+commit: a5c702a (on the `webp-spikes` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| xlsx -> csv, 1000000 rows (326.4 MB uncompressed): throughput (MB/s of uncompressed input) | 152.5 | 114.2 (calamine + csv) | PASS |
+| xlsx -> csv, 1000000 rows (39.5 MB on disk): throughput (MB/s of file bytes) [extra] | 18.5 | 13.8 (calamine + csv) | n/a |
+| xlsx -> csv, 1000000 rows: peak memory (MB) | 928.1 | 592.6 (calamine + csv) | FAIL |
+| csv -> xlsx, 1000000 rows (56.8 MB in + 387.7 MB out): throughput (MB/s of input plus uncompressed output) | 632.6 | 101.6 (csv + rust_xlsxwriter) | PASS |
+| csv -> xlsx, 1000000 rows: peak memory (MB) | 4.2 | 1301.2 (csv + rust_xlsxwriter) | PASS |
+
+The `xlsx -> csv` memory regression is not this change: `main` at 20a1985 holds 950 MB on the same file. It is recorded in `STATE.md` to be found.
 
 ### 2026-09-25, first release of Excel workbooks
 

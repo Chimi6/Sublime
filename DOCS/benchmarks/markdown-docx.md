@@ -1,6 +1,6 @@
 # Markdown -> Word
 
-**Latest** (2026-09-25, 0.17.0 Markdown speedups: markdown -> docx 206.7 MB/s of input plus uncompressed output on the markup-dense shape and 288.8 on prose, at 92 and 35 MB peak; all lines PASS against pulldown-cmark with docx-rs)
+**Latest** (2026-09-27, the lazy deflate and the faster bit writer: 307.4 MB/s of input plus uncompressed output on the markup-dense shape (from 206.7) and 397.0 on prose (from 288.8); every line PASSES)
 
 ## Purpose
 
@@ -69,6 +69,20 @@ row. Rows and units follow `README.md`.
   block as it closes.
 
 ## Results
+
+### 2026-09-27, the lazy deflate and the faster bit writer
+
+commit: a5c702a (on the `webp-spikes` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| markdown -> docx, markup-dense (14.7 MB in + 90.7 MB out): throughput (MB/s of input plus uncompressed output) | 316.5 | 47.0 (pulldown-cmark + docx-rs, paragraphs and runs only) | PASS |
+| markdown -> docx, markup-dense: throughput (MB/s of input) [extra] | 44.0 | 8.6 (reference) | n/a |
+| markdown -> docx, markup-dense: peak memory (MB) | 91.0 | 1580.9 (reference) | PASS |
+| markdown -> docx, prose (11.3 MB in + 20.2 MB out): throughput (MB/s of input plus uncompressed output) | 427.3 | 93.1 (pulldown-cmark + docx-rs, paragraphs and runs only) | PASS |
+| markdown -> docx, prose: throughput (MB/s of input) [extra] | 153.4 | 27.8 (reference) | n/a |
+| markdown -> docx, prose: peak memory (MB) | 34.0 | 445.4 (reference) | PASS |
 
 ### 2026-09-25, 0.17.0 Markdown speedups
 
