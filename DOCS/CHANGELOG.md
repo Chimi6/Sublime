@@ -8,6 +8,7 @@ section under a version heading.
 
 ### Changed
 
+- The PNG reader relies on each chunk's CRC-32 and no longer sums Adler-32 over the decoded data (the png crate skips it by default too): 7% faster on a large photo, 20% on flat images.
 - Image pairs are generated from one table of codecs, each saying what its reader and its writer lose: every reader reaches every writer, and each pair's fidelity carries both texts (a new raster format is one table row).
 
 ## [0.21.0] - 2026-09-27
