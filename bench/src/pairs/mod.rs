@@ -9,6 +9,7 @@ pub mod docx_text;
 pub mod html_docx;
 pub mod html_markdown;
 pub mod html_text;
+pub mod ico_png;
 pub mod jsonl_json;
 pub mod markdown_docx;
 pub mod markdown_html;
@@ -61,6 +62,7 @@ pub const NAMES: &[&str] = &[
     "qoi-png",
     "ppm-png",
     "tga-png",
+    "ico-png",
     "yaml-json",
 ];
 
@@ -95,6 +97,7 @@ pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
         "qoi-png" => qoi_png::run(mode, args),
         "ppm-png" => ppm_png::run(mode, args),
         "tga-png" => tga_png::run(mode, args),
+        "ico-png" => ico_png::run(mode, args),
         "yaml-json" => yaml_json::run(mode, args),
         other => Err(format!(
             "unknown pair '{other}'; known: {}",

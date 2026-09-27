@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-09-27: ICO and CUR (`src/io/ico.rs`) with the first image operation, an area-averaging downscale (`src/image/resize.rs`): icons are read to their largest entry and written with the standard sizes from one streaming downscale. `ico-png`: an icon from a large picture passes with a margin; the 256-pixel lines are a few milliseconds and flip with load, and a 256-source icon is slower than the image crate's (its fast-level PNGs make it 78% larger).
 - 2026-09-27: TGA (`src/io/tga.rs`): every common layout read and top-down RLE written as Pillow writes it; bottom-up files hold their bytes and decode last row first. Every `tga-png` line passes; the flat decode is within 1%.
 - 2026-09-27: Netpbm (`src/io/netpbm.rs`): every form P1 to P7 read, PBM, PGM, PPM, and PAM written (Pillow's bytes for the first three), streaming rows both ways; `ppm-png` decode passes everywhere, encode passes on the flat and stock shapes and ties on the photo.
 - 2026-09-27: QOI both ways (`src/io/qoi.rs`): decoded to Pillow's pixels and written as Pillow's bytes on 60 fixtures, streaming a row at a time both ways; every `qoi-png` line passes at 4 to 5 MB against the crates' 52 to 524. Image pairs are now generated from one codec table (`src/converters/image.rs`), so every raster format reaches every other.
@@ -82,6 +83,7 @@ WebP color cache stays).
 - `qoi-png` thin margins: the photo decode (65.3 against 64.7 MB/s, the PNG write of a noise photo is most of it) and the stock encode (583.8 against 582.0, a tie). Levers: the deflate noise path (shared with the WebP lossless decode line), and the PNG reader's unfilter on large RGBA images.
 - `ppm-png` photo encode: a tie (86 to 89 ms against 88 to 90 direct; the harness read 834 against 888 MB/s). The time is the PNG decode, the inflater level with the png crate's fdeflate; the lever is the inflater's decode structure. CRC-32 over the IDAT chunks is 7% of it.
 - `tga-png` flat decode: 468.4 against 466.1 MB/s, within noise. Lever: the two passes over held RLE could be one, recording row starts while decoding into the last rows' slots.
+- `ico-png` 256-pixel lines: milliseconds, flipping with load; the icon from a 256 source takes 8.4 ms in process against the crate's 5 for its whole run, the seven PNG encodes at our default level (44% smaller icons). Levers: the deflate matcher on dense repeats (zlib 6 takes as long on those bytes; libdeflate's structure), or a faster level for entries under 64.
 - `xlsx -> csv` memory: 425 MB against calamine's 593 (the sheet part is inflated whole); a windowed inflate feeding the XML reader would make it constant.
 
 - 2026-09-26: JPEG leftovers:

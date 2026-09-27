@@ -99,6 +99,22 @@ pub static TGA: Format = Format {
     category: Category::Image,
 };
 
+pub static ICO: Format = Format {
+    id: "ico",
+    display_name: "Windows icon",
+    extensions: &["ico"],
+    magic: Some(b"\0\0\x01\0"),
+    category: Category::Image,
+};
+
+pub static CUR: Format = Format {
+    id: "cur",
+    display_name: "Windows cursor",
+    extensions: &["cur"],
+    magic: Some(b"\0\0\x02\0"),
+    category: Category::Image,
+};
+
 pub static QOI: Format = Format {
     id: "qoi",
     display_name: "QOI image",

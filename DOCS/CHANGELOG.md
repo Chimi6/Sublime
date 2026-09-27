@@ -12,12 +12,15 @@ section under a version heading.
 
 ### Added
 
+- ICO both ways and CUR read (`src/io/ico.rs`): the largest, deepest entry read from PNG or BMP entries (AND masks, alpha-less 32-bit entries as Windows reads them); icons written with the standard sizes that fit, the source itself as the largest when it fits in 256, from one streaming downscale. Pair `ico-png` against the image crate. Map in `DOCS/formats/ico.md`.
+- An area-averaging downscale (`src/image/resize.rs`) that streams source rows and weights color by alpha.
 - TGA both ways (`src/io/tga.rs`): every common layout read (color-mapped, truecolor, gray; raw and RLE; 15 to 32 bits; both orientations), top-down RLE written as Pillow writes it; a bottom-up file holds its bytes, not its pixels. Pair `tga-png` against the image and png crates. Map in `DOCS/formats/tga.md`.
 - Netpbm (`src/io/netpbm.rs`): PBM, PGM, PPM in plain and raw forms and PAM, one streaming reader for every form and a writer for each kind, to and from every image format. Pair `ppm-png` against the image and png crates. Map in `DOCS/formats/netpbm.md`.
 - QOI both ways (`src/io/qoi.rs`): a streaming reader and a writer that produces `qoi.h`'s bytes, to and from every image format. Pair `qoi-png` against the qoi and png crates. Map in `DOCS/formats/qoi.md`.
 
 ### Changed
 
+- The binary size budget is raised 2.25 -> 2.40 MB and the WebAssembly budget 1.10 -> 1.20 MB for the 0.22 image formats (QOI, Netpbm, TGA, ICO, the downscale, and TIFF to come).
 - Deflate on noise searches one position in eight and writes the rest as literals (literals are what pays there): a noisy photograph's PNG writes in 40% of the time and a little smaller; the lossless WebP photo decode goes from 53 to 93 MB/s.
 - The benchmark harness removes an `out-*` output before each timed run, so both sides write a fresh file (a rename over an existing file costs a writeback on btrfs and ext4 that a truncate does not).
 - The PNG reader relies on each chunk's CRC-32 and no longer sums Adler-32 over the decoded data (the png crate skips it by default too): 7% faster on a large photo, 20% on flat images.

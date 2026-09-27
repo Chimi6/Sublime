@@ -11,6 +11,7 @@ use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
 use crate::io::bmp::{BmpError, BmpRows, BmpRowsError, read_bmp_rows};
+use crate::io::ico::{IcoNotes, IcoRows, read_ico_rows};
 use crate::io::jpeg::{DEFAULT_QUALITY, JpegError, JpegNotes, JpegRows, read_jpeg_rows};
 use crate::io::netpbm::{Kind, NetpbmNotes, NetpbmRows, read_netpbm_rows};
 use crate::io::png::{PngError, PngNotes, PngRows, RowSink, RowsError, read_png_rows};
@@ -27,6 +28,7 @@ pub enum ImageFormat {
     Qoi,
     Netpbm(Kind),
     Tga,
+    Ico,
 }
 
 pub struct ImagePair {
@@ -99,6 +101,10 @@ impl Converter for ImagePair {
                 let mut rows = TgaRows::new(output);
                 read_rows(self.read, &mut input, &mut rows, self.name, context)
             }
+            ImageFormat::Ico => {
+                let mut rows = IcoRows::new(output);
+                read_rows(self.read, &mut input, &mut rows, self.name, context)
+            }
         }
     }
 }
@@ -139,6 +145,10 @@ fn read_rows(
         }
         ImageFormat::Qoi => read_qoi_rows(input, sink).map_err(rows_error)?,
         ImageFormat::Tga => read_tga_rows(input, sink).map_err(rows_error)?,
+        ImageFormat::Ico => {
+            let notes = read_ico_rows(input, sink).map_err(rows_error)?;
+            report_ico_notes(notes, context);
+        }
         ImageFormat::Netpbm(_) => {
             let notes = read_netpbm_rows(input, sink).map_err(rows_error)?;
             report_netpbm_notes(notes, name, context);
@@ -179,6 +189,18 @@ fn report_netpbm_notes(notes: NetpbmNotes, name: &'static str, context: &mut Con
             Location::default(),
             "16-bit samples reduced to 8 bits",
         );
+    }
+}
+
+fn report_ico_notes(notes: IcoNotes, context: &mut Context<'_>) {
+    if notes.others > 0 {
+        context.warning(format!(
+            "the largest image is kept and {} other sizes are dropped",
+            notes.others
+        ));
+    }
+    if notes.cursor {
+        context.warning("the cursor's hotspot is dropped".to_string());
     }
 }
 
@@ -238,25 +260,26 @@ struct Codec {
     format: &'static Format,
     kind: ImageFormat,
     read: Fidelity,
-    write: Fidelity,
+    /// What the writer loses; `None` for a format only read.
+    write: Option<Fidelity>,
 }
 
 const JPEG_LOSS: &str = "JPEG is lossy: the image is re-encoded at the quality given (85 by default, 4:2:0 chroma below 90) and alpha is flattened onto white";
 
-static CODECS: [Codec; 10] = [
+static CODECS: [Codec; 12] = [
     Codec {
         format: &formats::PNG,
         kind: ImageFormat::Png,
         read: Fidelity::Conditional(
             "16-bit samples become 8-bit, and metadata (gamma, color profile, text) is dropped",
         ),
-        write: Fidelity::Lossless,
+        write: Some(Fidelity::Lossless),
     },
     Codec {
         format: &formats::BMP,
         kind: ImageFormat::Bmp,
         read: Fidelity::Lossless,
-        write: Fidelity::Lossless,
+        write: Some(Fidelity::Lossless),
     },
     Codec {
         format: &formats::JPEG,
@@ -264,7 +287,7 @@ static CODECS: [Codec; 10] = [
         read: Fidelity::Conditional(
             "pixels as decoded (Exif orientation is reported, not applied); metadata (Exif, ICC, comments) is dropped",
         ),
-        write: Fidelity::Lossy(JPEG_LOSS),
+        write: Some(Fidelity::Lossy(JPEG_LOSS)),
     },
     Codec {
         format: &formats::WEBP,
@@ -272,39 +295,41 @@ static CODECS: [Codec; 10] = [
         read: Fidelity::Conditional(
             "pixels as decoded (a lossy WebP decodes exactly as libwebp does); an animation keeps its first frame; metadata (ICC, Exif, XMP) is dropped",
         ),
-        write: Fidelity::Lossless,
+        write: Some(Fidelity::Lossless),
     },
     Codec {
         format: &formats::QOI,
         kind: ImageFormat::Qoi,
         read: Fidelity::Lossless,
-        write: Fidelity::Lossless,
+        write: Some(Fidelity::Lossless),
     },
     Codec {
         format: &formats::PBM,
         kind: ImageFormat::Netpbm(Kind::Pbm),
         read: Fidelity::Lossless,
-        write: Fidelity::Lossy(
+        write: Some(Fidelity::Lossy(
             "black and white: color becomes luma, alpha is flattened onto white, and gray below half is black",
-        ),
+        )),
     },
     Codec {
         format: &formats::PGM,
         kind: ImageFormat::Netpbm(Kind::Pgm),
         read: Fidelity::Conditional(NETPBM_READ),
-        write: Fidelity::Conditional("color becomes luma and alpha is flattened onto white"),
+        write: Some(Fidelity::Conditional(
+            "color becomes luma and alpha is flattened onto white",
+        )),
     },
     Codec {
         format: &formats::PPM,
         kind: ImageFormat::Netpbm(Kind::Ppm),
         read: Fidelity::Conditional(NETPBM_READ),
-        write: Fidelity::Conditional("alpha is flattened onto white"),
+        write: Some(Fidelity::Conditional("alpha is flattened onto white")),
     },
     Codec {
         format: &formats::PAM,
         kind: ImageFormat::Netpbm(Kind::Pam),
         read: Fidelity::Conditional(NETPBM_READ),
-        write: Fidelity::Lossless,
+        write: Some(Fidelity::Lossless),
     },
     Codec {
         format: &formats::TGA,
@@ -312,7 +337,25 @@ static CODECS: [Codec; 10] = [
         read: Fidelity::Conditional(
             "the ID field and any TGA 2.0 extension area (thumbnail, author, dates) are dropped",
         ),
-        write: Fidelity::Lossless,
+        write: Some(Fidelity::Lossless),
+    },
+    Codec {
+        format: &formats::ICO,
+        kind: ImageFormat::Ico,
+        read: Fidelity::Conditional(
+            "the largest image is read and the icon's other sizes are dropped",
+        ),
+        write: Some(Fidelity::Conditional(
+            "the image is the icon's largest size (scaled down to 256 pixels if larger), with the standard smaller sizes added, scaled by area averaging",
+        )),
+    },
+    Codec {
+        format: &formats::CUR,
+        kind: ImageFormat::Ico,
+        read: Fidelity::Conditional(
+            "the largest image is read; the cursor's other sizes and its hotspot are dropped",
+        ),
+        write: None,
     },
 ];
 
@@ -346,6 +389,9 @@ pub fn pairs() -> &'static [ImagePair] {
         let mut pairs = Vec::new();
         for from in &CODECS {
             for to in &CODECS {
+                let Some(write) = &to.write else {
+                    continue;
+                };
                 if from.format.id == to.format.id {
                     continue;
                 }
@@ -356,7 +402,7 @@ pub fn pairs() -> &'static [ImagePair] {
                     to: to.format,
                     read: from.kind,
                     write: to.kind,
-                    fidelity: combine(&from.read, &to.write),
+                    fidelity: combine(&from.read, write),
                 });
             }
         }
@@ -388,7 +434,8 @@ mod tests {
 
     #[test]
     fn every_codec_reaches_every_other() {
-        let count = CODECS.len();
-        assert_eq!(pairs().len(), count * (count - 1));
+        let readers = CODECS.len();
+        let writers = CODECS.iter().filter(|codec| codec.write.is_some()).count();
+        assert_eq!(pairs().len(), readers * writers - writers);
     }
 }
