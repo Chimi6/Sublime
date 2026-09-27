@@ -200,6 +200,15 @@ impl<'p> View<'p> {
             .collect()
     }
 
+    /// A number field at full precision (a double, or a float widened).
+    fn double(&self, name: &str) -> Option<f64> {
+        match self.node(name)? {
+            Node::Double(value) => Some(value),
+            Node::Float(value) => Some(f64::from(value)),
+            _ => None,
+        }
+    }
+
     fn float(&self, name: &str) -> Option<f32> {
         match self.node(name)? {
             Node::Float(value) => Some(value),
@@ -795,6 +804,25 @@ impl Reader<'_> {
         if !children.is_empty() {
             for child in children {
                 self.floating_object(child, page, x, y);
+            }
+            return;
+        }
+        // A chart: its data grid, series by row (or by column).
+        if let Some(unity) = view.message("unity")
+            && let Some(grid) = unity.message("grid")
+        {
+            if width > 0.0 && height > 0.0 {
+                let chart = chart_from_grid(unity, grid);
+                if !chart.series.is_empty() {
+                    self.document.floating.push(FloatingObject {
+                        page,
+                        x,
+                        y,
+                        width,
+                        height,
+                        content: FloatingContent::Chart(chart),
+                    });
+                }
             }
             return;
         }
@@ -2764,6 +2792,69 @@ fn number_format(number_type: i64, tiered: bool) -> NumberFormat {
 
 /// The em a list's label-to-text gap is measured in: Pages' body text size.
 const LIST_EM: f32 = 11.0;
+
+/// A Pages chart's data (`TSCH.ChartArchive` "unity" and its grid): each
+/// grid row is a series over the column names, unless the chart takes its
+/// series by column.
+fn chart_from_grid(unity: View<'_>, grid: View<'_>) -> crate::document::Chart {
+    use crate::document::{Chart, ChartKind, ChartSeries};
+    let rows: Vec<String> = grid
+        .strings("row_name")
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    let columns: Vec<String> = grid
+        .strings("column_name")
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    let values: Vec<Vec<Option<f64>>> = grid
+        .messages("grid_row")
+        .into_iter()
+        .map(|row| {
+            row.messages("value")
+                .into_iter()
+                .map(|value| value.double("numeric_value"))
+                .collect()
+        })
+        .collect();
+    let by_column = unity.integer("series_direction") == Some(2);
+    let (names, categories) = if by_column {
+        (columns, rows)
+    } else {
+        (rows, columns)
+    };
+    let series = names
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| ChartSeries {
+            name,
+            values: (0..categories.len())
+                .map(|at| {
+                    let (row, column) = if by_column { (at, index) } else { (index, at) };
+                    values
+                        .get(row)
+                        .and_then(|row: &Vec<Option<f64>>| row.get(column))
+                        .copied()
+                        .flatten()
+                })
+                .collect(),
+        })
+        .collect();
+    let kind = match unity.integer("chart_type").unwrap_or(1) {
+        2 => ChartKind::Bar,
+        3 => ChartKind::Line,
+        4 => ChartKind::Area,
+        5 => ChartKind::Pie,
+        6 => ChartKind::Scatter,
+        _ => ChartKind::Column,
+    };
+    Chart {
+        kind,
+        categories,
+        series,
+    }
+}
 
 #[cfg(test)]
 mod decimal_tests {

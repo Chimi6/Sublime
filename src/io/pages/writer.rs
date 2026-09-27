@@ -7881,6 +7881,58 @@ fn text_boxes(document: &Document) -> Vec<TextBox> {
                     content,
                 })
             }
+            // A chart Pages cannot draw from here keeps its data: a box of
+            // tab-separated lines, a series per column.
+            crate::document::FloatingContent::Chart(chart) => {
+                let mut lines = vec![
+                    std::iter::once(String::new())
+                        .chain(chart.series.iter().map(|series| series.name.clone()))
+                        .collect::<Vec<_>>()
+                        .join("\t"),
+                ];
+                for (index, category) in chart.categories.iter().enumerate() {
+                    let values = chart.series.iter().map(|series| {
+                        series
+                            .values
+                            .get(index)
+                            .copied()
+                            .flatten()
+                            .map(|value| value.to_string())
+                            .unwrap_or_default()
+                    });
+                    lines.push(
+                        std::iter::once(category.clone())
+                            .chain(values)
+                            .collect::<Vec<_>>()
+                            .join("\t"),
+                    );
+                }
+                let mut text = String::new();
+                let mut paragraphs = Vec::new();
+                for line in &lines {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    paragraphs.push((utf16_len(&text), ParaFormat::default()));
+                    text.push_str(line);
+                }
+                Some(TextBox {
+                    fill: None,
+                    line: None,
+                    geometry: crate::document::ShapeGeometry::Rectangle,
+                    flip: (false, false),
+                    page: floating.page,
+                    x: floating.x,
+                    y: floating.y,
+                    width: floating.width.max(12.0),
+                    height: floating.height.max(12.0),
+                    content: CellContent {
+                        text,
+                        paragraphs,
+                        ..CellContent::default()
+                    },
+                })
+            }
             _ => None,
         })
         .collect()

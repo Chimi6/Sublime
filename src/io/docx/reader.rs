@@ -17,7 +17,7 @@ use std::fmt;
 
 use crate::document::{
     Alignment, Anchor, AnchorBase, Baseline, Block, Border, Caps, Cell, CellBorders, CellMargins,
-    CharacterStyle, Color, Document, FloatingContent, FloatingObject, Inline, InlineImage,
+    CharacterStyle, Chart, Color, Document, FloatingContent, FloatingObject, Inline, InlineImage,
     LineSpacing, ListItem, ListLabel, ListLevel, ListStyle, Media, MediaId, Merge, NoteId,
     NumberFormat, NumberKind, PageSetup, PageVariants, Paragraph, ParagraphProperties,
     ParagraphStyle, Placement, Revision, RevisionKind, Row, Run, RunProperties, Section,
@@ -2002,9 +2002,24 @@ impl Reader<'_> {
                 XmlEvent::Text(_) => {}
             }
         }
-        // A chart keeps its data: its title and a table of its series.
-        if let Some(blocks) = chart.and_then(|id| self.read_chart(&id, width)) {
-            return vec![Drawn::Blocks(blocks)];
+        // A chart keeps its data: one floating on the page stays a chart;
+        // one in the text line becomes its title and a table of its series.
+        if let Some((title, chart)) = chart.and_then(|id| self.read_chart(&id)) {
+            if anchored {
+                return vec![Drawn::Floating(
+                    FloatingObject {
+                        page: self.page,
+                        x: horizontal.offset,
+                        y: vertical.offset,
+                        width,
+                        height,
+                        content: FloatingContent::Chart(chart),
+                    },
+                    horizontal.from,
+                    vertical.from,
+                )];
+            }
+            return vec![Drawn::Blocks(self.chart_blocks(&title, &chart, width))];
         }
         if !shapes.is_empty() {
             // A child's frame maps from the group's child space onto the
@@ -2084,13 +2099,15 @@ impl Reader<'_> {
         })]
     }
 
-    /// A chart part's cached data as blocks: its title, then a table of its
-    /// series (a column each) by category (a row each).
-    fn read_chart(&mut self, relationship_id: &str, width: f32) -> Option<Vec<Block>> {
+    /// A chart part's cached data: its title, and its series over their
+    /// categories as a model chart.
+    fn read_chart(&mut self, relationship_id: &str) -> Option<(String, Chart)> {
+        use crate::document::ChartKind;
         let part = self.target(relationship_id)?;
         let text = self.part_text(&part)?;
         let mut reader = XmlReader::new(&text);
         let mut title = String::new();
+        let mut kind: Option<ChartKind> = None;
         let mut in_title = false;
         // Per series: name, categories by index, values by index.
         let mut series: Vec<ChartSeries> = Vec::new();
@@ -2102,6 +2119,18 @@ impl Reader<'_> {
                     name, attributes, ..
                 } => match name {
                     "c:title" if series.is_empty() => in_title = true,
+                    "c:barChart" | "c:bar3DChart" => kind = Some(ChartKind::Column),
+                    "c:barDir" if attribute(&attributes, "val") == Some("bar") => {
+                        kind = Some(ChartKind::Bar);
+                    }
+                    "c:lineChart" | "c:line3DChart" | "c:stockChart" => {
+                        kind = Some(ChartKind::Line)
+                    }
+                    "c:areaChart" | "c:area3DChart" => kind = Some(ChartKind::Area),
+                    "c:pieChart" | "c:pie3DChart" | "c:doughnutChart" | "c:ofPieChart" => {
+                        kind = Some(ChartKind::Pie);
+                    }
+                    "c:scatterChart" | "c:bubbleChart" => kind = Some(ChartKind::Scatter),
                     "c:ser" => series.push((String::new(), Vec::new(), Vec::new())),
                     "c:tx" | "c:cat" | "c:val" | "c:xVal" | "c:yVal" if !series.is_empty() => {
                         part_of = name;
@@ -2116,9 +2145,7 @@ impl Reader<'_> {
                             match part_of {
                                 "c:tx" => current.0 = value,
                                 "c:cat" | "c:xVal" => current.1.push((index, value)),
-                                "c:val" | "c:yVal" => {
-                                    current.2.push((index, general_number(&value)))
-                                }
+                                "c:val" | "c:yVal" => current.2.push((index, value)),
                                 _ => {}
                             }
                         }
@@ -2137,7 +2164,7 @@ impl Reader<'_> {
         if series.is_empty() {
             return None;
         }
-        let categories = series
+        let count = series
             .iter()
             .flat_map(|(_, categories, values)| {
                 categories
@@ -2147,6 +2174,44 @@ impl Reader<'_> {
             })
             .max()
             .map_or(0, |last| last + 1);
+        let categories = (0..count)
+            .map(|index| {
+                series
+                    .iter()
+                    .find_map(|(_, categories, _)| {
+                        categories
+                            .iter()
+                            .find(|(at, _)| *at == index)
+                            .map(|(_, text)| text.clone())
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        let series = series
+            .into_iter()
+            .map(|(name, _, values)| crate::document::ChartSeries {
+                name,
+                values: (0..count)
+                    .map(|index| {
+                        values
+                            .iter()
+                            .find(|(at, _)| *at == index)
+                            .and_then(|(_, text)| text.parse::<f64>().ok())
+                    })
+                    .collect(),
+            })
+            .collect();
+        let chart = Chart {
+            kind: kind.unwrap_or(ChartKind::Column),
+            categories,
+            series,
+        };
+        Some((title.trim().to_string(), chart))
+    }
+
+    /// A chart as blocks for the text flow: its title, then a table of its
+    /// series (a column each) by category (a row each).
+    fn chart_blocks(&mut self, title: &str, chart: &Chart, width: f32) -> Vec<Block> {
         let mut cell = |text: &str| {
             let span = self.document.push_text(text);
             Cell {
@@ -2165,29 +2230,22 @@ impl Reader<'_> {
         };
         let mut rows = Vec::new();
         let mut header = vec![cell("")];
-        for (name, _, _) in &series {
-            header.push(cell(name));
+        for series in &chart.series {
+            header.push(cell(&series.name));
         }
         rows.push(Row {
             cells: header,
             height: None,
         });
-        for index in 0..categories {
-            let label = series
-                .iter()
-                .find_map(|(_, categories, _)| {
-                    categories
-                        .iter()
-                        .find(|(at, _)| *at == index)
-                        .map(|(_, text)| text.clone())
-                })
-                .unwrap_or_default();
-            let mut cells = vec![cell(&label)];
-            for (_, _, values) in &series {
-                let value = values
-                    .iter()
-                    .find(|(at, _)| *at == index)
-                    .map(|(_, text)| text.clone())
+        for (index, category) in chart.categories.iter().enumerate() {
+            let mut cells = vec![cell(category)];
+            for series in &chart.series {
+                let value = series
+                    .values
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .map(|value| general_number(&value.to_string()))
                     .unwrap_or_default();
                 cells.push(cell(&value));
             }
@@ -2196,7 +2254,7 @@ impl Reader<'_> {
                 height: None,
             });
         }
-        let columns = series.len() + 1;
+        let columns = chart.series.len() + 1;
         let line = Some(Border {
             width: 0.5,
             color: None,
@@ -2216,15 +2274,15 @@ impl Reader<'_> {
             ..Table::default()
         };
         let mut blocks = Vec::new();
-        if !title.trim().is_empty() {
-            let span = self.document.push_text(title.trim());
+        if !title.is_empty() {
+            let span = self.document.push_text(title);
             blocks.push(Block::Paragraph(Paragraph {
                 runs: vec![plain_run(Inline::Text(span))],
                 ..Paragraph::default()
             }));
         }
         blocks.push(Block::Table(table));
-        Some(blocks)
+        blocks
     }
 
     fn load_media(&mut self, relationship_id: &str) -> Option<MediaId> {
@@ -3026,7 +3084,7 @@ mod tests {
         assert_eq!((second.x, second.width), (30.0, 20.0));
         let fill = |object: &FloatingObject| match &object.content {
             FloatingContent::TextBox { fill, .. } => *fill,
-            FloatingContent::Image(_) => panic!("a text box"),
+            _ => panic!("a text box"),
         };
         assert_eq!(
             fill(first),

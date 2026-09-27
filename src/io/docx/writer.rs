@@ -154,6 +154,12 @@ fn write_parts<W: io::Write>(
             )?;
         }
     }
+    for (index, chart) in writer.charts.iter().enumerate() {
+        zip.add_deflated(
+            &format!("word/charts/chart{}.xml", index + 1),
+            chart.as_bytes(),
+        )?;
+    }
     for (index, target) in writer.media_targets.iter().enumerate() {
         if let Some(target) = target {
             zip.add_deflated(&format!("word/{target}"), &document.media[index].bytes)?;
@@ -173,6 +179,8 @@ struct DocxWriter {
     media_targets: Vec<Option<String>>,
     /// Drawings written so far, for unique ids.
     drawings: u32,
+    /// Chart parts (`charts/chart<n>.xml`), in order.
+    charts: Vec<String>,
     /// Some section has an even-page header or footer.
     even_pages: bool,
     /// Which floating objects have been anchored to a paragraph.
@@ -198,6 +206,7 @@ enum RelationshipKind {
     Image,
     Header,
     Footer,
+    Chart,
 }
 
 /// A part rendered on its own, with its own relationships.
@@ -225,6 +234,7 @@ impl DocxWriter {
             page_parts: Vec::new(),
             media_targets: vec![None; document.media.len()],
             drawings: 0,
+            charts: Vec::new(),
             even_pages: false,
             floating_done: vec![false; document.floating.len()],
             revisions: 0,
@@ -775,6 +785,23 @@ impl DocxWriter {
                 self.render_image(document, &image, out);
                 out.push_str("</w:r>");
             }
+            FloatingContent::Chart(chart) => {
+                self.charts.push(chart_xml(chart));
+                let target = format!("charts/chart{}.xml", self.charts.len());
+                let relationship = self.relationship_for(RelationshipKind::Chart, &target);
+                self.drawings += 1;
+                let number = self.drawings;
+                let _ = write!(
+                    out,
+                    "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{}\" cy=\"{}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/><wp:wrapSquare wrapText=\"bothSides\"/><wp:docPr id=\"{number}\" name=\"Chart {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{CHART}\"><c:chart xmlns:c=\"{CHART}\" r:id=\"rId{}\"/></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
+                    251_658_240 + number,
+                    emu(object.x),
+                    emu(object.y),
+                    emu(object.width),
+                    emu(object.height),
+                    relationship,
+                );
+            }
             FloatingContent::TextBox {
                 blocks,
                 fill,
@@ -1022,6 +1049,7 @@ impl DocxWriter {
                 RelationshipKind::Image => "image",
                 RelationshipKind::Header => "header",
                 RelationshipKind::Footer => "footer",
+                RelationshipKind::Chart => "chart",
             };
             let _ = write!(
                 xml,
@@ -1068,6 +1096,13 @@ impl DocxWriter {
         }
         if self.even_pages {
             xml.push_str("<Override PartName=\"/word/settings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml\"/>");
+        }
+        for index in 0..self.charts.len() {
+            let _ = write!(
+                xml,
+                "<Override PartName=\"/word/charts/chart{}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.drawingml.chart+xml\"/>",
+                index + 1
+            );
         }
         for part in &self.page_parts {
             let kind = if part.name.starts_with("header") {
@@ -1620,6 +1655,102 @@ fn border_xml(name: &str, side: Option<Option<crate::document::Border>>, out: &m
         }
         None => {}
     }
+}
+
+/// The DrawingML chart namespace (also the chart graphic's URI).
+const CHART: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
+
+/// A chart part: the chart's kind, its series, and their cached values
+/// (which Word draws from; there is no embedded workbook).
+fn chart_xml(chart: &crate::document::Chart) -> String {
+    use crate::document::ChartKind;
+    let mut xml = String::new();
+    let _ = write!(
+        xml,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><c:chartSpace xmlns:c=\"{CHART}\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><c:roundedCorners val=\"0\"/><c:chart><c:autoTitleDeleted val=\"1\"/><c:plotArea><c:layout/>"
+    );
+    let (element, extra) = match chart.kind {
+        ChartKind::Column => (
+            "c:barChart",
+            "<c:barDir val=\"col\"/><c:grouping val=\"clustered\"/>",
+        ),
+        ChartKind::Bar => (
+            "c:barChart",
+            "<c:barDir val=\"bar\"/><c:grouping val=\"clustered\"/>",
+        ),
+        ChartKind::Line => ("c:lineChart", "<c:grouping val=\"standard\"/>"),
+        ChartKind::Area => ("c:areaChart", "<c:grouping val=\"standard\"/>"),
+        ChartKind::Pie => ("c:pieChart", ""),
+        ChartKind::Scatter => ("c:scatterChart", "<c:scatterStyle val=\"lineMarker\"/>"),
+    };
+    let _ = write!(xml, "<{element}>{extra}<c:varyColors val=\"0\"/>");
+    let count = chart.categories.len();
+    for (index, series) in chart.series.iter().enumerate() {
+        let _ = write!(
+            xml,
+            "<c:ser><c:idx val=\"{index}\"/><c:order val=\"{index}\"/><c:tx><c:strRef><c:f/><c:strCache><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>"
+        );
+        escape_text(&mut xml, &series.name);
+        xml.push_str("</c:v></c:pt></c:strCache></c:strRef></c:tx>");
+        // Each series in its own colour, as Pages draws them.
+        const PALETTE: [&str; 6] = ["4A9CF5", "7ED957", "F5A623", "E8505B", "9B6BD9", "4FC9C1"];
+        let color = PALETTE[index % PALETTE.len()];
+        if chart.kind == ChartKind::Line || chart.kind == ChartKind::Scatter {
+            let _ = write!(
+                xml,
+                "<c:spPr><a:ln w=\"28575\"><a:solidFill><a:srgbClr val=\"{color}\"/></a:solidFill></a:ln></c:spPr>"
+            );
+        } else {
+            let _ = write!(
+                xml,
+                "<c:spPr><a:solidFill><a:srgbClr val=\"{color}\"/></a:solidFill></c:spPr>"
+            );
+        }
+        let (categories, values) = if chart.kind == ChartKind::Scatter {
+            ("c:xVal", "c:yVal")
+        } else {
+            ("c:cat", "c:val")
+        };
+        let _ = write!(
+            xml,
+            "<{categories}><c:strRef><c:f/><c:strCache><c:ptCount val=\"{count}\"/>"
+        );
+        for (point, category) in chart.categories.iter().enumerate() {
+            let _ = write!(xml, "<c:pt idx=\"{point}\"><c:v>");
+            escape_text(&mut xml, category);
+            xml.push_str("</c:v></c:pt>");
+        }
+        let _ = write!(
+            xml,
+            "</c:strCache></c:strRef></{categories}><{values}><c:numRef><c:f/><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val=\"{count}\"/>"
+        );
+        for (point, value) in series.values.iter().enumerate() {
+            if let Some(value) = value {
+                let _ = write!(xml, "<c:pt idx=\"{point}\"><c:v>{value}</c:v></c:pt>");
+            }
+        }
+        let _ = write!(xml, "</c:numCache></c:numRef></{values}></c:ser>");
+    }
+    if chart.kind == ChartKind::Pie {
+        let _ = write!(xml, "</{element}>");
+    } else {
+        let _ = write!(
+            xml,
+            "<c:axId val=\"1\"/><c:axId val=\"2\"/></{element}><c:catAx><c:axId val=\"1\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"{}\"/><c:crossAx val=\"2\"/></c:catAx><c:valAx><c:axId val=\"2\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"{}\"/><c:majorGridlines/><c:crossAx val=\"1\"/></c:valAx>",
+            if chart.kind == ChartKind::Bar {
+                "l"
+            } else {
+                "b"
+            },
+            if chart.kind == ChartKind::Bar {
+                "b"
+            } else {
+                "l"
+            },
+        );
+    }
+    xml.push_str("</c:plotArea><c:legend><c:legendPos val=\"t\"/><c:overlay val=\"0\"/></c:legend><c:plotVisOnly val=\"1\"/></c:chart></c:chartSpace>");
+    xml
 }
 
 /// A shape's outline in DrawingML: a preset by name, or its own path.

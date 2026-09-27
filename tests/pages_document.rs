@@ -400,8 +400,19 @@ fn sections_split_at_section_and_layout_breaks() {
 #[test]
 fn floating_text_boxes_and_images_are_collected() {
     let document = read("native-objects");
-    // Two grouped shapes, the lone shape, and the line.
-    assert_eq!(document.floating.len(), 4);
+    // Two grouped shapes, the lone shape, the line, and the chart.
+    assert_eq!(document.floating.len(), 5);
+    let chart = document
+        .floating
+        .iter()
+        .find_map(|floating| match &floating.content {
+            FloatingContent::Chart(chart) => Some(chart),
+            _ => None,
+        })
+        .expect("the chart");
+    assert_eq!(chart.categories, ["April", "May", "June", "July"]);
+    assert_eq!(chart.series[0].name, "Region 1");
+    assert_eq!(chart.series[1].values[3], Some(58.0));
     let lone = &document.floating[2];
     assert!(matches!(
         document.floating[3].content,
@@ -422,7 +433,7 @@ fn floating_text_boxes_and_images_are_collected() {
                 "A lone shape with text."
             );
         }
-        FloatingContent::Image(_) => panic!("a text box"),
+        _ => panic!("a text box"),
     }
     // Grouped shapes are placed relative to their group.
     assert_eq!(
