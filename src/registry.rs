@@ -193,6 +193,7 @@ mod tests {
                 "qoi",
                 "text",
                 "tga",
+                "tiff",
                 "toml",
                 "tsv",
                 "webp",

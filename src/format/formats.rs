@@ -115,6 +115,15 @@ pub static CUR: Format = Format {
     category: Category::Image,
 };
 
+pub static TIFF: Format = Format {
+    id: "tiff",
+    display_name: "TIFF image",
+    extensions: &["tif", "tiff"],
+    // Little-endian; a big-endian file ("MM\0*") is known by extension.
+    magic: Some(b"II*\0"),
+    category: Category::Image,
+};
+
 pub static QOI: Format = Format {
     id: "qoi",
     display_name: "QOI image",
