@@ -6016,11 +6016,9 @@ fn max_row_height(document: &Document, table: &crate::document::Table, widths: &
     let mut tallest: f32 = 0.0;
     for row in &table.rows {
         let mut row_height: f32 = row.height.unwrap_or(0.0);
-        let mut column = 0usize;
-        for cell in &row.cells {
+        for (column, cell) in row.cells.iter().enumerate() {
             let span = cell.column_span.max(1) as usize;
             let width: f32 = widths.iter().skip(column).take(span).sum::<f32>().max(24.0);
-            column += 1;
             if cell.merge != crate::document::Merge::Origin {
                 continue;
             }
