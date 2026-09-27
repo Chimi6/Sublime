@@ -1237,6 +1237,7 @@ impl Reader<'_> {
     #[inline(never)]
     fn read_paragraph_properties(&mut self, reader: &mut XmlReader<'_>) -> ParagraphHeader {
         let mut header = ParagraphHeader::default();
+        let mut first_relative: Option<f32> = None;
         let mut level: u8 = 0;
         let mut num_id: Option<i64> = None;
         while let Some(event) = reader.next() {
@@ -1274,15 +1275,18 @@ impl Reader<'_> {
                             if let Some(points) = right.and_then(twips_to_points) {
                                 header.properties.right_indent = Some(points);
                             }
+                            // Word measures the first line from the left indent;
+                            // the model from the margin (resolved when the
+                            // properties close, once the left indent is known).
                             if let Some(points) =
                                 attribute(&attributes, "w:firstLine").and_then(twips_to_points)
                             {
-                                header.properties.first_line_indent = Some(points);
+                                first_relative = Some(points);
                             }
                             if let Some(points) =
                                 attribute(&attributes, "w:hanging").and_then(twips_to_points)
                             {
-                                header.properties.first_line_indent = Some(-points);
+                                first_relative = Some(-points);
                             }
                         }
                         "w:contextualSpacing" => {
@@ -1335,7 +1339,17 @@ impl Reader<'_> {
                         _ => {}
                     }
                 }
-                XmlEvent::End { name: "w:pPr" } => break,
+                XmlEvent::End { name: "w:pPr" } => {
+                    if let Some(relative) = first_relative {
+                        let left = header.properties.left_indent.or_else(|| {
+                            header.style.and_then(|style| {
+                                self.document.paragraph_style_properties(style).left_indent
+                            })
+                        });
+                        header.properties.first_line_indent = Some(left.unwrap_or(0.0) + relative);
+                    }
+                    break;
+                }
                 _ => {}
             }
         }
@@ -2818,6 +2832,30 @@ mod tests {
         assert!(!first.tiered);
         assert!(second.tiered);
         assert_eq!(second.pattern, "%1.");
+    }
+
+    #[test]
+    fn first_line_indents_are_measured_from_the_margin() {
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let paragraph = |ind: &str| format!(r#"<w:p><w:pPr><w:ind {ind}/></w:pPr></w:p>"#);
+        let document = format!(
+            r#"<w:document {w}><w:body>{}{}{}</w:body></w:document>"#,
+            paragraph(r#"w:left="720" w:hanging="360""#),
+            paragraph(r#"w:left="720" w:firstLine="720""#),
+            paragraph(r#"w:firstLine="360""#),
+        );
+        let read = read_docx(&package(&document, &format!("<w:styles {w}/>"))).unwrap();
+        let first: Vec<Option<f32>> = read.sections[0]
+            .blocks
+            .iter()
+            .map(|block| match block {
+                Block::Paragraph(paragraph) => {
+                    read.paragraph_properties(paragraph).first_line_indent
+                }
+                Block::Table(_) => None,
+            })
+            .collect();
+        assert_eq!(first, vec![Some(18.0), Some(72.0), Some(18.0)]);
     }
 
     #[test]
