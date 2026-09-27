@@ -13,6 +13,7 @@ use crate::format::formats;
 use crate::io::bmp::{BmpError, BmpRows, BmpRowsError, read_bmp_rows};
 use crate::io::jpeg::{DEFAULT_QUALITY, JpegError, JpegNotes, JpegRows, read_jpeg_rows};
 use crate::io::png::{PngError, PngNotes, PngRows, RowSink, RowsError, read_png_rows};
+use crate::io::qoi::{QoiRows, read_qoi_rows};
 use crate::io::webp::{Effort, WebpNotes, WebpRows, read_webp_rows};
 
 #[derive(Clone, Copy)]
@@ -21,6 +22,7 @@ pub enum ImageFormat {
     Bmp,
     Jpeg,
     Webp,
+    Qoi,
 }
 
 pub struct ImagePair {
@@ -81,6 +83,10 @@ impl Converter for ImagePair {
                 let mut rows = WebpRows::new(output).with_effort(effort);
                 read_rows(self.read, &mut input, &mut rows, self.name, context)
             }
+            ImageFormat::Qoi => {
+                let mut rows = QoiRows::new(output);
+                read_rows(self.read, &mut input, &mut rows, self.name, context)
+            }
         }
     }
 }
@@ -119,6 +125,7 @@ fn read_rows(
             let notes = read_webp_rows(input, sink).map_err(rows_error)?;
             report_webp_notes(notes, context);
         }
+        ImageFormat::Qoi => read_qoi_rows(input, sink).map_err(rows_error)?,
     }
     Ok(())
 }
@@ -209,7 +216,7 @@ struct Codec {
 
 const JPEG_LOSS: &str = "JPEG is lossy: the image is re-encoded at the quality given (85 by default, 4:2:0 chroma below 90) and alpha is flattened onto white";
 
-static CODECS: [Codec; 4] = [
+static CODECS: [Codec; 5] = [
     Codec {
         format: &formats::PNG,
         kind: ImageFormat::Png,
@@ -238,6 +245,12 @@ static CODECS: [Codec; 4] = [
         read: Fidelity::Conditional(
             "pixels as decoded (a lossy WebP decodes exactly as libwebp does); an animation keeps its first frame; metadata (ICC, Exif, XMP) is dropped",
         ),
+        write: Fidelity::Lossless,
+    },
+    Codec {
+        format: &formats::QOI,
+        kind: ImageFormat::Qoi,
+        read: Fidelity::Lossless,
         write: Fidelity::Lossless,
     },
 ];

@@ -146,7 +146,8 @@ lossless and universal.
 | WebP | webp | [x] | S | L | Shipped 0.21.0 (`DOCS/formats/webp.md`): lossless and lossy decode bit-exact with libwebp, lossless encode. Lossy encode and animation are not written. |
 | AVIF, HEIC, JPEG XL | avif, heic, jxl | [ ] | D | XL | AV1, HEVC, and JXL codecs: External tier. |
 | Netpbm | ppm, pgm, pbm, pam | [ ] | A | S | Trivial and beloved by tooling. |
-| farbfeld, QOI | ff, qoi | [ ] | B | S | Tiny formats; QOI is a day's work and a crowd-pleaser. |
+| QOI | qoi | [x] | B | S | Shipped 0.22.0 (`DOCS/formats/qoi.md`): both ways, streaming, `qoi.h`'s bytes. |
+| farbfeld | ff | [ ] | B | S | Tiny format. |
 | TGA | tga | [ ] | B | S | Games and textures; RLE. |
 | PCX | pcx | [ ] | C | S | DOS-era; RLE. |
 | ICO, CUR, ICNS | ico, cur, icns | [ ] | A | S | Icon containers (PNG and BMP inside); PNG <-> ICO is a constant developer need. |

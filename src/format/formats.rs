@@ -58,6 +58,14 @@ pub static WEBP: Format = Format {
     category: Category::Image,
 };
 
+pub static QOI: Format = Format {
+    id: "qoi",
+    display_name: "QOI image",
+    extensions: &["qoi"],
+    magic: Some(b"qoif"),
+    category: Category::Image,
+};
+
 pub static BMP: Format = Format {
     id: "bmp",
     display_name: "Windows bitmap",

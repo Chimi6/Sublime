@@ -3,6 +3,7 @@
 pub mod reader;
 pub mod writer;
 
+pub(crate) use reader::Collect;
 pub use reader::{PngError, PngNotes, RowSink, RowsError, read_png, read_png_from, read_png_rows};
 pub use writer::{PngRows, write_png};
 
