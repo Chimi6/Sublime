@@ -504,13 +504,26 @@ impl Inflater {
         }
     }
 
-    /// Makes sure `room` more bytes fit behind `filled`.
+    /// Makes sure `room` more bytes fit behind `filled`. A larger slab is
+    /// allocated zeroed and only the filled bytes are copied: `resize`
+    /// wrote zeros over the whole doubled slab, so every page of it was
+    /// resident (a 326 MB sheet held a 512 MB slab).
     fn reserve_room(&mut self, room: usize) {
         let needed = self.filled + room;
         if self.out.len() < needed {
             let grown = needed.max(self.out.len() * 2).max(SLAB);
-            self.out.resize(grown, 0);
+            let mut larger = vec![0u8; grown];
+            larger[..self.filled].copy_from_slice(&self.out[..self.filled]);
+            self.out = larger;
         }
+    }
+
+    /// The whole output, when nothing has been drained: the slab itself,
+    /// cut to what was written.
+    fn into_output(mut self) -> Vec<u8> {
+        debug_assert_eq!(self.compacted, 0);
+        self.out.truncate(self.filled);
+        self.out
     }
 
     fn push_byte(&mut self, byte: u8) {
@@ -1019,6 +1032,14 @@ impl Inflater {
 /// stream used. `limit` caps the output.
 pub fn inflate(input: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<usize, InflateError> {
     let mut inflater = Inflater::new();
+    // The slab sized for the expected output (no more than deflate's
+    // largest ratio allows) plus the fast loop's headroom of a megabyte
+    // and a match, so it never doubles (a doubling held the old slab and
+    // a new one twice its size at once) and is moved out, not copied.
+    let expected = limit.min(input.len().saturating_mul(1032));
+    if expected > SLAB {
+        inflater.out = vec![0u8; expected + SLAB + MAX_MATCH + 16];
+    }
     let mut at = 0usize;
     loop {
         let (consumed, progress) = inflater.push(&input[at..], usize::MAX)?;
@@ -1036,8 +1057,13 @@ pub fn inflate(input: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<usize, I
             Progress::OutputFull => {}
         }
     }
-    out.extend_from_slice(inflater.output());
-    Ok(inflater.total_in() - inflater.leftover().len())
+    let consumed = inflater.total_in() - inflater.leftover().len();
+    if out.is_empty() {
+        *out = inflater.into_output();
+    } else {
+        out.extend_from_slice(inflater.output());
+    }
+    Ok(consumed)
 }
 
 fn fixed_tables() -> Result<(Huffman, Huffman), InflateError> {
@@ -1165,6 +1191,22 @@ mod tests {
         ];
         let expected = b"hello hello hello hello, said the deflate test. ".repeat(3);
         assert_eq!(run(&input).unwrap(), expected);
+    }
+
+    #[test]
+    fn a_large_stream_inflates_into_an_empty_or_a_filled_vector() {
+        // Past the slab, so the expected-size path moves its output out
+        // (empty vector) or appends it (filled vector).
+        let text: Vec<u8> = (0..3_000_000u32).map(|n| (n % 251 ^ n / 7) as u8).collect();
+        let mut compressed = Vec::new();
+        super::super::compress::deflate(&text, &mut compressed);
+        let mut empty = Vec::new();
+        inflate(&compressed, &mut empty, text.len()).unwrap();
+        assert_eq!(empty, text);
+        let mut filled = b"head".to_vec();
+        inflate(&compressed, &mut filled, text.len()).unwrap();
+        assert_eq!(&filled[..4], b"head");
+        assert_eq!(&filled[4..], &text[..]);
     }
 
     #[test]
