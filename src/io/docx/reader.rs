@@ -80,6 +80,7 @@ pub fn read_docx(bytes: &[u8]) -> Result<Document, DocxError> {
         page: 0,
         even_headers: false,
         pending_floating: Vec::new(),
+        pending_blocks: Vec::new(),
         theme_colors: HashMap::new(),
         theme_fonts: [None, None],
         table_style_borders: HashMap::new(),
@@ -225,6 +226,8 @@ struct Reader<'a> {
     /// Floating objects of the section being read, by index, with the bases
     /// their offsets are measured from.
     pending_floating: Vec<(usize, AnchorBase, AnchorBase)>,
+    /// Blocks a paragraph's drawings leave to follow the paragraph.
+    pending_blocks: Vec<Block>,
     /// The theme's colour scheme (dk1, lt1, accent1, ...), for colours Word
     /// gives by scheme name.
     theme_colors: HashMap<String, Color>,
@@ -907,6 +910,9 @@ impl Reader<'_> {
             }
         }
         blocks.push(Block::Paragraph(paragraph));
+        // What the paragraph's drawings hold that is not inline (a chart's
+        // data) follows it.
+        blocks.append(&mut self.pending_blocks);
         section
     }
 
@@ -1122,6 +1128,7 @@ impl Reader<'_> {
                                         content: Inline::Image(id),
                                     });
                                 }
+                                Drawn::Blocks(mut drawn) => self.pending_blocks.append(&mut drawn),
                                 Drawn::Floating(object, horizontal, vertical) => {
                                     self.pending_floating.push((
                                         self.document.floating.len(),
@@ -1737,6 +1744,7 @@ impl Reader<'_> {
         let mut position_axis: Option<bool> = None;
         let mut media: Option<MediaId> = None;
         let mut shapes: Vec<ShapeRead> = Vec::new();
+        let mut chart: Option<String> = None;
         // The shape being read (a `wps:wsp`).
         let mut shape = ShapeRead::default();
         let mut shape_frame: Option<[f32; 4]> = None;
@@ -1803,6 +1811,9 @@ impl Reader<'_> {
                             Some(false) => vertical.offset = offset,
                             None => {}
                         }
+                    }
+                    "c:chart" => {
+                        chart = attribute(&attributes, "r:id").map(str::to_string);
                     }
                     "a:blip" => {
                         if media.is_none() {
@@ -1979,6 +1990,10 @@ impl Reader<'_> {
                 XmlEvent::Text(_) => {}
             }
         }
+        // A chart keeps its data: its title and a table of its series.
+        if let Some(blocks) = chart.and_then(|id| self.read_chart(&id, width)) {
+            return vec![Drawn::Blocks(blocks)];
+        }
         if !shapes.is_empty() {
             // A child's frame maps from the group's child space onto the
             // drawing's extent; a lone shape fills the drawing.
@@ -2054,6 +2069,149 @@ impl Reader<'_> {
             description,
             placement,
         })]
+    }
+
+    /// A chart part's cached data as blocks: its title, then a table of its
+    /// series (a column each) by category (a row each).
+    fn read_chart(&mut self, relationship_id: &str, width: f32) -> Option<Vec<Block>> {
+        let part = self.target(relationship_id)?;
+        let text = self.part_text(&part)?;
+        let mut reader = XmlReader::new(&text);
+        let mut title = String::new();
+        let mut in_title = false;
+        // Per series: name, categories by index, values by index.
+        let mut series: Vec<ChartSeries> = Vec::new();
+        let mut part_of = "";
+        let mut point: Option<usize> = None;
+        while let Some(event) = reader.next() {
+            match event {
+                XmlEvent::Start {
+                    name, attributes, ..
+                } => match name {
+                    "c:title" if series.is_empty() => in_title = true,
+                    "c:ser" => series.push((String::new(), Vec::new(), Vec::new())),
+                    "c:tx" | "c:cat" | "c:val" | "c:xVal" | "c:yVal" if !series.is_empty() => {
+                        part_of = name;
+                    }
+                    "c:pt" => {
+                        point = attribute(&attributes, "idx").and_then(|idx| idx.parse().ok())
+                    }
+                    "a:t" if in_title => title.push_str(&read_element_text(&mut reader, name)),
+                    "c:v" => {
+                        let value = read_element_text(&mut reader, name);
+                        if let (Some(current), Some(index)) = (series.last_mut(), point) {
+                            match part_of {
+                                "c:tx" => current.0 = value,
+                                "c:cat" | "c:xVal" => current.1.push((index, value)),
+                                "c:val" | "c:yVal" => {
+                                    current.2.push((index, general_number(&value)))
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                XmlEvent::End { name } => match name {
+                    "c:title" => in_title = false,
+                    "c:tx" | "c:cat" | "c:val" | "c:xVal" | "c:yVal" => part_of = "",
+                    "c:pt" => point = None,
+                    _ => {}
+                },
+                XmlEvent::Text(_) => {}
+            }
+        }
+        if series.is_empty() {
+            return None;
+        }
+        let categories = series
+            .iter()
+            .flat_map(|(_, categories, values)| {
+                categories
+                    .iter()
+                    .map(|(index, _)| *index)
+                    .chain(values.iter().map(|(index, _)| *index))
+            })
+            .max()
+            .map_or(0, |last| last + 1);
+        let mut cell = |text: &str| {
+            let span = self.document.push_text(text);
+            Cell {
+                blocks: vec![Block::Paragraph(Paragraph {
+                    runs: if text.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![plain_run(Inline::Text(span))]
+                    },
+                    ..Paragraph::default()
+                })],
+                column_span: 1,
+                row_span: 1,
+                ..Cell::default()
+            }
+        };
+        let mut rows = Vec::new();
+        let mut header = vec![cell("")];
+        for (name, _, _) in &series {
+            header.push(cell(name));
+        }
+        rows.push(Row {
+            cells: header,
+            height: None,
+        });
+        for index in 0..categories {
+            let label = series
+                .iter()
+                .find_map(|(_, categories, _)| {
+                    categories
+                        .iter()
+                        .find(|(at, _)| *at == index)
+                        .map(|(_, text)| text.clone())
+                })
+                .unwrap_or_default();
+            let mut cells = vec![cell(&label)];
+            for (_, _, values) in &series {
+                let value = values
+                    .iter()
+                    .find(|(at, _)| *at == index)
+                    .map(|(_, text)| text.clone())
+                    .unwrap_or_default();
+                cells.push(cell(&value));
+            }
+            rows.push(Row {
+                cells,
+                height: None,
+            });
+        }
+        let columns = series.len() + 1;
+        let line = Some(Border {
+            width: 0.5,
+            color: None,
+        });
+        let table = Table {
+            columns: vec![(width.max(144.0) / columns as f32).max(36.0); columns],
+            rows,
+            header_rows: 1,
+            borders: Some(TableBorders {
+                top: line,
+                bottom: line,
+                left: line,
+                right: line,
+                inside_horizontal: line,
+                inside_vertical: line,
+            }),
+            ..Table::default()
+        };
+        let mut blocks = Vec::new();
+        if !title.trim().is_empty() {
+            let span = self.document.push_text(title.trim());
+            blocks.push(Block::Paragraph(Paragraph {
+                runs: vec![plain_run(Inline::Text(span))],
+                ..Paragraph::default()
+            }));
+        }
+        blocks.push(Block::Table(table));
+        Some(blocks)
     }
 
     fn load_media(&mut self, relationship_id: &str) -> Option<MediaId> {
@@ -2181,6 +2339,8 @@ enum Drawn {
     /// A page-positioned object, with what its x and y offsets are measured
     /// from (converted to page coordinates once the section's margins are known).
     Floating(FloatingObject, AnchorBase, AnchorBase),
+    /// Blocks standing for the drawing after its paragraph (a chart's data).
+    Blocks(Vec<Block>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2683,6 +2843,24 @@ fn symbol_bullet(text: &str) -> String {
         .collect()
 }
 
+/// A chart series as read: its name, and its categories and values by index.
+type ChartSeries = (String, Vec<(usize, String)>, Vec<(usize, String)>);
+
+/// A cached chart value as Word's General format shows it: a number
+/// without its binary noise (4.4000000000000004 is 4.4).
+fn general_number(value: &str) -> String {
+    let Ok(number) = value.trim().parse::<f64>() else {
+        return value.to_string();
+    };
+    let text = format!("{number:.10}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" {
+        "0".to_string()
+    } else {
+        text.to_string()
+    }
+}
+
 fn plain_run(content: Inline) -> Run {
     Run {
         style: None,
@@ -2885,6 +3063,13 @@ mod tests {
             })
             .collect();
         assert_eq!(first, vec![Some(18.0), Some(72.0), Some(18.0)]);
+    }
+
+    #[test]
+    fn chart_values_read_as_word_shows_them() {
+        assert_eq!(general_number("4.4000000000000004"), "4.4");
+        assert_eq!(general_number("2"), "2");
+        assert_eq!(general_number("n/a"), "n/a");
     }
 
     #[test]
