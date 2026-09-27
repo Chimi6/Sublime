@@ -9,9 +9,12 @@ section under a version heading.
 ### Added
 
 - PDF output from images (`src/io/pdf`): a page of each image at its own size; JPEGs embedded unchanged, every other image deflated with PNG predictors and its alpha as a soft mask, streaming. `sublime convert a.png b.jpg c.tif scan.pdf` merges images into one PDF, a page each. Map in `DOCS/formats/pdf.md`.
+- PDF to images: a PDF object model (cross-reference tables and streams, object streams, repair of broken cross references) and a page's largest image read to any image format, `--page N` to choose the page; PDF to JPEG copies an embedded JPEG unchanged.
+- LZW decoding is shared between TIFF and PDF (`src/io/lzw.rs`).
 
 ### Changed
 
+- The binary size budget is raised 2.40 -> 2.55 MB and the WebAssembly budget 1.20 -> 1.30 MB for PDF (the object model, filters, and image reader: about 80 KB).
 - The PNG writer's filtered, deflated row stream is shared (`FilteredZlib`), so a PDF image stream is the same bytes a PNG's IDAT chunks hold; PNG output is unchanged byte for byte.
 
 ## [0.22.0] - 2026-09-27
