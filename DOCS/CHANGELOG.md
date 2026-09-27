@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-26
+
 JPEG, both ways, streaming: a decoder bit-exact with libjpeg-turbo
 and an encoder with `--quality`; with it, a faster deflate on
 photographic data and a leaner PNG filter selection.
