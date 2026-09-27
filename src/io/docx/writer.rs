@@ -435,7 +435,14 @@ impl DocxWriter {
                 instance + 1
             );
         }
-        paragraph_properties_xml(&document.paragraph_properties(paragraph), &mut properties);
+        let mut own = document.paragraph_properties(paragraph);
+        if paragraph.list.is_some() {
+            // A list paragraph is indented by its list level (Pages keeps the
+            // paragraph's own indents at zero); stating them would override it.
+            own.left_indent = None;
+            own.first_line_indent = None;
+        }
+        paragraph_properties_xml(&own, &mut properties);
         let mut mark = String::new();
         run_properties_xml(
             document,
