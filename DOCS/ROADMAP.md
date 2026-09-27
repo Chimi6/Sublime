@@ -110,7 +110,7 @@ formats.
 | Word legacy | doc | [ ] | C | L | Word 97 binary over OLE2; text and basic formatting extraction only. |
 | Rich Text Format | rtf | [ ] | A | M | Text format with a documented grammar; RTF <-> Markdown/HTML/DOCX. Still emitted by many systems. |
 | OpenDocument text | odt | [ ] | A | M | ZIP plus XML; close to DOCX in shape. |
-| PDF | pdf | [ ] | S | XL | Two different jobs. Writing PDF from Markdown/HTML/DOCX (layout engine, fonts, images) is the most requested output of any converter. Reading PDF for text extraction is moderate; full PDF -> DOCX is a research project and stays lossy. |
+| PDF | pdf | [~] | S | XL | Images to PDF merged, unreleased (`DOCS/formats/pdf.md`). Two different jobs. Writing PDF from Markdown/HTML/DOCX (layout engine, fonts, images) is the most requested output of any converter. Reading PDF for text extraction is moderate; full PDF -> DOCX is a research project and stays lossy. |
 | EPUB | epub | [ ] | A | M | ZIP of XHTML plus manifest. Markdown/HTML/DOCX -> EPUB is a favorite of writers; EPUB -> Markdown. |
 | Kindle MOBI, AZW3 | mobi, azw3 | [ ] | B | M | PalmDOC and HUFF/CDIC compression, documented by the community; read to HTML/EPUB. Writing MOBI is dead technology; AZW3 (KF8) write is possible. |
 | FictionBook | fb2 | [ ] | B | S | XML; popular in Eastern Europe. |

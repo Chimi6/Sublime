@@ -124,6 +124,14 @@ pub static TIFF: Format = Format {
     category: Category::Image,
 };
 
+pub static PDF: Format = Format {
+    id: "pdf",
+    display_name: "PDF document",
+    extensions: &["pdf"],
+    magic: Some(b"%PDF-"),
+    category: Category::Document,
+};
+
 pub static QOI: Format = Format {
     id: "qoi",
     display_name: "QOI image",

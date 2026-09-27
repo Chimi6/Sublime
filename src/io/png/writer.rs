@@ -24,14 +24,12 @@ pub fn write_png(image: &Image, sink: &mut dyn Write) -> io::Result<()> {
     Ok(())
 }
 
-/// Writes a PNG row by row as a `RowSink`: each row is filtered against
-/// the one before and deflated into IDAT chunks of about 256 KiB, so a
-/// decoder can hand rows over as it produces them and no image is held.
-pub struct PngRows<'a> {
-    sink: &'a mut dyn Write,
-    stride: usize,
+/// Rows filtered as PNG does (the filter chosen by trial every fourth
+/// row) and deflated into a zlib stream in parts of about 256 KiB: what
+/// a PNG's IDAT chunks hold and a PDF image's `/FlateDecode` stream with
+/// PNG predictors holds. Each part is handed back as it is made.
+pub(crate) struct FilteredZlib {
     unit: usize,
-    rows_left: u32,
     filtered: Vec<u8>,
     scratch: Vec<u8>,
     deflated: Vec<u8>,
@@ -42,17 +40,16 @@ pub struct PngRows<'a> {
     last_filter: u8,
 }
 
-impl<'a> PngRows<'a> {
-    pub fn new(sink: &'a mut dyn Write) -> PngRows<'a> {
-        PngRows {
-            sink,
-            stride: 0,
-            unit: 1,
-            rows_left: 0,
-            filtered: Vec::new(),
-            scratch: Vec::new(),
+impl FilteredZlib {
+    /// For rows of `stride` bytes, `unit` bytes a pixel.
+    pub(crate) fn new(stride: usize, unit: usize) -> FilteredZlib {
+        FilteredZlib {
+            unit,
+            filtered: Vec::with_capacity(PART_SIZE + stride + 1),
+            scratch: vec![0; stride],
             deflated: Vec::new(),
-            previous: Vec::new(),
+            // The row above the first is zeros, as the filters define it.
+            previous: vec![0; stride],
             adler: 1,
             first_part: true,
             rows_seen: 0,
@@ -60,54 +57,8 @@ impl<'a> PngRows<'a> {
         }
     }
 
-    fn part(&mut self, is_final: bool) -> io::Result<()> {
-        self.adler = adler32_update(self.adler, &self.filtered);
-        self.deflated.clear();
-        if self.first_part {
-            self.deflated.extend_from_slice(&[0x78, 0x9c]);
-            self.first_part = false;
-        }
-        deflate_part(&self.filtered, &mut self.deflated, Level::Default, is_final);
-        if is_final {
-            self.deflated.extend_from_slice(&self.adler.to_be_bytes());
-        }
-        write_chunk(self.sink, b"IDAT", &self.deflated)?;
-        self.filtered.clear();
-        Ok(())
-    }
-}
-
-impl RowSink for PngRows<'_> {
-    fn start(&mut self, width: u32, height: u32, color: ColorType) -> io::Result<()> {
-        self.sink.write_all(&SIGNATURE)?;
-        let mut header = Vec::with_capacity(13);
-        header.extend_from_slice(&width.to_be_bytes());
-        header.extend_from_slice(&height.to_be_bytes());
-        header.push(8);
-        header.push(match color {
-            ColorType::Gray => 0,
-            ColorType::GrayAlpha => 4,
-            ColorType::Rgb => 2,
-            ColorType::Rgba => 6,
-        });
-        header.extend_from_slice(&[0, 0, 0]);
-        write_chunk(self.sink, b"IHDR", &header)?;
-        self.stride = width as usize * color.channels();
-        self.unit = color.channels();
-        self.rows_left = height;
-        self.filtered = Vec::with_capacity(PART_SIZE + self.stride + 1);
-        self.scratch = vec![0; self.stride];
-        // The row above the first is zeros, as the filters define it.
-        self.previous = vec![0; self.stride];
-        if height == 0 {
-            self.part(true)?;
-            write_chunk(self.sink, b"IEND", &[])?;
-            self.sink.flush()?;
-        }
-        Ok(())
-    }
-
-    fn row(&mut self, pixels: &[u8]) -> io::Result<()> {
+    /// Filters a row into the pending part.
+    pub(crate) fn row(&mut self, pixels: &[u8]) {
         // The filter is chosen by trial on every fourth row and kept for
         // the rows between: image statistics change slowly down the
         // rows, and the trials cost four passes a row.
@@ -126,14 +77,101 @@ impl RowSink for PngRows<'_> {
             &mut self.filtered,
         );
         self.previous.copy_from_slice(pixels);
-        self.rows_left = self.rows_left.saturating_sub(1);
-        if self.rows_left == 0 {
-            self.part(true)?;
-            write_chunk(self.sink, b"IEND", &[])?;
-            return self.sink.flush();
-        }
+    }
+
+    /// A compressed part when enough rows are pending (call `finish`
+    /// instead after the last row, so the stream ends in one part).
+    pub(crate) fn take_part(&mut self) -> Option<&[u8]> {
         if self.filtered.len() >= PART_SIZE {
-            self.part(false)?;
+            self.part(false);
+            return Some(&self.deflated);
+        }
+        None
+    }
+
+    /// The last part, ending the stream.
+    pub(crate) fn finish(&mut self) -> &[u8] {
+        self.part(true);
+        &self.deflated
+    }
+
+    fn part(&mut self, is_final: bool) {
+        self.adler = adler32_update(self.adler, &self.filtered);
+        self.deflated.clear();
+        if self.first_part {
+            self.deflated.extend_from_slice(&[0x78, 0x9c]);
+            self.first_part = false;
+        }
+        deflate_part(&self.filtered, &mut self.deflated, Level::Default, is_final);
+        if is_final {
+            self.deflated.extend_from_slice(&self.adler.to_be_bytes());
+        }
+        self.filtered.clear();
+    }
+}
+
+/// Writes a PNG row by row as a `RowSink`: each row is filtered against
+/// the one before and deflated into IDAT chunks of about 256 KiB, so a
+/// decoder can hand rows over as it produces them and no image is held.
+pub struct PngRows<'a> {
+    sink: &'a mut dyn Write,
+    rows_left: u32,
+    stream: Option<FilteredZlib>,
+}
+
+impl<'a> PngRows<'a> {
+    pub fn new(sink: &'a mut dyn Write) -> PngRows<'a> {
+        PngRows {
+            sink,
+            rows_left: 0,
+            stream: None,
+        }
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        if let Some(stream) = self.stream.as_mut() {
+            write_chunk(self.sink, b"IDAT", stream.finish())?;
+        }
+        write_chunk(self.sink, b"IEND", &[])?;
+        self.sink.flush()
+    }
+}
+
+impl RowSink for PngRows<'_> {
+    fn start(&mut self, width: u32, height: u32, color: ColorType) -> io::Result<()> {
+        self.sink.write_all(&SIGNATURE)?;
+        let mut header = Vec::with_capacity(13);
+        header.extend_from_slice(&width.to_be_bytes());
+        header.extend_from_slice(&height.to_be_bytes());
+        header.push(8);
+        header.push(match color {
+            ColorType::Gray => 0,
+            ColorType::GrayAlpha => 4,
+            ColorType::Rgb => 2,
+            ColorType::Rgba => 6,
+        });
+        header.extend_from_slice(&[0, 0, 0]);
+        write_chunk(self.sink, b"IHDR", &header)?;
+        let stride = width as usize * color.channels();
+        self.stream = Some(FilteredZlib::new(stride, color.channels()));
+        self.rows_left = height;
+        if height == 0 {
+            self.finish()?;
+        }
+        Ok(())
+    }
+
+    fn row(&mut self, pixels: &[u8]) -> io::Result<()> {
+        self.rows_left = self.rows_left.saturating_sub(1);
+        let Some(stream) = self.stream.as_mut() else {
+            return Ok(());
+        };
+        stream.row(pixels);
+        if self.rows_left == 0 {
+            return self.finish();
+        }
+        if let Some(part) = stream.take_part() {
+            write_chunk(self.sink, b"IDAT", part)?;
         }
         Ok(())
     }

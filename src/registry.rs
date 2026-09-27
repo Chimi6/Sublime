@@ -187,6 +187,7 @@ mod tests {
                 "pages-json",
                 "pam",
                 "pbm",
+                "pdf",
                 "pgm",
                 "png",
                 "ppm",
