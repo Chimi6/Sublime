@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Fixed
+
+- A PNG whose small image data inflates far past the reader's step (a 1.2 KB chunk holding a 256 KB image, as Pillow writes flat icons) is read whole; the reader stopped when the chunk's bytes were used up, with output still inside the inflater, and called it cut short. In every release since 0.19.0.
+
 ### Added
 
 - TGA both ways (`src/io/tga.rs`): every common layout read (color-mapped, truecolor, gray; raw and RLE; 15 to 32 bits; both orientations), top-down RLE written as Pillow writes it; a bottom-up file holds its bytes, not its pixels. Pair `tga-png` against the image and png crates. Map in `DOCS/formats/tga.md`.
