@@ -814,6 +814,7 @@ fn object_reference(package: &Package, id: u64, field: &str) -> Option<u64> {
 
 /// Rewrites the template table's tile, string table, header buckets, and
 /// model sizes to carry the model table's cells.
+#[allow(clippy::too_many_arguments)]
 fn reuse_table(
     package: &mut Package,
     table: &TemplateTable,
