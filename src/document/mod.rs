@@ -317,6 +317,9 @@ pub struct ParagraphProperties {
     pub widow_control: Option<bool>,
     pub outline_level: Option<u8>,
     pub background: Option<Color>,
+    /// No space between this paragraph and a neighbour of the same style
+    /// (Word's contextual spacing).
+    pub contextual_spacing: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -393,7 +396,8 @@ impl ParagraphProperties {
             keep_lines_together,
             widow_control,
             outline_level,
-            background
+            background,
+            contextual_spacing
         );
     }
 

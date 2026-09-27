@@ -2258,6 +2258,7 @@ fn paragraph_properties(view: View<'_>) -> ParagraphProperties {
             .filter(|level| (0..=8).contains(level))
             .map(|level| level as u8),
         background: view.message("fill").and_then(color),
+        contextual_spacing: None,
     }
 }
 

@@ -1307,6 +1307,9 @@ impl Reader<'_> {
                                 header.properties.first_line_indent = Some(-points);
                             }
                         }
+                        "w:contextualSpacing" => {
+                            header.properties.contextual_spacing = Some(toggle(value));
+                        }
                         "w:spacing" => {
                             if let Some(points) =
                                 attribute(&attributes, "w:before").and_then(twips_to_points)
