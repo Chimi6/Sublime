@@ -20,6 +20,7 @@ pub mod scan;
 pub mod snappy;
 pub mod text;
 pub mod tga;
+pub mod tiff;
 pub mod toml;
 pub mod webp;
 pub mod xlsx;

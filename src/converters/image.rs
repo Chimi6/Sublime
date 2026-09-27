@@ -17,6 +17,7 @@ use crate::io::netpbm::{Kind, NetpbmNotes, NetpbmRows, read_netpbm_rows};
 use crate::io::png::{PngError, PngNotes, PngRows, RowSink, RowsError, read_png_rows};
 use crate::io::qoi::{QoiRows, read_qoi_rows};
 use crate::io::tga::{TgaRows, read_tga_rows};
+use crate::io::tiff::{TiffNotes, TiffRows, read_tiff_rows};
 use crate::io::webp::{Effort, WebpNotes, WebpRows, read_webp_rows};
 
 #[derive(Clone, Copy)]
@@ -29,6 +30,7 @@ pub enum ImageFormat {
     Netpbm(Kind),
     Tga,
     Ico,
+    Tiff,
 }
 
 pub struct ImagePair {
@@ -105,6 +107,10 @@ impl Converter for ImagePair {
                 let mut rows = IcoRows::new(output);
                 read_rows(self.read, &mut input, &mut rows, self.name, context)
             }
+            ImageFormat::Tiff => {
+                let mut rows = TiffRows::new(output);
+                read_rows(self.read, &mut input, &mut rows, self.name, context)
+            }
         }
     }
 }
@@ -148,6 +154,10 @@ fn read_rows(
         ImageFormat::Ico => {
             let notes = read_ico_rows(input, sink).map_err(rows_error)?;
             report_ico_notes(notes, context);
+        }
+        ImageFormat::Tiff => {
+            let notes = read_tiff_rows(input, sink).map_err(rows_error)?;
+            report_tiff_notes(notes, name, context);
         }
         ImageFormat::Netpbm(_) => {
             let notes = read_netpbm_rows(input, sink).map_err(rows_error)?;
@@ -201,6 +211,29 @@ fn report_ico_notes(notes: IcoNotes, context: &mut Context<'_>) {
     }
     if notes.cursor {
         context.warning("the cursor's hotspot is dropped".to_string());
+    }
+}
+
+fn report_tiff_notes(notes: TiffNotes, name: &'static str, context: &mut Context<'_>) {
+    if notes.other_pages > 0 {
+        context.warning(format!(
+            "the first page is kept and {} more are dropped",
+            notes.other_pages
+        ));
+    }
+    if notes.sixteen_bit {
+        context.loss(
+            name,
+            Location::default(),
+            "16-bit samples reduced to 8 bits",
+        );
+    }
+    if notes.cmyk {
+        context.loss(
+            name,
+            Location::default(),
+            "CMYK converted to RGB without a color profile",
+        );
     }
 }
 
@@ -266,7 +299,7 @@ struct Codec {
 
 const JPEG_LOSS: &str = "JPEG is lossy: the image is re-encoded at the quality given (85 by default, 4:2:0 chroma below 90) and alpha is flattened onto white";
 
-static CODECS: [Codec; 12] = [
+static CODECS: [Codec; 13] = [
     Codec {
         format: &formats::PNG,
         kind: ImageFormat::Png,
@@ -336,6 +369,14 @@ static CODECS: [Codec; 12] = [
         kind: ImageFormat::Tga,
         read: Fidelity::Conditional(
             "the ID field and any TGA 2.0 extension area (thumbnail, author, dates) are dropped",
+        ),
+        write: Some(Fidelity::Lossless),
+    },
+    Codec {
+        format: &formats::TIFF,
+        kind: ImageFormat::Tiff,
+        read: Fidelity::Conditional(
+            "the first page is read; 16-bit samples become 8-bit, CMYK becomes RGB, and metadata (resolution, EXIF, ICC, XMP) is dropped",
         ),
         write: Some(Fidelity::Lossless),
     },
