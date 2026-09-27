@@ -307,6 +307,8 @@ fn rebuild_body(
         None => HashMap::new(),
     };
 
+    // Drawables floating on their pages: (page, drawable).
+    let mut placed: Vec<(u32, u64)> = Vec::new();
     if let Some(styles) = cell_styles {
         write_page_areas(
             package,
@@ -316,7 +318,7 @@ fn rebuild_body(
             &para_styles,
             &mut next_id,
         )?;
-        write_text_boxes(
+        placed = write_text_boxes(
             package,
             &boxes,
             &all_formats,
@@ -385,7 +387,37 @@ fn rebuild_body(
             };
             anchors.push((mark.offset, attach_id));
         }
+        // Pictures floating on their pages: the same image, placed on the page
+        // rather than anchored in the text.
+        for floating in &document.floating {
+            let crate::document::FloatingContent::Image(media) = floating.content else {
+                continue;
+            };
+            let bytes = document.media[media].bytes.clone();
+            let digest = sha1(&bytes).to_vec();
+            let mark = ImageMark {
+                offset: 0,
+                media,
+                width: floating.width,
+                height: floating.height,
+                description: None,
+            };
+            let shared = written.get(&digest).copied();
+            let (attach, full, thumb) = clone_image(
+                package,
+                &prototype,
+                &mark,
+                &bytes,
+                shared,
+                &mut next_id,
+                &mut next_data_id,
+            )?;
+            written.entry(digest).or_insert((full, thumb));
+            let image = float_image(package, attach, floating.x, floating.y)?;
+            placed.push((floating.page, image));
+        }
     }
+    place_floating(package, &placed)?;
     // Attachments anchor by ascending character offset in one table.
     anchors.sort_by_key(|(offset, _)| *offset);
 
@@ -7797,9 +7829,9 @@ fn write_text_boxes(
     styles: CellStyles,
     paras: &ParaStyles,
     next_id: &mut u64,
-) -> Result<(), PackageError> {
+) -> Result<Vec<(u32, u64)>, PackageError> {
     if boxes.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let shape_style = shape_style_identified(package, "textbox-0-shapestyle")
         .ok_or_else(|| malformed("template has no text box shape style"))?;
@@ -7828,19 +7860,6 @@ fn write_text_boxes(
         _ => HashMap::new(),
     };
     let stream = document_stream(package)?;
-    let (floating_id, zorder_id) = {
-        let find = |kind| {
-            stream
-                .objects
-                .iter()
-                .find(|object| first_type(object) == Some(kind))
-                .map(|object| object.identifier)
-        };
-        (
-            find(FLOATING_DRAWABLES).ok_or_else(|| malformed("no floating drawables"))?,
-            find(DRAWABLES_ZORDER).ok_or_else(|| malformed("no drawables z-order"))?,
-        )
-    };
     let shape_info = message_ref("TSWP.ShapeInfoArchive")?;
     let shape = child_message(shape_info, "super")?;
     let drawable = child_message(shape, "super")?;
@@ -8109,88 +8128,7 @@ fn write_text_boxes(
         placed.push((text_box.page, shape_id));
     }
 
-    // List each shape under its page, and on top in the z-order.
-    let floating = message_ref("TP.FloatingDrawablesArchive")?;
-    let group = child_message(floating, "page_groups")?;
-    let entry = child_message(group, "drawables")?;
-    let zorder = message_ref("TP.DrawablesZOrderArchive")?;
-    let tree = &mut stream.tree;
-    let (floating_first, floating_info) = stream
-        .objects
-        .iter()
-        .find(|object| object.identifier == floating_id)
-        .map(|object| (object.messages[0].first, object.info))
-        .ok_or_else(|| malformed("floating drawables missing"))?;
-    let mut pages: Vec<u32> = placed.iter().map(|(page, _)| *page).collect();
-    pages.sort_unstable();
-    pages.dedup();
-    let mut fields: Vec<(u32, Node)> = tree
-        .chain(floating_first)
-        .map(|(_, e)| (e.number, e.value))
-        .collect();
-    let groups_number = floating
-        .slot_named("page_groups")
-        .map(|(_, f)| f.number)
-        .ok_or_else(|| malformed("no page_groups"))?;
-    for page in pages {
-        let mut group_chain = Chain::new();
-        push_field(
-            tree,
-            &mut group_chain,
-            group,
-            "page_index",
-            Node::Uint(u64::from(page)),
-        )?;
-        for (_, shape_id) in placed.iter().filter(|(p, _)| *p == page) {
-            let mut item = Chain::new();
-            push_field(
-                tree,
-                &mut item,
-                entry,
-                "drawable",
-                Node::Reference(*shape_id),
-            )?;
-            push_field(
-                tree,
-                &mut group_chain,
-                group,
-                "drawables",
-                Node::Message(item.first),
-            )?;
-        }
-        fields.push((groups_number, Node::Message(group_chain.first)));
-    }
-    let mut chain = Chain::new();
-    for (number, value) in fields {
-        let slot = floating
-            .slot(number)
-            .ok_or_else(|| malformed("floating field without slot"))?;
-        let field = floating
-            .field_at(slot)
-            .ok_or_else(|| malformed("floating slot out of range"))?;
-        tree.push_known(&mut chain, floating, slot, field, number, value)
-            .map_err(tree_error)?;
-    }
-    let shape_ids: Vec<u64> = placed.iter().map(|(_, id)| *id).collect();
-    add_object_references(tree, floating_info, &shape_ids)?;
-    if let Some(object) = stream
-        .objects
-        .iter_mut()
-        .find(|object| object.identifier == floating_id)
-    {
-        object.messages[0].first = chain.first;
-    }
-    let (zorder_first, zorder_info) = stream
-        .objects
-        .iter()
-        .find(|object| object.identifier == zorder_id)
-        .map(|object| (object.messages[0].first, object.info))
-        .ok_or_else(|| malformed("z-order missing"))?;
-    for id in &shape_ids {
-        append_message_reference(&mut stream.tree, zorder, zorder_first, "drawables", *id)?;
-    }
-    add_object_references(&mut stream.tree, zorder_info, &shape_ids)?;
-    Ok(())
+    Ok(placed)
 }
 
 /// The template's shape style with style identifier `identifier` (at
@@ -9295,3 +9233,189 @@ const BORDERS_TOP: u64 = 1;
 const BORDERS_BOTTOM: u64 = 2;
 const BORDERS_TOP_AND_BOTTOM: u64 = 3;
 const BORDERS_BOX: u64 = 4;
+
+/// Lists floating drawables (page, drawable) under their pages in the
+/// document's floating drawables, and on top in the z-order, as Pages lists
+/// its own.
+fn place_floating(package: &mut Package, placed: &[(u32, u64)]) -> Result<(), PackageError> {
+    if placed.is_empty() {
+        return Ok(());
+    }
+    let stream = document_stream(package)?;
+    let (floating_id, zorder_id) = {
+        let find = |kind| {
+            stream
+                .objects
+                .iter()
+                .find(|object| first_type(object) == Some(kind))
+                .map(|object| object.identifier)
+        };
+        (
+            find(FLOATING_DRAWABLES).ok_or_else(|| malformed("no floating drawables"))?,
+            find(DRAWABLES_ZORDER).ok_or_else(|| malformed("no drawables z-order"))?,
+        )
+    };
+    // List each drawable under its page, and on top in the z-order.
+    let floating = message_ref("TP.FloatingDrawablesArchive")?;
+    let group = child_message(floating, "page_groups")?;
+    let entry = child_message(group, "drawables")?;
+    let zorder = message_ref("TP.DrawablesZOrderArchive")?;
+    let tree = &mut stream.tree;
+    let (floating_first, floating_info) = stream
+        .objects
+        .iter()
+        .find(|object| object.identifier == floating_id)
+        .map(|object| (object.messages[0].first, object.info))
+        .ok_or_else(|| malformed("floating drawables missing"))?;
+    let mut pages: Vec<u32> = placed.iter().map(|(page, _)| *page).collect();
+    pages.sort_unstable();
+    pages.dedup();
+    let mut fields: Vec<(u32, Node)> = tree
+        .chain(floating_first)
+        .map(|(_, e)| (e.number, e.value))
+        .collect();
+    let groups_number = floating
+        .slot_named("page_groups")
+        .map(|(_, f)| f.number)
+        .ok_or_else(|| malformed("no page_groups"))?;
+    for page in pages {
+        let mut group_chain = Chain::new();
+        push_field(
+            tree,
+            &mut group_chain,
+            group,
+            "page_index",
+            Node::Uint(u64::from(page)),
+        )?;
+        for (_, shape_id) in placed.iter().filter(|(p, _)| *p == page) {
+            let mut item = Chain::new();
+            push_field(
+                tree,
+                &mut item,
+                entry,
+                "drawable",
+                Node::Reference(*shape_id),
+            )?;
+            push_field(
+                tree,
+                &mut group_chain,
+                group,
+                "drawables",
+                Node::Message(item.first),
+            )?;
+        }
+        fields.push((groups_number, Node::Message(group_chain.first)));
+    }
+    let mut chain = Chain::new();
+    for (number, value) in fields {
+        let slot = floating
+            .slot(number)
+            .ok_or_else(|| malformed("floating field without slot"))?;
+        let field = floating
+            .field_at(slot)
+            .ok_or_else(|| malformed("floating slot out of range"))?;
+        tree.push_known(&mut chain, floating, slot, field, number, value)
+            .map_err(tree_error)?;
+    }
+    let shape_ids: Vec<u64> = placed.iter().map(|(_, id)| *id).collect();
+    add_object_references(tree, floating_info, &shape_ids)?;
+    if let Some(object) = stream
+        .objects
+        .iter_mut()
+        .find(|object| object.identifier == floating_id)
+    {
+        object.messages[0].first = chain.first;
+    }
+    let (zorder_first, zorder_info) = stream
+        .objects
+        .iter()
+        .find(|object| object.identifier == zorder_id)
+        .map(|object| (object.messages[0].first, object.info))
+        .ok_or_else(|| malformed("z-order missing"))?;
+    for id in &shape_ids {
+        append_message_reference(&mut stream.tree, zorder, zorder_first, "drawables", *id)?;
+    }
+    add_object_references(&mut stream.tree, zorder_info, &shape_ids)?;
+    Ok(())
+}
+
+/// Turns a cloned inline image into one floating on its page at (x, y): its
+/// in-text attachment goes, and so does its text parent.
+fn float_image(package: &mut Package, attach_id: u64, x: f32, y: f32) -> Result<u64, PackageError> {
+    let stream = document_stream(package)?;
+    let image_id = stream
+        .objects
+        .iter()
+        .find(|object| object.identifier == attach_id)
+        .and_then(
+            |object| match field_value(&stream.tree, object.messages[0].first, "drawable") {
+                Some(Node::Reference(id)) => Some(id),
+                _ => None,
+            },
+        )
+        .ok_or_else(|| malformed("floating image has no drawable"))?;
+    stream
+        .objects
+        .retain(|object| object.identifier != attach_id);
+    let (first, info) = stream
+        .objects
+        .iter()
+        .find(|object| object.identifier == image_id)
+        .map(|object| (object.messages[0].first, object.info))
+        .ok_or_else(|| malformed("floating image is missing"))?;
+    let tree = &mut stream.tree;
+    let drawable =
+        message_field(tree, first, "super").ok_or_else(|| malformed("image has no super"))?;
+    if let Some(geometry) = message_field(tree, drawable, "geometry")
+        && let Some(position) = message_field(tree, geometry, "position")
+    {
+        set_field_float(tree, position, "x", x);
+        set_field_float(tree, position, "y", y);
+    }
+    if let Some(wrap) = message_field(tree, drawable, "exterior_text_wrap")
+        && let Some(index) = field_entry(tree, wrap, "type")
+    {
+        // Floating over the page, as a text box does.
+        tree.entries[index as usize].value = Node::Uint(4);
+    }
+    if let Some(Node::Reference(parent)) = field_value(tree, drawable, "parent") {
+        remove_field(tree, drawable, "parent");
+        remove_info_reference(tree, info, parent);
+    }
+    Ok(image_id)
+}
+
+/// Unlinks a field (every occurrence) from a chain.
+fn remove_field(tree: &mut Tree, first: u32, name: &str) {
+    let mut previous = NONE;
+    let mut cursor = first;
+    while cursor != NONE {
+        let entry = tree.entries[cursor as usize];
+        let matches = tree.field(&entry).is_some_and(|field| field.name == name);
+        if matches && previous != NONE {
+            tree.entries[previous as usize].next = entry.next;
+        } else {
+            previous = cursor;
+        }
+        cursor = entry.next;
+    }
+}
+
+/// Drops an object reference from an `ArchiveInfo`.
+fn remove_info_reference(tree: &mut Tree, info: u32, id: u64) {
+    let mut previous = NONE;
+    let mut cursor = info;
+    while cursor != NONE {
+        let entry = tree.entries[cursor as usize];
+        let matches = tree
+            .field(&entry)
+            .is_some_and(|field| field.name == "object_references")
+            && matches!(entry.value, Node::Uint(value) if value == id);
+        if matches && previous != NONE {
+            tree.entries[previous as usize].next = entry.next;
+        } else {
+            previous = cursor;
+        }
+        cursor = entry.next;
+    }
+}
