@@ -137,6 +137,7 @@ The document category's one-way streets are closed (0.8.0 to 0.10.0) and the dat
 
 ## Done
 
+- 2026-09-26: JPEG encode margins released as 0.20.1: 4:2:0 chroma from summed RGB takes the photo encode from a tie to a 7 to 9% lead over jpeg-encoder at equal or higher PSNR; every jpeg-png line passes.
 - 2026-09-26: JPEG released as 0.20.0: baseline and progressive decode bit-exact with libjpeg-turbo, a streaming encoder with `--quality`, four streaming paths at a tenth of the crates' memory. The `png -> jpeg` photo line is a tie with jpeg-encoder (440 against 445 MB/s in the recorded block, 163 against 164 ms direct) at a smaller file and higher PSNR; the owner shipped it as a tie. The margin levers (Huffman coding loop, color intake, flat-chroma upsampling skip) are bundled with chroma-based subsampling under Tech Debt.
 - 2026-09-26: The image category released as 0.19.0: the pixel hub, PNG and BMP both ways streaming rows in both directions, the resumable inflater, the faster CRC-32 and deflate matcher, every `png-bmp` line passing against the png and image crates on the generated shapes and a stock photograph.
 - 2026-09-26: Batch conversion released as 0.18.0.
