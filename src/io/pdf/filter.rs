@@ -2,9 +2,12 @@
 //! ASCII85, and RunLength, applied in order. A DCT (JPEG) stream is left
 //! as its bytes, for the JPEG reader; other image codecs are refused.
 
-use crate::io::deflate::inflate;
+use std::borrow::Cow;
+
+use crate::io::deflate::{Inflater, Progress, inflate};
 use crate::io::pdf::PdfError;
 use crate::io::pdf::object::{Dictionary, Object};
+use crate::io::png::reader::unfilter_row;
 
 /// Decoded data is capped here (a stream claiming more is refused).
 const LIMIT: usize = 1 << 31;
@@ -78,16 +81,185 @@ pub fn decode(dictionary: &Dictionary, raw: &[u8]) -> Result<Vec<u8>, PdfError> 
     Ok(data)
 }
 
-fn flate(data: &[u8]) -> Result<Vec<u8>, PdfError> {
-    // A zlib stream; some writers leave off the two-byte header.
-    let body = if data.len() >= 2
+/// Inflated output asked for per push.
+const OUTPUT_STEP: usize = 1 << 16;
+
+/// An image's decoded sample rows, one at a time. A lone Flate filter
+/// (the common case) inflates and undoes its predictor row by row, so
+/// neither the samples nor a copy of the stream are held; an unfiltered
+/// stream is read in place; other chains decode whole first.
+pub enum Samples<'a> {
+    Held { data: Cow<'a, [u8]>, at: usize },
+    Flate(Box<FlateRows<'a>>),
+}
+
+impl<'a> Samples<'a> {
+    /// Rows of `stride` bytes from `raw` through the stream's filters.
+    pub fn new(
+        dictionary: &Dictionary,
+        raw: Cow<'a, [u8]>,
+        stride: usize,
+    ) -> Result<Samples<'a>, PdfError> {
+        let chain = filters(dictionary);
+        if chain.is_empty() {
+            return Ok(Samples::Held { data: raw, at: 0 });
+        }
+        if let ([(name, parameters)], Cow::Borrowed(raw)) = (chain.as_slice(), &raw) {
+            let is_flate = name == b"FlateDecode" || name == b"Fl";
+            if let (true, Some(predictor)) = (is_flate, Predictor::of(parameters.as_ref(), stride))
+            {
+                return Ok(Samples::Flate(Box::new(FlateRows::new(
+                    raw, predictor, stride,
+                ))));
+            }
+        }
+        let data = decode(dictionary, &raw)?;
+        Ok(Samples::Held {
+            data: Cow::Owned(data),
+            at: 0,
+        })
+    }
+
+    /// The next row, or `None` when the data runs out.
+    pub fn next_row(&mut self, stride: usize) -> Result<Option<&[u8]>, PdfError> {
+        match self {
+            Samples::Held { data, at } => {
+                let Some(row) = data.get(*at..*at + stride) else {
+                    return Ok(None);
+                };
+                *at += stride;
+                Ok(Some(row))
+            }
+            Samples::Flate(rows) => rows.next_row(),
+        }
+    }
+}
+
+/// A stream predictor the row reader undoes.
+#[derive(Clone, Copy)]
+pub enum Predictor {
+    None,
+    /// TIFF predictor 2 at eight bits: each byte adds the one a pixel back.
+    Tiff {
+        unit: usize,
+    },
+    /// PNG predictors: a filter byte before each row.
+    Png {
+        unit: usize,
+    },
+}
+
+impl Predictor {
+    /// The predictor the parameters name, when its rows are `stride`
+    /// bytes long and the row reader handles it.
+    fn of(parameters: Option<&Dictionary>, stride: usize) -> Option<Predictor> {
+        let Some(parameters) = parameters else {
+            return Some(Predictor::None);
+        };
+        let number = |key: &[u8], default: i64| {
+            parameters
+                .get(key)
+                .and_then(Object::as_integer)
+                .unwrap_or(default)
+        };
+        let predictor = number(b"Predictor", 1);
+        if predictor < 2 {
+            return Some(Predictor::None);
+        }
+        let colors = number(b"Colors", 1).max(1) as usize;
+        let bits = number(b"BitsPerComponent", 8).max(1) as usize;
+        let columns = number(b"Columns", 1).max(1) as usize;
+        let unit = (colors * bits).div_ceil(8).max(1);
+        if (colors * bits * columns).div_ceil(8) != stride || !matches!(unit, 1..=4 | 6 | 8) {
+            return None;
+        }
+        match predictor {
+            2 if bits == 8 => Some(Predictor::Tiff { unit }),
+            10.. => Some(Predictor::Png { unit }),
+            _ => None,
+        }
+    }
+}
+
+/// Flate data inflated a row at a time, its predictor undone as it goes.
+pub struct FlateRows<'a> {
+    input: &'a [u8],
+    inflater: Inflater,
+    predictor: Predictor,
+    /// Bytes per row in the stream (a PNG filter byte and the row).
+    line: usize,
+    previous: Vec<u8>,
+    current: Vec<u8>,
+}
+
+impl<'a> FlateRows<'a> {
+    fn new(data: &'a [u8], predictor: Predictor, stride: usize) -> FlateRows<'a> {
+        let line = match predictor {
+            Predictor::Png { .. } => stride + 1,
+            _ => stride,
+        };
+        FlateRows {
+            input: zlib_body(data),
+            inflater: Inflater::new(),
+            predictor,
+            line,
+            previous: vec![0; stride],
+            current: vec![0; stride],
+        }
+    }
+
+    fn next_row(&mut self) -> Result<Option<&[u8]>, PdfError> {
+        while self.inflater.output().len() < self.line {
+            if self.inflater.is_done() {
+                return Ok(None);
+            }
+            let (consumed, progress) =
+                self.inflater
+                    .push(self.input, OUTPUT_STEP.max(self.line))
+                    .map_err(|failure| fail(format!("bad PDF Flate data: {failure:?}")))?;
+            self.input = &self.input[consumed..];
+            if progress == Progress::NeedInput && self.input.is_empty() {
+                if self.inflater.output().len() < self.line {
+                    return Ok(None);
+                }
+                break;
+            }
+        }
+        let line = &self.inflater.output()[..self.line];
+        match self.predictor {
+            Predictor::None => self.current.copy_from_slice(line),
+            Predictor::Tiff { unit } => {
+                self.current.copy_from_slice(line);
+                for at in unit..self.current.len() {
+                    self.current[at] = self.current[at].wrapping_add(self.current[at - unit]);
+                }
+            }
+            Predictor::Png { unit } => {
+                unfilter_row(line[0], &line[1..], &self.previous, unit, &mut self.current)
+                    .map_err(|_| fail("bad PNG predictor row in PDF"))?;
+            }
+        }
+        self.inflater.drain(self.line);
+        std::mem::swap(&mut self.previous, &mut self.current);
+        Ok(Some(&self.previous))
+    }
+}
+
+/// A zlib stream's deflate data; some writers leave off the two-byte
+/// header.
+fn zlib_body(data: &[u8]) -> &[u8] {
+    if data.len() >= 2
         && data[0] & 0x0f == 8
         && (u16::from(data[0]) << 8 | u16::from(data[1])) % 31 == 0
     {
         &data[2..]
     } else {
         data
-    };
+    }
+}
+
+fn flate(data: &[u8]) -> Result<Vec<u8>, PdfError> {
+    let body = zlib_body(data);
     let mut out = Vec::new();
     inflate(body, &mut out, LIMIT)
         .map_err(|failure| fail(format!("bad PDF Flate data: {failure:?}")))?;
@@ -271,6 +443,51 @@ mod tests {
         assert_eq!(ascii_hex(b"48 65 6C6c 6F>").unwrap(), b"Hello");
         assert_eq!(ascii85(b"<~87cURD]i,\"Ebo80~>").unwrap(), b"Hello World!");
         assert_eq!(ascii85(b"z~>").unwrap(), vec![0, 0, 0, 0]);
+    }
+
+    /// Flate streams read a row at a time give what decoding them whole
+    /// gives, for both predictor kinds.
+    #[test]
+    fn streamed_rows_match_the_whole_decode() {
+        let parse = |text: &[u8]| {
+            let Ok(Object::Dictionary(dictionary)) =
+                crate::io::pdf::object::Parser::new(text, 0).object()
+            else {
+                panic!("bad dictionary");
+            };
+            dictionary
+        };
+        // Two rows of three RGB pixels: PNG predictor rows (Sub, Up,
+        // Average, Paeth over two rows each) and TIFF predictor rows.
+        let stride = 9;
+        let cases: Vec<(&[u8], Vec<u8>)> =
+            vec![
+            (
+                b"<< /Filter /FlateDecode /DecodeParms << /Predictor 15 /Colors 3 /Columns 3 >> >>",
+                [1u8, 3, 9, 27, 2, 4, 6, 8, 10, 12, 4, 5, 250, 1, 7, 7, 7, 0, 0, 9]
+                    .iter()
+                    .chain(&[3u8, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+                    .copied()
+                    .collect(),
+            ),
+            (
+                b"<< /Filter /FlateDecode /DecodeParms << /Predictor 2 /Colors 3 /Columns 3 >> >>",
+                vec![10, 20, 30, 1, 2, 3, 250, 250, 250, 5, 5, 5, 0, 0, 0, 9, 8, 7],
+            ),
+        ];
+        for (text, rows) in cases {
+            let dictionary = parse(text);
+            let mut zlib = vec![0x78, 0x9c];
+            crate::io::deflate::deflate(&rows, &mut zlib);
+            let whole = decode(&dictionary, &zlib).unwrap();
+            let mut samples = Samples::new(&dictionary, Cow::Borrowed(&zlib), stride).unwrap();
+            assert!(matches!(samples, Samples::Flate(_)));
+            let mut streamed = Vec::new();
+            while let Some(row) = samples.next_row(stride).unwrap() {
+                streamed.extend_from_slice(row);
+            }
+            assert_eq!(streamed, whole);
+        }
         assert_eq!(
             run_length(&[2, b'a', b'b', b'c', 254, b'x', 128]).unwrap(),
             b"abcxxx"
