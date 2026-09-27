@@ -295,6 +295,15 @@ fn rebuild_body(
         _ => (HashMap::new(), Vec::new()),
     };
 
+    // A list-style variation per Word list the body uses, with its own labels
+    // and indents, of the template list style of the same shape.
+    let word_lists = match stylesheet_id {
+        Some(sheet) => {
+            synthesize_list_styles(package, document, &body, lists, sheet, &mut next_id)?
+        }
+        None => HashMap::new(),
+    };
+
     if let Some(styles) = cell_styles {
         write_page_areas(
             package,
@@ -404,6 +413,7 @@ fn rebuild_body(
         styles,
         &all_formats,
         lists,
+        &word_lists,
         &anchors,
         &smart_entries,
         &para_styles,
@@ -2669,6 +2679,7 @@ fn build_storage(
     styles: &HashMap<String, u64>,
     formats: &HashMap<Format, u64>,
     lists: &HashMap<String, u64>,
+    word_lists: &HashMap<usize, u64>,
     anchors: &[(u32, u64)],
     smart_entries: &[(u32, Option<u64>)],
     paras: &ParaStyles,
@@ -2777,9 +2788,12 @@ fn build_storage(
             .paragraphs
             .iter()
             .map(|mark| {
+                let word_list = mark.list.and_then(|item| word_lists.get(&item.style));
                 (
                     mark.offset,
-                    list_style_for(document, lists, mark.list.as_ref()),
+                    word_list
+                        .copied()
+                        .or_else(|| list_style_for(document, lists, mark.list.as_ref())),
                 )
             })
             .collect();
@@ -2969,6 +2983,8 @@ struct ParagraphMark {
     style_name: Option<String>,
     list: Option<ListItem>,
     format: ParaFormat,
+    /// Word's contextual spacing: no space against a same-style neighbour.
+    contextual: bool,
 }
 
 /// A point in the text where the character formatting changes.
@@ -3095,6 +3111,7 @@ fn flatten(document: &Document) -> Body {
         }
         walk.blocks(document, &section.blocks);
     }
+    apply_contextual_spacing(&mut walk.paragraphs);
     Body {
         text: walk.text,
         paragraphs: walk.paragraphs,
@@ -3102,6 +3119,24 @@ fn flatten(document: &Document) -> Body {
         link_marks: walk.link_marks,
         tables: walk.tables,
         images: walk.images,
+    }
+}
+
+/// Word's contextual spacing, which Pages lacks: between two paragraphs of
+/// the same style, one that asks for it drops its space on that side.
+fn apply_contextual_spacing(paragraphs: &mut [ParagraphMark]) {
+    for index in 1..paragraphs.len() {
+        let (before, after) = paragraphs.split_at_mut(index);
+        let (previous, next) = (&mut before[index - 1], &mut after[0]);
+        if previous.style_name != next.style_name {
+            continue;
+        }
+        if previous.contextual {
+            previous.format.space_after = Some(0);
+        }
+        if next.contextual {
+            next.format.space_before = Some(0);
+        }
     }
 }
 
@@ -3182,6 +3217,7 @@ impl Walk {
             style_name: None,
             list: None,
             format: ParaFormat::default(),
+            contextual: false,
         });
         self.take_break();
         let columns = table.columns.len();
@@ -3277,6 +3313,10 @@ impl Walk {
             style_name,
             list: paragraph.list,
             format: para_format(document, paragraph),
+            contextual: document
+                .effective_paragraph(paragraph)
+                .contextual_spacing
+                .unwrap_or(false),
         });
         self.take_break();
         for run in &paragraph.runs {
@@ -3337,6 +3377,7 @@ impl Walk {
                 style_name: last.style_name.clone(),
                 list: last.list,
                 format: last.format,
+                contextual: last.contextual,
             };
             self.paragraphs.push(mark);
         }
@@ -7225,8 +7266,18 @@ fn para_format(document: &Document, paragraph: &Paragraph) -> ParaFormat {
         }),
         // Pages measures the first line from the margin, not from the left
         // indent: a paragraph indented as a whole starts its first line there too.
-        first_line_indent: hundredths(properties.first_line_indent.or(properties.left_indent)),
-        left_indent: hundredths(properties.left_indent),
+        // A list paragraph takes its indents from its list style, as Pages
+        // imports a Word list; its own are zero.
+        first_line_indent: if paragraph.list.is_some() {
+            Some(0)
+        } else {
+            hundredths(properties.first_line_indent.or(properties.left_indent))
+        },
+        left_indent: if paragraph.list.is_some() {
+            Some(0)
+        } else {
+            hundredths(properties.left_indent)
+        },
         right_indent: hundredths(properties.right_indent),
         space_before: hundredths(properties.space_before),
         space_after: hundredths(properties.space_after),
@@ -8481,4 +8532,221 @@ fn build_stroke_run(
     )?;
     push_field(tree, &mut run_chain, run, "order", Node::Uint(1))?;
     Ok(run_chain.first)
+}
+
+// ----- list styles -----
+
+/// Pages' list label types.
+const LABEL_NONE: u64 = 0;
+const LABEL_BULLET: u64 = 2;
+const LABEL_NUMBER: u64 = 3;
+/// Pages keeps nine list levels.
+const LIST_LEVELS: usize = 9;
+
+/// Creates a `TSWP.ListStyleArchive` variation (in the stylesheet's stream)
+/// for each Word list the body's paragraphs use: per level its label (bullet
+/// text or number style), where the label sits, and the gap to the text, as
+/// Pages imports a Word list. Keyed by the model's list style.
+fn synthesize_list_styles(
+    package: &mut Package,
+    document: &Document,
+    body: &Body,
+    lists: &HashMap<String, u64>,
+    stylesheet: u64,
+    next_id: &mut u64,
+) -> Result<HashMap<usize, u64>, PackageError> {
+    let archive = message_ref("TSWP.ListStyleArchive")?;
+    let base = child_message(archive, "super")?;
+    let geometry = child_message(archive, "geometries")?;
+    let mut used: Vec<&ListItem> = body
+        .paragraphs
+        .iter()
+        .filter_map(|mark| mark.list.as_ref())
+        .collect();
+    used.sort_by_key(|item| item.style);
+    used.dedup_by_key(|item| item.style);
+    // The em the text gap is measured in: the body text's size.
+    let em = default_font_size(document);
+    let mut out = HashMap::new();
+    let mut pairs = Vec::new();
+    let stream = stream_containing(package, stylesheet)?;
+    for item in used {
+        let Some(style) = document.styles.list.get(item.style) else {
+            continue;
+        };
+        let Some(parent) = list_style_for(document, lists, Some(item)) else {
+            continue;
+        };
+        let level = |index: usize| style.levels.get(index).or_else(|| style.levels.last());
+        let tree = &mut stream.tree;
+        let id = *next_id;
+        *next_id += 1;
+        let mut super_chain = Chain::new();
+        push_field(
+            tree,
+            &mut super_chain,
+            base,
+            "parent",
+            Node::Reference(parent),
+        )?;
+        push_field(
+            tree,
+            &mut super_chain,
+            base,
+            "is_variation",
+            Node::Bool(true),
+        )?;
+        push_field(
+            tree,
+            &mut super_chain,
+            base,
+            "stylesheet",
+            Node::Reference(stylesheet),
+        )?;
+        let mut chain = Chain::new();
+        push_field(
+            tree,
+            &mut chain,
+            archive,
+            "super",
+            Node::Message(super_chain.first),
+        )?;
+        push_field(tree, &mut chain, archive, "override_count", Node::Uint(8))?;
+        for index in 0..LIST_LEVELS {
+            let kind = match level(index).map(|level| &level.label) {
+                Some(ListLabel::Text(_)) => LABEL_BULLET,
+                Some(ListLabel::Number(_)) => LABEL_NUMBER,
+                _ => LABEL_NONE,
+            };
+            push_field(tree, &mut chain, archive, "label_types", Node::Uint(kind))?;
+        }
+        for index in 0..LIST_LEVELS {
+            let gap =
+                level(index).map_or(18.0, |level| (level.indent - level.label_indent).max(0.0));
+            push_field(
+                tree,
+                &mut chain,
+                archive,
+                "text_indents",
+                Node::Float((gap / em).max(0.5)),
+            )?;
+        }
+        for index in 0..LIST_LEVELS {
+            let at = level(index).map_or(0.0, |level| level.label_indent.max(0.0));
+            push_field(tree, &mut chain, archive, "indents", Node::Float(at))?;
+        }
+        for _ in 0..LIST_LEVELS {
+            let mut geometry_chain = Chain::new();
+            push_field(
+                tree,
+                &mut geometry_chain,
+                geometry,
+                "scale",
+                Node::Float(1.0),
+            )?;
+            push_field(
+                tree,
+                &mut geometry_chain,
+                geometry,
+                "baseline_offset",
+                Node::Float(0.0),
+            )?;
+            push_field(
+                tree,
+                &mut geometry_chain,
+                geometry,
+                "scale_with_text",
+                Node::Bool(true),
+            )?;
+            push_field(
+                tree,
+                &mut chain,
+                archive,
+                "geometries",
+                Node::Message(geometry_chain.first),
+            )?;
+        }
+        for index in 0..LIST_LEVELS {
+            let text = match level(index).map(|level| &level.label) {
+                Some(ListLabel::Text(text)) => text.clone(),
+                _ => String::new(),
+            };
+            let span = tree.push_bytes(text.as_bytes()).map_err(tree_error)?;
+            push_field(tree, &mut chain, archive, "strings", Node::Str(span))?;
+        }
+        for index in 0..LIST_LEVELS {
+            let number = match level(index).map(|level| &level.label) {
+                Some(ListLabel::Number(format)) => pages_number_type(format),
+                _ => 0,
+            };
+            push_field(
+                tree,
+                &mut chain,
+                archive,
+                "number_types",
+                Node::Uint(number),
+            )?;
+        }
+        for _ in 0..LIST_LEVELS {
+            push_field(
+                tree,
+                &mut chain,
+                archive,
+                "tiered_numbers",
+                Node::Bool(false),
+            )?;
+        }
+        let info = build_archive_info(tree, id, LIST_STYLE)?;
+        add_object_references(tree, info, &[parent, stylesheet])?;
+        stream.objects.push(Object {
+            identifier: id,
+            info,
+            messages: vec![ObjectMessage {
+                message_type: LIST_STYLE,
+                first: chain.first,
+            }],
+        });
+        out.insert(item.style, id);
+        pairs.push((parent, id));
+    }
+    register_in_stylesheet(package, stylesheet, &pairs)?;
+    Ok(out)
+}
+
+/// Pages' number style for a Word number format: its kind and whether it
+/// reads `1.`, `(1)`, or `1)` (Pages has no other punctuation; a bare
+/// number or another pattern takes the period form).
+fn pages_number_type(format: &crate::document::NumberFormat) -> u64 {
+    let base = match format.kind {
+        NumberKind::Decimal => 0,
+        NumberKind::UpperRoman => 3,
+        NumberKind::LowerRoman => 6,
+        NumberKind::UpperLetter => 9,
+        NumberKind::LowerLetter => 12,
+    };
+    let pattern = format.pattern.trim();
+    let punctuation = if pattern == "(%1)" {
+        1
+    } else if pattern == "%1)" {
+        2
+    } else {
+        0
+    };
+    base + punctuation
+}
+
+/// The body text's font size in points: the default paragraph style's (or
+/// its bases'), else 12.
+fn default_font_size(document: &Document) -> f32 {
+    let mut next = document.styles.default_paragraph;
+    for _ in 0..16 {
+        let Some(style) = next.and_then(|id| document.styles.paragraph.get(id)) else {
+            break;
+        };
+        if let Some(size) = style.run.size {
+            return size;
+        }
+        next = style.parent;
+    }
+    12.0
 }
