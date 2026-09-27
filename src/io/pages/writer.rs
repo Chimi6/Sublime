@@ -483,6 +483,7 @@ fn build_hyperlink_object(
     identifier: u64,
     url: &str,
 ) -> Result<Object, PackageError> {
+    let url = &encode_url(url);
     let hyperlink = message_ref("TSWP.HyperlinkFieldArchive")?;
     let smart = message_ref("TSWP.SmartFieldArchive")?;
     let mut base = Chain::new();
@@ -9146,5 +9147,38 @@ fn clear_template_rules(package: &mut Package) {
                 tree.entries[index as usize].value = Node::Uint(0);
             }
         }
+    }
+}
+
+/// A link target as a URL Pages can parse: characters outside printable
+/// ASCII (a Cyrillic path, a space) are percent-encoded as UTF-8, as a
+/// browser sends them; Pages fails an address it cannot read as a URL.
+fn encode_url(url: &str) -> String {
+    let mut out = String::with_capacity(url.len());
+    for character in url.chars() {
+        if character.is_ascii_graphic() {
+            out.push(character);
+        } else {
+            let mut buffer = [0u8; 4];
+            for byte in character.encode_utf8(&mut buffer).bytes() {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod url_tests {
+    #[test]
+    fn non_ascii_link_targets_are_percent_encoded() {
+        assert_eq!(
+            super::encode_url("http://ru.wikipedia.org/wiki/Уз b"),
+            "http://ru.wikipedia.org/wiki/%D0%A3%D0%B7%20b"
+        );
+        assert_eq!(
+            super::encode_url("https://example.com/?a=1#x"),
+            "https://example.com/?a=1#x"
+        );
     }
 }
