@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-09-27: TIFF (`src/io/tiff.rs`): the first page read in the common layouts (strips and tiles, chunky and planar, none, LZW, deflate, PackBits, the predictor, 1 to 16 bits, gray, palette, RGB, CMYK, both alphas) and 8-bit deflate strips written; every `tiff-png` line passes, memory 5 to 59 MB against 53 to 886. That completes 0.22's image set.
 - 2026-09-27: ICO and CUR (`src/io/ico.rs`) with the first image operation, an area-averaging downscale (`src/image/resize.rs`): icons are read to their largest entry and written with the standard sizes from one streaming downscale. `ico-png`: an icon from a large picture passes with a margin; the 256-pixel lines are a few milliseconds and flip with load, and a 256-source icon is slower than the image crate's (its fast-level PNGs make it 78% larger).
 - 2026-09-27: TGA (`src/io/tga.rs`): every common layout read and top-down RLE written as Pillow writes it; bottom-up files hold their bytes and decode last row first. Every `tga-png` line passes; the flat decode is within 1%.
 - 2026-09-27: Netpbm (`src/io/netpbm.rs`): every form P1 to P7 read, PBM, PGM, PPM, and PAM written (Pillow's bytes for the first three), streaming rows both ways; `ppm-png` decode passes everywhere, encode passes on the flat and stock shapes and ties on the photo.

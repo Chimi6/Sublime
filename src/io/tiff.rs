@@ -387,8 +387,6 @@ struct Layout {
     height: usize,
     bits: u32,
     samples: usize,
-    /// Samples before the alpha (1 gray or palette, 3 RGB, 4 CMYK).
-    color_samples: usize,
     alpha: Option<usize>,
     associated: bool,
     photometric: u32,
@@ -470,7 +468,6 @@ fn layout(tags: &Tags, big: bool) -> Result<Layout, TiffError> {
         height: tags.height as usize,
         bits,
         samples,
-        color_samples,
         alpha,
         associated: tags.extra.first() == Some(&1),
         photometric,
@@ -522,14 +519,14 @@ fn convert(layout: &Layout, stored: &[u8], row: &mut [u8]) {
             }
             5 => {
                 let black = 255 - u32::from(eight(sample(base + 3)));
-                for channel in 0..3 {
+                for (channel, value) in target[..3].iter_mut().enumerate() {
                     let ink = 255 - u32::from(eight(sample(base + channel)));
-                    target[channel] = ((ink * black + 127) / 255) as u8;
+                    *value = ((ink * black + 127) / 255) as u8;
                 }
             }
             _ => {
-                for channel in 0..3 {
-                    target[channel] = eight(sample(base + channel));
+                for (channel, value) in target[..3].iter_mut().enumerate() {
+                    *value = eight(sample(base + channel));
                 }
             }
         }
@@ -548,7 +545,6 @@ fn convert(layout: &Layout, stored: &[u8], row: &mut [u8]) {
             }
         }
     }
-    let _ = layout.color_samples;
 }
 
 /// Decodes the first page into `sink`, a band of rows (a strip, or a row
@@ -622,11 +618,11 @@ fn decode(bytes: &[u8], sink: &mut dyn RowSink) -> Result<TiffNotes, RowsError> 
                 );
             } else if !planar {
                 // Tiles side by side: whole bytes at 8 and 16 bits.
-                for column in 0..across {
+                for (column, tile) in chunks.iter().enumerate() {
                     let x0 = column * chunk_width;
                     let pixels = chunk_width.min(layout.width - x0);
                     let size = pixels * layout.samples * sample_bytes.max(1);
-                    let from = &chunks[column][line * chunk_row_bytes..][..size];
+                    let from = &tile[line * chunk_row_bytes..][..size];
                     let at = x0 * layout.samples * sample_bytes.max(1);
                     if bits < 8 {
                         return Err(fail(error("tiled TIFF under 8 bits is not supported")));
