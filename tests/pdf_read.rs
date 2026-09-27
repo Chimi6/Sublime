@@ -126,7 +126,10 @@ fn a_jpeg_image_comes_out_as_its_own_bytes() {
     let mut document = PdfDocument::new(&mut pdf).unwrap();
     document.jpeg_page(&jpeg).unwrap();
     document.finish().unwrap();
-    assert_eq!(page_jpeg(&pdf, None).unwrap(), Some(jpeg));
+    assert_eq!(
+        page_jpeg(&pdf, None).unwrap().as_deref(),
+        Some(jpeg.as_slice())
+    );
     // A PNG page has no JPEG to copy.
     let (image, _) = read_pdf(&fs::read(dir("").join("form.pdf")).unwrap(), None).unwrap();
     assert_eq!(image.width, 33);

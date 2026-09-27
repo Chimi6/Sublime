@@ -631,7 +631,7 @@ fn rows(bytes: &[u8], sink: &mut dyn RowSink, page: Option<u32>) -> Result<PdfNo
 
 /// The chosen page's image as a JPEG's own bytes, when it is a plain
 /// DCT image (no mask): PDF to JPEG copies it rather than re-encoding.
-pub fn page_jpeg(bytes: &[u8], page: Option<u32>) -> Result<Option<Vec<u8>>, PdfError> {
+pub fn page_jpeg(bytes: &[u8], page: Option<u32>) -> Result<Option<Cow<'_, [u8]>>, PdfError> {
     let document = Document::open(bytes)?;
     let (found, _) = choose(&document, page)?;
     let dictionary = &found.dictionary;
@@ -642,7 +642,7 @@ pub fn page_jpeg(bytes: &[u8], page: Option<u32>) -> Result<Option<Vec<u8>>, Pdf
     if !plain {
         return Ok(None);
     }
-    Ok(Some(found.raw.into_owned()))
+    Ok(Some(found.raw))
 }
 
 /// A page's image as a whole image.

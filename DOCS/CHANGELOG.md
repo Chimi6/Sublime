@@ -18,6 +18,7 @@ section under a version heading.
 - The binary size budget is raised 2.40 -> 2.55 MB and the WebAssembly budget 1.20 -> 1.30 MB for PDF (the object model, filters, and image reader: about 80 KB).
 - The PNG writer's filtered, deflated row stream is shared (`FilteredZlib`), so a PDF image stream is the same bytes a PNG's IDAT chunks hold; PNG output is unchanged byte for byte.
 - The PDF reader streams an image under a lone Flate filter a row at a time (inflate, predictor, color, soft mask) instead of holding the stream, its samples, and its pixels: 46 MB against 177 on a 41 MB file, flat pages twice as fast.
+- PDF to JPEG writes the embedded JPEG from the file's bytes without copying it first.
 
 ## [0.22.0] - 2026-09-27
 
