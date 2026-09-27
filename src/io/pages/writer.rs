@@ -416,6 +416,33 @@ fn rebuild_body(
             let image = float_image(package, attach, floating.x, floating.y)?;
             placed.push((floating.page, image));
         }
+        // Pictures in the header and footer repeat on every page: Pages keeps
+        // them as the section's layout objects.
+        let mut repeated = Vec::new();
+        for (image, x, y) in header_images(document) {
+            let bytes = document.media[image.media].bytes.clone();
+            let digest = sha1(&bytes).to_vec();
+            let mark = ImageMark {
+                offset: 0,
+                media: image.media,
+                width: image.width,
+                height: image.height,
+                description: image.description.clone(),
+            };
+            let shared = written.get(&digest).copied();
+            let (attach, full, thumb) = clone_image(
+                package,
+                &prototype,
+                &mark,
+                &bytes,
+                shared,
+                &mut next_id,
+                &mut next_data_id,
+            )?;
+            written.entry(digest).or_insert((full, thumb));
+            repeated.push(float_image(package, attach, x, y)?);
+        }
+        add_section_drawables(package, &repeated)?;
     }
     place_floating(package, &placed)?;
     // Attachments anchor by ascending character offset in one table.
@@ -9418,4 +9445,119 @@ fn remove_info_reference(tree: &mut Tree, info: u32, id: u64) {
         }
         cursor = entry.next;
     }
+}
+
+/// The pictures in the first section's default header and footer, each with
+/// its place on the page: where its anchor puts it, or, in the text line, at
+/// the header's (or footer's) edge by its paragraph's alignment.
+fn header_images(document: &Document) -> Vec<(&crate::document::InlineImage, f32, f32)> {
+    use crate::document::{AnchorBase, Placement};
+    let Some(section) = document.sections.first() else {
+        return Vec::new();
+    };
+    let page = &section.page;
+    let mut out = Vec::new();
+    for (blocks, is_footer) in [
+        (section.headers.default.as_ref(), false),
+        (section.footers.default.as_ref(), true),
+    ] {
+        let Some(blocks) = blocks else {
+            continue;
+        };
+        let mut paragraphs = Vec::new();
+        collect_paragraphs(blocks, &mut paragraphs);
+        for paragraph in paragraphs {
+            let alignment = document.effective_paragraph(paragraph).alignment;
+            for run in &paragraph.runs {
+                let Inline::Image(id) = run.content else {
+                    continue;
+                };
+                let Some(image) = document.images.get(id as usize) else {
+                    continue;
+                };
+                // Where the header's (or footer's) first line sits.
+                let line_top = if is_footer {
+                    page.height - page.footer_distance - image.height
+                } else {
+                    page.header_distance
+                };
+                let (x, y) = match image.placement {
+                    Placement::Floating {
+                        horizontal,
+                        vertical,
+                    } => {
+                        let x = match horizontal.from {
+                            AnchorBase::Page => horizontal.offset,
+                            _ => page.margin_left + horizontal.offset,
+                        };
+                        let y = match vertical.from {
+                            AnchorBase::Page => vertical.offset,
+                            AnchorBase::Margin => page.margin_top + vertical.offset,
+                            AnchorBase::Line => line_top + vertical.offset,
+                        };
+                        (x, y)
+                    }
+                    Placement::Inline => {
+                        let text_width = page.width - page.margin_left - page.margin_right;
+                        let x = page.margin_left
+                            + match alignment {
+                                Some(crate::document::Alignment::Center) => {
+                                    (text_width - image.width) / 2.0
+                                }
+                                Some(crate::document::Alignment::Right) => text_width - image.width,
+                                _ => 0.0,
+                            };
+                        (x, line_top)
+                    }
+                };
+                out.push((image, x.max(0.0), y.max(0.0)));
+            }
+        }
+    }
+    out
+}
+
+/// Adds drawables to the section's page template, where Pages keeps the
+/// objects it draws on every page of the section.
+fn add_section_drawables(package: &mut Package, drawables: &[u64]) -> Result<(), PackageError> {
+    if drawables.is_empty() {
+        return Ok(());
+    }
+    let template = message_ref("TP.SectionTemplateArchive")?;
+    let template_id = package.entries.iter().find_map(|entry| {
+        let Entry::Stream(stream) = entry else {
+            return None;
+        };
+        stream.objects.iter().find_map(|object| {
+            match field_value(
+                &stream.tree,
+                object.messages.first()?.first,
+                "odd_section_template_page",
+            ) {
+                Some(Node::Reference(id)) => Some(id),
+                _ => None,
+            }
+        })
+    });
+    let Some(template_id) = template_id else {
+        return Ok(());
+    };
+    let stream = stream_containing(package, template_id)?;
+    let (first, info) = stream
+        .objects
+        .iter()
+        .find(|object| object.identifier == template_id)
+        .map(|object| (object.messages[0].first, object.info))
+        .ok_or_else(|| malformed("section template is missing"))?;
+    for id in drawables {
+        append_message_reference(
+            &mut stream.tree,
+            template,
+            first,
+            "section_template_drawables",
+            *id,
+        )?;
+    }
+    add_object_references(&mut stream.tree, info, drawables)?;
+    Ok(())
 }
