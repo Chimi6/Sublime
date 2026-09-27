@@ -1,6 +1,6 @@
 # JPEG <-> PDF
 
-**Latest** (2026-09-27, pdf-bench branch: every line PASSES)
+**Latest** (2026-09-27, 0.23.0 release: every line PASSES)
 
 ## Purpose
 
@@ -46,6 +46,26 @@ runs from GNU `time`.
   creation on both sides; it ranks the whole command, not the copy.
 
 ## Results
+
+### 2026-09-27, 0.23.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| jpeg -> pdf, photo (1.6 MB): throughput (MB/s of JPEG, median of 101 alternated runs) | 344.6 | 246.4 (lopdf) | PASS |
+| jpeg -> pdf, photo: peak memory (MB) | 5.0 | 9.2 (lopdf) | PASS |
+| pdf -> jpeg, photo (1.6 MB): throughput (MB/s of JPEG, median of 101 alternated runs) | 499.7 | 309.9 (lopdf) | PASS |
+| pdf -> jpeg, photo: peak memory (MB) | 5.4 | 8.5 (lopdf) | PASS |
+| jpeg -> pdf, flat (0.3 MB): throughput (MB/s of JPEG, median of 101 alternated runs) | 197.5 | 168.1 (lopdf) | PASS |
+| jpeg -> pdf, flat: peak memory (MB) | 4.0 | 6.6 (lopdf) | PASS |
+| pdf -> jpeg, flat (0.3 MB): throughput (MB/s of JPEG, median of 101 alternated runs) | 128.6 | 67.9 (lopdf) | PASS |
+| pdf -> jpeg, flat: peak memory (MB) | 4.2 | 5.8 (lopdf) | PASS |
+| jpeg -> pdf, stock (3.2 MB): throughput (MB/s of JPEG, median of 101 alternated runs) [stock] | 572.2 | 400.5 (lopdf) | PASS |
+| jpeg -> pdf, stock: peak memory (MB) [stock] | 6.9 | 12.2 (lopdf) | PASS |
+| pdf -> jpeg, stock (3.2 MB): throughput (MB/s of JPEG, median of 101 alternated runs) [stock] | 471.8 | 297.6 (lopdf) | PASS |
+| pdf -> jpeg, stock: peak memory (MB) [stock] | 7.2 | 11.1 (lopdf) | PASS |
+
+commit: cb93dff (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
 
 ### 2026-09-27, pdf-bench branch (single runs)
 

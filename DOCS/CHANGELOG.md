@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-09-27
+
 ### Added
 
 - PDF output from images (`src/io/pdf`): a page of each image at its own size; JPEGs embedded unchanged, every other image deflated with PNG predictors and its alpha as a soft mask, streaming. `sublime convert a.png b.jpg c.tif scan.pdf` merges images into one PDF, a page each. Map in `DOCS/formats/pdf.md`.
