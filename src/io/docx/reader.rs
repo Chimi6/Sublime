@@ -285,6 +285,13 @@ impl Reader<'_> {
                     match kind {
                         "paragraph" => {
                             let index = self.document.styles.paragraph.len();
+                            let default = attribute(&attributes, "w:default");
+                            if default.is_some()
+                                && toggle(default)
+                                && self.document.styles.default_paragraph.is_none()
+                            {
+                                self.document.styles.default_paragraph = Some(index);
+                            }
                             self.document.styles.paragraph.push(ParagraphStyle {
                                 name: style.name.unwrap_or_else(|| id.clone()),
                                 parent: None,

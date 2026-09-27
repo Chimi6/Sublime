@@ -224,8 +224,32 @@ fn rebuild_body(
 
     // Rewrite one template table per model table (with rich cells for the
     // formatted ones); each returns the attachment the body anchors it with.
+    // A paragraph-style variation for every distinct paragraph formatting, of
+    // the style each paragraph sits in (named style in the body, Body in
+    // cells, the area's own style in headers and footers).
+    let (para_styles, para_refs) = match (stylesheet_id, cell_styles) {
+        (Some(sheet), Some(cell)) => {
+            let mut needed: Vec<(u64, ParaFormat)> = Vec::new();
+            for mark in &body.paragraphs {
+                let parent = style_identifier(document, styles, mark.style_name.as_deref());
+                needed.push((parent, mark.format));
+            }
+            for table in &body.tables {
+                for content in &table.cells {
+                    needed.extend(content.paragraphs.iter().map(|(_, format)| (cell.paragraph, *format)));
+                }
+            }
+            for area in &areas {
+                let parent = area_paragraph_style(package, area).unwrap_or(cell.paragraph);
+                needed.extend(area.content.paragraphs.iter().map(|(_, format)| (parent, *format)));
+            }
+            synthesize_para_styles(package, needed, sheet, &mut next_id)?
+        }
+        _ => (HashMap::new(), Vec::new()),
+    };
+
     if let Some(styles) = cell_styles {
-        write_page_areas(package, &areas, &all_formats, styles, &mut next_id)?;
+        write_page_areas(package, &areas, &all_formats, styles, &para_styles, &mut next_id)?;
     }
 
     // The template carries one table: a document with more gets a clone of
@@ -247,6 +271,7 @@ fn rebuild_body(
             mark,
             &all_formats,
             cell_styles,
+            &para_styles,
             &mut next_id,
         )?;
         anchors.push((mark.offset, table.attach_id));
@@ -315,6 +340,7 @@ fn rebuild_body(
         lists,
         &anchors,
         &smart_entries,
+        &para_styles,
     )?;
     stream.objects[index].messages[0].first = new_first;
     let info = stream.objects[index].info;
@@ -322,6 +348,7 @@ fn rebuild_body(
     references.extend(anchors.iter().map(|(_, id)| *id));
     references.extend(link_objects.iter().map(|object| object.identifier));
     references.extend(style_refs);
+    references.extend(para_refs);
     stream.objects.extend(link_objects);
     add_object_references(&mut stream.tree, info, &references)?;
     Ok(())
@@ -769,6 +796,7 @@ fn reuse_table(
     mark: &TableMark,
     formats: &HashMap<Format, u64>,
     cell_styles: Option<CellStyles>,
+    paras: &ParaStyles,
     next_id: &mut u64,
 ) -> Result<(), PackageError> {
     // Every cell becomes a rich-text cell (as Pages itself writes them): its own
@@ -794,7 +822,7 @@ fn reuse_table(
                 *next_id += 2;
                 let attachments = create_number_attachments(stream, &cell.fields, next_id)?;
                 let (message, refs) =
-                    build_text_storage(&mut stream.tree, cell, formats, styles, 5, &attachments)?;
+                    build_text_storage(&mut stream.tree, cell, formats, styles, 5, &attachments, paras)?;
                 let info = build_archive_info(&mut stream.tree, storage_id, STORAGE_ARCHIVE)?;
                 add_object_references(&mut stream.tree, info, &refs)?;
                 new_objects.push(Object {
@@ -2386,6 +2414,7 @@ fn build_storage(
     lists: &HashMap<String, u64>,
     anchors: &[(u32, u64)],
     smart_entries: &[(u32, Option<u64>)],
+    paras: &ParaStyles,
 ) -> Result<(u32, Vec<u64>), PackageError> {
     let storage = message_ref("TSWP.StorageArchive")?;
     let has_tables = !anchors.is_empty();
@@ -2406,10 +2435,10 @@ fn build_storage(
         "table_para_bidi",
         "table_language",
         "table_dictation",
+        // Owned always: the template's own entries anchor its table and
+        // picture at offsets that are ordinary text in a new body.
+        "table_attachment",
     ];
-    if has_tables {
-        owned.push("table_attachment");
-    }
     if has_links {
         owned.push("table_smartfield");
     }
@@ -2443,6 +2472,7 @@ fn build_storage(
         .iter()
         .map(|paragraph| {
             let identifier = style_identifier(document, styles, paragraph.style_name.as_deref());
+            let identifier = paras.get(&(identifier, paragraph.format)).copied().unwrap_or(identifier);
             (paragraph.offset, Some(identifier))
         })
         .collect();
@@ -2546,6 +2576,9 @@ fn build_storage(
         )?;
     }
 
+    // One bidirectional-text entry for the whole text, as Pages writes it.
+    emit_data_table(tree, &mut chain, storage, "table_para_bidi", &[(0, 0, 0)])?;
+
     // Each model table anchors a reused template table by its drawable
     // attachment at the offset of its U+FFFC character.
     if has_tables {
@@ -2573,7 +2606,21 @@ fn build_storage(
         emit_reference_table(tree, &mut chain, storage, "table_smartfield", &link_entries)?;
     }
 
-    Ok((chain.first, references))
+    Ok((sorted_chain(tree, storage, chain.first)?, references))
+}
+
+/// Rebuilds a message chain in field-number order (stable within a field),
+/// the canonical order Pages writes.
+fn sorted_chain(tree: &mut Tree, message: MessageRef, first: u32) -> Result<u32, PackageError> {
+    let mut entries: Vec<TreeEntry> = tree.chain(first).map(|(_, entry)| *entry).collect();
+    entries.sort_by_key(|entry| entry.number);
+    let mut chain = Chain::new();
+    for mut entry in entries {
+        entry.next = NONE;
+        tree.push(&mut chain, entry).map_err(tree_error)?;
+    }
+    let _ = message;
+    Ok(chain.first)
 }
 
 /// Collapses consecutive entries with the same reference, keeping the first
@@ -2661,6 +2708,7 @@ struct ParagraphMark {
     offset: u32,
     style_name: Option<String>,
     list: Option<ListItem>,
+    format: ParaFormat,
 }
 
 /// A point in the text where the character formatting changes.
@@ -2687,6 +2735,8 @@ struct CellContent {
     /// Page-number (kind 0) and page-count (kind 1) fields, by offset of the
     /// U+FFFC standing for each.
     fields: Vec<(u32, u64)>,
+    /// Where each Pages paragraph starts, with its paragraph formatting.
+    paragraphs: Vec<(u32, ParaFormat)>,
 }
 
 /// A table anchored at a `U+FFFC` character: its offset and its grid of cell
@@ -2843,6 +2893,7 @@ impl Walk {
             offset: self.offset,
             style_name: None,
             list: None,
+            format: ParaFormat::default(),
         });
         self.take_break();
         let columns = table.columns.len();
@@ -2908,6 +2959,7 @@ impl Walk {
             offset: self.offset,
             style_name,
             list: paragraph.list,
+            format: para_format(document, paragraph),
         });
         self.take_break();
         for run in &paragraph.runs {
@@ -2924,7 +2976,14 @@ impl Walk {
                 Inline::Text(span) => document.text(span),
                 Inline::Tab => "\t",
                 Inline::LineBreak => "\u{2028}",
-                Inline::PageBreak => "\u{5}",
+                Inline::PageBreak => {
+                    self.mark(Format::default());
+                    self.link_mark(None);
+                    self.text.push(PAGE_BREAK);
+                    self.offset += 1;
+                    self.continue_paragraph();
+                    continue;
+                }
                 _ => continue,
             };
             let piece = without_attachments(raw);
@@ -2946,6 +3005,23 @@ impl Walk {
             self.link_mark(None);
             self.text.push(PAGE_BREAK);
             self.offset += 1;
+            self.continue_paragraph();
+        }
+    }
+
+    /// The page-break character ends a paragraph in Pages' text model, so
+    /// what follows it is a new paragraph and needs its own style entry (the
+    /// same style as the one it continues); without it Pages discards every
+    /// paragraph style of the storage on load.
+    fn continue_paragraph(&mut self) {
+        if let Some(last) = self.paragraphs.last() {
+            let mark = ParagraphMark {
+                offset: self.offset,
+                style_name: last.style_name.clone(),
+                list: last.list,
+                format: last.format,
+            };
+            self.paragraphs.push(mark);
         }
     }
 
@@ -3054,6 +3130,7 @@ fn flatten_lines(document: &Document, lines: &[Line<'_>]) -> CellContent {
     let mut text = String::new();
     let mut marks: Vec<(u32, Format)> = Vec::new();
     let mut fields: Vec<(u32, u64)> = Vec::new();
+    let mut starts: Vec<(u32, ParaFormat)> = Vec::new();
     let mut current = Format::default();
     let mut offset = 0u32;
     let separator = |text: &mut String, offset: &mut u32, marks: &mut Vec<(u32, Format)>, current: &mut Format, character: char| {
@@ -3083,6 +3160,10 @@ fn flatten_lines(document: &Document, lines: &[Line<'_>]) -> CellContent {
     for (lead, paragraph) in paragraphs {
         if let Some(character) = lead {
             separator(&mut text, &mut offset, &mut marks, &mut current, character);
+        }
+        // A line (not a tab or soft break) begins a Pages paragraph.
+        if matches!(lead, None | Some('\n')) {
+            starts.push((offset, para_format(document, paragraph)));
         }
         for run in &paragraph.runs {
             if document.is_deleted(run) {
@@ -3126,6 +3207,7 @@ fn flatten_lines(document: &Document, lines: &[Line<'_>]) -> CellContent {
         text,
         marks,
         fields,
+        paragraphs: starts,
     }
 }
 
@@ -3450,6 +3532,7 @@ fn build_text_storage(
     styles: CellStyles,
     kind: u64,
     attachments: &[(u32, u64)],
+    paras: &ParaStyles,
 ) -> Result<(u32, Vec<u64>), PackageError> {
     let storage = message_ref("TSWP.StorageArchive")?;
     let mut chain = Chain::new();
@@ -3466,12 +3549,31 @@ fn build_text_storage(
     push_field(tree, &mut chain, storage, "in_document", Node::Bool(true))?;
 
     let mut refs = vec![styles.paragraph, styles.list, styles.base_char];
+    // Each paragraph points at its formatting's variation of the base style.
+    let mut paragraph_entries: Vec<(u32, Option<u64>)> = cell
+        .paragraphs
+        .iter()
+        .map(|(offset, format)| {
+            let style = paras.get(&(styles.paragraph, *format)).copied().unwrap_or(styles.paragraph);
+            (*offset, Some(style))
+        })
+        .collect();
+    if paragraph_entries.first().is_none_or(|(offset, _)| *offset != 0) {
+        paragraph_entries.insert(0, (0, Some(styles.paragraph)));
+    }
+    for (_, id) in &paragraph_entries {
+        if let Some(id) = id
+            && !refs.contains(id)
+        {
+            refs.push(*id);
+        }
+    }
     emit_reference_table(
         tree,
         &mut chain,
         storage,
         "table_para_style",
-        &[(0, Some(styles.paragraph))],
+        &dedup(paragraph_entries),
     )?;
     emit_reference_table(
         tree,
@@ -5861,6 +5963,7 @@ fn write_page_areas(
     areas: &[PageArea],
     formats: &HashMap<Format, u64>,
     styles: CellStyles,
+    paras: &ParaStyles,
     next_id: &mut u64,
 ) -> Result<(), PackageError> {
     if areas.is_empty() {
@@ -5918,7 +6021,7 @@ fn write_page_areas(
         let stream = stream_containing(package, storage_id)?;
         let attachments = create_number_attachments(stream, &area.content.fields, next_id)?;
         let (message, refs) =
-            build_text_storage(&mut stream.tree, &area.content, formats, area_styles, 1, &attachments)?;
+            build_text_storage(&mut stream.tree, &area.content, formats, area_styles, 1, &attachments, paras)?;
         let object = stream
             .objects
             .iter_mut()
@@ -6048,4 +6151,283 @@ fn max_row_height(document: &Document, table: &crate::document::Table, widths: &
         tallest = tallest.max(row_height);
     }
     tallest
+}
+
+// ----- paragraph formatting -----
+
+/// Paragraph-style variations by (parent style, formatting).
+type ParaStyles = HashMap<(u64, ParaFormat), u64>;
+
+/// A paragraph's formatting, as Pages paragraph properties: alignment (Pages'
+/// numbering), indents and spacing in hundredths of a point, and line spacing
+/// as (mode, amount x 100). Hundredths keep it hashable.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+struct ParaFormat {
+    alignment: Option<u8>,
+    first_line_indent: Option<i32>,
+    left_indent: Option<i32>,
+    right_indent: Option<i32>,
+    space_before: Option<i32>,
+    space_after: Option<i32>,
+    line_spacing: Option<(u8, i32)>,
+}
+
+impl ParaFormat {
+    fn overrides(&self) -> u64 {
+        [
+            self.alignment.is_some(),
+            self.first_line_indent.is_some(),
+            self.left_indent.is_some(),
+            self.right_indent.is_some(),
+            self.space_before.is_some(),
+            self.space_after.is_some(),
+            self.line_spacing.is_some(),
+        ]
+        .iter()
+        .filter(|set| **set)
+        .count() as u64
+    }
+}
+
+/// A paragraph's effective formatting (its style's, then its own), so Pages
+/// lays it out as Word does even where Pages' own style defaults differ.
+fn para_format(document: &Document, paragraph: &Paragraph) -> ParaFormat {
+    let properties = document.effective_paragraph(paragraph);
+    let hundredths = |value: Option<f32>| {
+        value
+            .filter(|value| value.is_finite())
+            .map(|value| (value * 100.0).round() as i32)
+    };
+    ParaFormat {
+        alignment: properties.alignment.map(|alignment| match alignment {
+            crate::document::Alignment::Left => 0,
+            crate::document::Alignment::Right => 1,
+            crate::document::Alignment::Center => 2,
+            crate::document::Alignment::Justify => 3,
+        }),
+        // Pages measures the first line from the margin, not from the left
+        // indent: a paragraph indented as a whole starts its first line there too.
+        first_line_indent: hundredths(properties.first_line_indent.or(properties.left_indent)),
+        left_indent: hundredths(properties.left_indent),
+        right_indent: hundredths(properties.right_indent),
+        space_before: hundredths(properties.space_before),
+        space_after: hundredths(properties.space_after),
+        line_spacing: properties.line_spacing.and_then(|spacing| {
+            let (mode, amount) = match spacing {
+                crate::document::LineSpacing::Relative(amount) => (0, amount),
+                crate::document::LineSpacing::Minimum(amount) => (1, amount),
+                crate::document::LineSpacing::Exact(amount) => (2, amount),
+            };
+            amount
+                .is_finite()
+                .then(|| (mode, (amount * 100.0).round() as i32))
+        }),
+    }
+}
+
+/// Creates a `TSWP.ParagraphStyleArchive` variation (in the document stream)
+/// for each distinct (parent, formatting) that sets anything, as Pages writes
+/// a paragraph's direct formatting.
+fn synthesize_para_styles(
+    package: &mut Package,
+    needed: Vec<(u64, ParaFormat)>,
+    stylesheet: u64,
+    next_id: &mut u64,
+) -> Result<(ParaStyles, Vec<u64>), PackageError> {
+    let archive = message_ref("TSWP.ParagraphStyleArchive")?;
+    let base = child_message(archive, "super")?;
+    let properties = child_message(archive, "para_properties")?;
+    let spacing = child_message(properties, "line_spacing")?;
+    let mut map: ParaStyles = HashMap::new();
+    let mut created = Vec::new();
+    let stream = document_stream(package)?;
+    for key in needed {
+        let (parent, format) = key;
+        if format.overrides() == 0 || map.contains_key(&key) {
+            continue;
+        }
+        let id = *next_id;
+        *next_id += 1;
+        let tree = &mut stream.tree;
+        let mut style = Chain::new();
+        push_field(tree, &mut style, base, "parent", Node::Reference(parent))?;
+        push_field(tree, &mut style, base, "is_variation", Node::Bool(true))?;
+        push_field(tree, &mut style, base, "stylesheet", Node::Reference(stylesheet))?;
+        let mut props = Chain::new();
+        let points = |value: i32| Node::Float(value as f32 / 100.0);
+        if let Some(alignment) = format.alignment {
+            push_field(tree, &mut props, properties, "alignment", Node::Uint(u64::from(alignment)))?;
+        }
+        if let Some(value) = format.first_line_indent {
+            push_field(tree, &mut props, properties, "first_line_indent", points(value))?;
+        }
+        if let Some(value) = format.left_indent {
+            push_field(tree, &mut props, properties, "left_indent", points(value))?;
+        }
+        if let Some((mode, amount)) = format.line_spacing {
+            let mut line = Chain::new();
+            push_field(tree, &mut line, spacing, "mode", Node::Uint(u64::from(mode)))?;
+            push_field(tree, &mut line, spacing, "amount", points(amount))?;
+            push_field(tree, &mut props, properties, "line_spacing", Node::Message(line.first))?;
+        }
+        if let Some(value) = format.right_indent {
+            push_field(tree, &mut props, properties, "right_indent", points(value))?;
+        }
+        if let Some(value) = format.space_after {
+            push_field(tree, &mut props, properties, "space_after", points(value))?;
+        }
+        if let Some(value) = format.space_before {
+            push_field(tree, &mut props, properties, "space_before", points(value))?;
+        }
+        let mut chain = Chain::new();
+        push_field(tree, &mut chain, archive, "super", Node::Message(style.first))?;
+        push_field(tree, &mut chain, archive, "override_count", Node::Uint(format.overrides()))?;
+        push_field(tree, &mut chain, archive, "char_properties", Node::Message(NONE))?;
+        push_field(tree, &mut chain, archive, "para_properties", Node::Message(props.first))?;
+        let info = build_archive_info(tree, id, PARAGRAPH_STYLE)?;
+        add_object_references(tree, info, &[parent, stylesheet])?;
+        stream.objects.push(Object {
+            identifier: id,
+            info,
+            messages: vec![ObjectMessage {
+                message_type: PARAGRAPH_STYLE,
+                first: chain.first,
+            }],
+        });
+        map.insert(key, id);
+        created.push(id);
+    }
+    let pairs: Vec<(u64, u64)> = map.iter().map(|((parent, _), id)| (*parent, *id)).collect();
+    register_in_stylesheet(package, stylesheet, &pairs)?;
+    Ok((map, created))
+}
+
+/// Registers style variations with the stylesheet, as Pages does: each in its
+/// `styles` list and under its parent in `parent_to_children_style_map`. Pages
+/// repairs a paragraph that points at an unregistered style on load, dropping
+/// the formatting.
+fn register_in_stylesheet(
+    package: &mut Package,
+    stylesheet: u64,
+    pairs: &[(u64, u64)],
+) -> Result<(), PackageError> {
+    if pairs.is_empty() {
+        return Ok(());
+    }
+    let sheet_ref = message_ref("TSS.StylesheetArchive")?;
+    let map_ref = child_message(sheet_ref, "parent_to_children_style_map")?;
+    let stream = stream_containing(package, stylesheet)?;
+    let (first, info) = stream
+        .objects
+        .iter()
+        .find(|object| object.identifier == stylesheet)
+        .map(|object| (object.messages[0].first, object.info))
+        .ok_or_else(|| malformed("stylesheet is missing"))?;
+    let tree = &mut stream.tree;
+    // Rebuild the chain in field order with the new entries alongside.
+    let mut fields: Vec<(u32, Node)> = tree.chain(first).map(|(_, entry)| (entry.number, entry.value)).collect();
+    let styles_number = sheet_ref.slot_named("styles").map(|(_, f)| f.number).ok_or_else(|| malformed("no styles field"))?;
+    let map_number = sheet_ref.slot_named("parent_to_children_style_map").map(|(_, f)| f.number).ok_or_else(|| malformed("no map field"))?;
+    for (_, child) in pairs {
+        fields.push((styles_number, Node::Reference(*child)));
+    }
+    let mut parents: Vec<u64> = pairs.iter().map(|(parent, _)| *parent).collect();
+    parents.sort_unstable();
+    parents.dedup();
+    for parent in parents {
+        let children: Vec<u64> = pairs.iter().filter(|(p, _)| *p == parent).map(|(_, c)| *c).collect();
+        // Extend the parent's existing entry if it has one.
+        let existing = fields.iter().find_map(|(number, value)| match value {
+            Node::Message(entry) if *number == map_number && field_value(tree, *entry, "parent") == Some(Node::Reference(parent)) => Some(*entry),
+            _ => None,
+        });
+        match existing {
+            Some(entry) => {
+                for child in children {
+                    append_message_reference(tree, map_ref, entry, "children", child)?;
+                }
+            }
+            None => {
+                let mut entry = Chain::new();
+                push_field(tree, &mut entry, map_ref, "parent", Node::Reference(parent))?;
+                for child in children {
+                    push_field(tree, &mut entry, map_ref, "children", Node::Reference(child))?;
+                }
+                fields.push((map_number, Node::Message(entry.first)));
+            }
+        }
+    }
+    fields.sort_by_key(|(number, _)| *number);
+    let mut chain = Chain::new();
+    for (number, value) in fields {
+        let slot = sheet_ref.slot(number).ok_or_else(|| malformed("stylesheet field without a slot"))?;
+        let field = sheet_ref.field_at(slot).ok_or_else(|| malformed("stylesheet slot out of range"))?;
+        tree.push_known(&mut chain, sheet_ref, slot, field, number, value).map_err(tree_error)?;
+    }
+    let refs: Vec<u64> = pairs.iter().map(|(_, child)| *child).collect();
+    add_object_references(tree, info, &refs)?;
+    if let Some(object) = stream.objects.iter_mut().find(|object| object.identifier == stylesheet) {
+        object.messages[0].first = chain.first;
+    }
+    Ok(())
+}
+
+/// Appends a reference to a repeated field at the end of a chain.
+fn append_message_reference(
+    tree: &mut Tree,
+    parent: MessageRef,
+    first: u32,
+    name: &str,
+    id: u64,
+) -> Result<(), PackageError> {
+    let (slot, field) = parent.slot_named(name).ok_or_else(|| malformed("field is not in the schema"))?;
+    let mut last = first;
+    for (index, _) in tree.chain(first) {
+        last = index;
+    }
+    let mut chain = Chain { first, last };
+    tree.push_known(&mut chain, parent, slot, field, field.number, Node::Reference(id))
+        .map_err(tree_error)?;
+    Ok(())
+}
+
+/// The paragraph style of the template storage a header or footer area is
+/// written into (its own "Header"/"Footer" style), the parent of its
+/// paragraphs' variations.
+fn area_paragraph_style(package: &Package, area: &PageArea) -> Option<u64> {
+    for entry in &package.entries {
+        let Entry::Stream(stream) = entry else {
+            continue;
+        };
+        for object in &stream.objects {
+            let first = object.messages.first()?.first;
+            let odd = match field_value(&stream.tree, first, "odd_section_template_page") {
+                Some(Node::Reference(id)) => id,
+                _ => continue,
+            };
+            let name = match area.variant {
+                PageVariant::Default => None,
+                PageVariant::First => Some("first_section_template_page"),
+                PageVariant::Even => Some("even_section_template_page"),
+            };
+            let template = name
+                .and_then(|name| reference_of(field_value(&stream.tree, first, name)))
+                .unwrap_or(odd);
+            let (template_tree, template_first) = object_message(package, template)?;
+            let field = if area.footer { "footers" } else { "headers" };
+            let storage = template_tree
+                .chain(template_first)
+                .filter(|(_, entry)| template_tree.field(entry).map(|f| f.name) == Some(field))
+                .filter_map(|(_, entry)| match entry.value {
+                    Node::Reference(id) => Some(id),
+                    _ => None,
+                })
+                .nth(area.position)?;
+            let (storage_tree, storage_first) = object_message(package, storage)?;
+            let table = message_field(storage_tree, storage_first, "table_para_style")?;
+            let entry = message_field(storage_tree, table, "entries")?;
+            return reference_of(field_value(storage_tree, entry, "object"));
+        }
+    }
+    None
 }
