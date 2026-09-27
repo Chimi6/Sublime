@@ -26,6 +26,10 @@ libwebp, and a lossless encoder.
 - The VP8 loop filter works on an eight-sample window, loaded whole across a vertical edge (about 3% of a lossy decode).
 - The Huffman code builder behind deflate (and now WebP) sorts once and merges from two queues, O(n log n) where it re-sorted per merge; large alphabets build in microseconds.
 
+### Fixed
+
+- `sublime convert in.png - --to webp` writes to stdout: `-` as the output means stdout, as it means stdin as the input (it wrote a file named `-`).
+
 ## [0.20.1] - 2026-09-26
 
 JPEG encode margins: chroma from summed RGB.
