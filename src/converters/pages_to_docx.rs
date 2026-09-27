@@ -13,8 +13,7 @@ use crate::io::docx::write_docx;
 use crate::io::pages::{Package, Scope, read_document};
 
 const NAME: &str = "pages-to-docx";
-const FIDELITY_NOTE: &str =
-    "lossless for text, styles, lists, links, footnotes, and tables; shapes and charts are dropped";
+const FIDELITY_NOTE: &str = "text, named styles, lists (with their indents and numbering), links, footnotes, headers and footers, tab stops, and paragraph borders carry over; tables keep merges, fills, borders, and cell alignment, including tables placed on the page; shapes, lines, and text boxes keep their outline, fill, and stroke; charts become native Word charts with their data; images keep their place";
 
 pub struct PagesToDocx;
 
