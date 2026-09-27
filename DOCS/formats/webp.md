@@ -46,19 +46,22 @@ anywhere above.
 
 ## What the writer does
 
-Lossless only, from rows held as ARGB:
+Lossless only:
 
-- An image of at most 256 colors becomes a sorted palette with indices
-  packed two, four, or eight to a pixel when there are few colors.
+- While the rows seen have at most 256 colors they are held as a byte
+  per pixel; such an image becomes a sorted palette with indices
+  packed two, four, or eight to a pixel when there are few colors. The
+  257th color turns what is held into ARGB words.
 - Otherwise: subtract-green, then a predictor chosen per 16x16 tile
-  from left, top, their average, select, and the two gradient clamps
-  by the smallest sum of residual magnitudes on a quarter of the
-  tile's pixels; residuals are computed in place.
+  from top, the average of left and top, select, and the gradient
+  clamp by the smallest sum of residual magnitudes on every other row
+  of the tile; residuals are computed in place.
 - Symbols: runs copying the pixel to the left or the pixel above, a
   1024-entry color cache, literals; one set of five prefix codes,
   length-limited to 15 bits.
-- Two passes over the same decisions, counting then writing, so no
-  symbol stream is held.
+- Two passes: the first chooses and counts every symbol and records
+  its choices in two bits per pixel (a cache hit, the start of a
+  copy) with a list of copy lengths; the second replays them to write.
 
 ## Known deviations
 
