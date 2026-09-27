@@ -59,6 +59,10 @@ Lossless only:
 - Symbols: runs copying the pixel to the left or the pixel above, a
   1024-entry color cache, literals; one set of five prefix codes,
   length-limited to 15 bits.
+- Effort from `--quality`, as cwebp reads it for lossless output: 50
+  and under writes the gradient predictor everywhere with no search;
+  90 and up chooses each tile's predictor by an entropy estimate (the
+  residuals priced by what the tiles above chose) on every row.
 - Two passes: the first chooses and counts every symbol and records
   its choices in two bits per pixel (a cache hit, the start of a
   copy) with a list of copy lengths; the second replays them to write.

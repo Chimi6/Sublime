@@ -12,6 +12,7 @@ libwebp, and a lossless encoder.
 ### Added
 
 - WebP (`src/io/webp`): the RIFF container in its simple and extended forms (alpha, metadata chunks reported, an animation's first frame placed on its canvas); the lossless bitstream (VP8L: prefix codes, meta codes, the color cache, LZ77, and the predictor, cross-color, subtract-green, and color-indexing transforms); lossy key frames (VP8: segmentation, both loop filters, every intra mode, with libwebp's fancy upsampling and color conversion), streaming by macroblock row. All 224 Pillow-written fixtures decode bit for bit to libwebp's pixels (`tests/webp_suite.rs`). Map in `DOCS/formats/webp.md`.
+- `--quality` sets lossless WebP effort, as cwebp reads it: 50 and under writes one predictor without a search, 90 and up chooses predictors by an entropy estimate on every row (1 to 1.5% smaller), anything else is the default.
 - A lossless WebP writer: a palette with packed indices for images of up to 256 colors; otherwise subtract-green and a predictor chosen per 16x16 tile, runs, a color cache, and one set of prefix codes, in two passes that hold no symbol stream. Pillow reads its files to the same pixels.
 - `webp -> png`, `webp -> bmp`, `webp -> jpeg`, `png -> webp`, `bmp -> webp`, `jpeg -> webp`. Every image pair now streams through one path: the reader hands rows to whichever writer.
 - Magic bytes may hold a wildcard byte, so a RIFF form (`RIFF????WEBP`) is told apart from other RIFF files.
@@ -20,6 +21,7 @@ libwebp, and a lossless encoder.
 
 ### Changed
 
+- Deflate's default level (PNG, and the parts of DOCX and XLSX that use it) is zlib's lazy evaluation with chains hashed on four bytes and a price check on short matches, priced by the last block's codes: zlib level 6's ratio or better at about its speed. PNGs are 1 to 13% smaller on photographs, three times smaller on flat images, and prose deflates 20% smaller, and faster to write on every recorded pair (jpeg -> png photo 87 -> 100 MB/s, bmp -> png 31.5 MB against the png crate's 32.2). The bit writer emits 32-bit words (DOCX writes about 50% faster, csv -> xlsx twice as fast).
 - The lossless WebP encoder is faster, with the same output byte for byte except where noted: predictors computed as byte loops over whole rows, the first pass's choices (cache hits, copies) recorded in two bits per pixel so the writing pass replays them, each literal written in one call, and the palette built as rows arrive, a byte per pixel, so an image of up to 256 colors never holds ARGB words (flat encode 428 -> 659 MB/s at 52 MB where it held 96). Predictor tiles are scored on every other row with four candidates (top, average, select, gradient), within 0.3% of the six-candidate output. Photo encode 183 -> 248 MB/s.
 - The VP8 loop filter works on an eight-sample window, loaded whole across a vertical edge (about 3% of a lossy decode).
 - The Huffman code builder behind deflate (and now WebP) sorts once and merges from two queues, O(n log n) where it re-sorted per merge; large alphabets build in microseconds.

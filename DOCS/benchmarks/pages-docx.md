@@ -1,6 +1,6 @@
 # Pages -> Word
 
-**Latest** (2026-09-24: pages -> docx handles 150 MB/s of input plus uncompressed output on the dense shape and 156 on prose (22 and 26 MB/s of input alone), at 46 and 28 MB peak; every goal PASSES)
+**Latest** (2026-09-27, the lazy deflate and the faster bit writer: 207.1 MB/s on the styled shape (from 150.4) and 216.7 on prose (from 156.3); every goal PASSES)
 
 ## Purpose
 
@@ -81,6 +81,20 @@ in-process runs; inputs come from the `pages-json` pair's generator.
   work the Markdown, HTML, and text pairs do not.
 
 ## Results
+
+### 2026-09-27, the lazy deflate and the faster bit writer
+
+commit: a5c702a (on the `webp-spikes` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> docx, styled (2.5 MB in + 14.9 MB out): throughput (MB/s of input plus uncompressed output) | 222.0 | goal: 50 | PASS |
+| pages -> docx, styled: throughput (MB/s of input) [extra] | 32.4 | recorded | n/a |
+| pages -> docx, styled: peak memory (MB) | 45.6 | goal: <= 64.0 | PASS |
+| pages -> docx, prose (1.5 MB in + 7.5 MB out): throughput (MB/s of input plus uncompressed output) | 222.6 | goal: 50 | PASS |
+| pages -> docx, prose: throughput (MB/s of input) [extra] | 37.4 | recorded | n/a |
+| pages -> docx, prose: peak memory (MB) | 29.3 | goal: <= 64.0 | PASS |
 
 ### 2026-09-24, throughput over input plus uncompressed output
 

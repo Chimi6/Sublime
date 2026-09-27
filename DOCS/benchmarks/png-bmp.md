@@ -1,6 +1,6 @@
 # PNG <-> BMP
 
-**Latest** (2026-09-26, with the JPEG release's deflate and filter changes: every line PASSES, the stock rows included; photo png -> bmp 528.1 against 443.4 MB/s, bmp -> png 167.8 against 146.3; flat 1040.4 against 742.3 and 1915.8 against 615.0; stock 537.2 against 521.8 and 294.4 against 177.0; memory 4 to 65 MB against 66 to 887)
+**Latest** (2026-09-27, the lazy deflate: bmp -> png writes 31.5 MB against the png crate's 32.2 (from 33.6) at 167.5 against 146.1 MB/s on the photo, and 0.1 MB against 0.4 on the flat image at 1861.6 against 617.8; every write, memory, and stock line PASSES; the photo png -> bmp line (reader code unchanged since 0.20.1) read 424.9 against 436.0 with a game running, and times 102 against 109 ms directly)
 
 ## Purpose
 
@@ -85,6 +85,35 @@ median wall clock of the whole process, peak resident memory from GNU
   is one run of three-run medians.
 
 ## Results
+
+### 2026-09-27, the lazy deflate
+
+commit: afaff87 (on the `webp-spikes` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| png -> bmp, photo (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 424.9 | 436.0 (png + image) | FAIL |
+| png -> bmp, photo (32.8 MB on disk): throughput (MB/s of file bytes) [extra] | 228.3 | 234.3 (png + image) | n/a |
+| png -> bmp, photo: peak memory (MB) | 5.9 | 66.1 (png + image) | PASS |
+| bmp -> png, photo (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 167.5 | 146.1 (image + png) | PASS |
+| bmp -> png, photo: peak memory (MB) | 65.4 | 160.1 (image + png) | PASS |
+| bmp -> png, photo: output size (MB) [extra] | 31.5 | 32.2 (png) | n/a |
+| bmp -> png, photo: the png crate's fast level, throughput and size [extra] | - | 516.9 MB/s, 32.8 MB (png fast) | n/a |
+| png -> bmp, flat (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 939.4 | 709.5 (png + image) | PASS |
+| png -> bmp, flat (1.7 MB on disk): throughput (MB/s of file bytes) [extra] | 26.1 | 19.7 (png + image) | n/a |
+| png -> bmp, flat: peak memory (MB) | 6.0 | 66.9 (png + image) | PASS |
+| bmp -> png, flat (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 1861.6 | 617.8 (image + png) | PASS |
+| bmp -> png, flat: peak memory (MB) | 65.3 | 127.6 (image + png) | PASS |
+| bmp -> png, flat: output size (MB) [extra] | 0.1 | 0.4 (png) | n/a |
+| bmp -> png, flat: the png crate's fast level, throughput and size [extra] | - | 792.1 MB/s, 1.7 MB (png fast) | n/a |
+| png -> bmp, stock (418.4 MB of pixels, 24.2 MB on disk): throughput (MB/s of decoded pixels) [stock] | 564.8 | 524.8 (png + image) | PASS |
+| png -> bmp, stock: peak memory (MB) [stock] | 6.4 | 423.8 (png + image) | PASS |
+| bmp -> png, stock (418.4 MB in + 418.4 MB of pixels): throughput (MB/s of input plus pixels) [stock] | 351.0 | 178.6 (image + png) | PASS |
+| bmp -> png, stock: peak memory (MB) [stock] | 4.7 | 886.3 (image + png) | PASS |
+| bmp -> png, stock: output size (MB) [stock] | 28.8 | 44.2 (png) | n/a |
+
+The photo `png -> bmp` line runs code unchanged since 0.20.1; direct timing, ten runs each while the harness ran: ours 102 to 104 ms, the crates 107 to 111.
 
 ### 2026-09-26, with the JPEG release's deflate and filter changes
 
