@@ -32,12 +32,13 @@ quality 85 from `bench/data/stock.png`, `[stock]`); the PDF inputs
 are the reference's own output for each.
 
 **Statistics.** `bench/run.sh jpeg-pdf`: every command here finishes in
-one to ten milliseconds, where a single run times process start and the
-file system more than the copy, and three single runs swung by several
-times from run to run. So each throughput line times 100 runs back to
-back (the output removed before each, both sides alike), three times,
-and takes the median; memory is the peak resident size of single runs
-from GNU `time`.
+one to ten milliseconds, where single runs time the machine's noise and
+back-to-back blocks catch its slow spells unevenly (three single runs,
+then blocks of 100, both flipped lines between runs). So each
+throughput line alternates ours and the reference for 101 rounds, the
+outputs removed before each run, timed by bash's microsecond clock, and
+compares the two medians; memory is the peak resident size of single
+runs from GNU `time`.
 
 ## Threats to validity
 
@@ -62,4 +63,6 @@ With three single runs a command, the harness's throughput lines
 flipped between runs (the stock jpeg -> pdf line read 698.6 against
 159.3 MB/s, then 175.9 against 207.2), and at the release commit three
 lines read FAIL; the interleaved timing above had ours ahead on every
-command. The harness now times 100 runs back to back.
+command. Blocks of 100 runs back to back flipped the stock pdf -> jpeg
+line too (344.5 against lopdf's 552.4, 378.3 against 206.9 the run
+before); the harness now alternates the two commands.
