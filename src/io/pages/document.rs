@@ -2095,7 +2095,7 @@ impl Reader<'_> {
             }
             let paragraph = view
                 .message("para_properties")
-                .map(paragraph_properties)
+                .map(|properties| self.paragraph_properties_with_tabs(properties))
                 .unwrap_or_default();
             let characters = view
                 .message("char_properties")
@@ -2162,6 +2162,38 @@ impl Reader<'_> {
     /// The model style for a named Pages paragraph style, created on
     /// first use with its parent chain.
     #[inline(never)]
+    /// A style's paragraph properties with its tab stops.
+    fn paragraph_properties_with_tabs(&mut self, view: View<'_>) -> ParagraphProperties {
+        let mut properties = paragraph_properties(view);
+        let tabs: Vec<crate::document::TabStop> = view
+            .message("tabs")
+            .map(|tabs| {
+                tabs.messages("tabs")
+                    .into_iter()
+                    .filter_map(|tab| {
+                        Some(crate::document::TabStop {
+                            position: tab.float("position")?,
+                            alignment: match tab.integer("alignment").unwrap_or(0) {
+                                1 => crate::document::TabAlignment::Center,
+                                2 => crate::document::TabAlignment::Right,
+                                3 => crate::document::TabAlignment::Decimal,
+                                _ => crate::document::TabAlignment::Left,
+                            },
+                            leader: tab
+                                .string("leader")
+                                .and_then(|leader| leader.chars().next())
+                                .filter(|leader| !leader.is_whitespace()),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !tabs.is_empty() {
+            properties.tabs = Some(self.document.intern_tabs(tabs));
+        }
+        properties
+    }
+
     fn paragraph_style_id(&mut self, object: u64) -> StyleId {
         if let Some(id) = self.paragraph_styles.get(&object) {
             return *id;
@@ -2182,7 +2214,7 @@ impl Reader<'_> {
                 .to_string();
             style.paragraph = view
                 .message("para_properties")
-                .map(paragraph_properties)
+                .map(|properties| self.paragraph_properties_with_tabs(properties))
                 .unwrap_or_default();
             style.run = view
                 .message("char_properties")
@@ -2315,6 +2347,7 @@ fn paragraph_properties(view: View<'_>) -> ParagraphProperties {
         background: view.message("fill").and_then(color),
         contextual_spacing: None,
         border: None,
+        tabs: None,
     }
 }
 

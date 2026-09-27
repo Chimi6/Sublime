@@ -491,17 +491,16 @@ impl DocxWriter {
                 style_id(&document.styles.paragraph[style].name)
             );
         }
-        if let Some(item) = paragraph.list {
+        let numbering = paragraph.list.map(|item| {
             let instance = self
                 .numbering
                 .instance_for(item.style, item.starts_list, item.start);
-            let _ = write!(
-                properties,
+            format!(
                 "<w:numPr><w:ilvl w:val=\"{}\"/><w:numId w:val=\"{}\"/></w:numPr>",
                 item.level,
                 instance + 1
-            );
-        }
+            )
+        });
         let mut own = document.paragraph_properties(paragraph);
         if paragraph.list.is_some() {
             // A list paragraph is indented by its list level (Pages keeps the
@@ -509,7 +508,12 @@ impl DocxWriter {
             own.left_indent = None;
             own.first_line_indent = None;
         }
-        paragraph_properties_xml(&own, &mut properties);
+        paragraph_properties_xml(
+            &own,
+            numbering.as_deref(),
+            document.tab_set(own.tabs),
+            &mut properties,
+        );
         let mut mark = String::new();
         run_properties_xml(
             document,
@@ -1074,7 +1078,12 @@ impl DocxWriter {
                 );
             }
             let mut paragraph = String::new();
-            paragraph_properties_xml(&style.paragraph, &mut paragraph);
+            paragraph_properties_xml(
+                &style.paragraph,
+                None,
+                document.tab_set(style.paragraph.tabs),
+                &mut paragraph,
+            );
             if !paragraph.is_empty() {
                 let _ = write!(xml, "<w:pPr>{paragraph}</w:pPr>");
             }
@@ -1279,7 +1288,14 @@ fn image_content_type(extension: &str) -> Option<&'static str> {
     }
 }
 
-fn paragraph_properties_xml(properties: &ParagraphProperties, out: &mut String) {
+/// A paragraph's properties in `w:pPr` schema order, with its list
+/// numbering (`w:numPr`) and tab stops placed where Word expects them.
+fn paragraph_properties_xml(
+    properties: &ParagraphProperties,
+    numbering: Option<&str>,
+    tabs: &[crate::document::TabStop],
+    out: &mut String,
+) {
     if properties.keep_with_next == Some(true) {
         out.push_str("<w:keepNext/>");
     }
@@ -1293,12 +1309,53 @@ fn paragraph_properties_xml(properties: &ParagraphProperties, out: &mut String) 
             if widows { "1" } else { "0" }
         );
     }
+    if let Some(numbering) = numbering {
+        out.push_str(numbering);
+    }
+    if let Some(border) = properties.border {
+        out.push_str("<w:pBdr>");
+        for (name, drawn) in [
+            ("top", border.top),
+            ("left", border.left),
+            ("bottom", border.bottom),
+            ("right", border.right),
+        ] {
+            if drawn {
+                border_xml(name, Some(Some(border.line)), out);
+            }
+        }
+        out.push_str("</w:pBdr>");
+    }
     if let Some(background) = properties.background {
         let _ = write!(
             out,
             "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{}\"/>",
             background.hex()
         );
+    }
+    if !tabs.is_empty() {
+        out.push_str("<w:tabs>");
+        for tab in tabs {
+            let alignment = match tab.alignment {
+                crate::document::TabAlignment::Left => "left",
+                crate::document::TabAlignment::Center => "center",
+                crate::document::TabAlignment::Right => "right",
+                crate::document::TabAlignment::Decimal => "decimal",
+            };
+            let leader = match tab.leader {
+                Some('.') => " w:leader=\"dot\"",
+                Some('-') => " w:leader=\"hyphen\"",
+                Some('_') => " w:leader=\"underscore\"",
+                Some('·') => " w:leader=\"middleDot\"",
+                _ => "",
+            };
+            let _ = write!(
+                out,
+                "<w:tab w:val=\"{alignment}\"{leader} w:pos=\"{}\"/>",
+                twips(tab.position)
+            );
+        }
+        out.push_str("</w:tabs>");
     }
     let has_spacing = properties.space_before.is_some()
         || properties.space_after.is_some()

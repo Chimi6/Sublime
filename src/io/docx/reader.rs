@@ -1296,6 +1296,12 @@ impl Reader<'_> {
                                 first_relative = Some(-points);
                             }
                         }
+                        "w:tabs" if !self_closing => {
+                            let tabs = read_tabs(reader);
+                            if !tabs.is_empty() {
+                                header.properties.tabs = Some(self.document.intern_tabs(tabs));
+                            }
+                        }
                         "w:pBdr" if !self_closing => {
                             header.properties.border = read_paragraph_border(reader);
                         }
@@ -3096,6 +3102,24 @@ mod tests {
     }
 
     #[test]
+    fn tab_stops_are_read_with_their_leaders() {
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let document = format!(
+            r#"<w:document {w}><w:body><w:p><w:pPr><w:tabs><w:tab w:val="right" w:leader="dot" w:pos="9000"/>
+            <w:tab w:val="clear" w:pos="720"/><w:tab w:val="decimal" w:pos="4680"/></w:tabs></w:pPr></w:p></w:body></w:document>"#
+        );
+        let read = read_docx(&package(&document, &format!("<w:styles {w}/>"))).unwrap();
+        let Some(Block::Paragraph(paragraph)) = read.sections[0].blocks.first() else {
+            panic!("a paragraph");
+        };
+        let tabs = read.tab_set(read.paragraph_properties(paragraph).tabs);
+        assert_eq!(tabs.len(), 2, "a cleared stop is left out");
+        assert_eq!((tabs[0].position, tabs[0].leader), (450.0, Some('.')));
+        assert_eq!(tabs[0].alignment, crate::document::TabAlignment::Right);
+        assert_eq!(tabs[1].alignment, crate::document::TabAlignment::Decimal);
+    }
+
+    #[test]
     fn a_field_inside_one_run_is_read() {
         let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
         let document = format!(
@@ -3449,6 +3473,48 @@ fn read_table_properties(reader: &mut XmlReader<'_>) -> (Option<String>, TableSi
         }
     }
     (style, borders)
+}
+
+/// A paragraph's `w:tabs`: its tab stops (a cleared one is left out).
+fn read_tabs(reader: &mut XmlReader<'_>) -> Vec<crate::document::TabStop> {
+    use crate::document::{TabAlignment, TabStop};
+    let mut tabs = Vec::new();
+    while let Some(event) = reader.next() {
+        match event {
+            XmlEvent::Start {
+                name: "w:tab",
+                attributes,
+                ..
+            } => {
+                let alignment = match attribute(&attributes, "w:val") {
+                    Some("clear") => continue,
+                    Some("center") => TabAlignment::Center,
+                    Some("right" | "end") => TabAlignment::Right,
+                    Some("decimal") => TabAlignment::Decimal,
+                    _ => TabAlignment::Left,
+                };
+                let Some(position) = attribute(&attributes, "w:pos").and_then(twips_to_points)
+                else {
+                    continue;
+                };
+                let leader = match attribute(&attributes, "w:leader") {
+                    Some("dot") => Some('.'),
+                    Some("hyphen") => Some('-'),
+                    Some("underscore" | "heavy") => Some('_'),
+                    Some("middleDot") => Some('·'),
+                    _ => None,
+                };
+                tabs.push(TabStop {
+                    position,
+                    alignment,
+                    leader,
+                });
+            }
+            XmlEvent::End { name: "w:tabs" } => break,
+            _ => {}
+        }
+    }
+    tabs
 }
 
 /// A paragraph's `w:pBdr`: the sides that draw a line, with the first

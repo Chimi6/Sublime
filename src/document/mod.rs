@@ -56,6 +56,27 @@ pub struct Document {
     /// Direct run formatting, interned; `None` on a run means none.
     pub run_properties: Vec<RunProperties>,
     pub paragraph_properties: Vec<ParagraphProperties>,
+    /// Sets of tab stops paragraphs name by index.
+    pub tab_sets: Vec<Vec<TabStop>>,
+}
+
+/// A tab stop: where it is, how text aligns to it, and what fills the gap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabStop {
+    /// From the left margin, in points.
+    pub position: f32,
+    pub alignment: TabAlignment,
+    /// The character repeated across the gap (a dot leader), if any.
+    pub leader: Option<char>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabAlignment {
+    Left,
+    Center,
+    Right,
+    /// On the decimal point.
+    Decimal,
 }
 
 /// A text box, shape with text, or image placed on a page.
@@ -364,6 +385,8 @@ pub struct ParagraphProperties {
     pub contextual_spacing: Option<bool>,
     /// A rule or box around the paragraph.
     pub border: Option<ParagraphBorder>,
+    /// Its tab stops, an index into `Document::tab_sets`.
+    pub tabs: Option<u32>,
 }
 
 /// The lines around a paragraph: which sides, drawn with one line.
@@ -452,7 +475,8 @@ impl ParagraphProperties {
             outline_level,
             background,
             contextual_spacing,
-            border
+            border,
+            tabs
         );
     }
 
@@ -703,6 +727,22 @@ impl Document {
 
     pub fn string(&self, id: Id) -> &str {
         self.strings.get(id as usize).map_or("", String::as_str)
+    }
+
+    /// Keeps a set of tab stops, returning its index (an equal set is shared).
+    pub fn intern_tabs(&mut self, tabs: Vec<TabStop>) -> u32 {
+        if let Some(index) = self.tab_sets.iter().position(|set| *set == tabs) {
+            return index as u32;
+        }
+        self.tab_sets.push(tabs);
+        (self.tab_sets.len() - 1) as u32
+    }
+
+    /// A paragraph's tab stops by their index.
+    pub fn tab_set(&self, index: Option<u32>) -> &[TabStop] {
+        index
+            .and_then(|index| self.tab_sets.get(index as usize))
+            .map_or(&[], Vec::as_slice)
     }
 
     pub fn intern_link(&mut self, target: &str) -> Id {
