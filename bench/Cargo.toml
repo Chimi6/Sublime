@@ -24,6 +24,8 @@ image = { version = "0.25", default-features = false, features = ["bmp", "jpeg",
 jpeg-encoder = "0.6"
 qoi = "0.4"
 tiff = "0.11"
+lopdf = "0.34"
+printpdf = { version = "0.8", default-features = false }
 
 [profile.release]
 lto = "fat"

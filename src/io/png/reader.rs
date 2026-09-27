@@ -699,7 +699,7 @@ fn parse_header(data: &[u8]) -> Result<Header, PngError> {
 /// filters that look left run one lane per byte of the pixel, so each
 /// lane is its own dependency chain and the bounds checks happen once
 /// per pixel rather than once per byte.
-fn unfilter_row(
+pub(crate) fn unfilter_row(
     filter: u8,
     source: &[u8],
     previous: &[u8],
