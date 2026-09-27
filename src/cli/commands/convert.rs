@@ -19,6 +19,9 @@ pub fn run(
     renderer: &mut dyn Sink,
     stdout: &mut dyn Write,
 ) -> Result<ExitCode, CliError> {
+    if args.merge {
+        return super::merge::run(args, renderer);
+    }
     if super::batch::is_batch(args) {
         return super::batch::run(args, renderer);
     }

@@ -9,6 +9,7 @@ sublime: universal efficient file conversion
 USAGE
   sublime convert <input> [output] [--to <format>] [--from <format>] [--strict] [--via <format>] [--sheet <name|number>] [--quality <1-100>]
   sublime convert <inputs...> [out-dir/] --to <format> [--out-dir <dir>] [-r] [--jobs <n>] [--dry-run]
+  sublime convert <images...> <output.pdf>
   sublime check <from> <to> [--strict]
   sublime formats
   sublime paths [--markdown]
@@ -17,6 +18,7 @@ USAGE
 COMMANDS
   convert   Convert a file. Formats come from extensions unless --from/--to are given.
             Use '-' as input to read stdin, and '-' or no output to write stdout.
+            Several images followed by a .pdf merge into one PDF, a page each.
   check     Show the path and fidelity between two formats without converting.
   formats   List every known format.
   paths     List every conversion path. --markdown emits DOCS/FORMATS.md.
@@ -98,6 +100,9 @@ pub struct ConvertArgs {
     pub sheet: Option<String>,
     pub quality: Option<u8>,
     pub via: Option<String>,
+    /// The inputs are images merged into `output`, a page each (the last
+    /// of three or more positionals names a PDF).
+    pub merge: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,7 +336,18 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
             last.ends_with('/') || last.ends_with('\\') || Path::new(last).is_dir()
         });
     let mut output = None;
-    if trailing_is_directory {
+    // `a.png b.jpg scan.pdf`: the images merge into one PDF, a page each.
+    let merges = to.is_none()
+        && out_dir.is_none()
+        && positionals.len() >= 3
+        && positionals.last().is_some_and(|last| {
+            Path::new(last)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+        });
+    if merges {
+        output = positionals.pop();
+    } else if trailing_is_directory {
         let last = positionals.pop().unwrap_or_default();
         if out_dir.is_none() {
             out_dir = Some(last);
@@ -343,6 +359,7 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
     Ok(ConvertArgs {
         inputs: positionals,
         output,
+        merge: merges,
         out_dir,
         recursive,
         jobs,
@@ -521,6 +538,25 @@ mod tests {
                 assert_eq!(args.inputs, vec!["in.png".to_string()]);
                 assert!(args.output.is_none());
             }
+            other => panic!("wrong command {other:?}"),
+        }
+    }
+
+    #[test]
+    fn images_ending_in_a_pdf_merge_into_it() {
+        let parsed = parse_strs(&["convert", "a.png", "b.jpg", "c.tif", "scan.pdf"]).unwrap();
+        match parsed.command {
+            Command::Convert(args) => {
+                assert!(args.merge);
+                assert_eq!(args.inputs, vec!["a.png", "b.jpg", "c.tif"]);
+                assert_eq!(args.output.as_deref(), Some("scan.pdf"));
+            }
+            other => panic!("wrong command {other:?}"),
+        }
+        // With --to it is a batch of PDFs converted beside themselves.
+        let parsed = parse_strs(&["convert", "a.pdf", "b.pdf", "c.pdf", "--to", "png"]).unwrap();
+        match parsed.command {
+            Command::Convert(args) => assert!(!args.merge),
             other => panic!("wrong command {other:?}"),
         }
     }

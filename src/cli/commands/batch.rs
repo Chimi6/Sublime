@@ -426,7 +426,10 @@ fn collect_directory(
 }
 
 /// The input's format by extension, else by its first bytes.
-fn detect_format(path: &Path, known: &[&'static Format]) -> Result<&'static Format, FormatError> {
+pub(crate) fn detect_format(
+    path: &Path,
+    known: &[&'static Format],
+) -> Result<&'static Format, FormatError> {
     let by_extension = format::find_by_extension(path, known);
     let extension_error = match by_extension {
         Ok(found) => return Ok(found),
