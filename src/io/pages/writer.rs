@@ -36,6 +36,8 @@ const RICH_TEXT_PAYLOAD: u32 = 6218;
 /// its cell style, and the number-format-table key every cell shares.
 const TEXT_STYLE_KEY: u32 = 1;
 const CELL_STYLE_KEY: u32 = 2;
+const CELL_STYLE: u32 = 6004;
+const TABLE_STYLE: u32 = 6003;
 const FORMAT_KEY: u32 = 1;
 /// The fixed number of per-column offset slots a tile row allocates, as Pages
 /// writes them (a 510-byte `cell_offsets` array of u16).
@@ -61,6 +63,13 @@ pub fn write(document: &Document) -> Result<Vec<u8>, PackageError> {
     // high-water mark, so it must sit above every object written here.
     let highest = max_identifier(&package);
     set_last_object_identifier(&mut package, highest)?;
+    // Written in the current format, so stamped with the writer version the
+    // current Pages records; an older stamp makes Pages run its upgrade passes,
+    // one of which strips style overrides (a table's cell fills among them).
+    set_write_version(&mut package, [4, 1, 0])?;
+    // Record the document's origin as a Word import, as Pages' own importer
+    // does, rather than the template it was assembled from.
+    set_origin(&mut package, "docx");
     // A fresh document identity per output: Pages keeps a local view-state
     // sidecar keyed by the document UUID, and reusing the template's would pair
     // every converted file with another file's stale objects.
@@ -272,6 +281,8 @@ fn rebuild_body(
         }
     }
     let mut anchors: Vec<(u32, u64)> = Vec::new();
+    let mut fill_styles: CellFillStyles = HashMap::new();
+    let mut unbanded: HashMap<u64, u64> = HashMap::new();
     for (mark, table) in body.tables.iter().zip(&template_tables) {
         reuse_table(
             package,
@@ -280,6 +291,8 @@ fn rebuild_body(
             &all_formats,
             cell_styles,
             &para_styles,
+            &mut fill_styles,
+            &mut unbanded,
             &mut next_id,
         )?;
         anchors.push((mark.offset, table.attach_id));
@@ -706,6 +719,7 @@ struct TemplateTable {
     rich_text_id: u64,
     style_id: u64,
     cell_style_id: u64,
+    format_id: u64,
     col_bucket_id: u64,
     row_bucket_id: u64,
 }
@@ -737,6 +751,7 @@ fn traverse_template_table(package: &Package, attach_id: u64) -> Option<Template
     let string_id = reference_of(field_value(tree, store, "stringTable"))?;
     let rich_text_id = reference_of(field_value(tree, store, "rich_text_table"))?;
     let style_id = reference_of(field_value(tree, store, "styleTable"))?;
+    let format_id = reference_of(field_value(tree, store, "format_table"))?;
     let cell_style_id = reference_of(field_value(tree, model_first, "body_cell_style"))?;
     let col_bucket_id = reference_of(field_value(tree, store, "columnHeaders"))?;
     let tiles = message_field(tree, store, "tiles")?;
@@ -753,6 +768,7 @@ fn traverse_template_table(package: &Package, attach_id: u64) -> Option<Template
         rich_text_id,
         style_id,
         cell_style_id,
+        format_id,
         col_bucket_id,
         row_bucket_id,
     })
@@ -805,13 +821,36 @@ fn reuse_table(
     formats: &HashMap<Format, u64>,
     cell_styles: Option<CellStyles>,
     paras: &ParaStyles,
+    fill_styles: &mut CellFillStyles,
+    unbanded: &mut HashMap<u64, u64>,
     next_id: &mut u64,
 ) -> Result<(), PackageError> {
+    // Word tables do not band their rows as the template's table style does:
+    // each table takes a variation of its style with banding off.
+    if let (Some(styles), Some(parent)) = (cell_styles, object_reference(package, table.model_id, "table_style")) {
+        let variation = match unbanded.get(&parent) {
+            Some(id) => *id,
+            None => {
+                let id = create_unbanded_table_style(package, parent, styles.stylesheet, next_id)?;
+                unbanded.insert(parent, id);
+                id
+            }
+        };
+        let stream = stream_containing(package, table.model_id)?;
+        if let Some(object) = stream.objects.iter().find(|object| object.identifier == table.model_id) {
+            let (first, info) = (object.messages[0].first, object.info);
+            if let Some(index) = field_entry(&stream.tree, first, "table_style") {
+                stream.tree.entries[index as usize].value = Node::Reference(variation);
+            }
+            add_object_references(&mut stream.tree, info, &[variation])?;
+        }
+    }
     // Every cell becomes a rich-text cell (as Pages itself writes them): its own
     // storage and payload objects, an entry in the table's rich-text list, and a
     // kind-9 record in the tile that names the cell's styles. This matches the
     // shape Pages lays out and keeps the string table empty.
     let mut rich: HashMap<usize, u32> = HashMap::new();
+    let mut cell_style_keys: HashMap<usize, u32> = HashMap::new();
     if let Some(styles) = cell_styles {
         let mut entries: Vec<(u32, u64)> = Vec::new();
         let mut new_objects: Vec<Object> = Vec::new();
@@ -869,13 +908,60 @@ fn reuse_table(
         // The style table each rich cell record points at: key 1 the cell's
         // paragraph (text) style, key 2 its cell style. Pages needs a cell to
         // resolve both to lay it out.
-        rewrite_object(package, table.style_id, |tree| {
-            build_style_list(tree, styles.paragraph, table.cell_style_id)
-        })?;
-        add_object_refs(package, table.style_id, &[styles.paragraph, table.cell_style_id])?;
+        // Each cell's own cell style, as Pages writes a Word table: a variation
+        // of the body cell style that sets its fill (empty for none, which also
+        // switches off the table style's banded rows).
+        let mut fills: Vec<Option<crate::document::Color>> = mark.backgrounds.clone();
+        fills.sort_by_key(|fill| fill.map(|color| (color.red, color.green, color.blue)));
+        fills.dedup();
+        // An unshaded cell keeps the table's own body cell style.
+        fill_styles.insert((table.cell_style_id, None), table.cell_style_id);
+        // Shared across tables: Pages merges identical variations on load, which
+        // would leave a second table's copy dangling.
+        let missing: Vec<Option<crate::document::Color>> = fills
+            .iter()
+            .filter(|fill| fill.is_some() && !fill_styles.contains_key(&(table.cell_style_id, **fill)))
+            .copied()
+            .collect();
+        if !missing.is_empty() {
+            let created = create_cell_styles(package, table.cell_style_id, &missing, styles.stylesheet, next_id)?;
+            for (fill, id) in created {
+                fill_styles.insert((table.cell_style_id, fill), id);
+            }
+        }
+        let variations: HashMap<Option<crate::document::Color>, u64> = fills
+            .iter()
+            .map(|fill| (*fill, fill_styles[&(table.cell_style_id, *fill)]))
+            .collect();
+        // Refcounts are the number of cell records naming each key: Pages
+        // decrements them as it restyles cells, and one that runs out leaves
+        // the table's other cells with dangling keys.
+        let covered = mark.covered();
+        let cells = mark.rows * mark.columns;
+        let mut style_entries: Vec<(u32, u64, u64)> = vec![(TEXT_STYLE_KEY, styles.paragraph, cells as u64)];
+        let mut fill_keys: HashMap<Option<crate::document::Color>, u32> = HashMap::new();
+        for fill in &fills {
+            let key = style_entries.len() as u32 + 1;
+            let users = mark
+                .backgrounds
+                .iter()
+                .enumerate()
+                .filter(|(index, background)| *background == fill && !covered.contains(index))
+                .count() as u64;
+            style_entries.push((key, variations[fill], users.max(1)));
+            fill_keys.insert(*fill, key);
+        }
+        for (index, fill) in mark.backgrounds.iter().enumerate() {
+            cell_style_keys.insert(index, fill_keys[fill]);
+        }
+        let references: Vec<u64> = style_entries.iter().map(|(_, id, _)| *id).collect();
+        rewrite_object(package, table.style_id, |tree| build_style_list(tree, &style_entries))?;
+        add_object_refs(package, table.style_id, &references)?;
+        let rich_cells = (cells - covered.len()) as u64;
+        set_list_refcount(package, table.format_id, u64::from(FORMAT_KEY), rich_cells.max(1))?;
     }
 
-    rewrite_object(package, table.tile_id, |tree| build_tile(tree, mark, &rich))?;
+    rewrite_object(package, table.tile_id, |tree| build_tile(tree, mark, &rich, &cell_style_keys))?;
     // When every cell is rich its text lives in its own storage, so the string
     // table stays empty (as Pages writes it); otherwise plain cells use it.
     let string_cells: &[CellContent] = if rich.is_empty() { &mark.cells } else { &[] };
@@ -2760,6 +2846,8 @@ struct TableMark {
     heights: Vec<f32>,
     /// Merged regions as (row, column, rows, columns), origin first.
     merges: Vec<(usize, usize, usize, usize)>,
+    /// Row-major cell background colours (shading), `None` for none.
+    backgrounds: Vec<Option<crate::document::Color>>,
 }
 
 impl TableMark {
@@ -2914,6 +3002,12 @@ impl Walk {
                 cells[r * columns + c] = flatten_cell(document, cell);
             }
         }
+        let mut backgrounds = vec![None; rows * columns];
+        for (r, row) in table.rows.iter().enumerate() {
+            for (c, cell) in row.cells.iter().enumerate().take(columns) {
+                backgrounds[r * columns + c] = cell.background;
+            }
+        }
         let mut merges = Vec::new();
         for (r, row) in table.rows.iter().enumerate() {
             for (c, cell) in row.cells.iter().enumerate().take(columns) {
@@ -2938,6 +3032,7 @@ impl Walk {
             widths,
             heights,
             merges,
+            backgrounds,
         });
         self.mark(Format::default());
         self.link_mark(None);
@@ -3722,39 +3817,85 @@ fn build_rich_text_list(tree: &mut Tree, entries: &[(u32, u64)]) -> Result<u32, 
     Ok(chain.first)
 }
 
-/// Rebuilds the table's style data list (listType 4): key 1 the paragraph
-/// (text) style every cell uses, key 2 the cell style. These are the keys a
-/// rich cell record names in its `text_style` and `cell_style` fields.
-fn build_style_list(
-    tree: &mut Tree,
-    para_style: u64,
-    cell_style: u64,
-) -> Result<u32, PackageError> {
+/// Cell-style variations by (parent cell style, fill), shared by all tables.
+type CellFillStyles = HashMap<(u64, Option<crate::document::Color>), u64>;
+
+/// Rebuilds the table's style data list (listType 4) from (key, style)
+/// entries: key 1 the paragraph (text) style every cell uses, then the cell
+/// styles cell records name in their `cell_style` field.
+fn build_style_list(tree: &mut Tree, entries: &[(u32, u64, u64)]) -> Result<u32, PackageError> {
     let data_list = message_ref("TST.TableDataList")?;
     let entry_ref = message_ref("TST.TableDataList.ListEntry")?;
     let mut chain = Chain::new();
     push_field(tree, &mut chain, data_list, "listType", Node::Uint(4))?;
-    push_field(tree, &mut chain, data_list, "nextListID", Node::Uint(3))?;
-    for (key, style) in [(TEXT_STYLE_KEY, para_style), (CELL_STYLE_KEY, cell_style)] {
+    push_field(tree, &mut chain, data_list, "nextListID", Node::Uint(entries.len() as u64 + 1))?;
+    for (key, style, refcount) in entries {
         let mut entry = Chain::new();
-        push_field(tree, &mut entry, entry_ref, "key", Node::Uint(u64::from(key)))?;
-        push_field(tree, &mut entry, entry_ref, "refcount", Node::Uint(1))?;
-        push_field(
-            tree,
-            &mut entry,
-            entry_ref,
-            "reference",
-            Node::Reference(style),
-        )?;
-        push_field(
-            tree,
-            &mut chain,
-            data_list,
-            "entries",
-            Node::Message(entry.first),
-        )?;
+        push_field(tree, &mut entry, entry_ref, "key", Node::Uint(u64::from(*key)))?;
+        push_field(tree, &mut entry, entry_ref, "refcount", Node::Uint(*refcount))?;
+        push_field(tree, &mut entry, entry_ref, "reference", Node::Reference(*style))?;
+        push_field(tree, &mut chain, data_list, "entries", Node::Message(entry.first))?;
     }
     Ok(chain.first)
+}
+
+/// Creates, in the document stream, a `TST.CellStyleArchive` variation of
+/// `parent` per fill (the colour, or an empty fill for none), with the
+/// vertical alignment and padding Pages gives imported Word cells, and
+/// registers them with the stylesheet.
+fn create_cell_styles(
+    package: &mut Package,
+    parent: u64,
+    fills: &[Option<crate::document::Color>],
+    stylesheet: u64,
+    next_id: &mut u64,
+) -> Result<HashMap<Option<crate::document::Color>, u64>, PackageError> {
+    let archive = message_ref("TST.CellStyleArchive")?;
+    let base = child_message(archive, "super")?;
+    let properties = child_message(archive, "cell_properties")?;
+    let fill = child_message(properties, "cell_fill")?;
+    let padding = child_message(properties, "padding")?;
+    let mut out = HashMap::new();
+    // In the stylesheet's own stream, where Pages keeps style variations; one
+    // elsewhere is swapped out on load (and a table's cell references with it).
+    let stream = stream_containing(package, stylesheet)?;
+    for color in fills {
+        let id = *next_id;
+        *next_id += 1;
+        let tree = &mut stream.tree;
+        let mut style = Chain::new();
+        push_field(tree, &mut style, base, "parent", Node::Reference(parent))?;
+        push_field(tree, &mut style, base, "is_variation", Node::Bool(true))?;
+        push_field(tree, &mut style, base, "stylesheet", Node::Reference(stylesheet))?;
+        let mut fill_chain = Chain::new();
+        if let Some(color) = color {
+            let color_first = build_color(tree, *color)?;
+            push_field(tree, &mut fill_chain, fill, "color", Node::Message(color_first))?;
+        }
+        let mut pad = Chain::new();
+        for side in ["left", "top", "right", "bottom"] {
+            push_field(tree, &mut pad, padding, side, Node::Float(4.0))?;
+        }
+        let mut props = Chain::new();
+        push_field(tree, &mut props, properties, "cell_fill", Node::Message(fill_chain.first))?;
+        push_field(tree, &mut props, properties, "vertical_alignment", Node::Uint(3))?;
+        push_field(tree, &mut props, properties, "padding", Node::Message(pad.first))?;
+        let mut chain = Chain::new();
+        push_field(tree, &mut chain, archive, "super", Node::Message(style.first))?;
+        push_field(tree, &mut chain, archive, "override_count", Node::Uint(3))?;
+        push_field(tree, &mut chain, archive, "cell_properties", Node::Message(props.first))?;
+        let info = build_archive_info(tree, id, CELL_STYLE)?;
+        add_object_references(tree, info, &[parent, stylesheet])?;
+        stream.objects.push(Object {
+            identifier: id,
+            info,
+            messages: vec![ObjectMessage { message_type: CELL_STYLE, first: chain.first }],
+        });
+        out.insert(*color, id);
+    }
+    let pairs: Vec<(u64, u64)> = out.values().map(|id| (parent, *id)).collect();
+    register_in_stylesheet(package, stylesheet, &pairs)?;
+    Ok(out)
 }
 
 /// Adds object references to an object's `ArchiveInfo`, wherever it lives.
@@ -3858,6 +3999,7 @@ fn build_tile(
     tree: &mut Tree,
     mark: &TableMark,
     rich: &HashMap<usize, u32>,
+    cell_styles: &HashMap<usize, u32>,
 ) -> Result<u32, PackageError> {
     let tile = message_ref("TST.Tile")?;
     let row_info = message_ref("TST.TileRowInfo")?;
@@ -3897,7 +4039,8 @@ fn build_tile(
             if covered.contains(&cell) {
                 buffer.extend_from_slice(&covered_record_bytes());
             } else {
-                buffer.extend_from_slice(&cell_record_bytes(key, rich.get(&cell).copied()));
+                let style = cell_styles.get(&cell).copied().unwrap_or(CELL_STYLE_KEY);
+                buffer.extend_from_slice(&cell_record_bytes(key, rich.get(&cell).copied(), style));
             }
         }
         let mut entry = Chain::new();
@@ -3975,7 +4118,7 @@ fn covered_record_bytes() -> Vec<u8> {
 /// rich_text key, the cell-style key, the text-style key, a constant, and the
 /// number-format key. A plain cell (kind 3) is a 16-byte record naming a
 /// stringTable key.
-fn cell_record_bytes(string_key: u32, rich_key: Option<u32>) -> Vec<u8> {
+fn cell_record_bytes(string_key: u32, rich_key: Option<u32>, cell_style_key: u32) -> Vec<u8> {
     match rich_key {
         Some(rich) => {
             let mut bytes = vec![0u8; 32];
@@ -3985,7 +4128,7 @@ fn cell_record_bytes(string_key: u32, rich_key: Option<u32>) -> Vec<u8> {
             let flags: u32 = 0x10 | 0x20 | 0x40 | 0x1000 | 0x20000;
             bytes[8..12].copy_from_slice(&flags.to_le_bytes());
             bytes[12..16].copy_from_slice(&rich.to_le_bytes());
-            bytes[16..20].copy_from_slice(&CELL_STYLE_KEY.to_le_bytes());
+            bytes[16..20].copy_from_slice(&cell_style_key.to_le_bytes());
             bytes[20..24].copy_from_slice(&TEXT_STYLE_KEY.to_le_bytes());
             bytes[24..28].copy_from_slice(&5u32.to_le_bytes());
             bytes[28..32].copy_from_slice(&FORMAT_KEY.to_le_bytes());
@@ -4470,7 +4613,13 @@ fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
                     refs.push(id);
                 }
             }
-            if first_type(object) == Some(STORAGE_ARCHIVE) {
+            // Text storages and styles carry persistent UUIDs in Pages; a style
+            // without one is re-created on load and its references swapped,
+            // which drops a table's cell styles.
+            if matches!(
+                first_type(object),
+                Some(STORAGE_ARCHIVE | PARAGRAPH_STYLE | CHARACTER_STYLE | CELL_STYLE | SHAPE_STYLE | LIST_STYLE)
+            ) {
                 storages
                     .entry(stream.name.clone())
                     .or_default()
@@ -6746,4 +6895,107 @@ fn create_fill_styles(
     let pairs: Vec<(u64, u64)> = out.values().map(|id| (parent, *id)).collect();
     register_in_stylesheet(package, stylesheet, &pairs)?;
     Ok(out)
+}
+
+/// Sets the refcount of the entry with `key` in a table data list.
+fn set_list_refcount(package: &mut Package, list_id: u64, key: u64, refcount: u64) -> Result<(), PackageError> {
+    let stream = stream_containing(package, list_id)?;
+    let first = stream
+        .objects
+        .iter()
+        .find(|object| object.identifier == list_id)
+        .map(|object| object.messages[0].first)
+        .ok_or_else(|| malformed("data list is missing"))?;
+    let entries: Vec<u32> = stream
+        .tree
+        .chain(first)
+        .filter(|(_, entry)| stream.tree.field(entry).map(|f| f.name) == Some("entries"))
+        .filter_map(|(_, entry)| match entry.value {
+            Node::Message(child) => Some(child),
+            _ => None,
+        })
+        .collect();
+    for entry in entries {
+        if field_value(&stream.tree, entry, "key") == Some(Node::Uint(key)) {
+            set_field_uint(&mut stream.tree, entry, "refcount", refcount);
+        }
+    }
+    Ok(())
+}
+
+/// Sets `PackageMetadata.write_version` (major, minor, patch).
+fn set_write_version(package: &mut Package, version: [u64; 3]) -> Result<(), PackageError> {
+    let (stream, first) =
+        metadata_message(package).ok_or_else(|| malformed("PackageMetadata is missing"))?;
+    let slots: Vec<u32> = stream
+        .tree
+        .chain(first)
+        .filter(|(_, entry)| stream.tree.field(entry).map(|f| f.name) == Some("write_version"))
+        .map(|(index, _)| index)
+        .collect();
+    for (index, value) in slots.iter().zip(version) {
+        stream.tree.entries[*index as usize].value = Node::Uint(value);
+    }
+    Ok(())
+}
+
+/// Replaces the first entry of `Metadata/BuildVersionHistory.plist` (the
+/// document's origin) with `origin`.
+fn set_origin(package: &mut Package, origin: &str) {
+    for entry in &mut package.entries {
+        let Entry::File { name, bytes } = entry else {
+            continue;
+        };
+        if name != "Metadata/BuildVersionHistory.plist" {
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            return;
+        };
+        let Some(start) = text.find("<string>") else {
+            return;
+        };
+        let Some(end) = text[start..].find("</string>").map(|offset| start + offset) else {
+            return;
+        };
+        let replaced = format!("{}<string>{origin}{}", &text[..start], &text[end..]);
+        *bytes = replaced.into_bytes();
+        return;
+    }
+}
+
+/// Creates, in the stylesheet's stream, a variation of table style `parent`
+/// with banded rows off, registered with the stylesheet.
+fn create_unbanded_table_style(
+    package: &mut Package,
+    parent: u64,
+    stylesheet: u64,
+    next_id: &mut u64,
+) -> Result<u64, PackageError> {
+    let archive = message_ref("TST.TableStyleArchive")?;
+    let base = child_message(archive, "super")?;
+    let properties = child_message(archive, "table_properties")?;
+    let id = *next_id;
+    *next_id += 1;
+    let stream = stream_containing(package, stylesheet)?;
+    let tree = &mut stream.tree;
+    let mut style = Chain::new();
+    push_field(tree, &mut style, base, "parent", Node::Reference(parent))?;
+    push_field(tree, &mut style, base, "is_variation", Node::Bool(true))?;
+    push_field(tree, &mut style, base, "stylesheet", Node::Reference(stylesheet))?;
+    let mut props = Chain::new();
+    push_field(tree, &mut props, properties, "banded_rows", Node::Bool(false))?;
+    let mut chain = Chain::new();
+    push_field(tree, &mut chain, archive, "super", Node::Message(style.first))?;
+    push_field(tree, &mut chain, archive, "override_count", Node::Uint(1))?;
+    push_field(tree, &mut chain, archive, "table_properties", Node::Message(props.first))?;
+    let info = build_archive_info(tree, id, TABLE_STYLE)?;
+    add_object_references(tree, info, &[parent, stylesheet])?;
+    stream.objects.push(Object {
+        identifier: id,
+        info,
+        messages: vec![ObjectMessage { message_type: TABLE_STYLE, first: chain.first }],
+    });
+    register_in_stylesheet(package, stylesheet, &[(parent, id)])?;
+    Ok(id)
 }
