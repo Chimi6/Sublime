@@ -1212,7 +1212,6 @@ impl<'a> WebpRows<'a> {
             self.palette = None;
         }
     }
-
 }
 
 impl RowSink for WebpRows<'_> {

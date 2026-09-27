@@ -1,6 +1,6 @@
 # JPEG <-> PNG
 
-**Latest** (2026-09-26, chroma from summed RGB: every line PASSES; photo encode 490.7 against jpeg-encoder's 445.7 MB/s (151 against 163 ms direct), photo decode 87.4 against 41.2, flat decode 705.3 against 640.4, flat encode 565.3 against 451.3; memory a tenth of the crates' everywhere)
+**Latest** (2026-09-27, the lazy deflate: every line PASSES; jpeg -> png on the photo 99.9 against 41.4 MB/s (from 87.4) with a smaller PNG)
 
 ## Purpose
 
@@ -78,6 +78,26 @@ median wall clock of the whole process, peak resident memory from GNU
   session; a line near parity is a coin toss between runs.
 
 ## Results
+
+### 2026-09-27, the lazy deflate
+
+commit: a5c702a (on the `webp-spikes` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| jpeg -> png, photo (45.8 MB of pixels, 1.6 MB on disk): throughput (MB/s of decoded pixels) | 102.8 | 41.6 (image + png) | PASS |
+| jpeg -> png, photo: peak memory (MB) | 6.1 | 69.8 (image + png) | PASS |
+| png -> jpeg, photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 497.2 | 452.6 (png + jpeg-encoder); 259.8 (png + image) | PASS |
+| png -> jpeg, photo: peak memory (MB) | 5.1 | 51.2 (png + jpeg-encoder); 51.3 (png + image) | PASS |
+| png -> jpeg, photo: output size (MB) at quality 85 [extra] | 1.5 | 1.6 (jpeg-encoder); 2.0 (image) | n/a |
+| png -> jpeg, photo: PSNR against the source (dB) at quality 85 [extra] | 36.19 | 35.90 (jpeg-encoder); 36.47 (image) | n/a |
+| jpeg -> png, flat (45.8 MB of pixels, 0.3 MB on disk): throughput (MB/s of decoded pixels) | 780.3 | 646.6 (image + png) | PASS |
+| jpeg -> png, flat: peak memory (MB) | 5.0 | 52.3 (image + png) | PASS |
+| png -> jpeg, flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 578.2 | 460.1 (png + jpeg-encoder); 223.7 (png + image) | PASS |
+| png -> jpeg, flat: peak memory (MB) | 5.5 | 51.6 (png + jpeg-encoder); 51.1 (png + image) | PASS |
+| png -> jpeg, flat: output size (MB) at quality 85 [extra] | 0.3 | 0.3 (jpeg-encoder); 0.5 (image) | n/a |
+| png -> jpeg, flat: PSNR against the source (dB) at quality 85 [extra] | 32.39 | 32.39 (jpeg-encoder); 56.88 (image) | n/a |
 
 ### 2026-09-26, chroma from summed RGB
 
