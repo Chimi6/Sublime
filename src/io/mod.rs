@@ -13,6 +13,7 @@ pub mod json;
 pub mod markdown;
 pub mod netpbm;
 pub mod pages;
+pub mod pdf;
 pub mod png;
 pub mod protobuf;
 pub mod qoi;
