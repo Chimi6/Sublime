@@ -6,6 +6,14 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- PDF output from images (`src/io/pdf`): a page of each image at its own size; JPEGs embedded unchanged, every other image deflated with PNG predictors and its alpha as a soft mask, streaming. `sublime convert a.png b.jpg c.tif scan.pdf` merges images into one PDF, a page each. Map in `DOCS/formats/pdf.md`.
+
+### Changed
+
+- The PNG writer's filtered, deflated row stream is shared (`FilteredZlib`), so a PDF image stream is the same bytes a PNG's IDAT chunks hold; PNG output is unchanged byte for byte.
+
 ## [0.22.0] - 2026-09-27
 
 The image set: QOI, Netpbm, TGA, ICO and CUR, and TIFF, each reaching
