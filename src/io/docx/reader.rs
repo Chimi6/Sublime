@@ -80,6 +80,7 @@ pub fn read_docx(bytes: &[u8]) -> Result<Document, DocxError> {
         page: 0,
         even_headers: false,
         pending_floating: Vec::new(),
+        anchoring: true,
         pending_blocks: Vec::new(),
         theme_colors: HashMap::new(),
         theme_fonts: [None, None],
@@ -190,6 +191,8 @@ struct ParagraphHeader {
 struct SectionHeader {
     page: PageSetup,
     columns: u16,
+    column_gap: Option<f32>,
+    column_widths: Vec<(f32, f32)>,
     continuous: bool,
     title_page: bool,
     /// (element, page kind, relationship id)
@@ -228,6 +231,9 @@ struct Reader<'a> {
     pending_floating: Vec<(usize, AnchorBase, AnchorBase)>,
     /// Blocks a paragraph's drawings leave to follow the paragraph.
     pending_blocks: Vec<Block>,
+    /// Reading the body's own text, where a drawing placed from its
+    /// paragraph is anchored in the text (not in headers, notes, or boxes).
+    anchoring: bool,
     /// The theme's colour scheme (dk1, lt1, accent1, ...), for colours Word
     /// gives by scheme name.
     theme_colors: HashMap<String, Color>,
@@ -650,7 +656,9 @@ impl Reader<'_> {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(-1);
             let is_separator = attribute(&attributes, "w:type").is_some();
+            let anchoring = std::mem::replace(&mut self.anchoring, false);
             let blocks = self.read_blocks(&mut reader, element);
+            self.anchoring = anchoring;
             if is_separator || id < 0 {
                 continue;
             }
@@ -744,7 +752,9 @@ impl Reader<'_> {
             let saved_rels = std::mem::replace(&mut self.rels, part_rels);
             let mut reader = XmlReader::new(&text);
             let root = if *is_header { "w:hdr" } else { "w:ftr" };
+            let anchoring = std::mem::replace(&mut self.anchoring, false);
             let part_blocks = self.read_blocks(&mut reader, root);
+            self.anchoring = anchoring;
             self.rels = saved_rels;
             let variants = if *is_header {
                 &mut headers
@@ -774,14 +784,23 @@ impl Reader<'_> {
                 if horizontal != AnchorBase::Page {
                     object.x += header.page.margin_left;
                 }
-                if vertical != AnchorBase::Page {
+                if vertical != AnchorBase::Page && !object.follows_text {
                     object.y += header.page.margin_top;
                 }
             }
         }
+        let columns = header.columns.max(1);
+        // Explicit widths only where they are unequal columns of the section.
+        let column_widths = if header.column_widths.len() == usize::from(columns) && columns > 1 {
+            header.column_widths
+        } else {
+            Vec::new()
+        };
         self.document.sections.push(Section {
             page: header.page,
-            columns: header.columns.max(1),
+            columns,
+            column_gap: header.column_gap,
+            column_widths,
             start,
             headers,
             footers,
@@ -1054,11 +1073,13 @@ impl Reader<'_> {
                         });
                     }
                     "w:br" if !hidden => {
-                        let content = if attribute(&attributes, "w:type") == Some("page") {
-                            self.page += 1;
-                            Inline::PageBreak
-                        } else {
-                            Inline::LineBreak
+                        let content = match attribute(&attributes, "w:type") {
+                            Some("page") => {
+                                self.page += 1;
+                                Inline::PageBreak
+                            }
+                            Some("column") => Inline::ColumnBreak,
+                            _ => Inline::LineBreak,
                         };
                         paragraph.runs.push(Run {
                             style,
@@ -1129,12 +1150,21 @@ impl Reader<'_> {
                                     });
                                 }
                                 Drawn::Blocks(mut drawn) => self.pending_blocks.append(&mut drawn),
-                                Drawn::Floating(object, horizontal, vertical) => {
-                                    self.pending_floating.push((
-                                        self.document.floating.len(),
-                                        horizontal,
-                                        vertical,
-                                    ));
+                                Drawn::Floating(mut object, horizontal, vertical) => {
+                                    let index = self.document.floating.len();
+                                    // One placed from its paragraph moves with
+                                    // the text: anchored here by a run.
+                                    if vertical == AnchorBase::Line && self.anchoring {
+                                        object.follows_text = true;
+                                        paragraph.runs.push(Run {
+                                            style,
+                                            properties,
+                                            link,
+                                            revision,
+                                            content: Inline::Anchor(index as crate::document::Id),
+                                        });
+                                    }
+                                    self.pending_floating.push((index, horizontal, vertical));
                                     self.document.floating.push(object);
                                 }
                             }
@@ -1573,6 +1603,18 @@ impl Reader<'_> {
                         header.columns = attribute(&attributes, "w:num")
                             .and_then(|num| num.parse().ok())
                             .unwrap_or(1);
+                        header.column_gap =
+                            attribute(&attributes, "w:space").and_then(twips_to_points);
+                    }
+                    // A column of its own width (in `w:cols` without equal widths).
+                    "w:col" => {
+                        if let Some(width) = attribute(&attributes, "w:w").and_then(twips_to_points)
+                        {
+                            let gap = attribute(&attributes, "w:space")
+                                .and_then(twips_to_points)
+                                .unwrap_or(0.0);
+                            header.column_widths.push((width, gap));
+                        }
                     }
                     "w:type" => {
                         header.continuous = attribute(&attributes, "w:val") == Some("continuous");
@@ -1784,6 +1826,7 @@ impl Reader<'_> {
         let mut height = 0.0f32;
         let mut description: Option<String> = None;
         let mut anchored = false;
+        let mut wrap = crate::document::TextWrap::Around;
         let mut horizontal = Anchor {
             from: AnchorBase::Margin,
             offset: 0.0,
@@ -1828,6 +1871,8 @@ impl Reader<'_> {
                     self_closing,
                 } => match name {
                     "wp:anchor" => anchored = true,
+                    "wp:wrapNone" => wrap = crate::document::TextWrap::None,
+                    "wp:wrapTopAndBottom" => wrap = crate::document::TextWrap::TopAndBottom,
                     "wp:extent" => {
                         width = attribute(&attributes, "cx")
                             .and_then(emu_to_points)
@@ -2020,7 +2065,9 @@ impl Reader<'_> {
                         }
                     }
                     "w:txbxContent" if !self_closing => {
+                        let anchoring = std::mem::replace(&mut self.anchoring, false);
                         let blocks = self.read_blocks(reader, "w:txbxContent");
+                        self.anchoring = anchoring;
                         shape.blocks.extend(blocks);
                     }
                     "mc:Fallback" if !self_closing => skip_element(reader, name),
@@ -2084,6 +2131,8 @@ impl Reader<'_> {
                         width,
                         height,
                         content: FloatingContent::Chart(chart),
+                        follows_text: false,
+                        wrap,
                     },
                     horizontal.from,
                     vertical.from,
@@ -2125,6 +2174,8 @@ impl Reader<'_> {
                                 flip: shape.flip,
                                 ends: shape.ends,
                             },
+                            follows_text: false,
+                            wrap,
                         },
                         horizontal.from,
                         vertical.from,
@@ -2147,6 +2198,8 @@ impl Reader<'_> {
                     width,
                     height,
                     content: FloatingContent::Image(media),
+                    follows_text: false,
+                    wrap,
                 },
                 AnchorBase::Page,
                 AnchorBase::Page,
@@ -2393,7 +2446,9 @@ impl Reader<'_> {
                                 attribute(&attributes, "r:id").and_then(|id| self.load_media(id));
                         }
                         "w:txbxContent" if !self_closing => {
+                            let anchoring = std::mem::replace(&mut self.anchoring, false);
                             blocks.extend(self.read_blocks(reader, "w:txbxContent"));
+                            self.anchoring = anchoring;
                         }
                         _ => {}
                     }

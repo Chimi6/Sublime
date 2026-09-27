@@ -730,6 +730,8 @@ impl Reader<'_> {
                         page: page.clone(),
                         columns: current.columns,
                         start: SectionStart::Continuous,
+                        column_gap: None,
+                        column_widths: Vec::new(),
                         headers: current.headers.clone(),
                         footers: current.footers.clone(),
                         blocks: Vec::new(),
@@ -755,7 +757,11 @@ impl Reader<'_> {
                     }
                 }
                 if let Some(layout_object) = layout_here {
-                    current.columns = self.column_count(layout_object);
+                    let text_width = page.width - page.margin_left - page.margin_right;
+                    let (count, gap, widths) = self.column_layout(layout_object, text_width);
+                    current.columns = count;
+                    current.column_gap = gap;
+                    current.column_widths = widths;
                 }
             }
             current.blocks.push(block);
@@ -809,6 +815,14 @@ impl Reader<'_> {
         let y = offset_y + position.and_then(|p| p.float("y")).unwrap_or(0.0);
         let width = size.and_then(|s| s.float("width")).unwrap_or(0.0);
         let height = size.and_then(|s| s.float("height")).unwrap_or(0.0);
+        let wrap = match base
+            .and_then(|base| base.message("exterior_text_wrap"))
+            .and_then(|wrap| wrap.integer("type"))
+        {
+            Some(2) => crate::document::TextWrap::TopAndBottom,
+            Some(5) => crate::document::TextWrap::None,
+            _ => crate::document::TextWrap::Around,
+        };
         let children = view.references("children");
         if !children.is_empty() {
             for child in children {
@@ -830,6 +844,8 @@ impl Reader<'_> {
                         width,
                         height,
                         content: FloatingContent::Chart(chart),
+                        follows_text: false,
+                        wrap,
                     });
                 }
             }
@@ -855,6 +871,8 @@ impl Reader<'_> {
                         flip: (false, false),
                         ends: (None, None),
                     },
+                    follows_text: false,
+                    wrap,
                 });
             }
             return;
@@ -925,6 +943,8 @@ impl Reader<'_> {
             width,
             height,
             content,
+            follows_text: false,
+            wrap,
         });
     }
 
@@ -1140,11 +1160,13 @@ impl Reader<'_> {
 
     /// The column count of a column style, through its variation chain.
     #[inline(never)]
-    fn column_count(&self, layout: u64) -> u16 {
+    /// A layout style's columns, through its parents: how many, the gap
+    /// between equal ones, and each column's width and following gap when
+    /// they differ (Pages stores them as shares of the text width).
+    fn column_layout(&self, layout: u64, text_width: f32) -> (u16, Option<f32>, Vec<(f32, f32)>) {
         let mut current = Some(layout);
-        let mut depth = 0;
-        while let Some(identifier) = current {
-            let Some(message) = self.graph.object(identifier) else {
+        for _ in 0..64 {
+            let Some(message) = current.and_then(|identifier| self.graph.object(identifier)) else {
                 break;
             };
             let view = View::of(message);
@@ -1152,23 +1174,27 @@ impl Reader<'_> {
                 .message("column_properties")
                 .and_then(|properties| properties.message("columns"));
             if let Some(columns) = columns {
-                if let Some(count) = columns
-                    .message("equal_columns")
-                    .and_then(|equal| equal.integer("count"))
-                {
-                    return count.clamp(1, 64) as u16;
+                if let Some(equal) = columns.message("equal_columns") {
+                    let count = equal.integer("count").unwrap_or(1).clamp(1, 64) as u16;
+                    let gap = equal.float("gap").map(|share| share * text_width);
+                    return (count, gap, Vec::new());
                 }
                 if let Some(unequal) = columns.message("non_equal_columns") {
-                    return (unequal.messages("columns").len() + 1).clamp(1, 64) as u16;
+                    let following = unequal.messages("following");
+                    let mut widths = Vec::new();
+                    let mut width = unequal.float("first").unwrap_or(0.0) * text_width;
+                    for next in &following {
+                        let gap = next.float("gap").unwrap_or(0.0) * text_width;
+                        widths.push((width, gap));
+                        width = next.float("width").unwrap_or(0.0) * text_width;
+                    }
+                    widths.push((width, 0.0));
+                    return ((following.len() + 1).clamp(1, 64) as u16, None, widths);
                 }
             }
             current = view.message("super").and_then(|s| s.reference("parent"));
-            depth += 1;
-            if depth > 64 {
-                break;
-            }
         }
-        1
+        (1, None, Vec::new())
     }
 
     /// The blocks of a storage read on its own: the running paragraph
@@ -1250,13 +1276,18 @@ impl Reader<'_> {
                 && matches!(leading, PAGE_BREAK | SECTION_BREAK | LAYOUT_BREAK)
             {
                 let mut marker = self.break_paragraph(start_units, &paragraph_styles);
-                if leading == PAGE_BREAK {
+                let content = match leading {
+                    PAGE_BREAK => Some(Inline::PageBreak),
+                    LAYOUT_BREAK => Some(Inline::ColumnBreak),
+                    _ => None,
+                };
+                if let Some(content) = content {
                     marker.runs.push(Run {
                         style: None,
                         properties: None,
                         link: None,
                         revision: None,
-                        content: Inline::PageBreak,
+                        content,
                     });
                 }
                 blocks.push((start_units, Block::Paragraph(marker)));
@@ -1746,6 +1777,42 @@ impl Reader<'_> {
         if view.message("data").is_some() {
             let image = self.image(view, attachment)?;
             return Some(Inline::Image(self.document.push_image(image)));
+        }
+        // A shape placed from its paragraph moves with the text: anchored
+        // here, measured from the paragraph's top (and the page's left edge
+        // or its own position).
+        if view
+            .message("super")
+            .and_then(|shape| shape.message("pathsource"))
+            .is_some()
+            && attachment.integer("v_offset_type").unwrap_or(0) == 0
+            && view
+                .message("super")
+                .and_then(|shape| shape.message("super"))
+                .and_then(|base| base.message("exterior_text_wrap"))
+                .and_then(|wrap| wrap.integer("type"))
+                != Some(0)
+            && let Some(v_offset) = attachment
+                .float("v_offset")
+                .filter(|value| value.is_finite())
+        {
+            let index = self.document.floating.len();
+            self.floating_object(drawable, 0, 0.0, 0.0);
+            if self.document.floating.len() != index + 1 {
+                self.document.floating.truncate(index);
+                return None;
+            }
+            let object = &mut self.document.floating[index];
+            object.follows_text = true;
+            object.y = v_offset;
+            if attachment.integer("h_offset_type") == Some(2)
+                && let Some(h_offset) = attachment
+                    .float("h_offset")
+                    .filter(|value| value.is_finite())
+            {
+                object.x = h_offset;
+            }
+            return Some(Inline::Anchor(index as crate::document::Id));
         }
         // A table of contents keeps its rendered entries in the storage
         // its shape owns; they follow the paragraph as text, as Pages

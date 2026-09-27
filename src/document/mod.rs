@@ -92,6 +92,24 @@ pub struct FloatingObject {
     pub width: f32,
     pub height: f32,
     pub content: FloatingContent,
+    /// Moves with the text: anchored by an `Inline::Anchor` run, `y` then
+    /// measured from the top of the anchoring paragraph (`x` stays from the
+    /// page's left edge, and `page` is only an estimate).
+    pub follows_text: bool,
+    /// How the text flows around it.
+    pub wrap: TextWrap,
+}
+
+/// How text flows around a floating object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextWrap {
+    /// Beside it, on either side.
+    #[default]
+    Around,
+    /// Above and below it only.
+    TopAndBottom,
+    /// Not at all: it sits over (or under) the text.
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -326,6 +344,11 @@ impl NumberKind {
 pub struct Section {
     pub page: PageSetup,
     pub columns: u16,
+    /// The space between equal columns, in points, when stated.
+    pub column_gap: Option<f32>,
+    /// Columns of their own widths: each one's width and the gap after it,
+    /// in points (empty when the columns are equal).
+    pub column_widths: Vec<(f32, f32)>,
     /// How the section begins relative to the previous one.
     pub start: SectionStart,
     pub headers: PageVariants,
@@ -608,6 +631,8 @@ pub enum Inline {
     Tab,
     /// A page break; usually the only content of its paragraph.
     PageBreak,
+    /// A column break: what follows starts the next column.
+    ColumnBreak,
     /// An equation, as MathML (a span of the text arena).
     Math(Span),
     Footnote(NoteId),
@@ -617,6 +642,9 @@ pub enum Inline {
     PageNumber,
     /// The number of pages, as a field.
     PageCount,
+    /// Where a floating object (`Document::floating`) that moves with the
+    /// text is anchored.
+    Anchor(Id),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -992,10 +1020,12 @@ impl Document {
                 Inline::Tab => text.push('\t'),
                 Inline::Math(span) => text.push_str(&mathml_text(self.text(span))),
                 Inline::PageBreak
+                | Inline::ColumnBreak
                 | Inline::Footnote(_)
                 | Inline::Image(_)
                 | Inline::PageNumber
-                | Inline::PageCount => {}
+                | Inline::PageCount
+                | Inline::Anchor(_) => {}
             }
         }
         text
