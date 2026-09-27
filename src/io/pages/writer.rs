@@ -54,8 +54,10 @@ pub fn write(document: &Document) -> Result<Vec<u8>, PackageError> {
     let styles = collect_style_names(&package);
     let formats = collect_char_formats(&package);
     let lists = collect_list_styles(&package);
-    rebuild_body(&mut package, document, &styles, &formats, &lists)?;
+    // The template's own heading rules go first: the source's borders are
+    // added with the body.
     clear_template_rules(&mut package);
+    rebuild_body(&mut package, document, &styles, &formats, &lists)?;
     if let Some(section) = document.sections.first() {
         set_page_setup(&mut package, &section.page)?;
     }
@@ -7300,6 +7302,8 @@ struct ParaFormat {
     space_before: Option<i32>,
     space_after: Option<i32>,
     line_spacing: Option<(u8, i32)>,
+    /// Pages' border positions, the line's width (hundredths) and colour.
+    border: Option<(u64, i32, (u8, u8, u8))>,
 }
 
 impl ParaFormat {
@@ -7312,6 +7316,8 @@ impl ParaFormat {
             self.space_before.is_some(),
             self.space_after.is_some(),
             self.line_spacing.is_some(),
+            self.border.is_some(),
+            self.border.is_some(),
         ]
         .iter()
         .filter(|set| **set)
@@ -7362,6 +7368,26 @@ fn para_format(document: &Document, paragraph: &Paragraph) -> ParaFormat {
                 .is_finite()
                 .then(|| (mode, (amount * 100.0).round() as i32))
         }),
+        border: properties
+            .border
+            .map(|border| {
+                // Pages draws a rule above, below, both, or a box: a side rule
+                // alone has no counterpart, and a box stands for any border
+                // with sides.
+                let positions = match (border.top, border.bottom, border.left || border.right) {
+                    (_, _, true) if border.top || border.bottom => BORDERS_BOX,
+                    (true, true, false) => BORDERS_TOP_AND_BOTTOM,
+                    (true, false, false) => BORDERS_TOP,
+                    (false, true, false) => BORDERS_BOTTOM,
+                    _ => 0,
+                };
+                let color = border
+                    .line
+                    .color
+                    .map_or((0, 0, 0), |color| (color.red, color.green, color.blue));
+                (positions, (border.line.width * 100.0).round() as i32, color)
+            })
+            .filter(|(positions, _, _)| *positions != 0),
     }
 }
 
@@ -7448,6 +7474,20 @@ fn synthesize_para_styles(
         }
         if let Some(value) = format.space_before {
             push_field(tree, &mut props, properties, "space_before", points(value))?;
+        }
+        if let Some((positions, width, (red, green, blue))) = format.border {
+            let stroke = child_message(properties, "stroke")?;
+            let color = crate::document::Color { red, green, blue };
+            let first = build_solid_stroke(tree, stroke, width as f32 / 100.0, color)?;
+            push_field(tree, &mut props, properties, "stroke", Node::Message(first))?;
+            push_field(
+                tree,
+                &mut props,
+                properties,
+                "deprecated_borders",
+                Node::Uint(positions),
+            )?;
+            push_field(tree, &mut props, properties, "rule_width", Node::Float(1.0))?;
         }
         let mut chain = Chain::new();
         push_field(
@@ -9237,3 +9277,9 @@ fn list_indents(document: &Document, paragraph: &Paragraph) -> Option<ListIndent
         != (hundredths(level.label_indent), hundredths(level.indent)))
         .then(|| (item.level, hundredths(label), hundredths(text)))
 }
+
+/// Pages' paragraph borders: a rule above, below, both, or a box.
+const BORDERS_TOP: u64 = 1;
+const BORDERS_BOTTOM: u64 = 2;
+const BORDERS_TOP_AND_BOTTOM: u64 = 3;
+const BORDERS_BOX: u64 = 4;
