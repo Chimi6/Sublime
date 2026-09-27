@@ -455,12 +455,14 @@ fn write_image(bits: &mut BitWriter, pixels: &[u32], width: usize, main: bool, c
     let alpha = byte_table(&codes[3]);
     let distances = pack(&codes[4]);
     let put_packed = |bits: &mut BitWriter, entry: u32| bits.put(entry & 0xffff, entry >> 16);
-    // One write of at most sixty bits per literal; a cached pixel is its
-    // index and three empty codes.
+    // A literal's codes as one value of at most sixty bits and its
+    // length; a cached pixel is its index and three empty codes. The
+    // hash is computed either way and the choice made by selects.
     let cache_shift = cache_bits.max(1);
-    let literal = |bits: &mut BitWriter, pixel: u32, cached: bool| {
+    let literal_code = |pixel: u32, cached: bool| -> (u64, u32) {
+        let index = cache_index_bits(pixel, cache_shift);
         let green_symbol = if cached {
-            280 + cache_index_bits(pixel, cache_shift)
+            280 + index
         } else {
             ((pixel >> 8) & 0xff) as usize
         };
@@ -477,6 +479,10 @@ fn write_image(bits: &mut BitWriter, pixels: &[u32], width: usize, main: bool, c
         length += b >> 16;
         value |= u64::from(a & 0xffff) << length;
         length += a >> 16;
+        (value, length)
+    };
+    let literal = |bits: &mut BitWriter, pixel: u32, cached: bool| {
+        let (value, length) = literal_code(pixel, cached);
         bits.put_wide(value, length);
     };
     let mut next_copy = 0;
@@ -487,11 +493,26 @@ fn write_image(bits: &mut BitWriter, pixels: &[u32], width: usize, main: bool, c
         // A whole word of literals (most of a photo): no copy tests, the
         // cache bits shifted out of a register.
         if bit == 0 && copy_bits[word] == 0 && at + 64 <= pixels.len() {
+            // The bit buffer in locals for the word: through `bits` it was
+            // a load, an or, and a store per pixel, one chain.
             let mut cached_word = cached_bits[word];
+            let mut buffer = bits.buffer;
+            let mut count = bits.count;
             for pixel in &pixels[at..at + 64] {
-                literal(bits, *pixel, cached_word & 1 != 0);
+                let (value, length) = literal_code(*pixel, cached_word & 1 != 0);
                 cached_word >>= 1;
+                buffer |= value << count;
+                let total = count + length;
+                if total >= 64 {
+                    bits.out.extend_from_slice(&buffer.to_le_bytes());
+                    buffer = value >> (64 - count);
+                    count = total - 64;
+                } else {
+                    count = total;
+                }
             }
+            bits.buffer = buffer;
+            bits.count = count;
             at += 64;
             continue;
         }
