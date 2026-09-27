@@ -28,6 +28,7 @@ libwebp, and a lossless encoder.
 
 ### Fixed
 
+- `xlsx -> csv` holds 425 MB on the benchmark workbook again, where 0.19.0 raised it to 950: the whole-part inflate sizes its buffer from the entry's size and hands it over instead of copying, and a growing inflate buffer no longer zero-writes its unused half (a 326 MB sheet held a 512 MB buffer and a copy of it).
 - `sublime convert in.png - --to webp` writes to stdout: `-` as the output means stdout, as it means stdin as the input (it wrote a file named `-`).
 
 ## [0.20.1] - 2026-09-26
