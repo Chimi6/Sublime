@@ -2080,7 +2080,7 @@ fn read_abstract_numbering(reader: &mut XmlReader<'_>, id: i64) -> AbstractNumbe
                     let level_index: usize = attribute(&attributes, "w:ilvl")
                         .and_then(|value| value.parse().ok())
                         .unwrap_or(numbering.levels.len());
-                    let (level, start) = read_level(reader);
+                    let (level, start) = read_level(reader, level_index);
                     while numbering.levels.len() <= level_index {
                         numbering.levels.push(ListLevel::default());
                         numbering.starts.push(1);
@@ -2099,7 +2099,7 @@ fn read_abstract_numbering(reader: &mut XmlReader<'_>, id: i64) -> AbstractNumbe
     numbering
 }
 
-fn read_level(reader: &mut XmlReader<'_>) -> (ListLevel, u32) {
+fn read_level(reader: &mut XmlReader<'_>, index: usize) -> (ListLevel, u32) {
     let mut format = "decimal";
     let mut text = String::new();
     let mut start = 1u32;
@@ -2163,15 +2163,25 @@ fn read_level(reader: &mut XmlReader<'_>) -> (ListLevel, u32) {
                 "upperRoman" => NumberKind::UpperRoman,
                 _ => NumberKind::Decimal,
             };
-            // The pattern names this level's number as `%1` in the model.
-            let mut pattern = text;
+            // A level that names its parents' numbers (`%1.%2.`) is tiered;
+            // the model keeps only its own part, naming its number `%1`.
+            let own = format!("%{}", index + 1);
+            let tiered = (1..=index).any(|parent| text.contains(&format!("%{parent}")));
+            let mut pattern = match text.find(&own) {
+                Some(at) if tiered => text[at..].to_string(),
+                _ => text,
+            };
             for level in (1..=9).rev() {
                 pattern = pattern.replace(&format!("%{level}"), "%1");
             }
             if pattern.is_empty() {
                 pattern.push_str("%1.");
             }
-            ListLabel::Number(NumberFormat { kind, pattern })
+            ListLabel::Number(NumberFormat {
+                kind,
+                pattern,
+                tiered,
+            })
         }
     };
     let level = ListLevel {
@@ -2652,6 +2662,37 @@ mod tests {
             })
         );
         assert_eq!(fill(second), None, "a shape's fill is its own");
+    }
+
+    #[test]
+    fn a_multi_level_pattern_is_tiered() {
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let numbering = format!(
+            r#"<w:numbering {w}><w:abstractNum w:abstractNumId="0">
+            <w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl>
+            <w:lvl w:ilvl="1"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2."/></w:lvl>
+            </w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>"#
+        );
+        let document = format!(
+            r#"<w:document {w}><w:body><w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="1"/></w:numPr></w:pPr>
+            <w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>"#
+        );
+        let mut zip = crate::io::zip::ZipWriter::new(Vec::new());
+        zip.add("word/document.xml", document.as_bytes()).unwrap();
+        zip.add("word/styles.xml", format!("<w:styles {w}/>").as_bytes())
+            .unwrap();
+        zip.add("word/numbering.xml", numbering.as_bytes()).unwrap();
+        let read = read_docx(&zip.finish().unwrap()).unwrap();
+        let style = &read.styles.list[0];
+        let ListLabel::Number(first) = &style.levels[0].label else {
+            panic!("a number");
+        };
+        let ListLabel::Number(second) = &style.levels[1].label else {
+            panic!("a number");
+        };
+        assert!(!first.tiered);
+        assert!(second.tiered);
+        assert_eq!(second.pattern, "%1.");
     }
 
     #[test]

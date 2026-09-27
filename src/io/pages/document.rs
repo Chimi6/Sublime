@@ -2203,13 +2203,18 @@ impl Reader<'_> {
         let strings = view.strings("strings");
         let indents = view.floats("indents");
         let text_indents = view.floats("text_indents");
+        let tiered: Vec<bool> = view
+            .entries("tiered_numbers")
+            .map(|node| matches!(node, Node::Bool(true)))
+            .collect();
         let mut levels = Vec::new();
         for (level, kind) in label_types.iter().enumerate() {
             let label = match kind {
                 2 => ListLabel::Text(strings.get(level).map_or("\u{2022}", |s| s).to_string()),
-                3 => {
-                    ListLabel::Number(number_format(number_types.get(level).copied().unwrap_or(0)))
-                }
+                3 => ListLabel::Number(number_format(
+                    number_types.get(level).copied().unwrap_or(0),
+                    tiered.get(level).copied().unwrap_or(false),
+                )),
                 _ => ListLabel::None,
             };
             let indent = indents.get(level).copied().unwrap_or(0.0);
@@ -2466,7 +2471,7 @@ fn color(view: View<'_>) -> Option<Color> {
 }
 
 /// `TSWP.ListStyleArchive.NumberType` to a format.
-fn number_format(number_type: i64) -> NumberFormat {
+fn number_format(number_type: i64, tiered: bool) -> NumberFormat {
     let kind = match number_type {
         3..=5 => NumberKind::UpperRoman,
         6..=8 => NumberKind::LowerRoman,
@@ -2482,5 +2487,6 @@ fn number_format(number_type: i64) -> NumberFormat {
     NumberFormat {
         kind,
         pattern: pattern.to_string(),
+        tiered,
     }
 }

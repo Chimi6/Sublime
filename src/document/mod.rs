@@ -141,6 +141,9 @@ pub struct NumberFormat {
     pub kind: NumberKind,
     /// Text around the number, with `%1` standing for it, e.g. `%1.`.
     pub pattern: String,
+    /// The number follows its parent levels' numbers (1.2.3), as a Word
+    /// multi-level list writes it.
+    pub tiered: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -898,6 +901,7 @@ mod tests {
             NumberFormat {
                 kind,
                 pattern: pattern.to_string(),
+                tiered: false,
             }
             .label(number)
         };
