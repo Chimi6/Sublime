@@ -7,7 +7,7 @@ use std::io::Read;
 
 use super::{WebpError, lossless, lossy, to_rows};
 use crate::image::{ColorType, Image};
-use crate::io::png::{RowSink, RowsError};
+use crate::io::png::{Collect, RowSink, RowsError};
 
 fn fail<T>(message: &str) -> Result<T, WebpError> {
     Err(WebpError(message.to_string()))
@@ -50,24 +50,6 @@ pub fn read_webp_rows(
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes).map_err(RowsError::Io)?;
     decode(&bytes, sink)
-}
-
-#[derive(Default)]
-struct Collect {
-    image: Image,
-}
-
-impl RowSink for Collect {
-    fn start(&mut self, width: u32, height: u32, color: ColorType) -> std::io::Result<()> {
-        self.image = Image::new(width, height, color);
-        self.image.pixels.clear();
-        Ok(())
-    }
-
-    fn row(&mut self, pixels: &[u8]) -> std::io::Result<()> {
-        self.image.pixels.extend_from_slice(pixels);
-        Ok(())
-    }
 }
 
 /// One chunk: its type and payload.

@@ -9,7 +9,7 @@
 use std::io::Read;
 
 use crate::image::{ColorType, Image};
-use crate::io::png::{RowSink, RowsError};
+use crate::io::png::{Collect, RowSink, RowsError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JpegError(pub String);
@@ -51,25 +51,6 @@ pub fn read_jpeg_from(reader: &mut dyn Read) -> Result<(Image, JpegNotes), JpegE
         Err(RowsError::Io(error)) => return Err(JpegError(format!("row sink failed: {error}"))),
     };
     Ok((sink.image, notes))
-}
-
-/// A sink that keeps the rows as an image.
-#[derive(Default)]
-struct Collect {
-    image: Image,
-}
-
-impl RowSink for Collect {
-    fn start(&mut self, width: u32, height: u32, color: ColorType) -> std::io::Result<()> {
-        self.image = Image::new(width, height, color);
-        self.image.pixels.clear();
-        Ok(())
-    }
-
-    fn row(&mut self, pixels: &[u8]) -> std::io::Result<()> {
-        self.image.pixels.extend_from_slice(pixels);
-        Ok(())
-    }
 }
 
 /// Reads a JPEG from a stream straight into `sink`, one row at a time.

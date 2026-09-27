@@ -75,6 +75,26 @@ pub trait RowSink {
     fn row(&mut self, pixels: &[u8]) -> std::io::Result<()>;
 }
 
+/// A sink that keeps the rows as an image: the whole-image readers
+/// (`read_jpeg`, `read_webp`, `read_qoi`) are their row readers into it.
+#[derive(Default)]
+pub(crate) struct Collect {
+    pub(crate) image: Image,
+}
+
+impl RowSink for Collect {
+    fn start(&mut self, width: u32, height: u32, color: ColorType) -> std::io::Result<()> {
+        self.image = Image::new(width, height, color);
+        self.image.pixels.clear();
+        Ok(())
+    }
+
+    fn row(&mut self, pixels: &[u8]) -> std::io::Result<()> {
+        self.image.pixels.extend_from_slice(pixels);
+        Ok(())
+    }
+}
+
 /// What can go wrong reading rows into a sink: the file, or the sink.
 #[derive(Debug)]
 pub enum RowsError {

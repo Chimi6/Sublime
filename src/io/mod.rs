@@ -13,6 +13,7 @@ pub mod markdown;
 pub mod pages;
 pub mod png;
 pub mod protobuf;
+pub mod qoi;
 pub mod scan;
 pub mod snappy;
 pub mod text;
