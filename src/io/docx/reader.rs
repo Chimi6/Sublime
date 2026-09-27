@@ -21,7 +21,7 @@ use crate::document::{
     LineSpacing, ListItem, ListLabel, ListLevel, ListStyle, Media, MediaId, Merge, NoteId,
     NumberFormat, NumberKind, PageSetup, PageVariants, Paragraph, ParagraphProperties,
     ParagraphStyle, Placement, Revision, RevisionKind, Row, Run, RunProperties, Section,
-    SectionStart, Span, StyleId, Table, TableBorders, VerticalAlignment,
+    SectionStart, ShapeGeometry, Span, StyleId, Table, TableBorders, VerticalAlignment,
 };
 use crate::io::xml::{XmlEvent, XmlReader};
 use crate::io::zip::{ZipArchive, ZipError};
@@ -1718,8 +1718,9 @@ impl Reader<'_> {
         };
         let mut position_axis: Option<bool> = None;
         let mut media: Option<MediaId> = None;
-        let mut text_boxes: Vec<GroupTextBox> = Vec::new();
-        let mut shape_boxes = 0usize;
+        let mut shapes: Vec<ShapeRead> = Vec::new();
+        // The shape being read (a `wps:wsp`).
+        let mut shape = ShapeRead::default();
         let mut shape_frame: Option<[f32; 4]> = None;
         // The group's frame and its children's coordinate space (EMU).
         let mut group: Option<([f32; 4], [f32; 4])> = None;
@@ -1734,6 +1735,12 @@ impl Reader<'_> {
         let mut no_fill = false;
         let mut in_fill_ref = false;
         let mut style_fill: Option<Color> = None;
+        // Its outline: its own (`a:ln`) or its style's line reference.
+        let mut line_width: Option<f32> = None;
+        let mut line_color: Option<Color> = None;
+        let mut no_line = false;
+        let mut in_line_ref = false;
+        let mut style_line: Option<Color> = None;
         let mut scheme: Option<PendingSchemeColor> = None;
         while let Some(event) = reader.next() {
             match event {
@@ -1787,11 +1794,24 @@ impl Reader<'_> {
                     }
                     "wps:spPr" if !self_closing => in_shape_properties = true,
                     "wps:wsp" if !self_closing => {
-                        shape_boxes = text_boxes.len();
+                        shape = ShapeRead::default();
                         shape_frame = None;
                         fill = None;
                         style_fill = None;
                         no_fill = false;
+                        line_width = None;
+                        line_color = None;
+                        no_line = false;
+                        style_line = None;
+                    }
+                    "a:prstGeom" if in_shape_properties => {
+                        shape.geometry =
+                            preset_geometry(attribute(&attributes, "prst").unwrap_or(""));
+                    }
+                    "a:xfrm" if in_shape_properties => {
+                        let flag =
+                            |key: &str| matches!(attribute(&attributes, key), Some("1" | "true"));
+                        shape.flip = (flag("flipH"), flag("flipV"));
                     }
                     "wpg:grpSpPr" if !self_closing && group.is_none() => {
                         in_group_properties = true;
@@ -1821,32 +1841,60 @@ impl Reader<'_> {
                             shape_frame = Some(frame);
                         }
                     }
-                    "a:ln" if !self_closing => in_line = true,
+                    "a:ln" => {
+                        in_line = !self_closing;
+                        if in_shape_properties {
+                            line_width = attribute(&attributes, "w").and_then(emu_to_points);
+                        }
+                    }
+                    "a:noFill" if in_shape_properties && in_line => no_line = true,
                     "a:noFill" if in_shape_properties && !in_line => no_fill = true,
                     "a:fillRef" if !self_closing => {
                         in_fill_ref = attribute(&attributes, "idx").is_some_and(|idx| idx != "0");
                     }
-                    "a:srgbClr" if in_shape_properties && !in_line && fill.is_none() => {
-                        fill = attribute(&attributes, "val").and_then(parse_color);
+                    "a:lnRef" if !self_closing => {
+                        in_line_ref = attribute(&attributes, "idx").is_some_and(|idx| idx != "0");
                     }
-                    "a:srgbClr" if in_fill_ref && style_fill.is_none() => {
-                        style_fill = attribute(&attributes, "val").and_then(parse_color);
-                    }
-                    "a:schemeClr"
-                        if (in_shape_properties && !in_line && fill.is_none())
-                            || (in_fill_ref && style_fill.is_none()) =>
+                    "a:srgbClr" | "a:prstClr"
+                        if in_shape_properties || in_fill_ref || in_line_ref =>
                     {
-                        let target_is_style = !in_shape_properties || in_line;
+                        let color = match name {
+                            "a:prstClr" => {
+                                preset_color(attribute(&attributes, "val").unwrap_or(""))
+                            }
+                            _ => attribute(&attributes, "val").and_then(parse_color),
+                        };
+                        let target = match (in_shape_properties, in_line) {
+                            (true, true) => &mut line_color,
+                            (true, false) => &mut fill,
+                            _ if in_fill_ref => &mut style_fill,
+                            _ => &mut style_line,
+                        };
+                        if target.is_none() {
+                            *target = color;
+                        }
+                    }
+                    "a:schemeClr" if in_shape_properties || in_fill_ref || in_line_ref => {
+                        let target = match (in_shape_properties, in_line) {
+                            (true, true) => ColorTarget::Line,
+                            (true, false) => ColorTarget::Fill,
+                            _ if in_fill_ref => ColorTarget::StyleFill,
+                            _ => ColorTarget::StyleLine,
+                        };
                         let name = attribute(&attributes, "val").unwrap_or("").to_string();
                         if self_closing {
                             let color = self.theme_color(&name, &[]);
-                            if target_is_style {
-                                style_fill = color
-                            } else {
-                                fill = color
+                            let slot = match target {
+                                ColorTarget::Fill => &mut fill,
+                                ColorTarget::StyleFill => &mut style_fill,
+                                ColorTarget::Line => &mut line_color,
+                                ColorTarget::StyleLine => &mut style_line,
+                            };
+                            if slot.is_none() {
+                                *slot = color;
                             }
                         } else {
-                            scheme = Some((name, Vec::new(), target_is_style));
+                            scheme = Some((name, Vec::new(), target));
                         }
                     }
                     "a:lumMod" | "a:lumOff" | "a:shade" | "a:tint" if scheme.is_some() => {
@@ -1854,12 +1902,15 @@ impl Reader<'_> {
                             scheme.as_mut(),
                             attribute(&attributes, "val").and_then(|v| v.parse::<f32>().ok()),
                         ) {
-                            modifiers.push((name.to_string(), value / 100_000.0));
+                            modifiers.push((
+                                name.trim_start_matches("a:").to_string(),
+                                value / 100_000.0,
+                            ));
                         }
                     }
                     "w:txbxContent" if !self_closing => {
                         let blocks = self.read_blocks(reader, "w:txbxContent");
-                        text_boxes.push((blocks, shape_frame, None));
+                        shape.blocks.extend(blocks);
                     }
                     "mc:Fallback" if !self_closing => skip_element(reader, name),
                     _ => {}
@@ -1872,20 +1923,36 @@ impl Reader<'_> {
                         group = Some((frame, child_frame));
                     }
                     "wps:wsp" => {
-                        let shape_fill = if no_fill { None } else { fill.or(style_fill) };
-                        for text_box in &mut text_boxes[shape_boxes..] {
-                            text_box.2 = shape_fill;
+                        let mut done = std::mem::take(&mut shape);
+                        done.frame = shape_frame;
+                        done.fill = if no_fill { None } else { fill.or(style_fill) };
+                        let color = line_color.or(style_line);
+                        done.line =
+                            (!no_line && (color.is_some() || line_width.is_some())).then(|| {
+                                Border {
+                                    width: line_width.unwrap_or(0.75).max(0.25),
+                                    color,
+                                }
+                            });
+                        // A shape that draws nothing and holds no text leaves no trace.
+                        if !done.blocks.is_empty() || done.fill.is_some() || done.line.is_some() {
+                            shapes.push(done);
                         }
                     }
                     "a:ln" => in_line = false,
                     "a:fillRef" => in_fill_ref = false,
+                    "a:lnRef" => in_line_ref = false,
                     "a:schemeClr" => {
-                        if let Some((name, modifiers, target_is_style)) = scheme.take() {
+                        if let Some((name, modifiers, target)) = scheme.take() {
                             let color = self.theme_color(&name, &modifiers);
-                            if target_is_style {
-                                style_fill = style_fill.or(color);
-                            } else {
-                                fill = fill.or(color);
+                            let slot = match target {
+                                ColorTarget::Fill => &mut fill,
+                                ColorTarget::StyleFill => &mut style_fill,
+                                ColorTarget::Line => &mut line_color,
+                                ColorTarget::StyleLine => &mut style_line,
+                            };
+                            if slot.is_none() {
+                                *slot = color;
                             }
                         }
                     }
@@ -1894,7 +1961,7 @@ impl Reader<'_> {
                 XmlEvent::Text(_) => {}
             }
         }
-        if !text_boxes.is_empty() {
+        if !shapes.is_empty() {
             // A child's frame maps from the group's child space onto the
             // drawing's extent; a lone shape fills the drawing.
             let place = |child: Option<[f32; 4]>| match (group, child) {
@@ -1909,10 +1976,10 @@ impl Reader<'_> {
                 }
                 _ => [0.0, 0.0, width, height],
             };
-            return text_boxes
+            return shapes
                 .into_iter()
-                .map(|(blocks, child, fill)| {
-                    let [x, y, box_width, box_height] = place(child);
+                .map(|shape| {
+                    let [x, y, box_width, box_height] = place(shape.frame);
                     Drawn::Floating(
                         FloatingObject {
                             page: self.page,
@@ -1920,7 +1987,13 @@ impl Reader<'_> {
                             y: vertical.offset + y,
                             width: box_width,
                             height: box_height,
-                            content: FloatingContent::TextBox { blocks, fill },
+                            content: FloatingContent::TextBox {
+                                blocks: shape.blocks,
+                                fill: shape.fill,
+                                line: shape.line,
+                                geometry: shape.geometry,
+                                flip: shape.flip,
+                            },
                         },
                         horizontal.from,
                         vertical.from,
@@ -2000,10 +2073,62 @@ struct RunRead {
     style: Option<StyleId>,
 }
 
-/// A text box read from a drawing: its blocks, its shape's frame (x, y,
-/// width, height in the group's coordinates, EMU), and its fill once its
-/// shape closes.
-type GroupTextBox = (Vec<Block>, Option<[f32; 4]>, Option<Color>);
+/// A shape read from a drawing: its text, its frame (x, y, width, height in
+/// the group's coordinates, EMU), and its look once the shape closes.
+#[derive(Default)]
+struct ShapeRead {
+    blocks: Vec<Block>,
+    frame: Option<[f32; 4]>,
+    fill: Option<Color>,
+    line: Option<Border>,
+    geometry: ShapeGeometry,
+    flip: (bool, bool),
+}
+
+/// Where a DrawingML colour being read goes.
+#[derive(Clone, Copy)]
+enum ColorTarget {
+    Fill,
+    StyleFill,
+    Line,
+    StyleLine,
+}
+
+/// A Word preset shape's geometry; one Pages cannot draw is a rectangle.
+fn preset_geometry(preset: &str) -> ShapeGeometry {
+    match preset {
+        "roundRect" | "snipRoundRect" | "round2SameRect" => ShapeGeometry::RoundedRectangle,
+        "ellipse" | "flowChartConnector" => ShapeGeometry::Ellipse,
+        "triangle" | "flowChartExtract" => ShapeGeometry::Triangle,
+        "rtTriangle" => ShapeGeometry::RightTriangle,
+        "diamond" | "flowChartDecision" => ShapeGeometry::Diamond,
+        "pentagon" | "homePlate" => ShapeGeometry::Pentagon,
+        "hexagon" => ShapeGeometry::Hexagon,
+        "octagon" => ShapeGeometry::Octagon,
+        "star4" | "star5" | "star6" | "star7" | "star8" => ShapeGeometry::Star,
+        "rightArrow" | "notchedRightArrow" | "stripedRightArrow" => ShapeGeometry::RightArrow,
+        "leftArrow" => ShapeGeometry::LeftArrow,
+        "upArrow" => ShapeGeometry::UpArrow,
+        "downArrow" => ShapeGeometry::DownArrow,
+        "line" | "straightConnector1" | "bentConnector2" | "bentConnector3" => ShapeGeometry::Line,
+        _ => ShapeGeometry::Rectangle,
+    }
+}
+
+/// A DrawingML preset colour by name (the common ones Word writes).
+fn preset_color(name: &str) -> Option<Color> {
+    let (red, green, blue) = match name {
+        "black" => (0, 0, 0),
+        "white" => (255, 255, 255),
+        "red" => (255, 0, 0),
+        "green" => (0, 128, 0),
+        "blue" => (0, 0, 255),
+        "yellow" => (255, 255, 0),
+        "gray" | "grey" => (128, 128, 128),
+        _ => return None,
+    };
+    Some(Color { red, green, blue })
+}
 
 /// A paragraph's complex field (`w:fldChar`) as its runs go by: where in the
 /// field they are, its instruction, whether it is a page number (whose
@@ -2714,6 +2839,86 @@ mod tests {
     }
 
     #[test]
+    fn shapes_without_text_keep_their_outline_fill_and_line() {
+        let ns = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="wp" xmlns:a="a" xmlns:wps="wps""#;
+        let drawing = |shape: &str| {
+            format!(
+                r#"<w:r><w:drawing><wp:anchor><wp:extent cx="254000" cy="127000"/><a:graphic><a:graphicData>
+                <wps:wsp>{shape}</wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>"#
+            )
+        };
+        let ellipse = drawing(
+            r#"<wps:spPr><a:prstGeom prst="ellipse"/><a:solidFill><a:srgbClr val="00FF00"/></a:solidFill>
+            <a:ln w="25400"><a:solidFill><a:srgbClr val="0000FF"/></a:solidFill></a:ln></wps:spPr>"#,
+        );
+        let line = drawing(
+            r#"<wps:spPr><a:xfrm flipV="1"/><a:prstGeom prst="line"/></wps:spPr>
+            <wps:style><a:lnRef idx="1"><a:srgbClr val="FF0000"/></a:lnRef></wps:style>"#,
+        );
+        let invisible = drawing(r#"<wps:spPr><a:prstGeom prst="rect"/><a:noFill/></wps:spPr>"#);
+        let document = format!(
+            r#"<w:document {ns}><w:body><w:p>{ellipse}{line}{invisible}</w:p></w:body></w:document>"#
+        );
+        let read = read_docx(&package(&document, "<w:styles/>")).unwrap();
+        assert_eq!(
+            read.floating.len(),
+            2,
+            "a shape drawing nothing is left out"
+        );
+        let FloatingContent::TextBox {
+            blocks,
+            fill,
+            line,
+            geometry,
+            ..
+        } = &read.floating[0].content
+        else {
+            panic!("a shape");
+        };
+        assert!(blocks.is_empty());
+        assert_eq!(*geometry, ShapeGeometry::Ellipse);
+        assert_eq!(
+            *fill,
+            Some(Color {
+                red: 0,
+                green: 255,
+                blue: 0
+            })
+        );
+        let outline = line.expect("an outline");
+        assert_eq!(outline.width, 2.0);
+        assert_eq!(
+            outline.color,
+            Some(Color {
+                red: 0,
+                green: 0,
+                blue: 255
+            })
+        );
+        let FloatingContent::TextBox {
+            line,
+            geometry,
+            flip,
+            fill,
+            ..
+        } = &read.floating[1].content
+        else {
+            panic!("a line");
+        };
+        assert_eq!(*geometry, ShapeGeometry::Line);
+        assert_eq!(*flip, (false, true));
+        assert_eq!(*fill, None);
+        assert_eq!(
+            line.and_then(|line| line.color),
+            Some(Color {
+                red: 255,
+                green: 0,
+                blue: 0
+            })
+        );
+    }
+
+    #[test]
     fn table_borders_come_from_the_style_table_and_cells() {
         let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
         let styles = format!(
@@ -2764,7 +2969,7 @@ mod tests {
 
 /// A scheme colour being read: its name, its modifiers so far, and whether
 /// it belongs to the shape's style (fill reference) rather than its own fill.
-type PendingSchemeColor = (String, Vec<(String, f32)>, bool);
+type PendingSchemeColor = (String, Vec<(String, f32)>, ColorTarget);
 
 /// Applies DrawingML colour modifiers: luminance scale and offset (in HSL),
 /// shade (toward black), and tint (toward white).

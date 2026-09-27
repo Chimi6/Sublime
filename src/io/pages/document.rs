@@ -777,7 +777,13 @@ impl Reader<'_> {
                 .message("super")
                 .and_then(|shape| shape.reference("style"))
                 .and_then(|style| self.shape_fill(style));
-            FloatingContent::TextBox { blocks, fill }
+            FloatingContent::TextBox {
+                blocks,
+                fill,
+                line: None,
+                geometry: Default::default(),
+                flip: (false, false),
+            }
         } else {
             return;
         };
