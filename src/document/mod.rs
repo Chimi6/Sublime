@@ -97,6 +97,8 @@ pub struct FloatingObject {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FloatingContent {
     Image(MediaId),
+    /// A chart: its data and how it is drawn.
+    Chart(Chart),
     /// A drawn shape, with or without text (a text box is a rectangle).
     TextBox {
         blocks: Vec<Block>,
@@ -109,6 +111,33 @@ pub enum FloatingContent {
         /// Marks at a line's start and end.
         ends: (Option<LineEnd>, Option<LineEnd>),
     },
+}
+
+/// A chart's data: its series of values over shared categories.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Chart {
+    pub kind: ChartKind,
+    pub categories: Vec<String>,
+    pub series: Vec<ChartSeries>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartSeries {
+    pub name: String,
+    /// One per category; `None` where the series has no value.
+    pub values: Vec<Option<f64>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChartKind {
+    /// Vertical bars.
+    Column,
+    /// Horizontal bars.
+    Bar,
+    Line,
+    Area,
+    Pie,
+    Scatter,
 }
 
 /// A mark drawn at the end of a line.

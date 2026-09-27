@@ -59,6 +59,7 @@ pub fn emit_events<'a>(document: &'a Document, sink: &mut dyn EventSink<'a>) {
                 emitter.image(*media, None);
                 emitter.sink.event(Event::End(TagEnd::Paragraph));
             }
+            FloatingContent::Chart(chart) => emitter.chart(chart),
         }
         emitter.close_lists(0);
         emitter.close_quotes(0);
@@ -613,6 +614,43 @@ impl<'a> Emitter<'a, '_> {
     /// A table as a Markdown table: the header rows (or the first row when
     /// there is none) as the head, merged cells as empty cells to keep the
     /// grid, each cell's paragraphs on one line.
+    /// A chart as the table of its data: a column per series, a row per
+    /// category.
+    fn chart(&mut self, chart: &super::Chart) {
+        let columns = chart.series.len() + 1;
+        let cell = |emitter: &mut Self, text: String| {
+            emitter.sink.event(Event::Start(Tag::TableCell));
+            if !text.is_empty() {
+                emitter.sink.event(Event::Text(Cow::Owned(text)));
+            }
+            emitter.sink.event(Event::End(TagEnd::TableCell));
+        };
+        self.sink
+            .event(Event::Start(Tag::Table(vec![Alignment::None; columns])));
+        self.sink.event(Event::Start(Tag::TableHead));
+        cell(self, String::new());
+        for series in &chart.series {
+            cell(self, series.name.clone());
+        }
+        self.sink.event(Event::End(TagEnd::TableHead));
+        for (index, category) in chart.categories.iter().enumerate() {
+            self.sink.event(Event::Start(Tag::TableRow));
+            cell(self, category.clone());
+            for series in &chart.series {
+                let value = series
+                    .values
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .map(|value| value.to_string())
+                    .unwrap_or_default();
+                cell(self, value);
+            }
+            self.sink.event(Event::End(TagEnd::TableRow));
+        }
+        self.sink.event(Event::End(TagEnd::Table));
+    }
+
     fn table(&mut self, table: &'a Table) {
         let Some(first) = table.rows.first() else {
             return;
