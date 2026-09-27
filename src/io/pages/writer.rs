@@ -321,6 +321,7 @@ fn rebuild_body(
         placed = write_text_boxes(
             package,
             &boxes,
+            &document.paths,
             &all_formats,
             styles,
             &para_styles,
@@ -7888,9 +7889,11 @@ fn text_boxes(document: &Document) -> Vec<TextBox> {
 /// Writes each text box as a Pages shape (the "Body" shape style, a text
 /// storage of its own) floating on its page at its position, listed in the
 /// document's floating drawables and z-order as Pages lists its own.
+#[allow(clippy::too_many_arguments)]
 fn write_text_boxes(
     package: &mut Package,
     boxes: &[TextBox],
+    paths: &[crate::document::ShapePath],
     formats: &HashMap<Format, u64>,
     styles: CellStyles,
     paras: &ParaStyles,
@@ -8078,7 +8081,13 @@ fn write_text_boxes(
             "height",
             Node::Float(text_box.height),
         )?;
-        let path = build_shape_path(tree, text_box.geometry, text_box.width, text_box.height)?;
+        let path = build_shape_path(
+            tree,
+            text_box.geometry,
+            text_box.width,
+            text_box.height,
+            paths,
+        )?;
         let mut bezier_chain = Chain::new();
         push_field(
             tree,
@@ -9016,14 +9025,7 @@ fn build_solid_stroke(
     Ok(chain.first)
 }
 
-/// A path element: move to (1), line to (2), curve to (4, two control
-/// points then the end), or close (5).
-enum PathStep {
-    Move(f32, f32),
-    Line(f32, f32),
-    Curve([(f32, f32); 3]),
-    Close,
-}
+use crate::document::PathStep;
 
 /// The outline of a preset shape in a `width` x `height` box, as a `TSP.Path`.
 fn build_shape_path(
@@ -9031,6 +9033,7 @@ fn build_shape_path(
     geometry: crate::document::ShapeGeometry,
     width: f32,
     height: f32,
+    paths: &[crate::document::ShapePath],
 ) -> Result<u32, PackageError> {
     use crate::document::ShapeGeometry as G;
     let (w, h) = (width, height);
@@ -9170,6 +9173,38 @@ fn build_shape_path(
             };
             vec![PathStep::Move(from.0, from.1), PathStep::Line(to.0, to.1)]
         }
+        // A drawn outline, scaled from its own box to this one.
+        G::Path(index) => match paths.get(index as usize) {
+            Some(path) => {
+                let sx = if path.width > 0.0 {
+                    w / path.width
+                } else {
+                    1.0
+                };
+                let sy = if path.height > 0.0 {
+                    h / path.height
+                } else {
+                    1.0
+                };
+                let scale = |(x, y): (f32, f32)| (x * sx, y * sy);
+                path.steps
+                    .iter()
+                    .map(|step| match *step {
+                        PathStep::Move(x, y) => {
+                            let (x, y) = scale((x, y));
+                            PathStep::Move(x, y)
+                        }
+                        PathStep::Line(x, y) => {
+                            let (x, y) = scale((x, y));
+                            PathStep::Line(x, y)
+                        }
+                        PathStep::Curve(points) => PathStep::Curve(points.map(scale)),
+                        PathStep::Close => PathStep::Close,
+                    })
+                    .collect()
+            }
+            None => polygon(&[(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)]),
+        },
     };
     let path = message_ref("TSP.Path")?;
     let element = message_ref("TSP.Path.Element")?;

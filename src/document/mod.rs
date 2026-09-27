@@ -58,6 +58,8 @@ pub struct Document {
     pub paragraph_properties: Vec<ParagraphProperties>,
     /// Sets of tab stops paragraphs name by index.
     pub tab_sets: Vec<Vec<TabStop>>,
+    /// Shape outlines floating shapes name by index.
+    pub paths: Vec<ShapePath>,
 }
 
 /// A tab stop: where it is, how text aligns to it, and what fills the gap.
@@ -138,6 +140,26 @@ pub enum ShapeGeometry {
     DownArrow,
     /// An open line from the top-left corner to the bottom-right.
     Line,
+    /// Any other outline: an index into `Document::paths`.
+    Path(u32),
+}
+
+/// A shape's outline drawn in its own box (`width` x `height` points).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShapePath {
+    pub width: f32,
+    pub height: f32,
+    pub steps: Vec<PathStep>,
+}
+
+/// One step of an outline, in points within the shape's box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PathStep {
+    Move(f32, f32),
+    Line(f32, f32),
+    /// A cubic curve: two control points, then the end.
+    Curve([(f32, f32); 3]),
+    Close,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
