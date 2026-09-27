@@ -1,6 +1,6 @@
 # PNG <-> BMP
 
-**Latest** (2026-09-27, the lazy deflate: bmp -> png writes 31.5 MB against the png crate's 32.2 (from 33.6) at 167.5 against 146.1 MB/s on the photo, and 0.1 MB against 0.4 on the flat image at 1861.6 against 617.8; every write, memory, and stock line PASSES; the photo png -> bmp line (reader code unchanged since 0.20.1) read 424.9 against 436.0 with a game running, and times 102 against 109 ms directly)
+**Latest** (2026-09-27, the reader relies on chunk CRCs: every line PASSES; png -> bmp 466.9 against 439.5 MB/s on the photo, 759.5 against 565.8 on the flat image, 579.0 against 513.1 on the stock photo; bmp -> png and memory as before)
 
 ## Purpose
 
@@ -85,6 +85,35 @@ median wall clock of the whole process, peak resident memory from GNU
   is one run of three-run medians.
 
 ## Results
+
+### 2026-09-27, the reader relies on chunk CRCs
+
+commit: 12bf4bb (on the `png-skip-adler` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| png -> bmp, photo (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 466.9 | 439.5 (png + image) | PASS |
+| png -> bmp, photo (32.8 MB on disk): throughput (MB/s of file bytes) [extra] | 250.9 | 236.2 (png + image) | n/a |
+| png -> bmp, photo: peak memory (MB) | 4.9 | 66.2 (png + image) | PASS |
+| bmp -> png, photo (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 164.2 | 145.5 (image + png) | PASS |
+| bmp -> png, photo: peak memory (MB) | 65.1 | 159.5 (image + png) | PASS |
+| bmp -> png, photo: output size (MB) [extra] | 31.5 | 32.2 (png) | n/a |
+| bmp -> png, photo: the png crate's fast level, throughput and size [extra] | - | 528.6 MB/s, 32.8 MB (png fast) | n/a |
+| png -> bmp, flat (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 759.5 | 565.8 (png + image) | PASS |
+| png -> bmp, flat (1.7 MB on disk): throughput (MB/s of file bytes) [extra] | 21.1 | 15.7 (png + image) | n/a |
+| png -> bmp, flat: peak memory (MB) | 5.3 | 66.3 (png + image) | PASS |
+| bmp -> png, flat (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 1901.3 | 623.3 (image + png) | PASS |
+| bmp -> png, flat: peak memory (MB) | 65.3 | 128.4 (image + png) | PASS |
+| bmp -> png, flat: output size (MB) [extra] | 0.1 | 0.4 (png) | n/a |
+| bmp -> png, flat: the png crate's fast level, throughput and size [extra] | - | 796.5 MB/s, 1.7 MB (png fast) | n/a |
+| png -> bmp, stock (418.4 MB of pixels, 24.2 MB on disk): throughput (MB/s of decoded pixels) [stock] | 579.0 | 513.1 (png + image) | PASS |
+| png -> bmp, stock: peak memory (MB) [stock] | 5.6 | 424.1 (png + image) | PASS |
+| bmp -> png, stock (418.4 MB in + 418.4 MB of pixels): throughput (MB/s of input plus pixels) [stock] | 340.3 | 178.0 (image + png) | PASS |
+| bmp -> png, stock: peak memory (MB) [stock] | 4.4 | 886.0 (image + png) | PASS |
+| bmp -> png, stock: output size (MB) [stock] | 28.8 | 44.2 (png) | n/a |
+
+The reader no longer sums Adler-32 over the decoded data (each IDAT chunk's CRC-32 covers the compressed bytes): 7% off the stock decode, 20% off the flat one.
 
 ### 2026-09-27, the lazy deflate
 
