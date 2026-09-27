@@ -47,6 +47,7 @@ pub fn run(
         strict: args.strict,
         sheet: args.sheet.clone(),
         quality: args.quality,
+        page: args.page,
     };
     let mut collector = CollectingSink::new();
     let mut multi = MultiSink::new(vec![renderer, &mut collector]);

@@ -198,95 +198,6 @@ fn read_tags(bytes: &[u8]) -> Result<(File<'_>, Tags, usize), TiffError> {
 
 // ------------------------------------------------------- decompression
 
-/// TIFF LZW: codes from 9 to 12 bits, most significant bit first, with
-/// the code width growing one code early (libtiff's compatible form).
-fn lzw(input: &[u8], expected: usize) -> Result<Vec<u8>, TiffError> {
-    const CLEAR: usize = 256;
-    const END: usize = 257;
-    if input.starts_with(&[0, 1]) {
-        return Err(error("old-style TIFF LZW is not supported"));
-    }
-    let mut out = Vec::with_capacity(expected);
-    // Each code: its prefix code, last byte, first byte, and length.
-    let mut prefix = vec![0u16; 4096];
-    let mut last = vec![0u8; 4096];
-    let mut first = vec![0u8; 4096];
-    let mut length = vec![0u16; 4096];
-    for code in 0..256 {
-        last[code] = code as u8;
-        first[code] = code as u8;
-        length[code] = 1;
-    }
-    let (mut next, mut width) = (258usize, 9u32);
-    let mut previous: Option<usize> = None;
-    let (mut buffer, mut count, mut at) = (0u32, 0u32, 0usize);
-    let emit = |out: &mut Vec<u8>, code: usize, prefix: &[u16], last: &[u8], length: &[u16]| {
-        let size = usize::from(length[code]);
-        let start = out.len();
-        out.resize(start + size, 0);
-        let mut cursor = code;
-        for slot in out[start..].iter_mut().rev() {
-            *slot = last[cursor];
-            cursor = usize::from(prefix[cursor]);
-        }
-    };
-    while out.len() < expected {
-        while count < width {
-            let Some(byte) = input.get(at) else {
-                return Err(error("TIFF LZW data cut short"));
-            };
-            buffer = (buffer << 8) | u32::from(*byte);
-            count += 8;
-            at += 1;
-        }
-        let code = ((buffer >> (count - width)) & ((1 << width) - 1)) as usize;
-        count -= width;
-        if code == END {
-            break;
-        }
-        if code == CLEAR {
-            next = 258;
-            width = 9;
-            previous = None;
-            continue;
-        }
-        match previous {
-            None => {
-                if code >= 256 {
-                    return Err(error("bad TIFF LZW code"));
-                }
-                out.push(code as u8);
-            }
-            Some(before) => {
-                let added = if code < next {
-                    emit(&mut out, code, &prefix, &last, &length);
-                    first[code]
-                } else if code == next {
-                    let head = first[before];
-                    emit(&mut out, before, &prefix, &last, &length);
-                    out.push(head);
-                    head
-                } else {
-                    return Err(error("bad TIFF LZW code"));
-                };
-                if next < 4096 {
-                    prefix[next] = before as u16;
-                    last[next] = added;
-                    first[next] = first[before];
-                    length[next] = length[before] + 1;
-                    next += 1;
-                }
-            }
-        }
-        previous = Some(code);
-        if next + 1 >= (1 << width) && width < 12 {
-            width += 1;
-        }
-    }
-    out.truncate(expected);
-    Ok(out)
-}
-
 /// PackBits: a count byte, then that many literal bytes or one repeated.
 fn packbits(input: &[u8], expected: usize) -> Result<Vec<u8>, TiffError> {
     let mut out = Vec::with_capacity(expected);
@@ -328,7 +239,13 @@ fn zlib(input: &[u8], expected: usize) -> Result<Vec<u8>, TiffError> {
 fn decompress(tags: &Tags, input: &[u8], expected: usize) -> Result<Vec<u8>, TiffError> {
     let mut out = match tags.compression {
         1 => input.to_vec(),
-        5 => lzw(input, expected)?,
+        5 => {
+            if input.starts_with(&[0, 1]) {
+                return Err(error("old-style TIFF LZW is not supported"));
+            }
+            crate::io::lzw::decode(input, Some(expected), true)
+                .map_err(|failure| error(format!("TIFF {failure}")))?
+        }
         8 | 32946 => zlib(input, expected)?,
         32773 => packbits(input, expected)?,
         other => {

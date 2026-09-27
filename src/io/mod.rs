@@ -10,6 +10,7 @@ pub mod ico;
 pub mod iwa;
 pub mod jpeg;
 pub mod json;
+pub mod lzw;
 pub mod markdown;
 pub mod netpbm;
 pub mod pages;
