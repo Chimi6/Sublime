@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use sublime::converter::{ConvertError, ConvertOptions, Converter, Input};
-use sublime::converters::image::{BMP_TO_PNG, PNG_TO_BMP};
+use sublime::converters::image::pair;
 use sublime::event::{Context, NullSink};
 use sublime::image::ColorType;
 use sublime::io::png::read_png;
@@ -46,8 +46,10 @@ fn suite() -> Vec<(String, Vec<u8>)> {
 fn every_suite_image_survives_png_to_bmp_to_png() {
     for (name, png) in suite() {
         let (original, _) = read_png(&png).unwrap();
-        let bmp = convert(&PNG_TO_BMP, &png).unwrap_or_else(|error| panic!("{name}: {error}"));
-        let back = convert(&BMP_TO_PNG, &bmp).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let bmp =
+            convert(pair("png", "bmp"), &png).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let back =
+            convert(pair("bmp", "png"), &bmp).unwrap_or_else(|error| panic!("{name}: {error}"));
         let (again, _) = read_png(&back).unwrap();
         // BMP has no gray: gray comes back as RGB with equal channels.
         let expected_color = match original.color {
