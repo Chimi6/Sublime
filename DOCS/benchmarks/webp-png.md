@@ -1,6 +1,6 @@
 # WebP <-> PNG
 
-**Latest** (2026-09-27, deflate stops searching on noise: every line PASSES but the lossless photo encode (258.0 against 439.9 MB/s, the owner's trade for 8 to 37% smaller real photos); the lossless photo decode now leads, 93.3 against 54.4)
+**Latest** (2026-09-27, 0.22.0 release: every line PASSES but the lossless photo encode (the owner's trade for 8 to 37% smaller real photos, `STATE.md` Decisions))
 
 ## Purpose
 
@@ -58,6 +58,28 @@ median wall clock of the whole process, peak resident memory from GNU
   between runs.
 
 ## Results
+
+### 2026-09-27, 0.22.0 release
+
+commit: 89d3694 (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| webp (lossless) -> png, photo (45.8 MB of pixels, 25.8 MB on disk): throughput (MB/s of decoded pixels) | 92.0 | 53.1 (image + png) | PASS |
+| webp (lossless) -> png, photo: peak memory (MB) | 101.9 | 173.9 (image + png) | PASS |
+| webp (lossy) -> png, photo (45.8 MB of pixels, 0.3 MB on disk): throughput (MB/s of decoded pixels) | 78.2 | 66.2 (image + png) | PASS |
+| webp (lossy) -> png, photo: peak memory (MB) | 4.9 | 75.1 (image + png) | PASS |
+| png -> webp (lossless), photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 255.8 | 438.8 (png + image) | FAIL |
+| png -> webp (lossless), photo: peak memory (MB) | 94.9 | 140.4 (png + image) | PASS |
+| png -> webp (lossless), photo: output size (MB) [extra] | 27.4 | 28.5 (image); 25.8 (libwebp, default effort) | n/a |
+| webp (lossless) -> png, flat (45.8 MB of pixels, 0.0 MB on disk): throughput (MB/s of decoded pixels) | 573.5 | 549.8 (image + png) | PASS |
+| webp (lossless) -> png, flat: peak memory (MB) | 95.5 | 112.0 (image + png) | PASS |
+| webp (lossy) -> png, flat (45.8 MB of pixels, 0.1 MB on disk): throughput (MB/s of decoded pixels) | 276.2 | 268.4 (image + png) | PASS |
+| webp (lossy) -> png, flat: peak memory (MB) | 4.7 | 74.4 (image + png) | PASS |
+| png -> webp (lossless), flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 765.7 | 601.5 (png + image) | PASS |
+| png -> webp (lossless), flat: peak memory (MB) | 52.2 | 112.4 (png + image) | PASS |
+| png -> webp (lossless), flat: output size (MB) [extra] | 0.0 | 0.0 (image); 0.0 (libwebp, default effort) | n/a |
 
 ### 2026-09-27, deflate stops searching on noise
 
