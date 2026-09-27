@@ -3802,24 +3802,32 @@ fn build_text_storage(
     push_field(tree, &mut chain, storage, "in_document", Node::Bool(true))?;
 
     let mut refs = vec![styles.paragraph, styles.list, styles.base_char];
-    // Each paragraph points at its formatting's variation of the base style.
-    let mut paragraph_entries: Vec<(u32, Option<u64>)> = cell
-        .paragraphs
-        .iter()
-        .map(|(offset, format)| {
-            let style = paras
-                .get(&(styles.paragraph, *format))
-                .copied()
+    // Each paragraph points at its formatting's variation of the base style,
+    // one entry per paragraph even where neighbours share a style: a storage
+    // whose paragraph table skips a paragraph start is "repaired" by Pages,
+    // which resets every paragraph to the default style.
+    let length = utf16_len(&cell.text);
+    let mut starts = vec![0u32];
+    let mut offset = 0u32;
+    for character in cell.text.chars() {
+        offset += character.len_utf16() as u32;
+        if character == '\n' && offset < length {
+            starts.push(offset);
+        }
+    }
+    let paragraph_entries: Vec<(u32, Option<u64>)> = starts
+        .into_iter()
+        .map(|start| {
+            let style = cell
+                .paragraphs
+                .iter()
+                .rev()
+                .find(|(offset, _)| *offset <= start)
+                .and_then(|(_, format)| paras.get(&(styles.paragraph, *format)).copied())
                 .unwrap_or(styles.paragraph);
-            (*offset, Some(style))
+            (start, Some(style))
         })
         .collect();
-    if paragraph_entries
-        .first()
-        .is_none_or(|(offset, _)| *offset != 0)
-    {
-        paragraph_entries.insert(0, (0, Some(styles.paragraph)));
-    }
     for (_, id) in &paragraph_entries {
         if let Some(id) = id
             && !refs.contains(id)
@@ -3832,7 +3840,7 @@ fn build_text_storage(
         &mut chain,
         storage,
         "table_para_style",
-        &dedup(paragraph_entries),
+        &paragraph_entries,
     )?;
     emit_reference_table(
         tree,
