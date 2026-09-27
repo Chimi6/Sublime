@@ -55,6 +55,7 @@ pub fn write(document: &Document) -> Result<Vec<u8>, PackageError> {
     let formats = collect_char_formats(&package);
     let lists = collect_list_styles(&package);
     rebuild_body(&mut package, document, &styles, &formats, &lists)?;
+    clear_template_rules(&mut package);
     if let Some(section) = document.sections.first() {
         set_page_setup(&mut package, &section.page)?;
     }
@@ -9122,4 +9123,28 @@ fn build_shape_path(
         )?;
     }
     Ok(chain.first)
+}
+
+/// Turns off the rules the template draws under its headings: the source's
+/// paragraphs never asked for them.
+fn clear_template_rules(package: &mut Package) {
+    for entry in &mut package.entries {
+        let Entry::Stream(stream) = entry else {
+            continue;
+        };
+        let firsts: Vec<u32> = stream
+            .objects
+            .iter()
+            .filter(|object| first_type(object) == Some(PARAGRAPH_STYLE))
+            .map(|object| object.messages[0].first)
+            .collect();
+        for first in firsts {
+            let tree = &mut stream.tree;
+            if let Some(properties) = message_field(tree, first, "para_properties")
+                && let Some(index) = field_entry(tree, properties, "deprecated_borders")
+            {
+                tree.entries[index as usize].value = Node::Uint(0);
+            }
+        }
+    }
 }
