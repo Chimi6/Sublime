@@ -1289,6 +1289,9 @@ impl Reader<'_> {
                                 first_relative = Some(-points);
                             }
                         }
+                        "w:pBdr" if !self_closing => {
+                            header.properties.border = read_paragraph_border(reader);
+                        }
                         "w:contextualSpacing" => {
                             header.properties.contextual_spacing = Some(toggle(value));
                         }
@@ -3212,6 +3215,45 @@ fn read_table_properties(reader: &mut XmlReader<'_>) -> (Option<String>, TableSi
         }
     }
     (style, borders)
+}
+
+/// A paragraph's `w:pBdr`: the sides that draw a line, with the first
+/// line's look (Pages draws every side with one line).
+fn read_paragraph_border(reader: &mut XmlReader<'_>) -> Option<crate::document::ParagraphBorder> {
+    let mut border = crate::document::ParagraphBorder {
+        top: false,
+        bottom: false,
+        left: false,
+        right: false,
+        line: Border {
+            width: 0.5,
+            color: None,
+        },
+    };
+    let mut line: Option<Border> = None;
+    while let Some(event) = reader.next() {
+        match event {
+            XmlEvent::Start {
+                name, attributes, ..
+            } => {
+                let side = match name {
+                    "w:top" => &mut border.top,
+                    "w:bottom" => &mut border.bottom,
+                    "w:left" | "w:start" => &mut border.left,
+                    "w:right" | "w:end" => &mut border.right,
+                    _ => continue,
+                };
+                if let Some(drawn) = border_line(&attributes) {
+                    *side = true;
+                    line.get_or_insert(drawn);
+                }
+            }
+            XmlEvent::End { name: "w:pBdr" } => break,
+            _ => {}
+        }
+    }
+    border.line = line?;
+    Some(border)
 }
 
 /// A border element's line, or `None` for "no line" (nil/none).

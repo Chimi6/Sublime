@@ -351,6 +351,18 @@ pub struct ParagraphProperties {
     /// No space between this paragraph and a neighbour of the same style
     /// (Word's contextual spacing).
     pub contextual_spacing: Option<bool>,
+    /// A rule or box around the paragraph.
+    pub border: Option<ParagraphBorder>,
+}
+
+/// The lines around a paragraph: which sides, drawn with one line.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParagraphBorder {
+    pub top: bool,
+    pub bottom: bool,
+    pub left: bool,
+    pub right: bool,
+    pub line: Border,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -428,7 +440,8 @@ impl ParagraphProperties {
             widow_control,
             outline_level,
             background,
-            contextual_spacing
+            contextual_spacing,
+            border
         );
     }
 
