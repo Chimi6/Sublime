@@ -277,20 +277,29 @@ impl Reader<'_> {
         let mut slot: Option<String> = None;
         while let Some(event) = reader.next() {
             match event {
-                XmlEvent::Start { name: "a:clrScheme", .. } => in_scheme = true,
-                XmlEvent::End { name: "a:clrScheme" } => break,
-                XmlEvent::Start { name, attributes, .. } if in_scheme => match name {
+                XmlEvent::Start {
+                    name: "a:clrScheme",
+                    ..
+                } => in_scheme = true,
+                XmlEvent::End {
+                    name: "a:clrScheme",
+                } => break,
+                XmlEvent::Start {
+                    name, attributes, ..
+                } if in_scheme => match name {
                     "a:srgbClr" => {
-                        if let (Some(key), Some(color)) =
-                            (slot.take(), attribute(&attributes, "val").and_then(parse_color))
-                        {
+                        if let (Some(key), Some(color)) = (
+                            slot.take(),
+                            attribute(&attributes, "val").and_then(parse_color),
+                        ) {
                             self.theme_colors.insert(key, color);
                         }
                     }
                     "a:sysClr" => {
-                        if let (Some(key), Some(color)) =
-                            (slot.take(), attribute(&attributes, "lastClr").and_then(parse_color))
-                        {
+                        if let (Some(key), Some(color)) = (
+                            slot.take(),
+                            attribute(&attributes, "lastClr").and_then(parse_color),
+                        ) {
                             self.theme_colors.insert(key, color);
                         }
                     }
@@ -1484,7 +1493,12 @@ impl Reader<'_> {
         // A grid may declare more columns than any row reaches (Google Docs and
         // some templates pad tblGrid); Word lays out only the occupied ones, so
         // the unused trailing columns are dropped rather than rendered empty.
-        let used = table.rows.iter().map(|row| row.cells.len()).max().unwrap_or(0);
+        let used = table
+            .rows
+            .iter()
+            .map(|row| row.cells.len())
+            .max()
+            .unwrap_or(0);
         if used > 0 && used < table.columns.len() {
             table.columns.truncate(used);
         }
@@ -1656,14 +1670,19 @@ impl Reader<'_> {
                     "a:srgbClr" if in_fill_ref && style_fill.is_none() => {
                         style_fill = attribute(&attributes, "val").and_then(parse_color);
                     }
-                    "a:schemeClr" if (in_shape_properties && !in_line && fill.is_none())
-                        || (in_fill_ref && style_fill.is_none()) =>
+                    "a:schemeClr"
+                        if (in_shape_properties && !in_line && fill.is_none())
+                            || (in_fill_ref && style_fill.is_none()) =>
                     {
                         let target_is_style = !in_shape_properties || in_line;
                         let name = attribute(&attributes, "val").unwrap_or("").to_string();
                         if self_closing {
                             let color = self.theme_color(&name, &[]);
-                            if target_is_style { style_fill = color } else { fill = color }
+                            if target_is_style {
+                                style_fill = color
+                            } else {
+                                fill = color
+                            }
                         } else {
                             scheme = Some((name, Vec::new(), target_is_style));
                         }
@@ -2204,7 +2223,11 @@ fn apply_color_modifiers(color: Color, modifiers: &[(String, f32)]) -> Color {
             "lumOff" => lightness = (lightness + value).clamp(0.0, 1.0),
             "shade" | "tint" => {
                 let current = hsl_to_rgb(hue, saturation, lightness);
-                let mut rgb = [current.red as f32, current.green as f32, current.blue as f32];
+                let mut rgb = [
+                    current.red as f32,
+                    current.green as f32,
+                    current.blue as f32,
+                ];
                 for channel in &mut rgb {
                     *channel = if name == "shade" {
                         *channel * value
@@ -2236,7 +2259,11 @@ fn rgb_to_hsl(color: Color) -> (f32, f32, f32) {
         return (0.0, 0.0, lightness);
     }
     let delta = max - min;
-    let saturation = if lightness > 0.5 { delta / (2.0 - max - min) } else { delta / (max + min) };
+    let saturation = if lightness > 0.5 {
+        delta / (2.0 - max - min)
+    } else {
+        delta / (max + min)
+    };
     let hue = if (max - r).abs() < f32::EPSILON {
         ((g - b) / delta).rem_euclid(6.0)
     } else if (max - g).abs() < f32::EPSILON {
@@ -2249,7 +2276,11 @@ fn rgb_to_hsl(color: Color) -> (f32, f32, f32) {
 
 fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> Color {
     let channel = |t: f32| {
-        let q = if lightness < 0.5 { lightness * (1.0 + saturation) } else { lightness + saturation - lightness * saturation };
+        let q = if lightness < 0.5 {
+            lightness * (1.0 + saturation)
+        } else {
+            lightness + saturation - lightness * saturation
+        };
         let p = 2.0 * lightness - q;
         let t = t.rem_euclid(1.0);
         let value = if t < 1.0 / 6.0 {
@@ -2265,7 +2296,11 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> Color {
     };
     if saturation == 0.0 {
         let gray = (lightness * 255.0).round().clamp(0.0, 255.0) as u8;
-        return Color { red: gray, green: gray, blue: gray };
+        return Color {
+            red: gray,
+            green: gray,
+            blue: gray,
+        };
     }
     Color {
         red: channel(hue + 1.0 / 3.0),
