@@ -173,6 +173,7 @@ fn rebuild_body(
     lists: &HashMap<String, u64>,
 ) -> Result<(), PackageError> {
     let body = flatten(document);
+    let areas = document.sections.first().map(|section| page_areas(document, section)).unwrap_or_default();
     let mut next_id = max_identifier(package) + 1;
     let mut next_data_id = max_data_id(package) + 1;
 
@@ -193,6 +194,9 @@ fn rebuild_body(
                             .map(|(_, format)| *format)
                             .collect::<Vec<_>>()
                     })
+                }))
+                .chain(areas.iter().flat_map(|area| {
+                    area.content.marks.iter().map(|(_, format)| *format).collect::<Vec<_>>()
                 }))
                 .filter(Format::has_direct);
             synthesize_char_styles(
@@ -220,6 +224,10 @@ fn rebuild_body(
 
     // Rewrite one template table per model table (with rich cells for the
     // formatted ones); each returns the attachment the body anchors it with.
+    if let Some(styles) = cell_styles {
+        write_page_areas(package, &areas, &all_formats, styles, &mut next_id)?;
+    }
+
     // The template carries one table: a document with more gets a clone of
     // the pristine prototype per extra table (cloned before any rewrite).
     let mut template_tables = collect_template_tables(package);
@@ -774,7 +782,9 @@ fn reuse_table(
                 let storage_id = *next_id;
                 let payload_id = *next_id + 1;
                 *next_id += 2;
-                let (message, refs) = build_cell_storage(&mut stream.tree, cell, formats, styles)?;
+                let attachments = create_number_attachments(stream, &cell.fields, next_id)?;
+                let (message, refs) =
+                    build_text_storage(&mut stream.tree, cell, formats, styles, 5, &attachments)?;
                 let info = build_archive_info(&mut stream.tree, storage_id, STORAGE_ARCHIVE)?;
                 add_object_references(&mut stream.tree, info, &refs)?;
                 new_objects.push(Object {
@@ -2619,6 +2629,9 @@ struct LinkMark {
 struct CellContent {
     text: String,
     marks: Vec<(u32, Format)>,
+    /// Page-number (kind 0) and page-count (kind 1) fields, by offset of the
+    /// U+FFFC standing for each.
+    fields: Vec<(u32, u64)>,
 }
 
 /// A table anchored at a `U+FFFC` character: its offset and its grid of cell
@@ -2690,8 +2703,13 @@ fn flatten(document: &Document) -> Body {
         offset: 0,
         current: Format::default(),
         current_link: None,
+        pending_break: false,
     };
-    for section in &document.sections {
+    for (index, section) in document.sections.iter().enumerate() {
+        // A section that starts a new page breaks the page before it.
+        if index > 0 && section.start != crate::document::SectionStart::Continuous {
+            walk.pending_break = true;
+        }
         walk.blocks(document, &section.blocks);
     }
     Body {
@@ -2714,7 +2732,13 @@ struct Walk {
     offset: u32,
     current: Format,
     current_link: Option<Id>,
+    /// A page break waiting to open the next paragraph (Pages writes one as
+    /// U+0005 at the start of the paragraph that follows it).
+    pending_break: bool,
 }
+
+/// Pages' page-break character, which opens the paragraph after the break.
+const PAGE_BREAK: char = '\u{5}';
 
 impl Walk {
     fn blocks(&mut self, document: &Document, blocks: &[Block]) {
@@ -2743,6 +2767,7 @@ impl Walk {
             style_name: None,
             list: None,
         });
+        self.take_break();
         let columns = table.columns.len();
         let rows = table.rows.len();
         let mut cells: Vec<CellContent> = (0..rows * columns)
@@ -2786,6 +2811,14 @@ impl Walk {
     }
 
     fn paragraph(&mut self, document: &Document, paragraph: &Paragraph) {
+        // A paragraph holding only a page break becomes the break character
+        // opening the next paragraph, as Pages writes it.
+        let live: Vec<&crate::document::Run> =
+            paragraph.runs.iter().filter(|run| !document.is_deleted(run)).collect();
+        if !live.is_empty() && live.iter().all(|run| matches!(run.content, Inline::PageBreak)) {
+            self.pending_break = true;
+            return;
+        }
         if !self.paragraphs.is_empty() {
             self.mark(Format::default());
             self.link_mark(None);
@@ -2800,6 +2833,7 @@ impl Walk {
             style_name,
             list: paragraph.list,
         });
+        self.take_break();
         for run in &paragraph.runs {
             if document.is_deleted(run) {
                 continue;
@@ -2813,6 +2847,8 @@ impl Walk {
             let raw = match run.content {
                 Inline::Text(span) => document.text(span),
                 Inline::Tab => "\t",
+                Inline::LineBreak => "\u{2028}",
+                Inline::PageBreak => "\u{5}",
                 _ => continue,
             };
             let piece = without_attachments(raw);
@@ -2823,6 +2859,17 @@ impl Walk {
             self.link_mark(run.link);
             self.text.push_str(&piece);
             self.offset += utf16_len(&piece);
+        }
+    }
+
+    /// Writes a pending page break at the current (paragraph-start) offset.
+    fn take_break(&mut self) {
+        if self.pending_break {
+            self.pending_break = false;
+            self.mark(Format::default());
+            self.link_mark(None);
+            self.text.push(PAGE_BREAK);
+            self.offset += 1;
         }
     }
 
@@ -2868,14 +2915,26 @@ impl Walk {
 /// a newline. Only text runs contribute; nested tables and other inlines are
 /// skipped (an MVP that carries the words).
 fn flatten_cell(document: &Document, cell: &crate::document::Cell) -> CellContent {
+    let paragraphs: Vec<&Paragraph> = cell
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Paragraph(paragraph) => Some(paragraph),
+            _ => None,
+        })
+        .collect();
+    flatten_paragraphs(document, &paragraphs)
+}
+
+/// Flattens paragraphs into one text with its formatting runs, one paragraph
+/// per line; page-number and page-count fields become U+FFFC attachments.
+fn flatten_paragraphs(document: &Document, paragraphs: &[&Paragraph]) -> CellContent {
     let mut text = String::new();
     let mut marks: Vec<(u32, Format)> = Vec::new();
+    let mut fields: Vec<(u32, u64)> = Vec::new();
     let mut current = Format::default();
     let mut offset = 0u32;
-    for block in &cell.blocks {
-        let Block::Paragraph(paragraph) = block else {
-            continue;
-        };
+    for paragraph in paragraphs {
         if !text.is_empty() {
             text.push('\n');
             offset += 1;
@@ -2888,16 +2947,32 @@ fn flatten_cell(document: &Document, cell: &crate::document::Cell) -> CellConten
             if document.is_deleted(run) {
                 continue;
             }
+            let format = run_format(document, paragraph, run);
+            let field = match run.content {
+                Inline::PageNumber => Some(0),
+                Inline::PageCount => Some(1),
+                _ => None,
+            };
+            if let Some(kind) = field {
+                if format != current {
+                    marks.push((offset, format));
+                    current = format;
+                }
+                fields.push((offset, kind));
+                text.push(ATTACHMENT);
+                offset += 1;
+                continue;
+            }
             let raw = match run.content {
                 Inline::Text(span) => document.text(span),
                 Inline::Tab => "\t",
+                Inline::LineBreak => "\u{2028}",
                 _ => continue,
             };
             let piece = without_attachments(raw);
             if piece.is_empty() {
                 continue;
             }
-            let format = run_format(document, paragraph, run);
             if format != current {
                 marks.push((offset, format));
                 current = format;
@@ -2906,7 +2981,11 @@ fn flatten_cell(document: &Document, cell: &crate::document::Cell) -> CellConten
             offset += utf16_len(&piece);
         }
     }
-    CellContent { text, marks }
+    CellContent {
+        text,
+        marks,
+        fields,
+    }
 }
 
 /// A run's own bold and italic, independent of the paragraph.
@@ -3220,19 +3299,20 @@ struct CellStyles {
     base_char: u64,
 }
 
-/// Builds a cell's rich-text storage (a `kind: 5` `TSWP.StorageArchive`): its
-/// text with a character-style table drawn from the cell's formatting runs.
-/// Returns the message chain and the style ids it references (for the object's
-/// header, so the document scope keeps them).
-fn build_cell_storage(
+/// Builds a `TSWP.StorageArchive` of `kind` (5 a table cell, 1 a header or
+/// footer) holding `content`, its paragraphs in `styles.paragraph`, its runs'
+/// character styles, and each field's attachment object at its offset.
+fn build_text_storage(
     tree: &mut Tree,
     cell: &CellContent,
     formats: &HashMap<Format, u64>,
     styles: CellStyles,
+    kind: u64,
+    attachments: &[(u32, u64)],
 ) -> Result<(u32, Vec<u64>), PackageError> {
     let storage = message_ref("TSWP.StorageArchive")?;
     let mut chain = Chain::new();
-    push_field(tree, &mut chain, storage, "kind", Node::Uint(5))?;
+    push_field(tree, &mut chain, storage, "kind", Node::Uint(kind))?;
     push_field(
         tree,
         &mut chain,
@@ -3283,6 +3363,12 @@ fn build_cell_storage(
         }
     }
     emit_reference_table(tree, &mut chain, storage, "table_char_style", &char_entries)?;
+    if !attachments.is_empty() {
+        let entries: Vec<(u32, Option<u64>)> =
+            attachments.iter().map(|(offset, id)| (*offset, Some(*id))).collect();
+        emit_reference_table(tree, &mut chain, storage, "table_attachment", &entries)?;
+        refs.extend(attachments.iter().map(|(_, id)| *id));
+    }
     // The per-paragraph tables Pages expects on a cell storage.
     emit_data_table(tree, &mut chain, storage, "table_para_data", &[(0, 0, 0)])?;
     emit_data_table(tree, &mut chain, storage, "table_para_starts", &[(0, 0, 0)])?;
@@ -4506,7 +4592,7 @@ impl CloneMap {
 enum UuidAt {
     Words([u32; 4], [u8; 16]),
     Pair([u32; 2], [u8; 16]),
-    Text(u32, [u8; 16]),
+    Text([u8; 16]),
 }
 
 fn chain_uuids(tree: &Tree, first: u32) -> Vec<UuidAt> {
@@ -4526,7 +4612,8 @@ fn chain_uuids(tree: &Tree, first: u32) -> Vec<UuidAt> {
             (Some("upper"), Node::Uint(v)) => pair[1] = Some((index, v)),
             (_, Node::Str(span)) => {
                 if let Some(bytes) = parse_uuid_text(tree.bytes(span)) {
-                    out.push(UuidAt::Text(index, bytes));
+                    let _ = index;
+                    out.push(UuidAt::Text(bytes));
                 }
             }
             _ => {}
@@ -4603,7 +4690,7 @@ fn mentions_clone(tree: &Tree, first: u32, map: &CloneMap) -> bool {
         }
         for uuid in chain_uuids(tree, chain) {
             let bytes = match uuid {
-                UuidAt::Words(_, b) | UuidAt::Pair(_, b) | UuidAt::Text(_, b) => b,
+                UuidAt::Words(_, b) | UuidAt::Pair(_, b) | UuidAt::Text(b) => b,
             };
             if map.uuid(bytes).is_some() {
                 found = true;
@@ -4686,7 +4773,7 @@ fn copy_chain(
                     target.entries[indices[1] as usize].value = Node::Uint(upper);
                 }
             }
-            UuidAt::Text(..) => {}
+            UuidAt::Text(_) => {}
         }
     }
     Ok(chain.first)
@@ -4794,7 +4881,7 @@ fn clone_template_table(
             walk_chains(&stream.tree, message.first, &mut |tree, chain| {
                 for uuid in chain_uuids(tree, chain) {
                     let bytes = match uuid {
-                        UuidAt::Words(_, b) | UuidAt::Pair(_, b) | UuidAt::Text(_, b) => b,
+                        UuidAt::Words(_, b) | UuidAt::Pair(_, b) | UuidAt::Text(b) => b,
                     };
                     let family: [u8; 12] = bytes[4..].try_into().expect("12");
                     if family.iter().any(|byte| *byte != 0) && !families.contains_key(&family) {
@@ -5558,4 +5645,199 @@ fn set_owner_table_ranges(
         }
     }
     Ok(())
+}
+
+// ----- headers and footers -----
+
+const NUMBER_ATTACHMENT: u32 = 2043;
+
+#[derive(Clone, Copy, PartialEq)]
+enum PageVariant {
+    Default,
+    First,
+    Even,
+}
+
+/// One header or footer area to write: which page template, header or footer,
+/// which of the three areas (left, center, right), and its content.
+struct PageArea {
+    variant: PageVariant,
+    footer: bool,
+    position: usize,
+    content: CellContent,
+}
+
+/// A section's headers and footers as Pages areas: each paragraph goes to the
+/// left, center, or right area by its alignment, the way Pages lays out a
+/// header natively.
+fn page_areas(document: &Document, section: &crate::document::Section) -> Vec<PageArea> {
+    let mut areas = Vec::new();
+    for (footer, variants) in [(false, &section.headers), (true, &section.footers)] {
+        for (variant, blocks) in [
+            (PageVariant::Default, &variants.default),
+            (PageVariant::First, &variants.first),
+            (PageVariant::Even, &variants.even),
+        ] {
+            let Some(blocks) = blocks else {
+                continue;
+            };
+            let mut buckets: [Vec<&Paragraph>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+            for block in blocks {
+                let Block::Paragraph(paragraph) = block else {
+                    continue;
+                };
+                let position = match document.paragraph_properties(paragraph).alignment {
+                    Some(crate::document::Alignment::Center) => 1,
+                    Some(crate::document::Alignment::Right) => 2,
+                    _ => 0,
+                };
+                buckets[position].push(paragraph);
+            }
+            for (position, paragraphs) in buckets.iter().enumerate() {
+                let content = flatten_paragraphs(document, paragraphs);
+                if content.text.trim().is_empty() && content.fields.is_empty() {
+                    continue;
+                }
+                areas.push(PageArea {
+                    variant,
+                    footer,
+                    position,
+                    content,
+                });
+            }
+        }
+    }
+    areas
+}
+
+/// Writes each area into the matching storage of the template's section page
+/// templates (odd for the default, first, even), keeping the storage's own
+/// paragraph style, and turns on first-page or odd/even variation when used.
+fn write_page_areas(
+    package: &mut Package,
+    areas: &[PageArea],
+    formats: &HashMap<Format, u64>,
+    styles: CellStyles,
+    next_id: &mut u64,
+) -> Result<(), PackageError> {
+    if areas.is_empty() {
+        return Ok(());
+    }
+    // The section and its page templates.
+    let (section_id, templates) = {
+        let stream = document_stream(package)?;
+        let mut found = None;
+        for object in &stream.objects {
+            let first = object.messages[0].first;
+            let reference = |name| match field_value(&stream.tree, first, name) {
+                Some(Node::Reference(id)) => Some(id),
+                _ => None,
+            };
+            if let Some(odd) = reference("odd_section_template_page") {
+                found = Some((
+                    object.identifier,
+                    [odd, reference("first_section_template_page").unwrap_or(odd), reference("even_section_template_page").unwrap_or(odd)],
+                ));
+                break;
+            }
+        }
+        found.ok_or_else(|| malformed("section has no page templates"))?
+    };
+    for area in areas {
+        let template = templates[match area.variant {
+            PageVariant::Default => 0,
+            PageVariant::First => 1,
+            PageVariant::Even => 2,
+        }];
+        let storages: Vec<u64> = {
+            let (tree, first) = object_message(package, template).ok_or_else(|| malformed("page template is missing"))?;
+            let name = if area.footer { "footers" } else { "headers" };
+            tree.chain(first)
+                .filter(|(_, entry)| tree.field(entry).map(|f| f.name) == Some(name))
+                .filter_map(|(_, entry)| match entry.value {
+                    Node::Reference(id) => Some(id),
+                    _ => None,
+                })
+                .collect()
+        };
+        let Some(&storage_id) = storages.get(area.position) else {
+            continue;
+        };
+        // Keep the area's own paragraph style (the template's header/footer).
+        let paragraph = object_message(package, storage_id)
+            .and_then(|(tree, first)| {
+                let table = message_field(tree, first, "table_para_style")?;
+                let entry = message_field(tree, table, "entries")?;
+                reference_of(field_value(tree, entry, "object"))
+            })
+            .unwrap_or(styles.paragraph);
+        let area_styles = CellStyles { paragraph, ..styles };
+        let stream = stream_containing(package, storage_id)?;
+        let attachments = create_number_attachments(stream, &area.content.fields, next_id)?;
+        let (message, refs) =
+            build_text_storage(&mut stream.tree, &area.content, formats, area_styles, 1, &attachments)?;
+        let object = stream
+            .objects
+            .iter_mut()
+            .find(|object| object.identifier == storage_id)
+            .ok_or_else(|| malformed("header storage is missing"))?;
+        object.messages[0].first = message;
+        let info = object.info;
+        add_object_references(&mut stream.tree, info, &refs)?;
+    }
+    // Variation flags on the section.
+    let first_used = areas.iter().any(|area| area.variant == PageVariant::First);
+    let even_used = areas.iter().any(|area| area.variant == PageVariant::Even);
+    let stream = document_stream(package)?;
+    let first = stream
+        .objects
+        .iter()
+        .find(|object| object.identifier == section_id)
+        .map(|object| object.messages[0].first)
+        .ok_or_else(|| malformed("section is missing"))?;
+    for (name, value) in [
+        ("section_template_first_page_different", first_used),
+        ("section_template_even_odd_pages_different", even_used),
+        ("inherit_previous_header_footer", false),
+    ] {
+        if let Some(index) = field_entry(&stream.tree, first, name) {
+            stream.tree.entries[index as usize].value = Node::Bool(value);
+        }
+    }
+    Ok(())
+}
+
+/// Creates a `TSWP.NumberAttachmentArchive` (page number or page count,
+/// decimal) in `stream` for each field, returning (offset, object id) pairs.
+fn create_number_attachments(
+    stream: &mut Stream,
+    fields: &[(u32, u64)],
+    next_id: &mut u64,
+) -> Result<Vec<(u32, u64)>, PackageError> {
+    let archive = message_ref("TSWP.NumberAttachmentArchive")?;
+    let base = child_message(archive, "super")?;
+    let mut out = Vec::new();
+    for &(offset, kind) in fields {
+        let id = *next_id;
+        *next_id += 1;
+        let tree = &mut stream.tree;
+        let mut super_chain = Chain::new();
+        push_field(tree, &mut super_chain, base, "kind", Node::Uint(kind))?;
+        let mut chain = Chain::new();
+        push_field(tree, &mut chain, archive, "super", Node::Message(super_chain.first))?;
+        push_field(tree, &mut chain, archive, "number_format", Node::Uint(0))?;
+        let name = tree.push_bytes(b"decimal").map_err(tree_error)?;
+        push_field(tree, &mut chain, archive, "number_format_name", Node::Str(name))?;
+        let info = build_archive_info(tree, id, NUMBER_ATTACHMENT)?;
+        stream.objects.push(Object {
+            identifier: id,
+            info,
+            messages: vec![ObjectMessage {
+                message_type: NUMBER_ATTACHMENT,
+                first: chain.first,
+            }],
+        });
+        out.push((offset, id));
+    }
+    Ok(out)
 }
