@@ -2683,7 +2683,7 @@ fn build_storage(
     styles: &HashMap<String, u64>,
     formats: &HashMap<Format, u64>,
     lists: &HashMap<String, u64>,
-    word_lists: &HashMap<usize, u64>,
+    word_lists: &HashMap<ListKey, u64>,
     anchors: &[(u32, u64)],
     smart_entries: &[(u32, Option<u64>)],
     paras: &ParaStyles,
@@ -2792,7 +2792,9 @@ fn build_storage(
             .paragraphs
             .iter()
             .map(|mark| {
-                let word_list = mark.list.and_then(|item| word_lists.get(&item.style));
+                let word_list = mark
+                    .list
+                    .and_then(|item| word_lists.get(&(item.style, mark.list_indents)));
                 (
                     mark.offset,
                     word_list
@@ -2989,6 +2991,8 @@ struct ParagraphMark {
     format: ParaFormat,
     /// Word's contextual spacing: no space against a same-style neighbour.
     contextual: bool,
+    /// A list paragraph's own indents where they differ from its list's.
+    list_indents: Option<ListIndents>,
 }
 
 /// A point in the text where the character formatting changes.
@@ -3222,6 +3226,7 @@ impl Walk {
             list: None,
             format: ParaFormat::default(),
             contextual: false,
+            list_indents: None,
         });
         self.take_break();
         let columns = table.columns.len();
@@ -3358,6 +3363,7 @@ impl Walk {
                 .effective_paragraph(paragraph)
                 .contextual_spacing
                 .unwrap_or(false),
+            list_indents: list_indents(document, paragraph),
         });
         self.take_break();
         for run in &paragraph.runs {
@@ -3419,6 +3425,7 @@ impl Walk {
                 list: last.list,
                 format: last.format,
                 contextual: last.contextual,
+                list_indents: last.list_indents,
             };
             self.paragraphs.push(mark);
         }
@@ -8675,25 +8682,41 @@ fn synthesize_list_styles(
     lists: &HashMap<String, u64>,
     stylesheet: u64,
     next_id: &mut u64,
-) -> Result<HashMap<usize, u64>, PackageError> {
+) -> Result<HashMap<ListKey, u64>, PackageError> {
     let archive = message_ref("TSWP.ListStyleArchive")?;
     let base = child_message(archive, "super")?;
     let geometry = child_message(archive, "geometries")?;
-    let mut used: Vec<&ListItem> = body
+    // One style per Word list, and one more per indents a paragraph gives its
+    // level of that list.
+    let mut used: Vec<(&ListItem, Option<ListIndents>)> = body
         .paragraphs
         .iter()
-        .filter_map(|mark| mark.list.as_ref())
+        .filter_map(|mark| mark.list.as_ref().map(|item| (item, mark.list_indents)))
         .collect();
-    used.sort_by_key(|item| item.style);
-    used.dedup_by_key(|item| item.style);
+    used.sort_by_key(|(item, indents)| (item.style, *indents));
+    used.dedup_by_key(|(item, indents)| (item.style, *indents));
     // The em the text gap is measured in: the body text's size.
     let em = default_font_size(document);
     let mut out = HashMap::new();
     let mut pairs = Vec::new();
     let stream = stream_containing(package, stylesheet)?;
-    for item in used {
+    for (item, indents) in used {
         let Some(style) = document.styles.list.get(item.style) else {
             continue;
+        };
+        // A level's (label position, text position), a paragraph's own where
+        // it states them.
+        let positions = |index: usize| -> (f32, f32) {
+            match indents {
+                Some((level, label, text)) if usize::from(level) == index => {
+                    (label as f32 / 100.0, text as f32 / 100.0)
+                }
+                _ => style
+                    .levels
+                    .get(index)
+                    .or_else(|| style.levels.last())
+                    .map_or((0.0, 18.0), |level| (level.label_indent, level.indent)),
+            }
         };
         let Some(parent) = list_style_for(document, lists, Some(item)) else {
             continue;
@@ -8742,8 +8765,8 @@ fn synthesize_list_styles(
             push_field(tree, &mut chain, archive, "label_types", Node::Uint(kind))?;
         }
         for index in 0..LIST_LEVELS {
-            let gap =
-                level(index).map_or(18.0, |level| (level.indent - level.label_indent).max(0.0));
+            let (label, text) = positions(index);
+            let gap = (text - label).max(0.0);
             push_field(
                 tree,
                 &mut chain,
@@ -8753,7 +8776,7 @@ fn synthesize_list_styles(
             )?;
         }
         for index in 0..LIST_LEVELS {
-            let at = level(index).map_or(0.0, |level| level.label_indent.max(0.0));
+            let at = positions(index).0.max(0.0);
             push_field(tree, &mut chain, archive, "indents", Node::Float(at))?;
         }
         for _ in 0..LIST_LEVELS {
@@ -8831,7 +8854,7 @@ fn synthesize_list_styles(
                 first: chain.first,
             }],
         });
-        out.insert(item.style, id);
+        out.insert((item.style, indents), id);
         pairs.push((parent, id));
     }
     register_in_stylesheet(package, stylesheet, &pairs)?;
@@ -9181,4 +9204,36 @@ mod url_tests {
             "https://example.com/?a=1#x"
         );
     }
+}
+
+/// A list paragraph's own indents at its level: (level, label position,
+/// text position), in hundredths of a point.
+type ListIndents = (u8, i32, i32);
+
+/// A Word list's style, and a paragraph's own indents for its level.
+type ListKey = (usize, Option<ListIndents>);
+
+/// The indents a list paragraph states itself, attribute by attribute over
+/// its list level's (as Word applies them), when they differ from the level's.
+fn list_indents(document: &Document, paragraph: &Paragraph) -> Option<ListIndents> {
+    let item = paragraph.list.as_ref()?;
+    let level = document
+        .styles
+        .list
+        .get(item.style)?
+        .levels
+        .get(item.level as usize)?;
+    let own = document.paragraph_properties(paragraph);
+    if own.left_indent.is_none() && own.first_line_indent.is_none() {
+        return None;
+    }
+    let text = own.left_indent.unwrap_or(level.indent);
+    // The model's first line is measured from the margin: it is the label's place.
+    let label = own
+        .first_line_indent
+        .unwrap_or(text - (level.indent - level.label_indent));
+    let hundredths = |value: f32| (value * 100.0).round() as i32;
+    ((hundredths(label), hundredths(text))
+        != (hundredths(level.label_indent), hundredths(level.indent)))
+        .then(|| (item.level, hundredths(label), hundredths(text)))
 }
