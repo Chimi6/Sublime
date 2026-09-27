@@ -58,6 +58,38 @@ pub static WEBP: Format = Format {
     category: Category::Image,
 };
 
+pub static PBM: Format = Format {
+    id: "pbm",
+    display_name: "Netpbm bitmap (PBM)",
+    extensions: &["pbm"],
+    magic: Some(b"P4"),
+    category: Category::Image,
+};
+
+pub static PGM: Format = Format {
+    id: "pgm",
+    display_name: "Netpbm graymap (PGM)",
+    extensions: &["pgm"],
+    magic: Some(b"P5"),
+    category: Category::Image,
+};
+
+pub static PPM: Format = Format {
+    id: "ppm",
+    display_name: "Netpbm pixmap (PPM)",
+    extensions: &["ppm", "pnm"],
+    magic: Some(b"P6"),
+    category: Category::Image,
+};
+
+pub static PAM: Format = Format {
+    id: "pam",
+    display_name: "Netpbm arbitrary map (PAM)",
+    extensions: &["pam"],
+    magic: Some(b"P7"),
+    category: Category::Image,
+};
+
 pub static QOI: Format = Format {
     id: "qoi",
     display_name: "QOI image",

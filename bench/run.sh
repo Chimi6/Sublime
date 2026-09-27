@@ -34,7 +34,13 @@ time_cmd() {
   local label="$1"; shift
   local rss=""
   local results=()
+  # An output under $data/out-* is removed before each run, so every
+  # run writes a fresh file: replacing an existing one costs a writeback
+  # on btrfs and ext4 for a rename into place (ours, atomic) and not for
+  # a truncate (the crates'), which is the file system, not the converter.
+  local last="${!#}"
   for _ in 1 2 3; do
+    case "$(basename -- "$last")" in out-*) rm -f -- "$last" ;; esac
     local start end
     start="$(date +%s.%N)"
     "$time_bin" -f "%M" -o "$data/rss.txt" "$@"

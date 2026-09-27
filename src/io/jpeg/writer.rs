@@ -9,6 +9,7 @@
 use std::io::{self, Write};
 
 use crate::image::{ColorType, Image};
+use crate::image::{flatten, luma_of};
 use crate::io::png::RowSink;
 
 /// The quality the converter uses when none is given.
@@ -530,19 +531,6 @@ impl<'a> JpegRows<'a> {
         self.rows_in_band = 0;
         Ok(())
     }
-}
-
-/// A sample over alpha, onto white.
-#[inline]
-fn flatten(value: u8, alpha: u8) -> u8 {
-    let (value, alpha) = (u32::from(value), u32::from(alpha));
-    ((value * alpha + 255 * (255 - alpha) + 127) / 255) as u8
-}
-
-/// Luma alone, with libjpeg's constants.
-#[inline]
-fn luma_of(r: u8, g: u8, b: u8) -> u8 {
-    ((19_595 * i32::from(r) + 38_470 * i32::from(g) + 7_471 * i32::from(b) + (1 << 15)) >> 16) as u8
 }
 
 /// libjpeg's fixed-point RGB to YCbCr (`jccolor.c`).
