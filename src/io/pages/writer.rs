@@ -293,7 +293,7 @@ fn rebuild_body(
                         .map(|(_, format)| (cell.paragraph, *format)),
                 );
             }
-            synthesize_para_styles(package, needed, sheet, &mut next_id)?
+            synthesize_para_styles(package, needed, sheet, &document.tab_sets, &mut next_id)?
         }
         _ => (HashMap::new(), Vec::new()),
     };
@@ -7375,6 +7375,8 @@ struct ParaFormat {
     line_spacing: Option<(u8, i32)>,
     /// Pages' border positions, the line's width (hundredths) and colour.
     border: Option<(u64, i32, (u8, u8, u8))>,
+    /// Its tab stops, an index into the document's tab sets.
+    tabs: Option<u32>,
 }
 
 impl ParaFormat {
@@ -7389,6 +7391,7 @@ impl ParaFormat {
             self.line_spacing.is_some(),
             self.border.is_some(),
             self.border.is_some(),
+            self.tabs.is_some(),
         ]
         .iter()
         .filter(|set| **set)
@@ -7459,6 +7462,7 @@ fn para_format(document: &Document, paragraph: &Paragraph) -> ParaFormat {
                 (positions, (border.line.width * 100.0).round() as i32, color)
             })
             .filter(|(positions, _, _)| *positions != 0),
+        tabs: properties.tabs,
     }
 }
 
@@ -7469,6 +7473,7 @@ fn synthesize_para_styles(
     package: &mut Package,
     needed: Vec<(u64, ParaFormat)>,
     stylesheet: u64,
+    tab_sets: &[Vec<crate::document::TabStop>],
     next_id: &mut u64,
 ) -> Result<(ParaStyles, Vec<u64>), PackageError> {
     let archive = message_ref("TSWP.ParagraphStyleArchive")?;
@@ -7545,6 +7550,39 @@ fn synthesize_para_styles(
         }
         if let Some(value) = format.space_before {
             push_field(tree, &mut props, properties, "space_before", points(value))?;
+        }
+        if let Some(tabs) = format.tabs.and_then(|index| tab_sets.get(index as usize)) {
+            let tabs_archive = child_message(properties, "tabs")?;
+            let tab = child_message(tabs_archive, "tabs")?;
+            let mut list = Chain::new();
+            for stop in tabs {
+                let mut item = Chain::new();
+                push_field(tree, &mut item, tab, "position", Node::Float(stop.position))?;
+                let alignment = match stop.alignment {
+                    crate::document::TabAlignment::Left => 0,
+                    crate::document::TabAlignment::Center => 1,
+                    crate::document::TabAlignment::Right => 2,
+                    crate::document::TabAlignment::Decimal => 3,
+                };
+                push_field(tree, &mut item, tab, "alignment", Node::Uint(alignment))?;
+                let leader = stop.leader.map(String::from).unwrap_or_default();
+                let span = tree.push_bytes(leader.as_bytes()).map_err(tree_error)?;
+                push_field(tree, &mut item, tab, "leader", Node::Str(span))?;
+                push_field(
+                    tree,
+                    &mut list,
+                    tabs_archive,
+                    "tabs",
+                    Node::Message(item.first),
+                )?;
+            }
+            push_field(
+                tree,
+                &mut props,
+                properties,
+                "tabs",
+                Node::Message(list.first),
+            )?;
         }
         if let Some((positions, width, (red, green, blue))) = format.border {
             let stroke = child_message(properties, "stroke")?;
