@@ -20,6 +20,7 @@ fn convert_with(
         strict: false,
         sheet: sheet.map(str::to_string),
         quality: None,
+        page: None,
     };
     let mut sink = NullSink;
     let mut context = Context::new(&mut sink, &options);
