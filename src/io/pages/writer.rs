@@ -182,7 +182,11 @@ fn rebuild_body(
     lists: &HashMap<String, u64>,
 ) -> Result<(), PackageError> {
     let body = flatten(document);
-    let areas = document.sections.first().map(|section| page_areas(document, section)).unwrap_or_default();
+    let areas = document
+        .sections
+        .first()
+        .map(|section| page_areas(document, section))
+        .unwrap_or_default();
     let boxes = text_boxes(document);
     let mut next_id = max_identifier(package) + 1;
     let mut next_data_id = max_data_id(package) + 1;
@@ -206,10 +210,19 @@ fn rebuild_body(
                     })
                 }))
                 .chain(areas.iter().flat_map(|area| {
-                    area.content.marks.iter().map(|(_, format)| *format).collect::<Vec<_>>()
+                    area.content
+                        .marks
+                        .iter()
+                        .map(|(_, format)| *format)
+                        .collect::<Vec<_>>()
                 }))
                 .chain(boxes.iter().flat_map(|text_box| {
-                    text_box.content.marks.iter().map(|(_, format)| *format).collect::<Vec<_>>()
+                    text_box
+                        .content
+                        .marks
+                        .iter()
+                        .map(|(_, format)| *format)
+                        .collect::<Vec<_>>()
                 }))
                 .filter(Format::has_direct);
             synthesize_char_styles(
@@ -249,15 +262,31 @@ fn rebuild_body(
             }
             for table in &body.tables {
                 for content in &table.cells {
-                    needed.extend(content.paragraphs.iter().map(|(_, format)| (cell.paragraph, *format)));
+                    needed.extend(
+                        content
+                            .paragraphs
+                            .iter()
+                            .map(|(_, format)| (cell.paragraph, *format)),
+                    );
                 }
             }
             for area in &areas {
                 let parent = area_paragraph_style(package, area).unwrap_or(cell.paragraph);
-                needed.extend(area.content.paragraphs.iter().map(|(_, format)| (parent, *format)));
+                needed.extend(
+                    area.content
+                        .paragraphs
+                        .iter()
+                        .map(|(_, format)| (parent, *format)),
+                );
             }
             for text_box in &boxes {
-                needed.extend(text_box.content.paragraphs.iter().map(|(_, format)| (cell.paragraph, *format)));
+                needed.extend(
+                    text_box
+                        .content
+                        .paragraphs
+                        .iter()
+                        .map(|(_, format)| (cell.paragraph, *format)),
+                );
             }
             synthesize_para_styles(package, needed, sheet, &mut next_id)?
         }
@@ -265,8 +294,22 @@ fn rebuild_body(
     };
 
     if let Some(styles) = cell_styles {
-        write_page_areas(package, &areas, &all_formats, styles, &para_styles, &mut next_id)?;
-        write_text_boxes(package, &boxes, &all_formats, styles, &para_styles, &mut next_id)?;
+        write_page_areas(
+            package,
+            &areas,
+            &all_formats,
+            styles,
+            &para_styles,
+            &mut next_id,
+        )?;
+        write_text_boxes(
+            package,
+            &boxes,
+            &all_formats,
+            styles,
+            &para_styles,
+            &mut next_id,
+        )?;
     }
 
     // The template carries one table: a document with more gets a clone of
@@ -828,7 +871,10 @@ fn reuse_table(
 ) -> Result<(), PackageError> {
     // Word tables do not band their rows as the template's table style does:
     // each table takes a variation of its style with banding off.
-    if let (Some(styles), Some(parent)) = (cell_styles, object_reference(package, table.model_id, "table_style")) {
+    if let (Some(styles), Some(parent)) = (
+        cell_styles,
+        object_reference(package, table.model_id, "table_style"),
+    ) {
         let variation = match unbanded.get(&parent) {
             Some(id) => *id,
             None => {
@@ -838,7 +884,11 @@ fn reuse_table(
             }
         };
         let stream = stream_containing(package, table.model_id)?;
-        if let Some(object) = stream.objects.iter().find(|object| object.identifier == table.model_id) {
+        if let Some(object) = stream
+            .objects
+            .iter()
+            .find(|object| object.identifier == table.model_id)
+        {
             let (first, info) = (object.messages[0].first, object.info);
             if let Some(index) = field_entry(&stream.tree, first, "table_style") {
                 stream.tree.entries[index as usize].value = Node::Reference(variation);
@@ -869,8 +919,15 @@ fn reuse_table(
                 let payload_id = *next_id + 1;
                 *next_id += 2;
                 let attachments = create_number_attachments(stream, &cell.fields, next_id)?;
-                let (message, refs) =
-                    build_text_storage(&mut stream.tree, cell, formats, styles, Some(5), &attachments, paras)?;
+                let (message, refs) = build_text_storage(
+                    &mut stream.tree,
+                    cell,
+                    formats,
+                    styles,
+                    Some(5),
+                    &attachments,
+                    paras,
+                )?;
                 let info = build_archive_info(&mut stream.tree, storage_id, STORAGE_ARCHIVE)?;
                 add_object_references(&mut stream.tree, info, &refs)?;
                 new_objects.push(Object {
@@ -921,11 +978,19 @@ fn reuse_table(
         // would leave a second table's copy dangling.
         let missing: Vec<Option<crate::document::Color>> = fills
             .iter()
-            .filter(|fill| fill.is_some() && !fill_styles.contains_key(&(table.cell_style_id, **fill)))
+            .filter(|fill| {
+                fill.is_some() && !fill_styles.contains_key(&(table.cell_style_id, **fill))
+            })
             .copied()
             .collect();
         if !missing.is_empty() {
-            let created = create_cell_styles(package, table.cell_style_id, &missing, styles.stylesheet, next_id)?;
+            let created = create_cell_styles(
+                package,
+                table.cell_style_id,
+                &missing,
+                styles.stylesheet,
+                next_id,
+            )?;
             for (fill, id) in created {
                 fill_styles.insert((table.cell_style_id, fill), id);
             }
@@ -939,7 +1004,8 @@ fn reuse_table(
         // the table's other cells with dangling keys.
         let covered = mark.covered();
         let cells = mark.rows * mark.columns;
-        let mut style_entries: Vec<(u32, u64, u64)> = vec![(TEXT_STYLE_KEY, styles.paragraph, cells as u64)];
+        let mut style_entries: Vec<(u32, u64, u64)> =
+            vec![(TEXT_STYLE_KEY, styles.paragraph, cells as u64)];
         let mut fill_keys: HashMap<Option<crate::document::Color>, u32> = HashMap::new();
         for fill in &fills {
             let key = style_entries.len() as u32 + 1;
@@ -956,13 +1022,22 @@ fn reuse_table(
             cell_style_keys.insert(index, fill_keys[fill]);
         }
         let references: Vec<u64> = style_entries.iter().map(|(_, id, _)| *id).collect();
-        rewrite_object(package, table.style_id, |tree| build_style_list(tree, &style_entries))?;
+        rewrite_object(package, table.style_id, |tree| {
+            build_style_list(tree, &style_entries)
+        })?;
         add_object_refs(package, table.style_id, &references)?;
         let rich_cells = (cells - covered.len()) as u64;
-        set_list_refcount(package, table.format_id, u64::from(FORMAT_KEY), rich_cells.max(1))?;
+        set_list_refcount(
+            package,
+            table.format_id,
+            u64::from(FORMAT_KEY),
+            rich_cells.max(1),
+        )?;
     }
 
-    rewrite_object(package, table.tile_id, |tree| build_tile(tree, mark, &rich, &cell_style_keys))?;
+    rewrite_object(package, table.tile_id, |tree| {
+        build_tile(tree, mark, &rich, &cell_style_keys)
+    })?;
     // When every cell is rich its text lives in its own storage, so the string
     // table stays empty (as Pages writes it); otherwise plain cells use it.
     let string_cells: &[CellContent] = if rich.is_empty() { &mark.cells } else { &[] };
@@ -1080,7 +1155,13 @@ fn rebuild_stroke_sidecar(
         tree.push_known(&mut chain, sidecar, slot, field, number, value)
             .map_err(tree_error)?;
     }
-    push_field(tree, &mut chain, sidecar, "column_count", Node::Uint(columns))?;
+    push_field(
+        tree,
+        &mut chain,
+        sidecar,
+        "column_count",
+        Node::Uint(columns),
+    )?;
     push_field(tree, &mut chain, sidecar, "row_count", Node::Uint(rows))?;
     Ok(chain.first)
 }
@@ -1103,7 +1184,11 @@ fn build_column_row_uids(
         (
             columns,
             0x436F_6C75_6D6E_0000u64,
-            ["sorted_column_uids", "column_index_for_uid", "column_uid_for_index"],
+            [
+                "sorted_column_uids",
+                "column_index_for_uid",
+                "column_uid_for_index",
+            ],
         ),
         (
             rows,
@@ -1114,7 +1199,8 @@ fn build_column_row_uids(
         // (upper, lower, index) per column or row, sorted by UUID value.
         let mut uids: Vec<(u64, u64, usize)> = (0..count)
             .map(|index| {
-                let (lower, upper) = object_uuid(seed.wrapping_mul(0x1_0000_0001) ^ salt ^ index as u64);
+                let (lower, upper) =
+                    object_uuid(seed.wrapping_mul(0x1_0000_0001) ^ salt ^ index as u64);
                 (upper, lower, index)
             })
             .collect();
@@ -2567,7 +2653,10 @@ fn build_storage(
         .iter()
         .map(|paragraph| {
             let identifier = style_identifier(document, styles, paragraph.style_name.as_deref());
-            let identifier = paras.get(&(identifier, paragraph.format)).copied().unwrap_or(identifier);
+            let identifier = paras
+                .get(&(identifier, paragraph.format))
+                .copied()
+                .unwrap_or(identifier);
             (paragraph.offset, Some(identifier))
         })
         .collect();
@@ -2962,13 +3051,21 @@ impl Walk {
         // page is clipped. Such a table (often a whole section wrapped in one
         // layout cell) is unwrapped into body content, row by row, where Pages
         // paginates freely; tables nested in it become tables in their own right.
-        let page = document.sections.first().map(|section| section.page.clone()).unwrap_or_default();
+        let page = document
+            .sections
+            .first()
+            .map(|section| section.page.clone())
+            .unwrap_or_default();
         let body_height = (page.height - page.margin_top - page.margin_bottom).max(144.0);
         // A table wider than the text area is shrunk to fit it, as Pages would
         // draw it anyway; its rows are estimated at those widths.
         let text_width = (page.width - page.margin_left - page.margin_right).max(72.0);
         let total: f32 = table.columns.iter().sum();
-        let scale = if total > text_width { text_width / total } else { 1.0 };
+        let scale = if total > text_width {
+            text_width / total
+        } else {
+            1.0
+        };
         let widths: Vec<f32> = table.columns.iter().map(|width| width * scale).collect();
         if max_row_height(document, table, &widths) > body_height * 1.1 {
             for row in &table.rows {
@@ -3014,7 +3111,9 @@ impl Walk {
             for (c, cell) in row.cells.iter().enumerate().take(columns) {
                 let span_rows = (cell.row_span.max(1) as usize).min(rows - r);
                 let span_columns = (cell.column_span.max(1) as usize).min(columns - c);
-                if cell.merge == crate::document::Merge::Origin && (span_rows > 1 || span_columns > 1) {
+                if cell.merge == crate::document::Merge::Origin
+                    && (span_rows > 1 || span_columns > 1)
+                {
                     merges.push((r, c, span_rows, span_columns));
                 }
             }
@@ -3044,9 +3143,16 @@ impl Walk {
     fn paragraph(&mut self, document: &Document, paragraph: &Paragraph) {
         // A paragraph holding only a page break becomes the break character
         // opening the next paragraph, as Pages writes it.
-        let live: Vec<&crate::document::Run> =
-            paragraph.runs.iter().filter(|run| !document.is_deleted(run)).collect();
-        if !live.is_empty() && live.iter().all(|run| matches!(run.content, Inline::PageBreak)) {
+        let live: Vec<&crate::document::Run> = paragraph
+            .runs
+            .iter()
+            .filter(|run| !document.is_deleted(run))
+            .collect();
+        if !live.is_empty()
+            && live
+                .iter()
+                .all(|run| matches!(run.content, Inline::PageBreak))
+        {
             self.pending_break = true;
             return;
         }
@@ -3226,7 +3332,6 @@ fn collect_paragraphs<'a>(blocks: &'a [Block], out: &mut Vec<&'a Paragraph>) {
     }
 }
 
-
 /// Flattens lines (see `block_lines`) into one text with its formatting runs:
 /// lines end with a paragraph break, segments with a tab, and a segment's
 /// paragraphs with a soft line break.
@@ -3237,7 +3342,11 @@ fn flatten_lines(document: &Document, lines: &[Line<'_>]) -> CellContent {
     let mut starts: Vec<(u32, ParaFormat)> = Vec::new();
     let mut current = Format::default();
     let mut offset = 0u32;
-    let separator = |text: &mut String, offset: &mut u32, marks: &mut Vec<(u32, Format)>, current: &mut Format, character: char| {
+    let separator = |text: &mut String,
+                     offset: &mut u32,
+                     marks: &mut Vec<(u32, Format)>,
+                     current: &mut Format,
+                     character: char| {
         if *current != Format::default() {
             marks.push((*offset, Format::default()));
             *current = Format::default();
@@ -3246,20 +3355,25 @@ fn flatten_lines(document: &Document, lines: &[Line<'_>]) -> CellContent {
         *offset += 1;
     };
     let paragraphs = lines.iter().enumerate().flat_map(|(line_index, line)| {
-        line.iter().enumerate().flat_map(move |(segment_index, segment)| {
-            segment.iter().enumerate().map(move |(paragraph_index, paragraph)| {
-                let lead = if paragraph_index > 0 {
-                    Some('\u{2028}')
-                } else if segment_index > 0 {
-                    Some('\t')
-                } else if line_index > 0 {
-                    Some('\n')
-                } else {
-                    None
-                };
-                (lead, *paragraph)
+        line.iter()
+            .enumerate()
+            .flat_map(move |(segment_index, segment)| {
+                segment
+                    .iter()
+                    .enumerate()
+                    .map(move |(paragraph_index, paragraph)| {
+                        let lead = if paragraph_index > 0 {
+                            Some('\u{2028}')
+                        } else if segment_index > 0 {
+                            Some('\t')
+                        } else if line_index > 0 {
+                            Some('\n')
+                        } else {
+                            None
+                        };
+                        (lead, *paragraph)
+                    })
             })
-        })
     });
     for (lead, paragraph) in paragraphs {
         if let Some(character) = lead {
@@ -3427,7 +3541,12 @@ fn utf16_len(text: &str) -> u32 {
 /// inline images anchor through their own path and never come through here.
 fn without_attachments(piece: &str) -> std::borrow::Cow<'_, str> {
     if piece.contains(ATTACHMENT) {
-        std::borrow::Cow::Owned(piece.chars().filter(|character| *character != ATTACHMENT).collect())
+        std::borrow::Cow::Owned(
+            piece
+                .chars()
+                .filter(|character| *character != ATTACHMENT)
+                .collect(),
+        )
     } else {
         std::borrow::Cow::Borrowed(piece)
     }
@@ -3661,11 +3780,17 @@ fn build_text_storage(
         .paragraphs
         .iter()
         .map(|(offset, format)| {
-            let style = paras.get(&(styles.paragraph, *format)).copied().unwrap_or(styles.paragraph);
+            let style = paras
+                .get(&(styles.paragraph, *format))
+                .copied()
+                .unwrap_or(styles.paragraph);
             (*offset, Some(style))
         })
         .collect();
-    if paragraph_entries.first().is_none_or(|(offset, _)| *offset != 0) {
+    if paragraph_entries
+        .first()
+        .is_none_or(|(offset, _)| *offset != 0)
+    {
         paragraph_entries.insert(0, (0, Some(styles.paragraph)));
     }
     for (_, id) in &paragraph_entries {
@@ -3714,8 +3839,10 @@ fn build_text_storage(
     }
     emit_reference_table(tree, &mut chain, storage, "table_char_style", &char_entries)?;
     if !attachments.is_empty() {
-        let entries: Vec<(u32, Option<u64>)> =
-            attachments.iter().map(|(offset, id)| (*offset, Some(*id))).collect();
+        let entries: Vec<(u32, Option<u64>)> = attachments
+            .iter()
+            .map(|(offset, id)| (*offset, Some(*id)))
+            .collect();
         emit_reference_table(tree, &mut chain, storage, "table_attachment", &entries)?;
         refs.extend(attachments.iter().map(|(_, id)| *id));
     }
@@ -3741,7 +3868,13 @@ fn build_rich_payload(tree: &mut Tree, storage_id: u64) -> Result<u32, PackageEr
     let cell_id = child_message(payload, "cellid")?;
     let coord = child_message(cell_id, "expanded_coord")?;
     let mut chain = Chain::new();
-    push_field(tree, &mut chain, payload, "storage", Node::Reference(storage_id))?;
+    push_field(
+        tree,
+        &mut chain,
+        payload,
+        "storage",
+        Node::Reference(storage_id),
+    )?;
     let mut id_chain = Chain::new();
     push_field(
         tree,
@@ -3829,13 +3962,43 @@ fn build_style_list(tree: &mut Tree, entries: &[(u32, u64, u64)]) -> Result<u32,
     let entry_ref = message_ref("TST.TableDataList.ListEntry")?;
     let mut chain = Chain::new();
     push_field(tree, &mut chain, data_list, "listType", Node::Uint(4))?;
-    push_field(tree, &mut chain, data_list, "nextListID", Node::Uint(entries.len() as u64 + 1))?;
+    push_field(
+        tree,
+        &mut chain,
+        data_list,
+        "nextListID",
+        Node::Uint(entries.len() as u64 + 1),
+    )?;
     for (key, style, refcount) in entries {
         let mut entry = Chain::new();
-        push_field(tree, &mut entry, entry_ref, "key", Node::Uint(u64::from(*key)))?;
-        push_field(tree, &mut entry, entry_ref, "refcount", Node::Uint(*refcount))?;
-        push_field(tree, &mut entry, entry_ref, "reference", Node::Reference(*style))?;
-        push_field(tree, &mut chain, data_list, "entries", Node::Message(entry.first))?;
+        push_field(
+            tree,
+            &mut entry,
+            entry_ref,
+            "key",
+            Node::Uint(u64::from(*key)),
+        )?;
+        push_field(
+            tree,
+            &mut entry,
+            entry_ref,
+            "refcount",
+            Node::Uint(*refcount),
+        )?;
+        push_field(
+            tree,
+            &mut entry,
+            entry_ref,
+            "reference",
+            Node::Reference(*style),
+        )?;
+        push_field(
+            tree,
+            &mut chain,
+            data_list,
+            "entries",
+            Node::Message(entry.first),
+        )?;
     }
     Ok(chain.first)
 }
@@ -3867,30 +4030,75 @@ fn create_cell_styles(
         let mut style = Chain::new();
         push_field(tree, &mut style, base, "parent", Node::Reference(parent))?;
         push_field(tree, &mut style, base, "is_variation", Node::Bool(true))?;
-        push_field(tree, &mut style, base, "stylesheet", Node::Reference(stylesheet))?;
+        push_field(
+            tree,
+            &mut style,
+            base,
+            "stylesheet",
+            Node::Reference(stylesheet),
+        )?;
         let mut fill_chain = Chain::new();
         if let Some(color) = color {
             let color_first = build_color(tree, *color)?;
-            push_field(tree, &mut fill_chain, fill, "color", Node::Message(color_first))?;
+            push_field(
+                tree,
+                &mut fill_chain,
+                fill,
+                "color",
+                Node::Message(color_first),
+            )?;
         }
         let mut pad = Chain::new();
         for side in ["left", "top", "right", "bottom"] {
             push_field(tree, &mut pad, padding, side, Node::Float(4.0))?;
         }
         let mut props = Chain::new();
-        push_field(tree, &mut props, properties, "cell_fill", Node::Message(fill_chain.first))?;
-        push_field(tree, &mut props, properties, "vertical_alignment", Node::Uint(3))?;
-        push_field(tree, &mut props, properties, "padding", Node::Message(pad.first))?;
+        push_field(
+            tree,
+            &mut props,
+            properties,
+            "cell_fill",
+            Node::Message(fill_chain.first),
+        )?;
+        push_field(
+            tree,
+            &mut props,
+            properties,
+            "vertical_alignment",
+            Node::Uint(3),
+        )?;
+        push_field(
+            tree,
+            &mut props,
+            properties,
+            "padding",
+            Node::Message(pad.first),
+        )?;
         let mut chain = Chain::new();
-        push_field(tree, &mut chain, archive, "super", Node::Message(style.first))?;
+        push_field(
+            tree,
+            &mut chain,
+            archive,
+            "super",
+            Node::Message(style.first),
+        )?;
         push_field(tree, &mut chain, archive, "override_count", Node::Uint(3))?;
-        push_field(tree, &mut chain, archive, "cell_properties", Node::Message(props.first))?;
+        push_field(
+            tree,
+            &mut chain,
+            archive,
+            "cell_properties",
+            Node::Message(props.first),
+        )?;
         let info = build_archive_info(tree, id, CELL_STYLE)?;
         add_object_references(tree, info, &[parent, stylesheet])?;
         stream.objects.push(Object {
             identifier: id,
             info,
-            messages: vec![ObjectMessage { message_type: CELL_STYLE, first: chain.first }],
+            messages: vec![ObjectMessage {
+                message_type: CELL_STYLE,
+                first: chain.first,
+            }],
         });
         out.insert(*color, id);
     }
@@ -4619,7 +4827,14 @@ fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
             // which drops a table's cell styles.
             if matches!(
                 first_type(object),
-                Some(STORAGE_ARCHIVE | PARAGRAPH_STYLE | CHARACTER_STYLE | CELL_STYLE | SHAPE_STYLE | LIST_STYLE)
+                Some(
+                    STORAGE_ARCHIVE
+                        | PARAGRAPH_STYLE
+                        | CHARACTER_STYLE
+                        | CELL_STYLE
+                        | SHAPE_STYLE
+                        | LIST_STYLE
+                )
             ) {
                 storages
                     .entry(stream.name.clone())
@@ -4709,7 +4924,11 @@ fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
 
         // What it needs: every reference out of its stream, by owning component.
         let mut missing_refs: Vec<(u64, Option<u64>)> = Vec::new();
-        for id in references.get(&component_entry.stream).into_iter().flatten() {
+        for id in references
+            .get(&component_entry.stream)
+            .into_iter()
+            .flatten()
+        {
             let Some(target_stream) = owner.get(id) else {
                 continue;
             };
@@ -4721,7 +4940,11 @@ fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
             };
             // A reference to another component's root object is recorded as a
             // weak component reference with no object identifier.
-            let wanted = if *id == target { (target, None) } else { (target, Some(*id)) };
+            let wanted = if *id == target {
+                (target, None)
+            } else {
+                (target, Some(*id))
+            };
             let known = declared.iter().any(|(c, o)| {
                 *c == wanted.0 && (*o == wanted.1 || (wanted.1.is_none() && o.is_none()))
             });
@@ -4749,11 +4972,21 @@ fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
             .collect();
         for (component_id, object_id) in missing_refs {
             let mut chain = Chain::new();
-            push_field(tree, &mut chain, external, "component_identifier", Node::Uint(component_id))?;
+            push_field(
+                tree,
+                &mut chain,
+                external,
+                "component_identifier",
+                Node::Uint(component_id),
+            )?;
             match object_id {
-                Some(object_id) => {
-                    push_field(tree, &mut chain, external, "object_identifier", Node::Uint(object_id))?
-                }
+                Some(object_id) => push_field(
+                    tree,
+                    &mut chain,
+                    external,
+                    "object_identifier",
+                    Node::Uint(object_id),
+                )?,
                 None => push_field(tree, &mut chain, external, "is_weak", Node::Bool(true))?,
             }
             let number = component
@@ -4769,7 +5002,13 @@ fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
             push_field(tree, &mut uuid_chain, uuid, "upper", Node::Uint(upper))?;
             let mut chain = Chain::new();
             push_field(tree, &mut chain, uuid_entry, "identifier", Node::Uint(id))?;
-            push_field(tree, &mut chain, uuid_entry, "uuid", Node::Message(uuid_chain.first))?;
+            push_field(
+                tree,
+                &mut chain,
+                uuid_entry,
+                "uuid",
+                Node::Message(uuid_chain.first),
+            )?;
             let number = component
                 .slot_named("object_uuid_map_entries")
                 .map(|(_, f)| f.number)
@@ -4844,7 +5083,6 @@ fn object_uuid(id: u64) -> (u64, u64) {
     }
     (mix(id), mix(id ^ 0x5355_424C_494D_4521))
 }
-
 
 /// Sets `PackageMetadata.last_object_identifier`, the identifier Pages
 /// allocates new objects above.
@@ -5138,7 +5376,9 @@ fn copy_chain(
                 let bytes = remapped.as_deref().unwrap_or(text);
                 Node::Str(target.push_bytes(bytes).map_err(tree_error)?)
             }
-            Node::Bytes(span) => Node::Bytes(target.push_bytes(source.bytes(span)).map_err(tree_error)?),
+            Node::Bytes(span) => {
+                Node::Bytes(target.push_bytes(source.bytes(span)).map_err(tree_error)?)
+            }
             Node::RawBytes(span) => {
                 Node::RawBytes(target.push_bytes(source.bytes(span)).map_err(tree_error)?)
             }
@@ -5164,7 +5404,9 @@ fn copy_chain(
             UuidAt::Words(indices, bytes) => {
                 if let Some(fresh) = map.uuid(bytes) {
                     for (slot, index) in indices.iter().enumerate() {
-                        let word = u32::from_le_bytes(fresh[slot * 4..slot * 4 + 4].try_into().expect("4"));
+                        let word = u32::from_le_bytes(
+                            fresh[slot * 4..slot * 4 + 4].try_into().expect("4"),
+                        );
                         target.entries[*index as usize].value = Node::Uint(u64::from(word));
                     }
                 }
@@ -5201,7 +5443,10 @@ fn copy_within(tree: &mut Tree, first: u32, map: &CloneMap) -> Result<u32, Packa
 /// how the calculation engine's owner map, dependency lists, and per-table
 /// registries learn about the new table. Returns whether anything was added.
 fn register_clone(tree: &mut Tree, first: u32, map: &CloneMap) -> Result<bool, PackageError> {
-    let entries: Vec<(u32, TreeEntry)> = tree.chain(first).map(|(index, entry)| (index, *entry)).collect();
+    let entries: Vec<(u32, TreeEntry)> = tree
+        .chain(first)
+        .map(|(index, entry)| (index, *entry))
+        .collect();
     let mut added = false;
     for (index, entry) in entries {
         let Some(field) = tree.field(&entry) else {
@@ -5314,30 +5559,34 @@ fn clone_template_table(
     let engine_id = engine_archive.identifier;
     let mut max_owner = 0u64;
     let mut table_owners: Vec<u64> = Vec::new();
-    walk_chains(&engine.tree, engine_archive.messages[0].first, &mut |tree, chain| {
-        let mut internal = None;
-        let mut mentions = false;
-        for (_, entry) in tree.chain(chain) {
-            if tree.field(entry).map(|f| f.name) == Some("internal_owner_id")
-                && let Node::Uint(value) = entry.value
-            {
-                internal = Some(value);
-                max_owner = max_owner.max(value);
-            }
-            if let Node::Message(child) = entry.value {
-                for uuid in chain_uuids(tree, child) {
-                    if let UuidAt::Words(_, bytes) | UuidAt::Pair(_, bytes) = uuid
-                        && map.uuid(bytes).is_some()
-                    {
-                        mentions = true;
+    walk_chains(
+        &engine.tree,
+        engine_archive.messages[0].first,
+        &mut |tree, chain| {
+            let mut internal = None;
+            let mut mentions = false;
+            for (_, entry) in tree.chain(chain) {
+                if tree.field(entry).map(|f| f.name) == Some("internal_owner_id")
+                    && let Node::Uint(value) = entry.value
+                {
+                    internal = Some(value);
+                    max_owner = max_owner.max(value);
+                }
+                if let Node::Message(child) = entry.value {
+                    for uuid in chain_uuids(tree, child) {
+                        if let UuidAt::Words(_, bytes) | UuidAt::Pair(_, bytes) = uuid
+                            && map.uuid(bytes).is_some()
+                        {
+                            mentions = true;
+                        }
                     }
                 }
             }
-        }
-        if let (Some(value), true) = (internal, mentions) {
-            table_owners.push(value);
-        }
-    });
+            if let (Some(value), true) = (internal, mentions) {
+                table_owners.push(value);
+            }
+        },
+    );
     for (offset, owner) in table_owners.iter().enumerate() {
         map.owners.insert(*owner, max_owner + 1 + offset as u64);
     }
@@ -5403,7 +5652,9 @@ fn clone_template_table(
             let info = copy_chain(&stream.tree, object.info, &mut tree, &map)?;
             set_field_uint(&mut tree, info, "identifier", new_id);
             let locator = component_locator(package, &name).unwrap_or_else(|| {
-                name.trim_start_matches("Index/").trim_end_matches(".iwa").to_string()
+                name.trim_start_matches("Index/")
+                    .trim_end_matches(".iwa")
+                    .to_string()
             });
             let base = locator.split('-').next().unwrap_or(&locator).to_string();
             new_streams.push((
@@ -5436,7 +5687,16 @@ fn clone_template_table(
             .map(|object| (object.identifier, object.info, object.messages[0].first))
             .collect();
         for (id, info, first) in shared {
-            if id != engine_id && !matches!(stream.objects.iter().find(|o| o.identifier == id).and_then(first_type), Some(FORMULA_OWNER_DEPENDENCIES) | Some(6366)) {
+            if id != engine_id
+                && !matches!(
+                    stream
+                        .objects
+                        .iter()
+                        .find(|o| o.identifier == id)
+                        .and_then(first_type),
+                    Some(FORMULA_OWNER_DEPENDENCIES) | Some(6366)
+                )
+            {
                 continue;
             }
             if register_clone(&mut stream.tree, first, &map)? {
@@ -5508,7 +5768,11 @@ fn metadata_view(package: &Package) -> Option<(&Tree, u32)> {
 /// Adds a component for a cloned single-object stream: a copy of the source
 /// object's component with the new identifier and locator, and without the
 /// per-object lists (the reconcile pass fills external references back in).
-fn add_component_clone(package: &mut Package, old_id: u64, new_id: u64) -> Result<(), PackageError> {
+fn add_component_clone(
+    package: &mut Package,
+    old_id: u64,
+    new_id: u64,
+) -> Result<(), PackageError> {
     let (stream, metadata_first) =
         metadata_message(package).ok_or_else(|| malformed("PackageMetadata is missing"))?;
     let tree = &mut stream.tree;
@@ -5525,7 +5789,8 @@ fn add_component_clone(package: &mut Package, old_id: u64, new_id: u64) -> Resul
             source = Some((index, component));
         }
     }
-    let (source_entry, component) = source.ok_or_else(|| malformed("component to clone is missing"))?;
+    let (source_entry, component) =
+        source.ok_or_else(|| malformed("component to clone is missing"))?;
     let last_component = last_component.expect("a component");
     let identity = CloneMap {
         ids: HashMap::new(),
@@ -5535,19 +5800,33 @@ fn add_component_clone(package: &mut Package, old_id: u64, new_id: u64) -> Resul
     let copied = copy_within(tree, component, &identity)?;
     // Rebuild without the per-object lists, with the new identity.
     let component_ref = child_message(message_ref("TSP.PackageMetadata")?, "components")?;
-    let preferred = str_field(tree, copied, "preferred_locator").unwrap_or("").to_string();
-    let base = preferred.split('-').next().unwrap_or(&preferred).to_string();
+    let preferred = str_field(tree, copied, "preferred_locator")
+        .unwrap_or("")
+        .to_string();
+    let base = preferred
+        .split('-')
+        .next()
+        .unwrap_or(&preferred)
+        .to_string();
     let kept: Vec<TreeEntry> = tree.chain(copied).map(|(_, entry)| *entry).collect();
     let mut chain = Chain::new();
     for entry in kept {
         let name = tree.field(&entry).map(|f| f.name);
         match name {
-            Some("external_references" | "object_uuid_map_entries" | "data_references" | "locator") => {
-                continue
-            }
+            Some(
+                "external_references" | "object_uuid_map_entries" | "data_references" | "locator",
+            ) => continue,
             Some("identifier") => {
-                push_field(tree, &mut chain, component_ref, "identifier", Node::Uint(new_id))?;
-                let span = tree.push_bytes(format!("{base}-{new_id}").as_bytes()).map_err(tree_error)?;
+                push_field(
+                    tree,
+                    &mut chain,
+                    component_ref,
+                    "identifier",
+                    Node::Uint(new_id),
+                )?;
+                let span = tree
+                    .push_bytes(format!("{base}-{new_id}").as_bytes())
+                    .map_err(tree_error)?;
                 push_field(tree, &mut chain, component_ref, "locator", Node::Str(span))?;
             }
             _ => {
@@ -5741,7 +6020,13 @@ fn write_merges(
     let extra_ref = child_message(node_ref, "AST_cross_table_reference_extra_info")?;
     let table_id_ref = child_message(extra_ref, "table_id")?;
     let mut store = Chain::new();
-    push_field(tree, &mut store, store_ref, "next_formula_index", Node::Uint(merges.len() as u64))?;
+    push_field(
+        tree,
+        &mut store,
+        store_ref,
+        "next_formula_index",
+        Node::Uint(merges.len() as u64),
+    )?;
     for (index, &(row, column, rows, columns)) in merges.iter().enumerate() {
         let mut nodes = Chain::new();
         for (c, r) in [(column, row), (column + columns - 1, row + rows - 1)] {
@@ -5752,33 +6037,127 @@ fn write_merges(
             push_field(tree, &mut rw, row_ref, "row", Node::Uint(r as u64))?;
             push_field(tree, &mut rw, row_ref, "absolute", Node::Bool(true))?;
             let mut words = Chain::new();
-            for (slot, name) in ["uuid_w0", "uuid_w1", "uuid_w2", "uuid_w3"].iter().enumerate() {
-                let word = u32::from_le_bytes(table_uuid[slot * 4..slot * 4 + 4].try_into().expect("4"));
-                push_field(tree, &mut words, table_id_ref, name, Node::Uint(u64::from(word)))?;
+            for (slot, name) in ["uuid_w0", "uuid_w1", "uuid_w2", "uuid_w3"]
+                .iter()
+                .enumerate()
+            {
+                let word =
+                    u32::from_le_bytes(table_uuid[slot * 4..slot * 4 + 4].try_into().expect("4"));
+                push_field(
+                    tree,
+                    &mut words,
+                    table_id_ref,
+                    name,
+                    Node::Uint(u64::from(word)),
+                )?;
             }
             let mut extra = Chain::new();
-            push_field(tree, &mut extra, extra_ref, "table_id", Node::Message(words.first))?;
+            push_field(
+                tree,
+                &mut extra,
+                extra_ref,
+                "table_id",
+                Node::Message(words.first),
+            )?;
             let mut node = Chain::new();
             push_field(tree, &mut node, node_ref, "AST_node_type", Node::Uint(36))?;
-            push_field(tree, &mut node, node_ref, "AST_column", Node::Message(col.first))?;
-            push_field(tree, &mut node, node_ref, "AST_row", Node::Message(rw.first))?;
-            push_field(tree, &mut node, node_ref, "AST_cross_table_reference_extra_info", Node::Message(extra.first))?;
-            push_field(tree, &mut nodes, array_ref, "AST_node", Node::Message(node.first))?;
+            push_field(
+                tree,
+                &mut node,
+                node_ref,
+                "AST_column",
+                Node::Message(col.first),
+            )?;
+            push_field(
+                tree,
+                &mut node,
+                node_ref,
+                "AST_row",
+                Node::Message(rw.first),
+            )?;
+            push_field(
+                tree,
+                &mut node,
+                node_ref,
+                "AST_cross_table_reference_extra_info",
+                Node::Message(extra.first),
+            )?;
+            push_field(
+                tree,
+                &mut nodes,
+                array_ref,
+                "AST_node",
+                Node::Message(node.first),
+            )?;
         }
         let mut colon = Chain::new();
         push_field(tree, &mut colon, node_ref, "AST_node_type", Node::Uint(29))?;
-        push_field(tree, &mut nodes, array_ref, "AST_node", Node::Message(colon.first))?;
+        push_field(
+            tree,
+            &mut nodes,
+            array_ref,
+            "AST_node",
+            Node::Message(colon.first),
+        )?;
         let mut function = Chain::new();
-        push_field(tree, &mut function, node_ref, "AST_node_type", Node::Uint(16))?;
-        push_field(tree, &mut function, node_ref, "AST_function_node_index", Node::Uint(MERGE_FUNCTION))?;
-        push_field(tree, &mut function, node_ref, "AST_function_node_numArgs", Node::Uint(1))?;
-        push_field(tree, &mut nodes, array_ref, "AST_node", Node::Message(function.first))?;
+        push_field(
+            tree,
+            &mut function,
+            node_ref,
+            "AST_node_type",
+            Node::Uint(16),
+        )?;
+        push_field(
+            tree,
+            &mut function,
+            node_ref,
+            "AST_function_node_index",
+            Node::Uint(MERGE_FUNCTION),
+        )?;
+        push_field(
+            tree,
+            &mut function,
+            node_ref,
+            "AST_function_node_numArgs",
+            Node::Uint(1),
+        )?;
+        push_field(
+            tree,
+            &mut nodes,
+            array_ref,
+            "AST_node",
+            Node::Message(function.first),
+        )?;
         let mut formula = Chain::new();
-        push_field(tree, &mut formula, formula_ref, "AST_node_array", Node::Message(nodes.first))?;
+        push_field(
+            tree,
+            &mut formula,
+            formula_ref,
+            "AST_node_array",
+            Node::Message(nodes.first),
+        )?;
         let mut pair = Chain::new();
-        push_field(tree, &mut pair, pair_ref, "formula_index", Node::Uint(index as u64))?;
-        push_field(tree, &mut pair, pair_ref, "formula", Node::Message(formula.first))?;
-        push_field(tree, &mut store, store_ref, "formulas", Node::Message(pair.first))?;
+        push_field(
+            tree,
+            &mut pair,
+            pair_ref,
+            "formula_index",
+            Node::Uint(index as u64),
+        )?;
+        push_field(
+            tree,
+            &mut pair,
+            pair_ref,
+            "formula",
+            Node::Message(formula.first),
+        )?;
+        push_field(
+            tree,
+            &mut store,
+            store_ref,
+            "formulas",
+            Node::Message(pair.first),
+        )?;
     }
     replace_message_field(tree, merge_owner, owner_ref, "formula_store", store.first)?;
 
@@ -5797,12 +6176,36 @@ fn write_merges(
     replace_message_field(tree, deps_first.0, deps_ref, "range_dependencies", ranges)?;
     let tiled_cells_ref = child_message(deps_ref, "tiled_cell_dependencies")?;
     let mut tiled_cells = Chain::new();
-    push_field(tree, &mut tiled_cells, tiled_cells_ref, "cell_record_tiles", Node::Reference(cell_tile_id))?;
-    replace_message_field(tree, deps_first.0, deps_ref, "tiled_cell_dependencies", tiled_cells.first)?;
+    push_field(
+        tree,
+        &mut tiled_cells,
+        tiled_cells_ref,
+        "cell_record_tiles",
+        Node::Reference(cell_tile_id),
+    )?;
+    replace_message_field(
+        tree,
+        deps_first.0,
+        deps_ref,
+        "tiled_cell_dependencies",
+        tiled_cells.first,
+    )?;
     let tiled_ranges_ref = child_message(deps_ref, "tiled_range_dependencies")?;
     let mut tiled_ranges = Chain::new();
-    push_field(tree, &mut tiled_ranges, tiled_ranges_ref, "range_precedents_tile", Node::Reference(range_tile_id))?;
-    replace_message_field(tree, deps_first.0, deps_ref, "tiled_range_dependencies", tiled_ranges.first)?;
+    push_field(
+        tree,
+        &mut tiled_ranges,
+        tiled_ranges_ref,
+        "range_precedents_tile",
+        Node::Reference(range_tile_id),
+    )?;
+    replace_message_field(
+        tree,
+        deps_first.0,
+        deps_ref,
+        "tiled_range_dependencies",
+        tiled_ranges.first,
+    )?;
     add_object_references(tree, deps_first.1, &[cell_tile_id, range_tile_id])?;
 
     let engine_first = stream
@@ -5812,7 +6215,13 @@ fn write_merges(
         .map(|object| object.messages[0].first)
         .ok_or_else(|| malformed("calculation engine is missing"))?;
     if let Some(tracker) = message_field(tree, engine_first, "dependency_tracker") {
-        let info_ref = child_message(child_message(message_ref("TSCE.CalculationEngineArchive")?, "dependency_tracker")?, "formula_owner_info")?;
+        let info_ref = child_message(
+            child_message(
+                message_ref("TSCE.CalculationEngineArchive")?,
+                "dependency_tracker",
+            )?,
+            "formula_owner_info",
+        )?;
         let infos: Vec<u32> = tree
             .chain(tracker)
             .filter(|(_, entry)| tree.field(entry).map(|f| f.name) == Some("formula_owner_info"))
@@ -5823,7 +6232,9 @@ fn write_merges(
             .collect();
         for info in infos {
             let is_merge = message_field(tree, info, "formula_owner_id").is_some_and(|id| {
-                chain_uuids(tree, id).iter().any(|at| matches!(at, UuidAt::Words(_, b) if *b == merge_uuid))
+                chain_uuids(tree, id)
+                    .iter()
+                    .any(|at| matches!(at, UuidAt::Words(_, b) if *b == merge_uuid))
             });
             if is_merge {
                 let cells = build_merge_cells(tree, info_ref, merges.len(), true)?;
@@ -5843,15 +6254,51 @@ fn write_merges(
     let cell_tile_ref = message_ref("TSCE.CellRecordTileArchive")?;
     let record_ref = child_message(cell_tile_ref, "cell_records")?;
     let mut cell_tile = Chain::new();
-    push_field(tree, &mut cell_tile, cell_tile_ref, "internal_owner_id", Node::Uint(merge_internal))?;
-    push_field(tree, &mut cell_tile, cell_tile_ref, "tile_column_begin", Node::Uint(0))?;
-    push_field(tree, &mut cell_tile, cell_tile_ref, "tile_row_begin", Node::Uint(0))?;
+    push_field(
+        tree,
+        &mut cell_tile,
+        cell_tile_ref,
+        "internal_owner_id",
+        Node::Uint(merge_internal),
+    )?;
+    push_field(
+        tree,
+        &mut cell_tile,
+        cell_tile_ref,
+        "tile_column_begin",
+        Node::Uint(0),
+    )?;
+    push_field(
+        tree,
+        &mut cell_tile,
+        cell_tile_ref,
+        "tile_row_begin",
+        Node::Uint(0),
+    )?;
     for index in 0..merges.len() {
         let mut record = Chain::new();
-        push_field(tree, &mut record, record_ref, "column", Node::Uint(index as u64))?;
+        push_field(
+            tree,
+            &mut record,
+            record_ref,
+            "column",
+            Node::Uint(index as u64),
+        )?;
         push_field(tree, &mut record, record_ref, "row", Node::Uint(0))?;
-        push_field(tree, &mut record, record_ref, "expanded_edges", Node::Message(NONE))?;
-        push_field(tree, &mut cell_tile, cell_tile_ref, "cell_records", Node::Message(record.first))?;
+        push_field(
+            tree,
+            &mut record,
+            record_ref,
+            "expanded_edges",
+            Node::Message(NONE),
+        )?;
+        push_field(
+            tree,
+            &mut cell_tile,
+            cell_tile_ref,
+            "cell_records",
+            Node::Message(record.first),
+        )?;
     }
     let range_tile_ref = message_ref("TSCE.RangePrecedentsTileArchive")?;
     let from_to_ref = child_message(range_tile_ref, "from_to_range")?;
@@ -5860,28 +6307,82 @@ fn write_merges(
     let origin_ref = child_message(rect_ref, "origin")?;
     let size_ref = child_message(rect_ref, "size")?;
     let mut range_tile = Chain::new();
-    push_field(tree, &mut range_tile, range_tile_ref, "to_owner_id", Node::Uint(table_owner))?;
+    push_field(
+        tree,
+        &mut range_tile,
+        range_tile_ref,
+        "to_owner_id",
+        Node::Uint(table_owner),
+    )?;
     for (index, &(row, column, rows, columns)) in merges.iter().enumerate() {
         let mut from = Chain::new();
-        push_field(tree, &mut from, from_ref, "column", Node::Uint(index as u64))?;
+        push_field(
+            tree,
+            &mut from,
+            from_ref,
+            "column",
+            Node::Uint(index as u64),
+        )?;
         push_field(tree, &mut from, from_ref, "row", Node::Uint(0))?;
         let mut origin = Chain::new();
-        push_field(tree, &mut origin, origin_ref, "column", Node::Uint(column as u64))?;
+        push_field(
+            tree,
+            &mut origin,
+            origin_ref,
+            "column",
+            Node::Uint(column as u64),
+        )?;
         push_field(tree, &mut origin, origin_ref, "row", Node::Uint(row as u64))?;
         let mut size = Chain::new();
         if columns > 1 {
-            push_field(tree, &mut size, size_ref, "num_columns", Node::Uint(columns as u64))?;
+            push_field(
+                tree,
+                &mut size,
+                size_ref,
+                "num_columns",
+                Node::Uint(columns as u64),
+            )?;
         }
         if rows > 1 {
-            push_field(tree, &mut size, size_ref, "num_rows", Node::Uint(rows as u64))?;
+            push_field(
+                tree,
+                &mut size,
+                size_ref,
+                "num_rows",
+                Node::Uint(rows as u64),
+            )?;
         }
         let mut rect = Chain::new();
-        push_field(tree, &mut rect, rect_ref, "origin", Node::Message(origin.first))?;
+        push_field(
+            tree,
+            &mut rect,
+            rect_ref,
+            "origin",
+            Node::Message(origin.first),
+        )?;
         push_field(tree, &mut rect, rect_ref, "size", Node::Message(size.first))?;
         let mut entry = Chain::new();
-        push_field(tree, &mut entry, from_to_ref, "from_coord", Node::Message(from.first))?;
-        push_field(tree, &mut entry, from_to_ref, "refers_to_rect", Node::Message(rect.first))?;
-        push_field(tree, &mut range_tile, range_tile_ref, "from_to_range", Node::Message(entry.first))?;
+        push_field(
+            tree,
+            &mut entry,
+            from_to_ref,
+            "from_coord",
+            Node::Message(from.first),
+        )?;
+        push_field(
+            tree,
+            &mut entry,
+            from_to_ref,
+            "refers_to_rect",
+            Node::Message(rect.first),
+        )?;
+        push_field(
+            tree,
+            &mut range_tile,
+            range_tile_ref,
+            "from_to_range",
+            Node::Message(entry.first),
+        )?;
     }
     for (id, kind, first) in [
         (cell_tile_id, CELL_RECORD_TILE, cell_tile.first),
@@ -5913,15 +6414,39 @@ fn build_merge_cells(
     let mut cells = Chain::new();
     for index in 0..count {
         let mut record = Chain::new();
-        push_field(tree, &mut record, record_ref, "column", Node::Uint(index as u64))?;
+        push_field(
+            tree,
+            &mut record,
+            record_ref,
+            "column",
+            Node::Uint(index as u64),
+        )?;
         push_field(tree, &mut record, record_ref, "row", Node::Uint(0))?;
         if legacy {
-            push_field(tree, &mut record, record_ref, "contains_a_formula", Node::Bool(true))?;
+            push_field(
+                tree,
+                &mut record,
+                record_ref,
+                "contains_a_formula",
+                Node::Bool(true),
+            )?;
             push_field(tree, &mut record, record_ref, "edges", Node::Message(NONE))?;
         } else {
-            push_field(tree, &mut record, record_ref, "expanded_edges", Node::Message(NONE))?;
+            push_field(
+                tree,
+                &mut record,
+                record_ref,
+                "expanded_edges",
+                Node::Message(NONE),
+            )?;
         }
-        push_field(tree, &mut cells, cells_ref, "cell_record", Node::Message(record.first))?;
+        push_field(
+            tree,
+            &mut cells,
+            cells_ref,
+            "cell_record",
+            Node::Message(record.first),
+        )?;
     }
     Ok(cells.first)
 }
@@ -5941,18 +6466,72 @@ fn build_merge_ranges(
     let mut ranges = Chain::new();
     for (index, &(row, column, rows, columns)) in merges.iter().enumerate() {
         let mut range = Chain::new();
-        push_field(tree, &mut range, range_ref, "top_left_column", Node::Uint(column as u64))?;
-        push_field(tree, &mut range, range_ref, "top_left_row", Node::Uint(row as u64))?;
-        push_field(tree, &mut range, range_ref, "bottom_right_column", Node::Uint((column + columns - 1) as u64))?;
-        push_field(tree, &mut range, range_ref, "bottom_right_row", Node::Uint((row + rows - 1) as u64))?;
+        push_field(
+            tree,
+            &mut range,
+            range_ref,
+            "top_left_column",
+            Node::Uint(column as u64),
+        )?;
+        push_field(
+            tree,
+            &mut range,
+            range_ref,
+            "top_left_row",
+            Node::Uint(row as u64),
+        )?;
+        push_field(
+            tree,
+            &mut range,
+            range_ref,
+            "bottom_right_column",
+            Node::Uint((column + columns - 1) as u64),
+        )?;
+        push_field(
+            tree,
+            &mut range,
+            range_ref,
+            "bottom_right_row",
+            Node::Uint((row + rows - 1) as u64),
+        )?;
         let mut reference = Chain::new();
-        push_field(tree, &mut reference, reference_ref, "owner_id", Node::Uint(table_owner))?;
-        push_field(tree, &mut reference, reference_ref, "range", Node::Message(range.first))?;
+        push_field(
+            tree,
+            &mut reference,
+            reference_ref,
+            "owner_id",
+            Node::Uint(table_owner),
+        )?;
+        push_field(
+            tree,
+            &mut reference,
+            reference_ref,
+            "range",
+            Node::Message(range.first),
+        )?;
         let mut back = Chain::new();
         push_field(tree, &mut back, back_ref, "cell_coord_row", Node::Uint(0))?;
-        push_field(tree, &mut back, back_ref, "cell_coord_column", Node::Uint(index as u64))?;
-        push_field(tree, &mut back, back_ref, "internal_range_reference", Node::Message(reference.first))?;
-        push_field(tree, &mut ranges, ranges_ref, "back_dependency", Node::Message(back.first))?;
+        push_field(
+            tree,
+            &mut back,
+            back_ref,
+            "cell_coord_column",
+            Node::Uint(index as u64),
+        )?;
+        push_field(
+            tree,
+            &mut back,
+            back_ref,
+            "internal_range_reference",
+            Node::Message(reference.first),
+        )?;
+        push_field(
+            tree,
+            &mut ranges,
+            ranges_ref,
+            "back_dependency",
+            Node::Message(back.first),
+        )?;
     }
     Ok(ranges.first)
 }
@@ -5982,7 +6561,14 @@ fn replace_message_field(
     let previous = previous.ok_or_else(|| malformed("cannot place field ahead of a chain"))?;
     let mut chain = Chain::new();
     let new_index = tree
-        .push_known(&mut chain, message, slot, field, field.number, Node::Message(value))
+        .push_known(
+            &mut chain,
+            message,
+            slot,
+            field,
+            field.number,
+            Node::Message(value),
+        )
         .map_err(tree_error)?;
     tree.entries[new_index as usize].next = tree.entries[previous as usize].next;
     tree.entries[previous as usize].next = new_index;
@@ -6038,7 +6624,10 @@ fn set_owner_table_ranges(
         let Some(map) = message_field(tree, owner_first, spanning) else {
             continue;
         };
-        for (name, top) in [("total_range_for_table", 0), ("body_range_for_table", body_top)] {
+        for (name, top) in [
+            ("total_range_for_table", 0),
+            ("body_range_for_table", body_top),
+        ] {
             let Some(range) = message_field(tree, map, name) else {
                 continue;
             };
@@ -6143,7 +6732,11 @@ fn write_page_areas(
             if let Some(odd) = reference("odd_section_template_page") {
                 found = Some((
                     object.identifier,
-                    [odd, reference("first_section_template_page").unwrap_or(odd), reference("even_section_template_page").unwrap_or(odd)],
+                    [
+                        odd,
+                        reference("first_section_template_page").unwrap_or(odd),
+                        reference("even_section_template_page").unwrap_or(odd),
+                    ],
                 ));
                 break;
             }
@@ -6157,7 +6750,8 @@ fn write_page_areas(
             PageVariant::Even => 2,
         }];
         let storages: Vec<u64> = {
-            let (tree, first) = object_message(package, template).ok_or_else(|| malformed("page template is missing"))?;
+            let (tree, first) = object_message(package, template)
+                .ok_or_else(|| malformed("page template is missing"))?;
             let name = if area.footer { "footers" } else { "headers" };
             tree.chain(first)
                 .filter(|(_, entry)| tree.field(entry).map(|f| f.name) == Some(name))
@@ -6178,11 +6772,21 @@ fn write_page_areas(
                 reference_of(field_value(tree, entry, "object"))
             })
             .unwrap_or(styles.paragraph);
-        let area_styles = CellStyles { paragraph, ..styles };
+        let area_styles = CellStyles {
+            paragraph,
+            ..styles
+        };
         let stream = stream_containing(package, storage_id)?;
         let attachments = create_number_attachments(stream, &area.content.fields, next_id)?;
-        let (message, refs) =
-            build_text_storage(&mut stream.tree, &area.content, formats, area_styles, Some(1), &attachments, paras)?;
+        let (message, refs) = build_text_storage(
+            &mut stream.tree,
+            &area.content,
+            formats,
+            area_styles,
+            Some(1),
+            &attachments,
+            paras,
+        )?;
         let object = stream
             .objects
             .iter_mut()
@@ -6231,10 +6835,22 @@ fn create_number_attachments(
         let mut super_chain = Chain::new();
         push_field(tree, &mut super_chain, base, "kind", Node::Uint(kind))?;
         let mut chain = Chain::new();
-        push_field(tree, &mut chain, archive, "super", Node::Message(super_chain.first))?;
+        push_field(
+            tree,
+            &mut chain,
+            archive,
+            "super",
+            Node::Message(super_chain.first),
+        )?;
         push_field(tree, &mut chain, archive, "number_format", Node::Uint(0))?;
         let name = tree.push_bytes(b"decimal").map_err(tree_error)?;
-        push_field(tree, &mut chain, archive, "number_format_name", Node::Str(name))?;
+        push_field(
+            tree,
+            &mut chain,
+            archive,
+            "number_format_name",
+            Node::Str(name),
+        )?;
         let info = build_archive_info(tree, id, NUMBER_ATTACHMENT)?;
         stream.objects.push(Object {
             identifier: id,
@@ -6270,7 +6886,13 @@ fn add_data_user(package: &mut Package, data_id: u64, object_id: u64) -> Result<
             .kind,
     )?;
     let reference_ref = child_message(components, "data_references")?;
-    append_message_field(tree, reference_ref, reference, "object_reference_list", copy)?;
+    append_message_field(
+        tree,
+        reference_ref,
+        reference,
+        "object_reference_list",
+        copy,
+    )?;
     Ok(())
 }
 
@@ -6413,23 +7035,53 @@ fn synthesize_para_styles(
         let mut style = Chain::new();
         push_field(tree, &mut style, base, "parent", Node::Reference(parent))?;
         push_field(tree, &mut style, base, "is_variation", Node::Bool(true))?;
-        push_field(tree, &mut style, base, "stylesheet", Node::Reference(stylesheet))?;
+        push_field(
+            tree,
+            &mut style,
+            base,
+            "stylesheet",
+            Node::Reference(stylesheet),
+        )?;
         let mut props = Chain::new();
         let points = |value: i32| Node::Float(value as f32 / 100.0);
         if let Some(alignment) = format.alignment {
-            push_field(tree, &mut props, properties, "alignment", Node::Uint(u64::from(alignment)))?;
+            push_field(
+                tree,
+                &mut props,
+                properties,
+                "alignment",
+                Node::Uint(u64::from(alignment)),
+            )?;
         }
         if let Some(value) = format.first_line_indent {
-            push_field(tree, &mut props, properties, "first_line_indent", points(value))?;
+            push_field(
+                tree,
+                &mut props,
+                properties,
+                "first_line_indent",
+                points(value),
+            )?;
         }
         if let Some(value) = format.left_indent {
             push_field(tree, &mut props, properties, "left_indent", points(value))?;
         }
         if let Some((mode, amount)) = format.line_spacing {
             let mut line = Chain::new();
-            push_field(tree, &mut line, spacing, "mode", Node::Uint(u64::from(mode)))?;
+            push_field(
+                tree,
+                &mut line,
+                spacing,
+                "mode",
+                Node::Uint(u64::from(mode)),
+            )?;
             push_field(tree, &mut line, spacing, "amount", points(amount))?;
-            push_field(tree, &mut props, properties, "line_spacing", Node::Message(line.first))?;
+            push_field(
+                tree,
+                &mut props,
+                properties,
+                "line_spacing",
+                Node::Message(line.first),
+            )?;
         }
         if let Some(value) = format.right_indent {
             push_field(tree, &mut props, properties, "right_indent", points(value))?;
@@ -6441,10 +7093,34 @@ fn synthesize_para_styles(
             push_field(tree, &mut props, properties, "space_before", points(value))?;
         }
         let mut chain = Chain::new();
-        push_field(tree, &mut chain, archive, "super", Node::Message(style.first))?;
-        push_field(tree, &mut chain, archive, "override_count", Node::Uint(format.overrides()))?;
-        push_field(tree, &mut chain, archive, "char_properties", Node::Message(NONE))?;
-        push_field(tree, &mut chain, archive, "para_properties", Node::Message(props.first))?;
+        push_field(
+            tree,
+            &mut chain,
+            archive,
+            "super",
+            Node::Message(style.first),
+        )?;
+        push_field(
+            tree,
+            &mut chain,
+            archive,
+            "override_count",
+            Node::Uint(format.overrides()),
+        )?;
+        push_field(
+            tree,
+            &mut chain,
+            archive,
+            "char_properties",
+            Node::Message(NONE),
+        )?;
+        push_field(
+            tree,
+            &mut chain,
+            archive,
+            "para_properties",
+            Node::Message(props.first),
+        )?;
         let info = build_archive_info(tree, id, PARAGRAPH_STYLE)?;
         add_object_references(tree, info, &[parent, stylesheet])?;
         stream.objects.push(Object {
@@ -6486,9 +7162,18 @@ fn register_in_stylesheet(
         .ok_or_else(|| malformed("stylesheet is missing"))?;
     let tree = &mut stream.tree;
     // Rebuild the chain in field order with the new entries alongside.
-    let mut fields: Vec<(u32, Node)> = tree.chain(first).map(|(_, entry)| (entry.number, entry.value)).collect();
-    let styles_number = sheet_ref.slot_named("styles").map(|(_, f)| f.number).ok_or_else(|| malformed("no styles field"))?;
-    let map_number = sheet_ref.slot_named("parent_to_children_style_map").map(|(_, f)| f.number).ok_or_else(|| malformed("no map field"))?;
+    let mut fields: Vec<(u32, Node)> = tree
+        .chain(first)
+        .map(|(_, entry)| (entry.number, entry.value))
+        .collect();
+    let styles_number = sheet_ref
+        .slot_named("styles")
+        .map(|(_, f)| f.number)
+        .ok_or_else(|| malformed("no styles field"))?;
+    let map_number = sheet_ref
+        .slot_named("parent_to_children_style_map")
+        .map(|(_, f)| f.number)
+        .ok_or_else(|| malformed("no map field"))?;
     for (_, child) in pairs {
         fields.push((styles_number, Node::Reference(*child)));
     }
@@ -6496,10 +7181,19 @@ fn register_in_stylesheet(
     parents.sort_unstable();
     parents.dedup();
     for parent in parents {
-        let children: Vec<u64> = pairs.iter().filter(|(p, _)| *p == parent).map(|(_, c)| *c).collect();
+        let children: Vec<u64> = pairs
+            .iter()
+            .filter(|(p, _)| *p == parent)
+            .map(|(_, c)| *c)
+            .collect();
         // Extend the parent's existing entry if it has one.
         let existing = fields.iter().find_map(|(number, value)| match value {
-            Node::Message(entry) if *number == map_number && field_value(tree, *entry, "parent") == Some(Node::Reference(parent)) => Some(*entry),
+            Node::Message(entry)
+                if *number == map_number
+                    && field_value(tree, *entry, "parent") == Some(Node::Reference(parent)) =>
+            {
+                Some(*entry)
+            }
             _ => None,
         });
         match existing {
@@ -6512,7 +7206,13 @@ fn register_in_stylesheet(
                 let mut entry = Chain::new();
                 push_field(tree, &mut entry, map_ref, "parent", Node::Reference(parent))?;
                 for child in children {
-                    push_field(tree, &mut entry, map_ref, "children", Node::Reference(child))?;
+                    push_field(
+                        tree,
+                        &mut entry,
+                        map_ref,
+                        "children",
+                        Node::Reference(child),
+                    )?;
                 }
                 fields.push((map_number, Node::Message(entry.first)));
             }
@@ -6521,13 +7221,22 @@ fn register_in_stylesheet(
     fields.sort_by_key(|(number, _)| *number);
     let mut chain = Chain::new();
     for (number, value) in fields {
-        let slot = sheet_ref.slot(number).ok_or_else(|| malformed("stylesheet field without a slot"))?;
-        let field = sheet_ref.field_at(slot).ok_or_else(|| malformed("stylesheet slot out of range"))?;
-        tree.push_known(&mut chain, sheet_ref, slot, field, number, value).map_err(tree_error)?;
+        let slot = sheet_ref
+            .slot(number)
+            .ok_or_else(|| malformed("stylesheet field without a slot"))?;
+        let field = sheet_ref
+            .field_at(slot)
+            .ok_or_else(|| malformed("stylesheet slot out of range"))?;
+        tree.push_known(&mut chain, sheet_ref, slot, field, number, value)
+            .map_err(tree_error)?;
     }
     let refs: Vec<u64> = pairs.iter().map(|(_, child)| *child).collect();
     add_object_references(tree, info, &refs)?;
-    if let Some(object) = stream.objects.iter_mut().find(|object| object.identifier == stylesheet) {
+    if let Some(object) = stream
+        .objects
+        .iter_mut()
+        .find(|object| object.identifier == stylesheet)
+    {
         object.messages[0].first = chain.first;
     }
     Ok(())
@@ -6541,14 +7250,23 @@ fn append_message_reference(
     name: &str,
     id: u64,
 ) -> Result<(), PackageError> {
-    let (slot, field) = parent.slot_named(name).ok_or_else(|| malformed("field is not in the schema"))?;
+    let (slot, field) = parent
+        .slot_named(name)
+        .ok_or_else(|| malformed("field is not in the schema"))?;
     let mut last = first;
     for (index, _) in tree.chain(first) {
         last = index;
     }
     let mut chain = Chain { first, last };
-    tree.push_known(&mut chain, parent, slot, field, field.number, Node::Reference(id))
-        .map_err(tree_error)?;
+    tree.push_known(
+        &mut chain,
+        parent,
+        slot,
+        field,
+        field.number,
+        Node::Reference(id),
+    )
+    .map_err(tree_error)?;
     Ok(())
 }
 
@@ -6653,11 +7371,14 @@ fn write_text_boxes(
         .ok_or_else(|| malformed("template has no text box shape style"))?;
     // A filled box gets a variation of the text-box style with that fill: text
     // set in white on a coloured shape would otherwise vanish.
-    let mut fills: Vec<crate::document::Color> = boxes.iter().filter_map(|text_box| text_box.fill).collect();
+    let mut fills: Vec<crate::document::Color> =
+        boxes.iter().filter_map(|text_box| text_box.fill).collect();
     fills.sort_by_key(|color| (color.red, color.green, color.blue));
     fills.dedup();
     let fill_styles = match stylesheet_identifier(package) {
-        Some(sheet) if !fills.is_empty() => create_fill_styles(package, shape_style, &fills, sheet, next_id)?,
+        Some(sheet) if !fills.is_empty() => {
+            create_fill_styles(package, shape_style, &fills, sheet, next_id)?
+        }
         _ => HashMap::new(),
     };
     let stream = document_stream(package)?;
@@ -6695,8 +7416,15 @@ fn write_text_boxes(
         *next_id += 4;
         let attachments = create_number_attachments(stream, &text_box.content.fields, next_id)?;
         let tree = &mut stream.tree;
-        let (storage_first, storage_refs) =
-            build_text_storage(tree, &text_box.content, formats, styles, None, &attachments, paras)?;
+        let (storage_first, storage_refs) = build_text_storage(
+            tree,
+            &text_box.content,
+            formats,
+            styles,
+            None,
+            &attachments,
+            paras,
+        )?;
         let mut objects = vec![(storage_id, STORAGE_ARCHIVE, storage_first, storage_refs)];
         for id in [title_id, caption_id] {
             objects.push((id, STANDIN_CAPTION, NONE, Vec::new()));
@@ -6707,11 +7435,35 @@ fn write_text_boxes(
         push_field(tree, &mut position, point, "x", Node::Float(text_box.x))?;
         push_field(tree, &mut position, point, "y", Node::Float(text_box.y))?;
         let mut extent = Chain::new();
-        push_field(tree, &mut extent, size, "width", Node::Float(text_box.width))?;
-        push_field(tree, &mut extent, size, "height", Node::Float(text_box.height))?;
+        push_field(
+            tree,
+            &mut extent,
+            size,
+            "width",
+            Node::Float(text_box.width),
+        )?;
+        push_field(
+            tree,
+            &mut extent,
+            size,
+            "height",
+            Node::Float(text_box.height),
+        )?;
         let mut geo = Chain::new();
-        push_field(tree, &mut geo, geometry, "position", Node::Message(position.first))?;
-        push_field(tree, &mut geo, geometry, "size", Node::Message(extent.first))?;
+        push_field(
+            tree,
+            &mut geo,
+            geometry,
+            "position",
+            Node::Message(position.first),
+        )?;
+        push_field(
+            tree,
+            &mut geo,
+            geometry,
+            "size",
+            Node::Message(extent.first),
+        )?;
         push_field(tree, &mut geo, geometry, "flags", Node::Uint(3))?;
         push_field(tree, &mut geo, geometry, "angle", Node::Float(0.0))?;
         let mut wrap_chain = Chain::new();
@@ -6719,45 +7471,182 @@ fn write_text_boxes(
         push_field(tree, &mut wrap_chain, wrap, "direction", Node::Uint(2))?;
         push_field(tree, &mut wrap_chain, wrap, "fit_type", Node::Uint(1))?;
         push_field(tree, &mut wrap_chain, wrap, "margin", Node::Float(12.0))?;
-        push_field(tree, &mut wrap_chain, wrap, "alpha_threshold", Node::Float(0.5))?;
-        push_field(tree, &mut wrap_chain, wrap, "is_html_wrap", Node::Bool(false))?;
+        push_field(
+            tree,
+            &mut wrap_chain,
+            wrap,
+            "alpha_threshold",
+            Node::Float(0.5),
+        )?;
+        push_field(
+            tree,
+            &mut wrap_chain,
+            wrap,
+            "is_html_wrap",
+            Node::Bool(false),
+        )?;
         let mut draw = Chain::new();
-        push_field(tree, &mut draw, drawable, "geometry", Node::Message(geo.first))?;
-        push_field(tree, &mut draw, drawable, "exterior_text_wrap", Node::Message(wrap_chain.first))?;
+        push_field(
+            tree,
+            &mut draw,
+            drawable,
+            "geometry",
+            Node::Message(geo.first),
+        )?;
+        push_field(
+            tree,
+            &mut draw,
+            drawable,
+            "exterior_text_wrap",
+            Node::Message(wrap_chain.first),
+        )?;
         push_field(tree, &mut draw, drawable, "locked", Node::Bool(false))?;
-        push_field(tree, &mut draw, drawable, "aspect_ratio_locked", Node::Bool(false))?;
-        push_field(tree, &mut draw, drawable, "title", Node::Reference(title_id))?;
-        push_field(tree, &mut draw, drawable, "caption", Node::Reference(caption_id))?;
+        push_field(
+            tree,
+            &mut draw,
+            drawable,
+            "aspect_ratio_locked",
+            Node::Bool(false),
+        )?;
+        push_field(
+            tree,
+            &mut draw,
+            drawable,
+            "title",
+            Node::Reference(title_id),
+        )?;
+        push_field(
+            tree,
+            &mut draw,
+            drawable,
+            "caption",
+            Node::Reference(caption_id),
+        )?;
         push_field(tree, &mut draw, drawable, "title_hidden", Node::Bool(false))?;
-        push_field(tree, &mut draw, drawable, "caption_hidden", Node::Bool(false))?;
+        push_field(
+            tree,
+            &mut draw,
+            drawable,
+            "caption_hidden",
+            Node::Bool(false),
+        )?;
 
         // The shape: style and a rectangular path at the box's size.
         let mut natural = Chain::new();
-        push_field(tree, &mut natural, size, "width", Node::Float(text_box.width))?;
-        push_field(tree, &mut natural, size, "height", Node::Float(text_box.height))?;
+        push_field(
+            tree,
+            &mut natural,
+            size,
+            "width",
+            Node::Float(text_box.width),
+        )?;
+        push_field(
+            tree,
+            &mut natural,
+            size,
+            "height",
+            Node::Float(text_box.height),
+        )?;
         let path = build_traced_path(tree, text_box.width, text_box.height)?;
         let mut bezier_chain = Chain::new();
-        push_field(tree, &mut bezier_chain, bezier, "naturalSize", Node::Message(natural.first))?;
+        push_field(
+            tree,
+            &mut bezier_chain,
+            bezier,
+            "naturalSize",
+            Node::Message(natural.first),
+        )?;
         push_field(tree, &mut bezier_chain, bezier, "path", Node::Message(path))?;
         let mut source = Chain::new();
-        push_field(tree, &mut source, path_source, "horizontalFlip", Node::Bool(false))?;
-        push_field(tree, &mut source, path_source, "verticalFlip", Node::Bool(false))?;
-        push_field(tree, &mut source, path_source, "bezier_path_source", Node::Message(bezier_chain.first))?;
+        push_field(
+            tree,
+            &mut source,
+            path_source,
+            "horizontalFlip",
+            Node::Bool(false),
+        )?;
+        push_field(
+            tree,
+            &mut source,
+            path_source,
+            "verticalFlip",
+            Node::Bool(false),
+        )?;
+        push_field(
+            tree,
+            &mut source,
+            path_source,
+            "bezier_path_source",
+            Node::Message(bezier_chain.first),
+        )?;
         let mut shape_chain = Chain::new();
-        push_field(tree, &mut shape_chain, shape, "super", Node::Message(draw.first))?;
+        push_field(
+            tree,
+            &mut shape_chain,
+            shape,
+            "super",
+            Node::Message(draw.first),
+        )?;
         let style = text_box
             .fill
             .and_then(|color| fill_styles.get(&color).copied())
             .unwrap_or(shape_style);
-        push_field(tree, &mut shape_chain, shape, "style", Node::Reference(style))?;
-        push_field(tree, &mut shape_chain, shape, "pathsource", Node::Message(source.first))?;
-        push_field(tree, &mut shape_chain, shape, "strokePatternOffsetDistance", Node::Float(0.0))?;
+        push_field(
+            tree,
+            &mut shape_chain,
+            shape,
+            "style",
+            Node::Reference(style),
+        )?;
+        push_field(
+            tree,
+            &mut shape_chain,
+            shape,
+            "pathsource",
+            Node::Message(source.first),
+        )?;
+        push_field(
+            tree,
+            &mut shape_chain,
+            shape,
+            "strokePatternOffsetDistance",
+            Node::Float(0.0),
+        )?;
         let mut info_chain = Chain::new();
-        push_field(tree, &mut info_chain, shape_info, "super", Node::Message(shape_chain.first))?;
-        push_field(tree, &mut info_chain, shape_info, "deprecated_storage", Node::Reference(storage_id))?;
-        push_field(tree, &mut info_chain, shape_info, "owned_storage", Node::Reference(storage_id))?;
-        push_field(tree, &mut info_chain, shape_info, "is_text_box", Node::Bool(true))?;
-        objects.push((shape_id, SHAPE_INFO, info_chain.first, vec![title_id, caption_id, style, storage_id]));
+        push_field(
+            tree,
+            &mut info_chain,
+            shape_info,
+            "super",
+            Node::Message(shape_chain.first),
+        )?;
+        push_field(
+            tree,
+            &mut info_chain,
+            shape_info,
+            "deprecated_storage",
+            Node::Reference(storage_id),
+        )?;
+        push_field(
+            tree,
+            &mut info_chain,
+            shape_info,
+            "owned_storage",
+            Node::Reference(storage_id),
+        )?;
+        push_field(
+            tree,
+            &mut info_chain,
+            shape_info,
+            "is_text_box",
+            Node::Bool(true),
+        )?;
+        objects.push((
+            shape_id,
+            SHAPE_INFO,
+            info_chain.first,
+            vec![title_id, caption_id, style, storage_id],
+        ));
 
         for (id, kind, first, refs) in objects {
             let info = build_archive_info(tree, id, kind)?;
@@ -6765,7 +7654,10 @@ fn write_text_boxes(
             stream.objects.push(Object {
                 identifier: id,
                 info,
-                messages: vec![ObjectMessage { message_type: kind, first }],
+                messages: vec![ObjectMessage {
+                    message_type: kind,
+                    first,
+                }],
             });
         }
         placed.push((text_box.page, shape_id));
@@ -6786,27 +7678,60 @@ fn write_text_boxes(
     let mut pages: Vec<u32> = placed.iter().map(|(page, _)| *page).collect();
     pages.sort_unstable();
     pages.dedup();
-    let mut fields: Vec<(u32, Node)> = tree.chain(floating_first).map(|(_, e)| (e.number, e.value)).collect();
-    let groups_number = floating.slot_named("page_groups").map(|(_, f)| f.number).ok_or_else(|| malformed("no page_groups"))?;
+    let mut fields: Vec<(u32, Node)> = tree
+        .chain(floating_first)
+        .map(|(_, e)| (e.number, e.value))
+        .collect();
+    let groups_number = floating
+        .slot_named("page_groups")
+        .map(|(_, f)| f.number)
+        .ok_or_else(|| malformed("no page_groups"))?;
     for page in pages {
         let mut group_chain = Chain::new();
-        push_field(tree, &mut group_chain, group, "page_index", Node::Uint(u64::from(page)))?;
+        push_field(
+            tree,
+            &mut group_chain,
+            group,
+            "page_index",
+            Node::Uint(u64::from(page)),
+        )?;
         for (_, shape_id) in placed.iter().filter(|(p, _)| *p == page) {
             let mut item = Chain::new();
-            push_field(tree, &mut item, entry, "drawable", Node::Reference(*shape_id))?;
-            push_field(tree, &mut group_chain, group, "drawables", Node::Message(item.first))?;
+            push_field(
+                tree,
+                &mut item,
+                entry,
+                "drawable",
+                Node::Reference(*shape_id),
+            )?;
+            push_field(
+                tree,
+                &mut group_chain,
+                group,
+                "drawables",
+                Node::Message(item.first),
+            )?;
         }
         fields.push((groups_number, Node::Message(group_chain.first)));
     }
     let mut chain = Chain::new();
     for (number, value) in fields {
-        let slot = floating.slot(number).ok_or_else(|| malformed("floating field without slot"))?;
-        let field = floating.field_at(slot).ok_or_else(|| malformed("floating slot out of range"))?;
-        tree.push_known(&mut chain, floating, slot, field, number, value).map_err(tree_error)?;
+        let slot = floating
+            .slot(number)
+            .ok_or_else(|| malformed("floating field without slot"))?;
+        let field = floating
+            .field_at(slot)
+            .ok_or_else(|| malformed("floating slot out of range"))?;
+        tree.push_known(&mut chain, floating, slot, field, number, value)
+            .map_err(tree_error)?;
     }
     let shape_ids: Vec<u64> = placed.iter().map(|(_, id)| *id).collect();
     add_object_references(tree, floating_info, &shape_ids)?;
-    if let Some(object) = stream.objects.iter_mut().find(|object| object.identifier == floating_id) {
+    if let Some(object) = stream
+        .objects
+        .iter_mut()
+        .find(|object| object.identifier == floating_id)
+    {
         object.messages[0].first = chain.first;
     }
     let (zorder_first, zorder_info) = stream
@@ -6868,18 +7793,60 @@ fn create_fill_styles(
         let mut style = Chain::new();
         push_field(tree, &mut style, base, "parent", Node::Reference(parent))?;
         push_field(tree, &mut style, base, "is_variation", Node::Bool(true))?;
-        push_field(tree, &mut style, base, "stylesheet", Node::Reference(stylesheet))?;
+        push_field(
+            tree,
+            &mut style,
+            base,
+            "stylesheet",
+            Node::Reference(stylesheet),
+        )?;
         let color_first = build_color(tree, *color)?;
         let mut fill_chain = Chain::new();
-        push_field(tree, &mut fill_chain, fill, "color", Node::Message(color_first))?;
+        push_field(
+            tree,
+            &mut fill_chain,
+            fill,
+            "color",
+            Node::Message(color_first),
+        )?;
         let mut props = Chain::new();
-        push_field(tree, &mut props, properties, "fill", Node::Message(fill_chain.first))?;
+        push_field(
+            tree,
+            &mut props,
+            properties,
+            "fill",
+            Node::Message(fill_chain.first),
+        )?;
         let mut drawing_chain = Chain::new();
-        push_field(tree, &mut drawing_chain, drawing, "super", Node::Message(style.first))?;
-        push_field(tree, &mut drawing_chain, drawing, "override_count", Node::Uint(1))?;
-        push_field(tree, &mut drawing_chain, drawing, "shape_properties", Node::Message(props.first))?;
+        push_field(
+            tree,
+            &mut drawing_chain,
+            drawing,
+            "super",
+            Node::Message(style.first),
+        )?;
+        push_field(
+            tree,
+            &mut drawing_chain,
+            drawing,
+            "override_count",
+            Node::Uint(1),
+        )?;
+        push_field(
+            tree,
+            &mut drawing_chain,
+            drawing,
+            "shape_properties",
+            Node::Message(props.first),
+        )?;
         let mut chain = Chain::new();
-        push_field(tree, &mut chain, archive, "super", Node::Message(drawing_chain.first))?;
+        push_field(
+            tree,
+            &mut chain,
+            archive,
+            "super",
+            Node::Message(drawing_chain.first),
+        )?;
         push_field(tree, &mut chain, archive, "override_count", Node::Uint(0))?;
         let info = build_archive_info(tree, id, SHAPE_STYLE)?;
         add_object_references(tree, info, &[parent, stylesheet])?;
@@ -6899,7 +7866,12 @@ fn create_fill_styles(
 }
 
 /// Sets the refcount of the entry with `key` in a table data list.
-fn set_list_refcount(package: &mut Package, list_id: u64, key: u64, refcount: u64) -> Result<(), PackageError> {
+fn set_list_refcount(
+    package: &mut Package,
+    list_id: u64,
+    key: u64,
+    refcount: u64,
+) -> Result<(), PackageError> {
     let stream = stream_containing(package, list_id)?;
     let first = stream
         .objects
@@ -6983,19 +7955,46 @@ fn create_unbanded_table_style(
     let mut style = Chain::new();
     push_field(tree, &mut style, base, "parent", Node::Reference(parent))?;
     push_field(tree, &mut style, base, "is_variation", Node::Bool(true))?;
-    push_field(tree, &mut style, base, "stylesheet", Node::Reference(stylesheet))?;
+    push_field(
+        tree,
+        &mut style,
+        base,
+        "stylesheet",
+        Node::Reference(stylesheet),
+    )?;
     let mut props = Chain::new();
-    push_field(tree, &mut props, properties, "banded_rows", Node::Bool(false))?;
+    push_field(
+        tree,
+        &mut props,
+        properties,
+        "banded_rows",
+        Node::Bool(false),
+    )?;
     let mut chain = Chain::new();
-    push_field(tree, &mut chain, archive, "super", Node::Message(style.first))?;
+    push_field(
+        tree,
+        &mut chain,
+        archive,
+        "super",
+        Node::Message(style.first),
+    )?;
     push_field(tree, &mut chain, archive, "override_count", Node::Uint(1))?;
-    push_field(tree, &mut chain, archive, "table_properties", Node::Message(props.first))?;
+    push_field(
+        tree,
+        &mut chain,
+        archive,
+        "table_properties",
+        Node::Message(props.first),
+    )?;
     let info = build_archive_info(tree, id, TABLE_STYLE)?;
     add_object_references(tree, info, &[parent, stylesheet])?;
     stream.objects.push(Object {
         identifier: id,
         info,
-        messages: vec![ObjectMessage { message_type: TABLE_STYLE, first: chain.first }],
+        messages: vec![ObjectMessage {
+            message_type: TABLE_STYLE,
+            first: chain.first,
+        }],
     });
     register_in_stylesheet(package, stylesheet, &[(parent, id)])?;
     Ok(id)
