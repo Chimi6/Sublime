@@ -12,6 +12,7 @@ use crate::format::Format;
 use crate::format::formats;
 use crate::io::bmp::{BmpError, BmpRows, BmpRowsError, read_bmp_rows};
 use crate::io::jpeg::{DEFAULT_QUALITY, JpegError, JpegNotes, JpegRows, read_jpeg_rows};
+use crate::io::netpbm::{Kind, NetpbmNotes, NetpbmRows, read_netpbm_rows};
 use crate::io::png::{PngError, PngNotes, PngRows, RowSink, RowsError, read_png_rows};
 use crate::io::qoi::{QoiRows, read_qoi_rows};
 use crate::io::webp::{Effort, WebpNotes, WebpRows, read_webp_rows};
@@ -23,6 +24,7 @@ pub enum ImageFormat {
     Jpeg,
     Webp,
     Qoi,
+    Netpbm(Kind),
 }
 
 pub struct ImagePair {
@@ -87,6 +89,10 @@ impl Converter for ImagePair {
                 let mut rows = QoiRows::new(output);
                 read_rows(self.read, &mut input, &mut rows, self.name, context)
             }
+            ImageFormat::Netpbm(kind) => {
+                let mut rows = NetpbmRows::new(output, kind);
+                read_rows(self.read, &mut input, &mut rows, self.name, context)
+            }
         }
     }
 }
@@ -126,6 +132,10 @@ fn read_rows(
             report_webp_notes(notes, context);
         }
         ImageFormat::Qoi => read_qoi_rows(input, sink).map_err(rows_error)?,
+        ImageFormat::Netpbm(_) => {
+            let notes = read_netpbm_rows(input, sink).map_err(rows_error)?;
+            report_netpbm_notes(notes, name, context);
+        }
     }
     Ok(())
 }
@@ -152,6 +162,16 @@ fn report_jpeg_notes(notes: JpegNotes, context: &mut Context<'_>) {
         context.warning(format!(
             "Exif orientation {orientation} is not applied: the pixels are as stored, and a viewer would rotate them"
         ));
+    }
+}
+
+fn report_netpbm_notes(notes: NetpbmNotes, name: &'static str, context: &mut Context<'_>) {
+    if notes.maxval > 255 {
+        context.loss(
+            name,
+            Location::default(),
+            "16-bit samples reduced to 8 bits",
+        );
     }
 }
 
@@ -216,7 +236,7 @@ struct Codec {
 
 const JPEG_LOSS: &str = "JPEG is lossy: the image is re-encoded at the quality given (85 by default, 4:2:0 chroma below 90) and alpha is flattened onto white";
 
-static CODECS: [Codec; 5] = [
+static CODECS: [Codec; 9] = [
     Codec {
         format: &formats::PNG,
         kind: ImageFormat::Png,
@@ -253,7 +273,35 @@ static CODECS: [Codec; 5] = [
         read: Fidelity::Lossless,
         write: Fidelity::Lossless,
     },
+    Codec {
+        format: &formats::PBM,
+        kind: ImageFormat::Netpbm(Kind::Pbm),
+        read: Fidelity::Lossless,
+        write: Fidelity::Lossy(
+            "black and white: color becomes luma, alpha is flattened onto white, and gray below half is black",
+        ),
+    },
+    Codec {
+        format: &formats::PGM,
+        kind: ImageFormat::Netpbm(Kind::Pgm),
+        read: Fidelity::Conditional(NETPBM_READ),
+        write: Fidelity::Conditional("color becomes luma and alpha is flattened onto white"),
+    },
+    Codec {
+        format: &formats::PPM,
+        kind: ImageFormat::Netpbm(Kind::Ppm),
+        read: Fidelity::Conditional(NETPBM_READ),
+        write: Fidelity::Conditional("alpha is flattened onto white"),
+    },
+    Codec {
+        format: &formats::PAM,
+        kind: ImageFormat::Netpbm(Kind::Pam),
+        read: Fidelity::Conditional(NETPBM_READ),
+        write: Fidelity::Lossless,
+    },
 ];
+
+const NETPBM_READ: &str = "samples wider than 8 bits (maxval over 255) are scaled to 8 bits";
 
 /// The worse of two fidelities, carrying both texts when both lose.
 fn combine(read: &Fidelity, write: &Fidelity) -> Fidelity {
