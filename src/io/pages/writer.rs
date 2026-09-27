@@ -220,7 +220,17 @@ fn rebuild_body(
 
     // Rewrite one template table per model table (with rich cells for the
     // formatted ones); each returns the attachment the body anchors it with.
-    let template_tables = collect_template_tables(package);
+    // The template carries one table: a document with more gets a clone of
+    // the pristine prototype per extra table (cloned before any rewrite).
+    let mut template_tables = collect_template_tables(package);
+    if let Some(prototype) = template_tables.first().copied() {
+        while template_tables.len() < body.tables.len() {
+            let attach = clone_template_table(package, &prototype, &mut next_id)?;
+            let table = traverse_template_table(package, attach)
+                .ok_or_else(|| malformed("cloned table does not resolve"))?;
+            template_tables.push(table);
+        }
+    }
     let mut anchors: Vec<(u32, u64)> = Vec::new();
     for (mark, table) in body.tables.iter().zip(&template_tables) {
         reuse_table(
@@ -633,6 +643,7 @@ fn base_char_style(package: &Package) -> Option<u64> {
 /// A table the template carries, by the identifiers of the objects a rewrite
 /// touches: the drawable attachment the body anchors, the model whose sizes
 /// change, and the tile, string table, and header buckets holding the cells.
+#[derive(Clone, Copy)]
 struct TemplateTable {
     attach_id: u64,
     info_id: u64,
@@ -755,7 +766,11 @@ fn reuse_table(
             // stream: Pages loads that stream as one component and aborts if the
             // payloads it references live elsewhere (e.g. the document stream).
             let stream = stream_containing(package, table.rich_text_id)?;
+            let covered = mark.covered();
             for (index, cell) in mark.cells.iter().enumerate() {
+                if covered.contains(&index) {
+                    continue;
+                }
                 let storage_id = *next_id;
                 let payload_id = *next_id + 1;
                 *next_id += 2;
@@ -835,7 +850,7 @@ fn reuse_table(
     if let Some(uid_map_id) = object_reference(package, table.model_id, "base_column_row_uids") {
         let (cols, rows) = (mark.columns, mark.rows);
         rewrite_object(package, uid_map_id, |tree| {
-            build_column_row_uids(tree, cols, rows)
+            build_column_row_uids(tree, cols, rows, table.model_id)
         })?;
     }
     // Resize the stroke sidecar's grid: it carries the cell-border counts, and
@@ -852,7 +867,12 @@ fn reuse_table(
     let width: f32 = mark.widths.iter().sum();
     let height: f32 = heights.iter().sum();
     set_table_frame(package, table.info_id, width, height)?;
-    update_model_dims(package, table.model_id, mark)
+    update_model_dims(package, table.model_id, mark)?;
+    set_owner_table_ranges(package, table, mark)?;
+    if !mark.merges.is_empty() {
+        write_merges(package, table, &mark.merges, next_id)?;
+    }
+    Ok(())
 }
 
 /// Sets a table drawable's frame size (`super.geometry.size`).
@@ -922,88 +942,56 @@ fn rebuild_stroke_sidecar(
     Ok(chain.first)
 }
 
-/// A fresh column/row UID map with one distinct UUID per column and row and
-/// an identity index mapping, so Pages sizes the table to exactly `columns`
-/// by `rows`.
+/// A fresh column/row UID map: a distinct UUID per column and row, unique to
+/// this table (seeded by it — the calculation engine resolves ranges through
+/// these, so two tables must never share one), kept sorted by value with the
+/// index<->UID permutations Pages reads, so Pages sizes the grid to exactly
+/// `columns` by `rows`.
 fn build_column_row_uids(
     tree: &mut Tree,
     columns: usize,
     rows: usize,
+    seed: u64,
 ) -> Result<u32, PackageError> {
     let map = message_ref("TST.ColumnRowUIDMapArchive")?;
     let uuid = message_ref("TSP.UUID")?;
     let mut chain = Chain::new();
-    for index in 0..columns {
-        let mut value = Chain::new();
-        push_field(
-            tree,
-            &mut value,
-            uuid,
-            "lower",
-            Node::Uint(0x1000 + index as u64),
-        )?;
-        push_field(tree, &mut value, uuid, "upper", Node::Uint(0xC01))?;
-        push_field(
-            tree,
-            &mut chain,
-            map,
-            "sorted_column_uids",
-            Node::Message(value.first),
-        )?;
-    }
-    for index in 0..columns {
-        push_field(
-            tree,
-            &mut chain,
-            map,
-            "column_index_for_uid",
-            Node::Uint(index as u64),
-        )?;
-    }
-    for index in 0..columns {
-        push_field(
-            tree,
-            &mut chain,
-            map,
-            "column_uid_for_index",
-            Node::Uint(index as u64),
-        )?;
-    }
-    for index in 0..rows {
-        let mut value = Chain::new();
-        push_field(
-            tree,
-            &mut value,
-            uuid,
-            "lower",
-            Node::Uint(0x2000 + index as u64),
-        )?;
-        push_field(tree, &mut value, uuid, "upper", Node::Uint(0x201))?;
-        push_field(
-            tree,
-            &mut chain,
-            map,
-            "sorted_row_uids",
-            Node::Message(value.first),
-        )?;
-    }
-    for index in 0..rows {
-        push_field(
-            tree,
-            &mut chain,
-            map,
-            "row_index_for_uid",
-            Node::Uint(index as u64),
-        )?;
-    }
-    for index in 0..rows {
-        push_field(
-            tree,
-            &mut chain,
-            map,
-            "row_uid_for_index",
-            Node::Uint(index as u64),
-        )?;
+    for (count, salt, names) in [
+        (
+            columns,
+            0x436F_6C75_6D6E_0000u64,
+            ["sorted_column_uids", "column_index_for_uid", "column_uid_for_index"],
+        ),
+        (
+            rows,
+            0x526F_7773_0000_0000u64,
+            ["sorted_row_uids", "row_index_for_uid", "row_uid_for_index"],
+        ),
+    ] {
+        // (upper, lower, index) per column or row, sorted by UUID value.
+        let mut uids: Vec<(u64, u64, usize)> = (0..count)
+            .map(|index| {
+                let (lower, upper) = object_uuid(seed.wrapping_mul(0x1_0000_0001) ^ salt ^ index as u64);
+                (upper, lower, index)
+            })
+            .collect();
+        uids.sort();
+        let mut position = vec![0usize; count];
+        for (sorted, (_, _, index)) in uids.iter().enumerate() {
+            position[*index] = sorted;
+        }
+        for (upper, lower, _) in &uids {
+            let mut value = Chain::new();
+            push_field(tree, &mut value, uuid, "lower", Node::Uint(*lower))?;
+            push_field(tree, &mut value, uuid, "upper", Node::Uint(*upper))?;
+            push_field(tree, &mut chain, map, names[0], Node::Message(value.first))?;
+        }
+        for (_, _, index) in &uids {
+            push_field(tree, &mut chain, map, names[1], Node::Uint(*index as u64))?;
+        }
+        for sorted in &position {
+            push_field(tree, &mut chain, map, names[2], Node::Uint(*sorted as u64))?;
+        }
     }
     Ok(chain.first)
 }
@@ -2644,6 +2632,26 @@ struct TableMark {
     cells: Vec<CellContent>,
     widths: Vec<f32>,
     heights: Vec<f32>,
+    /// Merged regions as (row, column, rows, columns), origin first.
+    merges: Vec<(usize, usize, usize, usize)>,
+}
+
+impl TableMark {
+    /// Row-major indices of the cells merged regions cover (every cell of a
+    /// region but its top-left origin).
+    fn covered(&self) -> std::collections::HashSet<usize> {
+        let mut covered = std::collections::HashSet::new();
+        for &(row, column, rows, columns) in &self.merges {
+            for r in row..row + rows {
+                for c in column..column + columns {
+                    if (r, c) != (row, column) {
+                        covered.insert(r * self.columns + c);
+                    }
+                }
+            }
+        }
+        covered
+    }
 }
 
 /// An inline image anchored at a `U+FFFC` character: its offset, the media
@@ -2745,6 +2753,16 @@ impl Walk {
                 cells[r * columns + c] = flatten_cell(document, cell);
             }
         }
+        let mut merges = Vec::new();
+        for (r, row) in table.rows.iter().enumerate() {
+            for (c, cell) in row.cells.iter().enumerate().take(columns) {
+                let span_rows = (cell.row_span.max(1) as usize).min(rows - r);
+                let span_columns = (cell.column_span.max(1) as usize).min(columns - c);
+                if cell.merge == crate::document::Merge::Origin && (span_rows > 1 || span_columns > 1) {
+                    merges.push((r, c, span_rows, span_columns));
+                }
+            }
+        }
         let widths = table.columns.clone();
         let heights = table
             .rows
@@ -2759,6 +2777,7 @@ impl Walk {
             cells,
             widths,
             heights,
+            merges,
         });
         self.mark(Format::default());
         self.link_mark(None);
@@ -3523,6 +3542,7 @@ fn build_tile(
         "last_saved_in_BNC",
         Node::Bool(true),
     )?;
+    let covered = mark.covered();
     for row in 0..mark.rows {
         // Pages allocates a fixed 255-slot column offset array per row (510
         // bytes): the byte offset of each present column's record in the
@@ -3534,7 +3554,11 @@ fn build_tile(
             let key = cell as u32 + 1;
             let slot = column * 2;
             offsets[slot..slot + 2].copy_from_slice(&(buffer.len() as u16).to_le_bytes());
-            buffer.extend_from_slice(&cell_record_bytes(key, rich.get(&cell).copied()));
+            if covered.contains(&cell) {
+                buffer.extend_from_slice(&covered_record_bytes());
+            } else {
+                buffer.extend_from_slice(&cell_record_bytes(key, rich.get(&cell).copied()));
+            }
         }
         let mut entry = Chain::new();
         push_field(
@@ -3595,6 +3619,17 @@ fn build_tile(
     Ok(chain.first)
 }
 
+/// The record of a cell a merged region covers: an empty cell (kind 0) that
+/// names only its text style, as Pages writes it; the region's text lives in
+/// its origin cell.
+fn covered_record_bytes() -> Vec<u8> {
+    let mut bytes = vec![0u8; 16];
+    bytes[0] = 5;
+    bytes[8] = 0x40;
+    bytes[12..16].copy_from_slice(&TEXT_STYLE_KEY.to_le_bytes());
+    bytes
+}
+
 /// A storage-version-5 cell record. A rich cell (kind 9) is the 32-byte record
 /// Pages writes: marker 5, kind 9, then the fields named by its flag word — the
 /// rich_text key, the cell-style key, the text-style key, a constant, and the
@@ -3638,6 +3673,16 @@ fn push_field(
     let (slot, field) = message
         .slot_named(name)
         .ok_or_else(|| malformed("field is not in the schema"))?;
+    // A signed field (int32/sint32) carries a Node::Int, which the encoder
+    // writes as two's complement or ZigZag; an unsigned value passed for one
+    // would otherwise be written raw and read back as a different number.
+    let value = match (field.kind, value) {
+        (
+            crate::io::protobuf::schema::Kind::Int | crate::io::protobuf::schema::Kind::Sint,
+            Node::Uint(unsigned),
+        ) => Node::Int(unsigned as i64),
+        (_, value) => value,
+    };
     tree.push_known(chain, message, slot, field, field.number, value)
         .map_err(tree_error)?;
     Ok(())
@@ -4424,5 +4469,1093 @@ fn set_page_setup(
     }
     let landscape = u64::from(page.width > page.height);
     set_field_uint(tree, first, "orientation", landscape);
+    Ok(())
+}
+
+// ----- table cloning -----
+
+const CALCULATION_ENGINE: u32 = 4000;
+const FORMULA_OWNER_DEPENDENCIES: u32 = 4008;
+
+/// What turns a copy of the prototype table's objects into a distinct table:
+/// new object identifiers, a fresh UUID family (a table's UUIDs share their
+/// last twelve bytes and differ in the first word), and new internal formula
+/// owner numbers in the calculation engine.
+struct CloneMap {
+    ids: HashMap<u64, u64>,
+    families: HashMap<[u8; 12], [u8; 12]>,
+    owners: HashMap<u64, u64>,
+}
+
+impl CloneMap {
+    fn id(&self, id: u64) -> u64 {
+        self.ids.get(&id).copied().unwrap_or(id)
+    }
+
+    fn uuid(&self, bytes: [u8; 16]) -> Option<[u8; 16]> {
+        let family: [u8; 12] = bytes[4..].try_into().expect("12 bytes");
+        let fresh = self.families.get(&family)?;
+        let mut out = bytes;
+        out[4..].copy_from_slice(fresh);
+        Some(out)
+    }
+}
+
+/// The UUIDs a message chain holds directly, by encoding: `uuid_w0..w3` words,
+/// a `lower`/`upper` pair, and each UUID string, with the entries holding them.
+enum UuidAt {
+    Words([u32; 4], [u8; 16]),
+    Pair([u32; 2], [u8; 16]),
+    Text(u32, [u8; 16]),
+}
+
+fn chain_uuids(tree: &Tree, first: u32) -> Vec<UuidAt> {
+    let mut words = [None; 4];
+    let mut pair = [None; 2];
+    let mut count = 0;
+    let mut out = Vec::new();
+    for (index, entry) in tree.chain(first) {
+        count += 1;
+        let name = tree.field(entry).map(|field| field.name);
+        match (name, entry.value) {
+            (Some("uuid_w0"), Node::Uint(v)) => words[0] = Some((index, v as u32)),
+            (Some("uuid_w1"), Node::Uint(v)) => words[1] = Some((index, v as u32)),
+            (Some("uuid_w2"), Node::Uint(v)) => words[2] = Some((index, v as u32)),
+            (Some("uuid_w3"), Node::Uint(v)) => words[3] = Some((index, v as u32)),
+            (Some("lower"), Node::Uint(v)) => pair[0] = Some((index, v)),
+            (Some("upper"), Node::Uint(v)) => pair[1] = Some((index, v)),
+            (_, Node::Str(span)) => {
+                if let Some(bytes) = parse_uuid_text(tree.bytes(span)) {
+                    out.push(UuidAt::Text(index, bytes));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let [Some(a), Some(b), Some(c), Some(d)] = words {
+        let mut bytes = [0u8; 16];
+        for (slot, (_, word)) in [a, b, c, d].iter().enumerate() {
+            bytes[slot * 4..slot * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        out.push(UuidAt::Words([a.0, b.0, c.0, d.0], bytes));
+    }
+    if let [Some(lower), Some(upper)] = pair
+        && count == 2
+    {
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&lower.1.to_le_bytes());
+        bytes[8..].copy_from_slice(&upper.1.to_le_bytes());
+        out.push(UuidAt::Pair([lower.0, upper.0], bytes));
+    }
+    out
+}
+
+fn parse_uuid_text(text: &[u8]) -> Option<[u8; 16]> {
+    let window: &[u8; 36] = text.try_into().ok()?;
+    if !is_uuid(window) {
+        return None;
+    }
+    let hex: Vec<u8> = text.iter().copied().filter(|byte| *byte != b'-').collect();
+    let mut out = [0u8; 16];
+    for (index, pair) in hex.chunks(2).enumerate() {
+        out[index] = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(out)
+}
+
+fn format_uuid_text(bytes: [u8; 16]) -> String {
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02X}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
+/// Calls `visit` on a chain and every nested chain below it.
+fn walk_chains(tree: &Tree, first: u32, visit: &mut dyn FnMut(&Tree, u32)) {
+    if first == NONE {
+        return;
+    }
+    visit(tree, first);
+    let nested: Vec<u32> = tree
+        .chain(first)
+        .filter_map(|(_, entry)| match entry.value {
+            Node::Message(child) => Some(child),
+            _ => None,
+        })
+        .collect();
+    for child in nested {
+        walk_chains(tree, child, visit);
+    }
+}
+
+/// Whether a chain (or anything below it) names a UUID of a remapped family
+/// or references a cloned object.
+fn mentions_clone(tree: &Tree, first: u32, map: &CloneMap) -> bool {
+    let mut found = false;
+    walk_chains(tree, first, &mut |tree, chain| {
+        if found {
+            return;
+        }
+        for uuid in chain_uuids(tree, chain) {
+            let bytes = match uuid {
+                UuidAt::Words(_, b) | UuidAt::Pair(_, b) | UuidAt::Text(_, b) => b,
+            };
+            if map.uuid(bytes).is_some() {
+                found = true;
+                return;
+            }
+        }
+        for (_, entry) in tree.chain(chain) {
+            if let Node::Reference(id) = entry.value
+                && map.ids.contains_key(&id)
+            {
+                found = true;
+                return;
+            }
+        }
+    });
+    found
+}
+
+/// Copies a chain from `source` into `target` (they may not be the same tree),
+/// applying the clone map: references and `object_references` to cloned
+/// objects, internal formula owner numbers, and UUIDs of remapped families.
+fn copy_chain(
+    source: &Tree,
+    first: u32,
+    target: &mut Tree,
+    map: &CloneMap,
+) -> Result<u32, PackageError> {
+    let entries: Vec<TreeEntry> = source.chain(first).map(|(_, entry)| *entry).collect();
+    let mut chain = Chain::new();
+    for original in entries {
+        let mut entry = original;
+        entry.next = NONE;
+        let name = source.field(&original).map(|field| field.name);
+        entry.value = match original.value {
+            Node::Message(child) => Node::Message(copy_chain(source, child, target, map)?),
+            Node::Str(span) => {
+                let text = source.bytes(span);
+                let remapped = parse_uuid_text(text)
+                    .and_then(|bytes| map.uuid(bytes))
+                    .map(|bytes| format_uuid_text(bytes).into_bytes());
+                let bytes = remapped.as_deref().unwrap_or(text);
+                Node::Str(target.push_bytes(bytes).map_err(tree_error)?)
+            }
+            Node::Bytes(span) => Node::Bytes(target.push_bytes(source.bytes(span)).map_err(tree_error)?),
+            Node::RawBytes(span) => {
+                Node::RawBytes(target.push_bytes(source.bytes(span)).map_err(tree_error)?)
+            }
+            Node::Deferred(span) => {
+                Node::Deferred(target.push_bytes(source.bytes(span)).map_err(tree_error)?)
+            }
+            Node::Reference(id) => Node::Reference(map.id(id)),
+            Node::Uint(value) if name == Some("object_references") => Node::Uint(map.id(value)),
+            // Internal formula-owner numbers appear under several names
+            // (internal_owner_id, internal_owner_id_for_edge, to_owner_id, a
+            // range reference's owner_id); every one naming a cloned owner
+            // must follow it, or the clone stays wired to the prototype.
+            Node::Uint(value) if name.is_some_and(|name| name.contains("owner_id")) => {
+                Node::Uint(map.owners.get(&value).copied().unwrap_or(value))
+            }
+            other => other,
+        };
+        target.push(&mut chain, entry).map_err(tree_error)?;
+    }
+    // UUIDs held as words or a lower/upper pair, rewritten in place.
+    for uuid in chain_uuids(target, chain.first) {
+        match uuid {
+            UuidAt::Words(indices, bytes) => {
+                if let Some(fresh) = map.uuid(bytes) {
+                    for (slot, index) in indices.iter().enumerate() {
+                        let word = u32::from_le_bytes(fresh[slot * 4..slot * 4 + 4].try_into().expect("4"));
+                        target.entries[*index as usize].value = Node::Uint(u64::from(word));
+                    }
+                }
+            }
+            UuidAt::Pair(indices, bytes) => {
+                if let Some(fresh) = map.uuid(bytes) {
+                    let lower = u64::from_le_bytes(fresh[..8].try_into().expect("8"));
+                    let upper = u64::from_le_bytes(fresh[8..].try_into().expect("8"));
+                    target.entries[indices[0] as usize].value = Node::Uint(lower);
+                    target.entries[indices[1] as usize].value = Node::Uint(upper);
+                }
+            }
+            UuidAt::Text(..) => {}
+        }
+    }
+    Ok(chain.first)
+}
+
+/// Copies a chain within one tree, through a scratch tree.
+fn copy_within(tree: &mut Tree, first: u32, map: &CloneMap) -> Result<u32, PackageError> {
+    let mut scratch = Tree::new(&SCHEMA);
+    let copied = copy_chain(tree, first, &mut scratch, map)?;
+    let identity = CloneMap {
+        ids: HashMap::new(),
+        families: HashMap::new(),
+        owners: HashMap::new(),
+    };
+    copy_chain(&scratch, copied, tree, &identity)
+}
+
+/// Inserts a copy of every repeated entry of a shared (not cloned) chain that
+/// concerns the prototype table — one naming its UUID family or referencing a
+/// cloned object — right after the original, remapped to the clone. This is
+/// how the calculation engine's owner map, dependency lists, and per-table
+/// registries learn about the new table. Returns whether anything was added.
+fn register_clone(tree: &mut Tree, first: u32, map: &CloneMap) -> Result<bool, PackageError> {
+    let entries: Vec<(u32, TreeEntry)> = tree.chain(first).map(|(index, entry)| (index, *entry)).collect();
+    let mut added = false;
+    for (index, entry) in entries {
+        let Some(field) = tree.field(&entry) else {
+            continue;
+        };
+        let duplicate = match entry.value {
+            Node::Message(child) if field.repeated && mentions_clone(tree, child, map) => {
+                Some(Node::Message(copy_within(tree, child, map)?))
+            }
+            Node::Message(child) => {
+                added |= register_clone(tree, child, map)?;
+                None
+            }
+            Node::Reference(id) if field.repeated && map.ids.contains_key(&id) => {
+                Some(Node::Reference(map.id(id)))
+            }
+            _ => None,
+        };
+        if let Some(value) = duplicate {
+            let mut copy = entry;
+            copy.value = value;
+            copy.next = tree.entries[index as usize].next;
+            let mut chain = Chain::new();
+            let new_index = tree.push(&mut chain, copy).map_err(tree_error)?;
+            tree.entries[new_index as usize].next = copy.next;
+            tree.entries[index as usize].next = new_index;
+            added = true;
+        }
+    }
+    Ok(added)
+}
+
+/// Every Reference a chain holds, at any depth.
+fn chain_references(tree: &Tree, first: u32) -> Vec<u64> {
+    let mut out = Vec::new();
+    walk_chains(tree, first, &mut |tree, chain| {
+        for (_, entry) in tree.chain(chain) {
+            if let Node::Reference(id) = entry.value
+                && !out.contains(&id)
+            {
+                out.push(id);
+            }
+        }
+    });
+    out
+}
+
+/// Clones the prototype table — its drawable attachment, table info and model,
+/// tiles, data lists, header buckets, and calculation-engine owners — into a
+/// distinct table, registered with the calculation engine and the package
+/// metadata. Returns the new drawable attachment for the body to anchor.
+fn clone_template_table(
+    package: &mut Package,
+    proto: &TemplateTable,
+    next_id: &mut u64,
+) -> Result<u64, PackageError> {
+    // Where every object lives and what it references.
+    let mut location: HashMap<u64, (usize, usize)> = HashMap::new();
+    for (stream_index, entry) in package.entries.iter().enumerate() {
+        if let Entry::Stream(stream) = entry {
+            for (object_index, object) in stream.objects.iter().enumerate() {
+                location.insert(object.identifier, (stream_index, object_index));
+            }
+        }
+    }
+    let (engine_stream, _) = *location
+        .get(&proto.info_id)
+        .ok_or_else(|| malformed("table info is missing"))?;
+
+    // The cluster: objects reachable from the table info, short of the shared
+    // stylesheet, the document, and the calculation engine archive itself.
+    let mut cluster: Vec<u64> = Vec::new();
+    extend_cluster(package, &location, &mut cluster, vec![proto.info_id]);
+
+    // The UUID families the cluster uses, each given fresh bytes.
+    let mut families: HashMap<[u8; 12], [u8; 12]> = HashMap::new();
+    for id in &cluster {
+        let (stream_index, object_index) = location[id];
+        let stream = stream_at(package, stream_index).expect("stream");
+        for message in &stream.objects[object_index].messages {
+            walk_chains(&stream.tree, message.first, &mut |tree, chain| {
+                for uuid in chain_uuids(tree, chain) {
+                    let bytes = match uuid {
+                        UuidAt::Words(_, b) | UuidAt::Pair(_, b) | UuidAt::Text(_, b) => b,
+                    };
+                    let family: [u8; 12] = bytes[4..].try_into().expect("12");
+                    if family.iter().any(|byte| *byte != 0) && !families.contains_key(&family) {
+                        let fresh = fresh_uuid(families.len() as u64 + *next_id);
+                        let fresh = parse_uuid_text(&fresh).expect("uuid");
+                        families.insert(family, fresh[4..].try_into().expect("12"));
+                    }
+                }
+            });
+        }
+    }
+    let mut map = CloneMap {
+        ids: HashMap::new(),
+        families,
+        owners: HashMap::new(),
+    };
+
+    // The engine's per-owner dependency objects for the table's owners are
+    // cloned too; the owner map gives each owner a new internal number.
+    let engine = stream_at(package, engine_stream).expect("stream");
+    let engine_archive = engine
+        .objects
+        .iter()
+        .find(|object| first_type(object) == Some(CALCULATION_ENGINE))
+        .ok_or_else(|| malformed("calculation engine is missing"))?;
+    let engine_id = engine_archive.identifier;
+    let mut max_owner = 0u64;
+    let mut table_owners: Vec<u64> = Vec::new();
+    walk_chains(&engine.tree, engine_archive.messages[0].first, &mut |tree, chain| {
+        let mut internal = None;
+        let mut mentions = false;
+        for (_, entry) in tree.chain(chain) {
+            if tree.field(entry).map(|f| f.name) == Some("internal_owner_id")
+                && let Node::Uint(value) = entry.value
+            {
+                internal = Some(value);
+                max_owner = max_owner.max(value);
+            }
+            if let Node::Message(child) = entry.value {
+                for uuid in chain_uuids(tree, child) {
+                    if let UuidAt::Words(_, bytes) | UuidAt::Pair(_, bytes) = uuid
+                        && map.uuid(bytes).is_some()
+                    {
+                        mentions = true;
+                    }
+                }
+            }
+        }
+        if let (Some(value), true) = (internal, mentions) {
+            table_owners.push(value);
+        }
+    });
+    for (offset, owner) in table_owners.iter().enumerate() {
+        map.owners.insert(*owner, max_owner + 1 + offset as u64);
+    }
+    // Each such object, with what it references (its cell-record tiles),
+    // belongs to the clone: sharing them would give two owners one record.
+    let owner_objects: Vec<u64> = engine
+        .objects
+        .iter()
+        .filter(|object| {
+            first_type(object) == Some(FORMULA_OWNER_DEPENDENCIES)
+                && mentions_clone(&engine.tree, object.messages[0].first, &map)
+        })
+        .map(|object| object.identifier)
+        .collect();
+    extend_cluster(package, &location, &mut cluster, owner_objects);
+    cluster.push(proto.attach_id);
+    for id in &cluster {
+        map.ids.insert(*id, *next_id);
+        *next_id += 1;
+    }
+
+    // Copy each object: into its own stream when it shares the engine or the
+    // document stream, otherwise into a new single-object component stream.
+    let mut new_streams: Vec<(Stream, u64, u64)> = Vec::new();
+    for id in &cluster {
+        let (stream_index, object_index) = location[id];
+        let new_id = map.id(*id);
+        let (name, source_object) = {
+            let stream = stream_at(package, stream_index).expect("stream");
+            (stream.name.clone(), stream.objects[object_index].identifier)
+        };
+        let shared = stream_index == engine_stream || name == "Index/Document.iwa";
+        if shared {
+            let Entry::Stream(stream) = &mut package.entries[stream_index] else {
+                unreachable!()
+            };
+            let source = stream.objects[object_index].clone_shape();
+            let mut messages = Vec::new();
+            for (message_type, first) in &source.1 {
+                messages.push(ObjectMessage {
+                    message_type: *message_type,
+                    first: copy_within(&mut stream.tree, *first, &map)?,
+                });
+            }
+            let info = copy_within(&mut stream.tree, source.0, &map)?;
+            set_field_uint(&mut stream.tree, info, "identifier", new_id);
+            stream.objects.push(Object {
+                identifier: new_id,
+                info,
+                messages,
+            });
+        } else {
+            let stream = stream_at(package, stream_index).expect("stream");
+            let object = &stream.objects[object_index];
+            let mut tree = Tree::new(&SCHEMA);
+            let mut messages = Vec::new();
+            for message in &object.messages {
+                messages.push(ObjectMessage {
+                    message_type: message.message_type,
+                    first: copy_chain(&stream.tree, message.first, &mut tree, &map)?,
+                });
+            }
+            let info = copy_chain(&stream.tree, object.info, &mut tree, &map)?;
+            set_field_uint(&mut tree, info, "identifier", new_id);
+            let locator = component_locator(package, &name).unwrap_or_else(|| {
+                name.trim_start_matches("Index/").trim_end_matches(".iwa").to_string()
+            });
+            let base = locator.split('-').next().unwrap_or(&locator).to_string();
+            new_streams.push((
+                Stream {
+                    name: format!("Index/{base}-{new_id}.iwa"),
+                    tree,
+                    objects: vec![Object {
+                        identifier: new_id,
+                        info,
+                        messages,
+                    }],
+                },
+                source_object,
+                new_id,
+            ));
+        }
+    }
+
+    // Register the clone in the engine's shared containers and every shared
+    // engine object that lists the table's owners.
+    {
+        let Entry::Stream(stream) = &mut package.entries[engine_stream] else {
+            unreachable!()
+        };
+        let shared: Vec<(u64, u32, u32)> = stream
+            .objects
+            .iter()
+            .filter(|object| !map.ids.values().any(|new| *new == object.identifier))
+            .filter(|object| !map.ids.contains_key(&object.identifier))
+            .map(|object| (object.identifier, object.info, object.messages[0].first))
+            .collect();
+        for (id, info, first) in shared {
+            if id != engine_id && !matches!(stream.objects.iter().find(|o| o.identifier == id).and_then(first_type), Some(FORMULA_OWNER_DEPENDENCIES) | Some(6366)) {
+                continue;
+            }
+            if register_clone(&mut stream.tree, first, &map)? {
+                let references = chain_references(&stream.tree, first);
+                add_object_references(&mut stream.tree, info, &references)?;
+            }
+        }
+    }
+
+    // Components for the new streams, and UUID-map entries for cloned objects.
+    for (_, old_id, new_id) in &new_streams {
+        add_component_clone(package, *old_id, *new_id)?;
+    }
+    add_uuid_map_clones(package, &map)?;
+    for (stream, _, _) in new_streams {
+        package.entries.push(Entry::Stream(stream));
+    }
+    Ok(map.id(proto.attach_id))
+}
+
+impl Object {
+    /// The info chain and (type, chain) of each message, for copying.
+    fn clone_shape(&self) -> (u32, Vec<(u32, u32)>) {
+        (
+            self.info,
+            self.messages
+                .iter()
+                .map(|message| (message.message_type, message.first))
+                .collect(),
+        )
+    }
+}
+
+/// The metadata locator (or preferred locator) of the component stored in
+/// stream `name`.
+fn component_locator(package: &Package, name: &str) -> Option<String> {
+    let (tree, first) = metadata_view(package)?;
+    for (_, field) in tree.chain(first) {
+        if tree.field(field).map(|f| f.name) != Some("components") {
+            continue;
+        }
+        let Node::Message(component) = field.value else {
+            continue;
+        };
+        let locator = str_field(tree, component, "locator")
+            .filter(|locator| !locator.is_empty())
+            .or_else(|| str_field(tree, component, "preferred_locator"))?;
+        if format!("Index/{locator}.iwa") == name {
+            return str_field(tree, component, "preferred_locator").map(str::to_string);
+        }
+    }
+    None
+}
+
+fn metadata_view(package: &Package) -> Option<(&Tree, u32)> {
+    for entry in &package.entries {
+        if let Entry::Stream(stream) = entry
+            && let Some(object) = stream
+                .objects
+                .iter()
+                .find(|object| first_type(object) == Some(PACKAGE_METADATA))
+        {
+            return Some((&stream.tree, object.messages.first()?.first));
+        }
+    }
+    None
+}
+
+/// Adds a component for a cloned single-object stream: a copy of the source
+/// object's component with the new identifier and locator, and without the
+/// per-object lists (the reconcile pass fills external references back in).
+fn add_component_clone(package: &mut Package, old_id: u64, new_id: u64) -> Result<(), PackageError> {
+    let (stream, metadata_first) =
+        metadata_message(package).ok_or_else(|| malformed("PackageMetadata is missing"))?;
+    let tree = &mut stream.tree;
+    let mut source = None;
+    let mut last_component = None;
+    for (index, field) in tree.chain(metadata_first) {
+        if tree.field(field).map(|f| f.name) != Some("components") {
+            continue;
+        }
+        last_component = Some(index);
+        if let Node::Message(component) = field.value
+            && field_value(tree, component, "identifier") == Some(Node::Uint(old_id))
+        {
+            source = Some((index, component));
+        }
+    }
+    let (source_entry, component) = source.ok_or_else(|| malformed("component to clone is missing"))?;
+    let last_component = last_component.expect("a component");
+    let identity = CloneMap {
+        ids: HashMap::new(),
+        families: HashMap::new(),
+        owners: HashMap::new(),
+    };
+    let copied = copy_within(tree, component, &identity)?;
+    // Rebuild without the per-object lists, with the new identity.
+    let component_ref = child_message(message_ref("TSP.PackageMetadata")?, "components")?;
+    let preferred = str_field(tree, copied, "preferred_locator").unwrap_or("").to_string();
+    let base = preferred.split('-').next().unwrap_or(&preferred).to_string();
+    let kept: Vec<TreeEntry> = tree.chain(copied).map(|(_, entry)| *entry).collect();
+    let mut chain = Chain::new();
+    for entry in kept {
+        let name = tree.field(&entry).map(|f| f.name);
+        match name {
+            Some("external_references" | "object_uuid_map_entries" | "data_references" | "locator") => {
+                continue
+            }
+            Some("identifier") => {
+                push_field(tree, &mut chain, component_ref, "identifier", Node::Uint(new_id))?;
+                let span = tree.push_bytes(format!("{base}-{new_id}").as_bytes()).map_err(tree_error)?;
+                push_field(tree, &mut chain, component_ref, "locator", Node::Str(span))?;
+            }
+            _ => {
+                let mut copy = entry;
+                copy.next = NONE;
+                tree.push(&mut chain, copy).map_err(tree_error)?;
+            }
+        }
+    }
+    let mut holder = tree.entries[source_entry as usize];
+    holder.value = Node::Message(chain.first);
+    holder.next = tree.entries[last_component as usize].next;
+    let mut scratch = Chain::new();
+    let new_index = tree.push(&mut scratch, holder).map_err(tree_error)?;
+    tree.entries[new_index as usize].next = holder.next;
+    tree.entries[last_component as usize].next = new_index;
+    Ok(())
+}
+
+/// For every `object_uuid_map_entries` entry naming a cloned object, adds an
+/// entry for the clone with a remapped (or, outside the table's family, fresh)
+/// UUID, in the same component.
+fn add_uuid_map_clones(package: &mut Package, map: &CloneMap) -> Result<(), PackageError> {
+    let (stream, metadata_first) =
+        metadata_message(package).ok_or_else(|| malformed("PackageMetadata is missing"))?;
+    let tree = &mut stream.tree;
+    let components: Vec<u32> = tree
+        .chain(metadata_first)
+        .filter(|(_, field)| tree.field(field).map(|f| f.name) == Some("components"))
+        .filter_map(|(_, field)| match field.value {
+            Node::Message(first) => Some(first),
+            _ => None,
+        })
+        .collect();
+    for component in components {
+        let entries: Vec<(u32, TreeEntry)> = tree.chain(component).map(|(i, e)| (i, *e)).collect();
+        for (index, entry) in entries {
+            if tree.field(&entry).map(|f| f.name) != Some("object_uuid_map_entries") {
+                continue;
+            }
+            let Node::Message(first) = entry.value else {
+                continue;
+            };
+            let Some(Node::Uint(id)) = field_value(tree, first, "identifier") else {
+                continue;
+            };
+            let Some(&new_id) = map.ids.get(&id) else {
+                continue;
+            };
+            let copied = copy_within(tree, first, map)?;
+            set_field_uint(tree, copied, "identifier", new_id);
+            // A UUID outside the table's family must still be unique.
+            if let Some(uuid) = message_field(tree, copied, "uuid") {
+                let unchanged = chain_uuids(tree, uuid).iter().any(|at| match at {
+                    UuidAt::Pair(_, bytes) => map.uuid(*bytes).is_none(),
+                    _ => false,
+                });
+                if unchanged {
+                    let (lower, upper) = object_uuid(new_id ^ 0xC10E);
+                    set_field_uint(tree, uuid, "lower", lower);
+                    set_field_uint(tree, uuid, "upper", upper);
+                }
+            }
+            let mut copy = entry;
+            copy.value = Node::Message(copied);
+            copy.next = tree.entries[index as usize].next;
+            let mut scratch = Chain::new();
+            let new_index = tree.push(&mut scratch, copy).map_err(tree_error)?;
+            tree.entries[new_index as usize].next = copy.next;
+            tree.entries[index as usize].next = new_index;
+        }
+    }
+    Ok(())
+}
+
+fn stream_at(package: &Package, index: usize) -> Option<&Stream> {
+    match &package.entries[index] {
+        Entry::Stream(stream) => Some(stream),
+        _ => None,
+    }
+}
+
+/// Adds to `cluster` every object reachable from `roots` through archive
+/// references, short of the shared stylesheet, the document stream, and the
+/// calculation engine archive.
+fn extend_cluster(
+    package: &Package,
+    location: &HashMap<u64, (usize, usize)>,
+    cluster: &mut Vec<u64>,
+    roots: Vec<u64>,
+) {
+    let mut stack = roots;
+    while let Some(id) = stack.pop() {
+        if cluster.contains(&id) {
+            continue;
+        }
+        let Some(&(stream_index, object_index)) = location.get(&id) else {
+            continue;
+        };
+        let stream = stream_at(package, stream_index).expect("stream");
+        let object = &stream.objects[object_index];
+        if stream.name == "Index/DocumentStylesheet.iwa"
+            || stream.name == "Index/Document.iwa"
+            || first_type(object) == Some(CALCULATION_ENGINE)
+        {
+            continue;
+        }
+        cluster.push(id);
+        stack.extend(archive_references(&stream.tree, object.info));
+    }
+}
+
+// ----- merged cells -----
+
+const CELL_RECORD_TILE: u32 = 4009;
+const RANGE_PRECEDENTS_TILE: u32 = 4010;
+/// The calculation-engine function a merge formula applies to its range.
+const MERGE_FUNCTION: u64 = 168;
+
+/// Writes merged regions the way Pages stores them: one formula per region in
+/// the table's merge owner (`range(top-left, bottom-right)` passed to the merge
+/// function), each recorded as a formula cell of the merge owner that depends
+/// on its range of the table, in the owner's dependency object, the engine's
+/// owner info, and a cell-record and a range-precedents tile.
+fn write_merges(
+    package: &mut Package,
+    table: &TemplateTable,
+    merges: &[(usize, usize, usize, usize)],
+    next_id: &mut u64,
+) -> Result<(), PackageError> {
+    let stream = stream_containing(package, table.model_id)?;
+    let tree = &mut stream.tree;
+    let model_first = stream
+        .objects
+        .iter()
+        .find(|object| object.identifier == table.model_id)
+        .map(|object| object.messages[0].first)
+        .ok_or_else(|| malformed("table model is missing"))?;
+
+    // The table's and its merge owner's UUIDs, and their engine owners.
+    let table_uuid = str_field(tree, model_first, "table_id")
+        .and_then(|text| parse_uuid_text(text.as_bytes()))
+        .ok_or_else(|| malformed("table model has no table_id"))?;
+    let merge_owner = message_field(tree, model_first, "merge_owner")
+        .ok_or_else(|| malformed("table model has no merge owner"))?;
+    let merge_uuid = message_field(tree, merge_owner, "owner_id")
+        .and_then(|id| {
+            chain_uuids(tree, id).into_iter().find_map(|at| match at {
+                UuidAt::Words(_, bytes) => Some(bytes),
+                _ => None,
+            })
+        })
+        .ok_or_else(|| malformed("merge owner has no id"))?;
+    let owner_of = |tree: &Tree, uuid: [u8; 16]| -> Option<(u64, u64)> {
+        stream_objects_by_type(&stream.objects, FORMULA_OWNER_DEPENDENCIES)
+            .into_iter()
+            .find_map(|(id, first)| {
+                let uid = message_field(tree, first, "formula_owner_uid")?;
+                let matches = chain_uuids(tree, uid).iter().any(|at| match at {
+                    UuidAt::Pair(_, bytes) => *bytes == uuid,
+                    _ => false,
+                });
+                if !matches {
+                    return None;
+                }
+                match field_value(tree, first, "internal_formula_owner_id")? {
+                    Node::Uint(internal) => Some((id, internal)),
+                    _ => None,
+                }
+            })
+    };
+    let (_, table_owner) =
+        owner_of(tree, table_uuid).ok_or_else(|| malformed("table owner is not registered"))?;
+    let (merge_deps, merge_internal) =
+        owner_of(tree, merge_uuid).ok_or_else(|| malformed("merge owner is not registered"))?;
+
+    let cell_tile_id = *next_id;
+    let range_tile_id = *next_id + 1;
+    *next_id += 2;
+
+    // 1. The formulas, in the model's merge-owner formula store.
+    let model = message_ref("TST.TableModelArchive")?;
+    let owner_ref = child_message(model, "merge_owner")?;
+    let store_ref = child_message(owner_ref, "formula_store")?;
+    let pair_ref = child_message(store_ref, "formulas")?;
+    let formula_ref = child_message(pair_ref, "formula")?;
+    let array_ref = child_message(formula_ref, "AST_node_array")?;
+    let node_ref = child_message(array_ref, "AST_node")?;
+    let column_ref = child_message(node_ref, "AST_column")?;
+    let row_ref = child_message(node_ref, "AST_row")?;
+    let extra_ref = child_message(node_ref, "AST_cross_table_reference_extra_info")?;
+    let table_id_ref = child_message(extra_ref, "table_id")?;
+    let mut store = Chain::new();
+    push_field(tree, &mut store, store_ref, "next_formula_index", Node::Uint(merges.len() as u64))?;
+    for (index, &(row, column, rows, columns)) in merges.iter().enumerate() {
+        let mut nodes = Chain::new();
+        for (c, r) in [(column, row), (column + columns - 1, row + rows - 1)] {
+            let mut col = Chain::new();
+            push_field(tree, &mut col, column_ref, "column", Node::Uint(c as u64))?;
+            push_field(tree, &mut col, column_ref, "absolute", Node::Bool(true))?;
+            let mut rw = Chain::new();
+            push_field(tree, &mut rw, row_ref, "row", Node::Uint(r as u64))?;
+            push_field(tree, &mut rw, row_ref, "absolute", Node::Bool(true))?;
+            let mut words = Chain::new();
+            for (slot, name) in ["uuid_w0", "uuid_w1", "uuid_w2", "uuid_w3"].iter().enumerate() {
+                let word = u32::from_le_bytes(table_uuid[slot * 4..slot * 4 + 4].try_into().expect("4"));
+                push_field(tree, &mut words, table_id_ref, name, Node::Uint(u64::from(word)))?;
+            }
+            let mut extra = Chain::new();
+            push_field(tree, &mut extra, extra_ref, "table_id", Node::Message(words.first))?;
+            let mut node = Chain::new();
+            push_field(tree, &mut node, node_ref, "AST_node_type", Node::Uint(36))?;
+            push_field(tree, &mut node, node_ref, "AST_column", Node::Message(col.first))?;
+            push_field(tree, &mut node, node_ref, "AST_row", Node::Message(rw.first))?;
+            push_field(tree, &mut node, node_ref, "AST_cross_table_reference_extra_info", Node::Message(extra.first))?;
+            push_field(tree, &mut nodes, array_ref, "AST_node", Node::Message(node.first))?;
+        }
+        let mut colon = Chain::new();
+        push_field(tree, &mut colon, node_ref, "AST_node_type", Node::Uint(29))?;
+        push_field(tree, &mut nodes, array_ref, "AST_node", Node::Message(colon.first))?;
+        let mut function = Chain::new();
+        push_field(tree, &mut function, node_ref, "AST_node_type", Node::Uint(16))?;
+        push_field(tree, &mut function, node_ref, "AST_function_node_index", Node::Uint(MERGE_FUNCTION))?;
+        push_field(tree, &mut function, node_ref, "AST_function_node_numArgs", Node::Uint(1))?;
+        push_field(tree, &mut nodes, array_ref, "AST_node", Node::Message(function.first))?;
+        let mut formula = Chain::new();
+        push_field(tree, &mut formula, formula_ref, "AST_node_array", Node::Message(nodes.first))?;
+        let mut pair = Chain::new();
+        push_field(tree, &mut pair, pair_ref, "formula_index", Node::Uint(index as u64))?;
+        push_field(tree, &mut pair, pair_ref, "formula", Node::Message(formula.first))?;
+        push_field(tree, &mut store, store_ref, "formulas", Node::Message(pair.first))?;
+    }
+    replace_message_field(tree, merge_owner, owner_ref, "formula_store", store.first)?;
+
+    // 2. The dependency records, in the owner's dependency object and the
+    // engine's owner info (which also flags each cell as a formula).
+    let deps_ref = message_ref("TSCE.FormulaOwnerDependenciesArchive")?;
+    let deps_first = stream
+        .objects
+        .iter()
+        .find(|object| object.identifier == merge_deps)
+        .map(|object| (object.messages[0].first, object.info))
+        .ok_or_else(|| malformed("merge owner dependencies are missing"))?;
+    let cells = build_merge_cells(tree, deps_ref, merges.len(), false)?;
+    replace_message_field(tree, deps_first.0, deps_ref, "cell_dependencies", cells)?;
+    let ranges = build_merge_ranges(tree, deps_ref, merges, table_owner)?;
+    replace_message_field(tree, deps_first.0, deps_ref, "range_dependencies", ranges)?;
+    let tiled_cells_ref = child_message(deps_ref, "tiled_cell_dependencies")?;
+    let mut tiled_cells = Chain::new();
+    push_field(tree, &mut tiled_cells, tiled_cells_ref, "cell_record_tiles", Node::Reference(cell_tile_id))?;
+    replace_message_field(tree, deps_first.0, deps_ref, "tiled_cell_dependencies", tiled_cells.first)?;
+    let tiled_ranges_ref = child_message(deps_ref, "tiled_range_dependencies")?;
+    let mut tiled_ranges = Chain::new();
+    push_field(tree, &mut tiled_ranges, tiled_ranges_ref, "range_precedents_tile", Node::Reference(range_tile_id))?;
+    replace_message_field(tree, deps_first.0, deps_ref, "tiled_range_dependencies", tiled_ranges.first)?;
+    add_object_references(tree, deps_first.1, &[cell_tile_id, range_tile_id])?;
+
+    let engine_first = stream
+        .objects
+        .iter()
+        .find(|object| first_type(object) == Some(CALCULATION_ENGINE))
+        .map(|object| object.messages[0].first)
+        .ok_or_else(|| malformed("calculation engine is missing"))?;
+    if let Some(tracker) = message_field(tree, engine_first, "dependency_tracker") {
+        let info_ref = child_message(child_message(message_ref("TSCE.CalculationEngineArchive")?, "dependency_tracker")?, "formula_owner_info")?;
+        let infos: Vec<u32> = tree
+            .chain(tracker)
+            .filter(|(_, entry)| tree.field(entry).map(|f| f.name) == Some("formula_owner_info"))
+            .filter_map(|(_, entry)| match entry.value {
+                Node::Message(first) => Some(first),
+                _ => None,
+            })
+            .collect();
+        for info in infos {
+            let is_merge = message_field(tree, info, "formula_owner_id").is_some_and(|id| {
+                chain_uuids(tree, id).iter().any(|at| matches!(at, UuidAt::Words(_, b) if *b == merge_uuid))
+            });
+            if is_merge {
+                let cells = build_merge_cells(tree, info_ref, merges.len(), true)?;
+                replace_message_field(tree, info, info_ref, "cell_dependencies", cells)?;
+                let ranges = build_merge_ranges(tree, info_ref, merges, table_owner)?;
+                replace_message_field(tree, info, info_ref, "range_dependencies", ranges)?;
+            }
+        }
+        if let Some(index) = field_entry(tree, tracker, "number_of_formulas")
+            && let Node::Uint(count) = tree.entries[index as usize].value
+        {
+            tree.entries[index as usize].value = Node::Uint(count + merges.len() as u64);
+        }
+    }
+
+    // 3. The tiles.
+    let cell_tile_ref = message_ref("TSCE.CellRecordTileArchive")?;
+    let record_ref = child_message(cell_tile_ref, "cell_records")?;
+    let mut cell_tile = Chain::new();
+    push_field(tree, &mut cell_tile, cell_tile_ref, "internal_owner_id", Node::Uint(merge_internal))?;
+    push_field(tree, &mut cell_tile, cell_tile_ref, "tile_column_begin", Node::Uint(0))?;
+    push_field(tree, &mut cell_tile, cell_tile_ref, "tile_row_begin", Node::Uint(0))?;
+    for index in 0..merges.len() {
+        let mut record = Chain::new();
+        push_field(tree, &mut record, record_ref, "column", Node::Uint(index as u64))?;
+        push_field(tree, &mut record, record_ref, "row", Node::Uint(0))?;
+        push_field(tree, &mut record, record_ref, "expanded_edges", Node::Message(NONE))?;
+        push_field(tree, &mut cell_tile, cell_tile_ref, "cell_records", Node::Message(record.first))?;
+    }
+    let range_tile_ref = message_ref("TSCE.RangePrecedentsTileArchive")?;
+    let from_to_ref = child_message(range_tile_ref, "from_to_range")?;
+    let from_ref = child_message(from_to_ref, "from_coord")?;
+    let rect_ref = child_message(from_to_ref, "refers_to_rect")?;
+    let origin_ref = child_message(rect_ref, "origin")?;
+    let size_ref = child_message(rect_ref, "size")?;
+    let mut range_tile = Chain::new();
+    push_field(tree, &mut range_tile, range_tile_ref, "to_owner_id", Node::Uint(table_owner))?;
+    for (index, &(row, column, rows, columns)) in merges.iter().enumerate() {
+        let mut from = Chain::new();
+        push_field(tree, &mut from, from_ref, "column", Node::Uint(index as u64))?;
+        push_field(tree, &mut from, from_ref, "row", Node::Uint(0))?;
+        let mut origin = Chain::new();
+        push_field(tree, &mut origin, origin_ref, "column", Node::Uint(column as u64))?;
+        push_field(tree, &mut origin, origin_ref, "row", Node::Uint(row as u64))?;
+        let mut size = Chain::new();
+        if columns > 1 {
+            push_field(tree, &mut size, size_ref, "num_columns", Node::Uint(columns as u64))?;
+        }
+        if rows > 1 {
+            push_field(tree, &mut size, size_ref, "num_rows", Node::Uint(rows as u64))?;
+        }
+        let mut rect = Chain::new();
+        push_field(tree, &mut rect, rect_ref, "origin", Node::Message(origin.first))?;
+        push_field(tree, &mut rect, rect_ref, "size", Node::Message(size.first))?;
+        let mut entry = Chain::new();
+        push_field(tree, &mut entry, from_to_ref, "from_coord", Node::Message(from.first))?;
+        push_field(tree, &mut entry, from_to_ref, "refers_to_rect", Node::Message(rect.first))?;
+        push_field(tree, &mut range_tile, range_tile_ref, "from_to_range", Node::Message(entry.first))?;
+    }
+    for (id, kind, first) in [
+        (cell_tile_id, CELL_RECORD_TILE, cell_tile.first),
+        (range_tile_id, RANGE_PRECEDENTS_TILE, range_tile.first),
+    ] {
+        let info = build_archive_info(tree, id, kind)?;
+        stream.objects.push(Object {
+            identifier: id,
+            info,
+            messages: vec![ObjectMessage {
+                message_type: kind,
+                first,
+            }],
+        });
+    }
+    Ok(())
+}
+
+/// A dependency map's `cell_dependencies`: one record per merge formula,
+/// at (formula index, 0). The engine's owner info also flags each a formula.
+fn build_merge_cells(
+    tree: &mut Tree,
+    parent: MessageRef,
+    count: usize,
+    legacy: bool,
+) -> Result<u32, PackageError> {
+    let cells_ref = child_message(parent, "cell_dependencies")?;
+    let record_ref = child_message(cells_ref, "cell_record")?;
+    let mut cells = Chain::new();
+    for index in 0..count {
+        let mut record = Chain::new();
+        push_field(tree, &mut record, record_ref, "column", Node::Uint(index as u64))?;
+        push_field(tree, &mut record, record_ref, "row", Node::Uint(0))?;
+        if legacy {
+            push_field(tree, &mut record, record_ref, "contains_a_formula", Node::Bool(true))?;
+            push_field(tree, &mut record, record_ref, "edges", Node::Message(NONE))?;
+        } else {
+            push_field(tree, &mut record, record_ref, "expanded_edges", Node::Message(NONE))?;
+        }
+        push_field(tree, &mut cells, cells_ref, "cell_record", Node::Message(record.first))?;
+    }
+    Ok(cells.first)
+}
+
+/// A dependency map's `range_dependencies`: each merge formula depends on its
+/// region of the table (owner `table_owner`).
+fn build_merge_ranges(
+    tree: &mut Tree,
+    parent: MessageRef,
+    merges: &[(usize, usize, usize, usize)],
+    table_owner: u64,
+) -> Result<u32, PackageError> {
+    let ranges_ref = child_message(parent, "range_dependencies")?;
+    let back_ref = child_message(ranges_ref, "back_dependency")?;
+    let reference_ref = child_message(back_ref, "internal_range_reference")?;
+    let range_ref = child_message(reference_ref, "range")?;
+    let mut ranges = Chain::new();
+    for (index, &(row, column, rows, columns)) in merges.iter().enumerate() {
+        let mut range = Chain::new();
+        push_field(tree, &mut range, range_ref, "top_left_column", Node::Uint(column as u64))?;
+        push_field(tree, &mut range, range_ref, "top_left_row", Node::Uint(row as u64))?;
+        push_field(tree, &mut range, range_ref, "bottom_right_column", Node::Uint((column + columns - 1) as u64))?;
+        push_field(tree, &mut range, range_ref, "bottom_right_row", Node::Uint((row + rows - 1) as u64))?;
+        let mut reference = Chain::new();
+        push_field(tree, &mut reference, reference_ref, "owner_id", Node::Uint(table_owner))?;
+        push_field(tree, &mut reference, reference_ref, "range", Node::Message(range.first))?;
+        let mut back = Chain::new();
+        push_field(tree, &mut back, back_ref, "cell_coord_row", Node::Uint(0))?;
+        push_field(tree, &mut back, back_ref, "cell_coord_column", Node::Uint(index as u64))?;
+        push_field(tree, &mut back, back_ref, "internal_range_reference", Node::Message(reference.first))?;
+        push_field(tree, &mut ranges, ranges_ref, "back_dependency", Node::Message(back.first))?;
+    }
+    Ok(ranges.first)
+}
+
+/// Sets a message field of `first`'s chain to `value` (a chain start),
+/// replacing it in place or inserting it in field-number order.
+fn replace_message_field(
+    tree: &mut Tree,
+    first: u32,
+    message: MessageRef,
+    name: &str,
+    value: u32,
+) -> Result<(), PackageError> {
+    if let Some(index) = field_entry(tree, first, name) {
+        tree.entries[index as usize].value = Node::Message(value);
+        return Ok(());
+    }
+    let (slot, field) = message
+        .slot_named(name)
+        .ok_or_else(|| malformed("field is not in the schema"))?;
+    let mut previous = None;
+    for (index, entry) in tree.chain(first) {
+        if entry.number < field.number {
+            previous = Some(index);
+        }
+    }
+    let previous = previous.ok_or_else(|| malformed("cannot place field ahead of a chain"))?;
+    let mut chain = Chain::new();
+    let new_index = tree
+        .push_known(&mut chain, message, slot, field, field.number, Node::Message(value))
+        .map_err(tree_error)?;
+    tree.entries[new_index as usize].next = tree.entries[previous as usize].next;
+    tree.entries[previous as usize].next = new_index;
+    Ok(())
+}
+
+fn stream_objects_by_type(objects: &[Object], kind: u32) -> Vec<(u64, u32)> {
+    objects
+        .iter()
+        .filter(|object| first_type(object) == Some(kind))
+        .map(|object| (object.identifier, object.messages[0].first))
+        .collect()
+}
+
+/// Sets the table owner's `total_range_for_table` and `body_range_for_table`
+/// (under both spanning dependency maps) to the table's real size: the
+/// calculation engine resolves every range into the table against these, so a
+/// resized table keeping the template's would put cells outside its grid.
+fn set_owner_table_ranges(
+    package: &mut Package,
+    table: &TemplateTable,
+    mark: &TableMark,
+) -> Result<(), PackageError> {
+    let stream = stream_containing(package, table.model_id)?;
+    let model_first = stream
+        .objects
+        .iter()
+        .find(|object| object.identifier == table.model_id)
+        .map(|object| object.messages[0].first)
+        .ok_or_else(|| malformed("table model is missing"))?;
+    let Some(table_uuid) = str_field(&stream.tree, model_first, "table_id")
+        .and_then(|text| parse_uuid_text(text.as_bytes()))
+    else {
+        return Ok(());
+    };
+    let owner = stream_objects_by_type(&stream.objects, FORMULA_OWNER_DEPENDENCIES)
+        .into_iter()
+        .find(|(_, first)| {
+            message_field(&stream.tree, *first, "formula_owner_uid").is_some_and(|uid| {
+                chain_uuids(&stream.tree, uid)
+                    .iter()
+                    .any(|at| matches!(at, UuidAt::Pair(_, bytes) if *bytes == table_uuid))
+            })
+        });
+    let Some((_, owner_first)) = owner else {
+        return Ok(());
+    };
+    let tree = &mut stream.tree;
+    let last_column = mark.columns.saturating_sub(1) as u64;
+    let last_row = mark.rows.saturating_sub(1) as u64;
+    let body_top = u64::from(mark.header_rows).min(last_row);
+    for spanning in ["spanning_column_dependencies", "spanning_row_dependencies"] {
+        let Some(map) = message_field(tree, owner_first, spanning) else {
+            continue;
+        };
+        for (name, top) in [("total_range_for_table", 0), ("body_range_for_table", body_top)] {
+            let Some(range) = message_field(tree, map, name) else {
+                continue;
+            };
+            set_field_uint(tree, range, "top_left_column", 0);
+            set_field_uint(tree, range, "top_left_row", top);
+            set_field_uint(tree, range, "bottom_right_column", last_column);
+            set_field_uint(tree, range, "bottom_right_row", last_row);
+        }
+    }
     Ok(())
 }
