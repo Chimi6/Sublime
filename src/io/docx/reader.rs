@@ -838,11 +838,8 @@ impl Reader<'_> {
         let mut paragraph = Paragraph::default();
         let mut section = None;
         let mut link: Option<u32> = None;
-        let mut field_link: Option<u32> = None;
         let mut revision: Option<u32> = None;
-        let mut field = Field::None;
-        let mut instruction = String::new();
-        let mut page_field = false;
+        let mut fields = FieldState::default();
         while let Some(event) = reader.next() {
             match event {
                 XmlEvent::Start {
@@ -863,42 +860,8 @@ impl Reader<'_> {
                         section = header.section;
                     }
                     "w:r" if !self_closing => {
-                        let run_link = field_link.or(link);
-                        let control = self.read_run(
-                            reader,
-                            &mut paragraph,
-                            run_link,
-                            revision,
-                            field,
-                            &mut instruction,
-                            page_field,
-                        );
-                        match control {
-                            RunControl::None => {}
-                            RunControl::FieldBegin => {
-                                field = Field::Instruction;
-                                instruction.clear();
-                                page_field = false;
-                            }
-                            RunControl::FieldSeparate => {
-                                field = Field::Result;
-                                let (target, page) =
-                                    self.field_meaning(&instruction, &mut paragraph);
-                                field_link = target;
-                                page_field = page;
-                            }
-                            RunControl::FieldEnd => {
-                                if field == Field::Instruction {
-                                    // No result: a bare page field still counts.
-                                    let (_, page) =
-                                        self.field_meaning(&instruction, &mut paragraph);
-                                    let _ = page;
-                                }
-                                field = Field::None;
-                                field_link = None;
-                                page_field = false;
-                            }
-                        }
+                        let run_link = fields.link.or(link);
+                        self.read_run(reader, &mut paragraph, run_link, revision, &mut fields);
                     }
                     "w:hyperlink" if !self_closing => {
                         let target = attribute(&attributes, "r:id")
@@ -921,7 +884,7 @@ impl Reader<'_> {
                         if page {
                             skip_element(reader, "w:fldSimple");
                         } else {
-                            field_link = target;
+                            fields.link = target;
                         }
                     }
                     "m:oMathPara" | "m:oMath" if !self_closing => {
@@ -937,7 +900,7 @@ impl Reader<'_> {
                     "w:p" => break,
                     "w:hyperlink" => link = None,
                     "w:ins" | "w:del" => revision = None,
-                    "w:fldSimple" => field_link = None,
+                    "w:fldSimple" => fields.link = None,
                     _ => {}
                 },
                 XmlEvent::Text(_) => {}
@@ -995,8 +958,8 @@ impl Reader<'_> {
     }
 
     /// One `w:r`: its properties, then each content element as a run of
-    /// the paragraph. Field characters are reported back to the paragraph.
-    #[allow(clippy::too_many_arguments)]
+    /// the paragraph. Field characters move the paragraph's field state as
+    /// they come (a whole field may sit in one run).
     #[inline(never)]
     fn read_run(
         &mut self,
@@ -1004,14 +967,11 @@ impl Reader<'_> {
         paragraph: &mut Paragraph,
         link: Option<u32>,
         revision: Option<u32>,
-        field: Field,
-        instruction: &mut String,
-        page_field: bool,
-    ) -> RunControl {
+        fields: &mut FieldState,
+    ) {
         let mut style: Option<StyleId> = None;
         let mut properties: Option<u32> = None;
-        let mut control = RunControl::None;
-        let hidden = field == Field::Instruction || (field == Field::Result && page_field);
+        let mut hidden = fields.hidden();
         // A legacy form checkbox (`FORMCHECKBOX`): Word draws the box itself,
         // with no result text, so its state is kept as a box character.
         let mut checkbox: Option<bool> = None;
@@ -1049,15 +1009,34 @@ impl Reader<'_> {
                     }
                     "w:instrText" if !self_closing => {
                         let span = self.read_text_element(reader, name);
-                        instruction.push_str(self.document.text(span));
+                        fields.instruction.push_str(self.document.text(span));
                     }
                     "w:fldChar" => {
-                        control = match attribute(&attributes, "w:fldCharType") {
-                            Some("begin") => RunControl::FieldBegin,
-                            Some("separate") => RunControl::FieldSeparate,
-                            Some("end") => RunControl::FieldEnd,
-                            _ => control,
-                        };
+                        match attribute(&attributes, "w:fldCharType") {
+                            Some("begin") => {
+                                fields.field = Field::Instruction;
+                                fields.instruction.clear();
+                                fields.page_field = false;
+                            }
+                            Some("separate") => {
+                                fields.field = Field::Result;
+                                let (target, page) =
+                                    self.field_meaning(&fields.instruction, paragraph);
+                                fields.link = target;
+                                fields.page_field = page;
+                            }
+                            Some("end") => {
+                                if fields.field == Field::Instruction {
+                                    // No result: a bare page field still counts.
+                                    self.field_meaning(&fields.instruction, paragraph);
+                                }
+                                fields.field = Field::None;
+                                fields.link = None;
+                                fields.page_field = false;
+                            }
+                            _ => {}
+                        }
+                        hidden = fields.hidden();
                     }
                     "w:tab" | "w:ptab" if !hidden => {
                         paragraph.runs.push(Run {
@@ -1186,7 +1165,6 @@ impl Reader<'_> {
                 _ => {}
             }
         }
-        control
     }
 
     /// The text of a `w:t`-like element, pushed to the arena.
@@ -2027,11 +2005,32 @@ struct RunRead {
 /// shape closes.
 type GroupTextBox = (Vec<Block>, Option<[f32; 4]>, Option<Color>);
 
-enum RunControl {
-    None,
-    FieldBegin,
-    FieldSeparate,
-    FieldEnd,
+/// A paragraph's complex field (`w:fldChar`) as its runs go by: where in the
+/// field they are, its instruction, whether it is a page number (whose
+/// cached result is not text), and the link a hyperlink field gives.
+struct FieldState {
+    field: Field,
+    instruction: String,
+    page_field: bool,
+    link: Option<u32>,
+}
+
+impl Default for FieldState {
+    fn default() -> Self {
+        FieldState {
+            field: Field::None,
+            instruction: String::new(),
+            page_field: false,
+            link: None,
+        }
+    }
+}
+
+impl FieldState {
+    /// Runs here are not text: the instruction, or a page field's result.
+    fn hidden(&self) -> bool {
+        self.field == Field::Instruction || (self.field == Field::Result && self.page_field)
+    }
 }
 
 enum Drawn {
@@ -2653,6 +2652,24 @@ mod tests {
             })
         );
         assert_eq!(fill(second), None, "a shape's fill is its own");
+    }
+
+    #[test]
+    fn a_field_inside_one_run_is_read() {
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let document = format!(
+            r#"<w:document {w}><w:body><w:p><w:r><w:fldChar w:fldCharType="begin"/><w:instrText>PAGE</w:instrText>
+            <w:fldChar w:fldCharType="separate"/><w:t>7</w:t><w:fldChar w:fldCharType="end"/></w:r></w:p></w:body></w:document>"#
+        );
+        let read = read_docx(&package(&document, &format!("<w:styles {w}/>"))).unwrap();
+        let Some(Block::Paragraph(paragraph)) = read.sections[0].blocks.first() else {
+            panic!("a paragraph");
+        };
+        let contents: Vec<&Inline> = paragraph.runs.iter().map(|run| &run.content).collect();
+        assert!(
+            matches!(contents.as_slice(), [Inline::PageNumber]),
+            "{contents:?}"
+        );
     }
 
     #[test]
