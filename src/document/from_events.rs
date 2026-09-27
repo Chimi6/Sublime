@@ -441,6 +441,7 @@ impl<'s> DocumentBuilder<'s> {
                 height: 0.0,
                 description,
                 placement: Placement::Inline,
+                crop: None,
             });
             self.push_inline(Inline::Image(id));
             return;
@@ -640,6 +641,8 @@ impl<'s> DocumentBuilder<'s> {
                     columns: vec![width; columns],
                     borders: None,
                     cell_margins: None,
+                    alignment: None,
+                    indent: None,
                 }));
             }
             TagEnd::TableHead => {

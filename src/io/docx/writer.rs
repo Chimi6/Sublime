@@ -354,6 +354,14 @@ impl DocxWriter {
             out,
             "<w:tbl><w:tblPr><w:tblStyle w:val=\"TableGrid\"/><w:tblW w:w=\"{total}\" w:type=\"dxa\"/>"
         );
+        match table.alignment {
+            Some(Alignment::Center) => out.push_str("<w:jc w:val=\"center\"/>"),
+            Some(Alignment::Right) => out.push_str("<w:jc w:val=\"right\"/>"),
+            _ => {}
+        }
+        if let Some(indent) = table.indent {
+            let _ = write!(out, "<w:tblInd w:w=\"{}\" w:type=\"dxa\"/>", twips(indent));
+        }
         // The table's own lines and margins, over the grid style's.
         if let Some(borders) = table.borders {
             out.push_str("<w:tblBorders>");
@@ -715,6 +723,21 @@ impl DocxWriter {
         let number = self.drawings;
         let width = emu(image.width);
         let height = emu(image.height);
+        // A cropped picture: the share cut from each edge, in thousandths of
+        // a percent.
+        let crop = image
+            .crop
+            .map_or_else(String::new, |[left, top, right, bottom]| {
+                let share = |value: f32| (value * 100_000.0).round() as i64;
+                format!(
+                    "<a:srcRect l=\"{}\" t=\"{}\" r=\"{}\" b=\"{}\"/>",
+                    share(left),
+                    share(top),
+                    share(right),
+                    share(bottom)
+                )
+            });
+
         let mut description = String::new();
         escape_attribute(&mut description, image.description.as_deref().unwrap_or(""));
         let mut name = String::new();
@@ -723,7 +746,7 @@ impl DocxWriter {
             "<wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>"
         );
         let graphic = format!(
-            "<wp:docPr id=\"{number}\" name=\"{name}\" descr=\"{description}\"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri=\"{PICTURE}\"><pic:pic><pic:nvPicPr><pic:cNvPr id=\"{number}\" name=\"{name}\"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed=\"rId{id}\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>"
+            "<wp:docPr id=\"{number}\" name=\"{name}\" descr=\"{description}\"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri=\"{PICTURE}\"><pic:pic><pic:nvPicPr><pic:cNvPr id=\"{number}\" name=\"{name}\"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed=\"rId{id}\"/>{crop}<a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>"
         );
         out.push_str("<w:drawing>");
         match image.placement {
@@ -780,6 +803,7 @@ impl DocxWriter {
                         horizontal,
                         vertical,
                     },
+                    crop: None,
                 };
                 out.push_str("<w:r>");
                 self.render_image(document, &image, out);
@@ -992,6 +1016,9 @@ impl DocxWriter {
             twips(page.header_distance),
             twips(page.footer_distance),
         );
+        if let Some(start) = page.page_number_start {
+            let _ = write!(xml, "<w:pgNumType w:start=\"{start}\"/>");
+        }
         if section.columns > 1 {
             let _ = write!(
                 xml,
@@ -1370,6 +1397,13 @@ fn paragraph_properties_xml(
     if properties.keep_lines_together == Some(true) {
         out.push_str("<w:keepLines/>");
     }
+    if let Some(page_break) = properties.page_break_before {
+        out.push_str(if page_break {
+            "<w:pageBreakBefore/>"
+        } else {
+            "<w:pageBreakBefore w:val=\"0\"/>"
+        });
+    }
     if let Some(widows) = properties.widow_control {
         let _ = write!(
             out,
@@ -1524,12 +1558,34 @@ fn run_properties_xml(document: &Document, properties: &RunProperties, out: &mut
             "<w:strike w:val=\"0\"/>"
         });
     }
+    if let Some(hidden) = properties.hidden {
+        out.push_str(if hidden {
+            "<w:vanish/>"
+        } else {
+            "<w:vanish w:val=\"0\"/>"
+        });
+    }
     if let Some(color) = properties.color {
         let _ = write!(out, "<w:color w:val=\"{}\"/>", color.hex());
+    }
+    if let Some(shift) = properties.shift {
+        let _ = write!(
+            out,
+            "<w:position w:val=\"{}\"/>",
+            (shift * 2.0).round() as i64
+        );
     }
     if let Some(size) = properties.size {
         let half_points = (size * 2.0).round() as i64;
         let _ = write!(out, "<w:sz w:val=\"{half_points}\"/>");
+    }
+    // Schema order: the underline comes before the shading.
+    if let Some(underline) = properties.underline {
+        out.push_str(if underline {
+            "<w:u w:val=\"single\"/>"
+        } else {
+            "<w:u w:val=\"none\"/>"
+        });
     }
     if let Some(highlight) = properties.highlight {
         let _ = write!(
@@ -1537,13 +1593,6 @@ fn run_properties_xml(document: &Document, properties: &RunProperties, out: &mut
             "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{}\"/>",
             highlight.hex()
         );
-    }
-    if let Some(underline) = properties.underline {
-        out.push_str(if underline {
-            "<w:u w:val=\"single\"/>"
-        } else {
-            "<w:u w:val=\"none\"/>"
-        });
     }
     match properties.baseline {
         Some(Baseline::Superscript) => out.push_str("<w:vertAlign w:val=\"superscript\"/>"),
@@ -1569,6 +1618,7 @@ fn split_for_style(merged: RunProperties) -> (RunProperties, RunProperties) {
         underline: merged.underline,
         baseline: merged.baseline,
         language: merged.language,
+        shift: merged.shift,
         ..RunProperties::default()
     };
     let inline = RunProperties {
@@ -1576,6 +1626,7 @@ fn split_for_style(merged: RunProperties) -> (RunProperties, RunProperties) {
         italic: merged.italic,
         strike: merged.strike,
         caps: merged.caps,
+        hidden: merged.hidden,
         ..RunProperties::default()
     };
     (styled, inline)
