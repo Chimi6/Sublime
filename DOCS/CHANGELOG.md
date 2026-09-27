@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- QOI both ways (`src/io/qoi.rs`): a streaming reader and a writer that produces `qoi.h`'s bytes, to and from every image format. Pair `qoi-png` against the qoi and png crates. Map in `DOCS/formats/qoi.md`.
+
 ### Changed
 
 - The PNG reader relies on each chunk's CRC-32 and no longer sums Adler-32 over the decoded data (the png crate skips it by default too): 7% faster on a large photo, 20% on flat images.
