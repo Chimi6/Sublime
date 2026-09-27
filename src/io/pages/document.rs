@@ -449,6 +449,8 @@ fn within(spans: &[Span], from: usize, to: usize) -> &[Span] {
 }
 
 pub struct Reader<'p> {
+    /// The document lays one full-width header and footer, not three zones.
+    single_header_footer: bool,
     package: &'p Package,
     graph: Graph<'p>,
     document: Document,
@@ -525,6 +527,7 @@ pub fn read_document(package: &Package) -> Document {
         media: HashMap::new(),
         data_files: None,
         merges: None,
+        single_header_footer: false,
     };
     reader.read();
     reader.document
@@ -624,6 +627,9 @@ impl Reader<'_> {
         let page = root
             .map(|root| page_setup(View::of(root)))
             .unwrap_or_default();
+        self.single_header_footer = root
+            .and_then(|root| View::of(root).boolean("uses_single_header_footer"))
+            .unwrap_or(false);
         let body = root
             .and_then(|root| View::of(root).reference("body_storage"))
             .and_then(|identifier| self.graph.object(identifier))
@@ -899,8 +905,10 @@ impl Reader<'_> {
             if !has_text {
                 continue;
             }
-            // The center and right areas align that way unless told otherwise.
+            // The center and right areas align that way unless told otherwise;
+            // a single full-width area takes its paragraphs' own alignment.
             let alignment = match position {
+                _ if self.single_header_footer => None,
                 1 => Some(Alignment::Center),
                 2 => Some(Alignment::Right),
                 _ => None,
