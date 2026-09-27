@@ -1,6 +1,6 @@
 # PNG <-> PDF
 
-**Latest** (2026-09-27, pdf-bench branch: every line PASSES)
+**Latest** (2026-09-27, 0.23.0 release: every line PASSES)
 
 ## Purpose
 
@@ -50,6 +50,32 @@ outputs are removed before each run.
   at the end); peak memory is about the file's size plus rows.
 
 ## Results
+
+### 2026-09-27, 0.23.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pdf -> png, photo (45.8 MB of pixels, 40.7 MB on disk): throughput (MB/s of decoded pixels) | 112.2 | 62.7 (lopdf + png) | PASS |
+| pdf -> png, photo: peak memory (MB) | 45.8 | 91.9 (lopdf + png) | PASS |
+| pdf -> png, photo: output size (MB) [extra] | 25.0 | 27.1 (png) | n/a |
+| png -> pdf, photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 242.4 | 81.9 (png + printpdf) | PASS |
+| png -> pdf, photo: peak memory (MB) | 5.4 | 227.1 (png + printpdf) | PASS |
+| png -> pdf, photo: output size (MB) [extra] | 25.0 | 37.9 (printpdf) | n/a |
+| pdf -> png, flat (45.8 MB of pixels, 0.4 MB on disk): throughput (MB/s of decoded pixels) | 1305.2 | 687.9 (lopdf + png) | PASS |
+| pdf -> png, flat: peak memory (MB) | 5.3 | 54.6 (lopdf + png) | PASS |
+| pdf -> png, flat: output size (MB) [extra] | 0.1 | 0.3 (png) | n/a |
+| png -> pdf, flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 887.9 | 257.7 (png + printpdf) | PASS |
+| png -> pdf, flat: peak memory (MB) | 5.3 | 189.6 (png + printpdf) | PASS |
+| png -> pdf, flat: output size (MB) [extra] | 0.1 | 0.2 (printpdf) | n/a |
+| pdf -> png, stock (418.4 MB of pixels, 93.7 MB on disk): throughput (MB/s of decoded pixels) [stock] | 131.6 | 88.5 (lopdf + png) | PASS |
+| pdf -> png, stock: peak memory (MB) [stock] | 98.8 | 890.3 (lopdf + png) | PASS |
+| pdf -> png, stock: output size (MB) [extra] | 28.9 | 44.2 (png) | n/a |
+| png -> pdf, stock (24.2 MB in + 418.4 MB of pixels): throughput (MB/s of input plus pixels) [stock] | 161.9 | 110.8 (png + printpdf) | PASS |
+| png -> pdf, stock: peak memory (MB) [stock] | 6.9 | 1679.1 (png + printpdf) | PASS |
+| png -> pdf, stock: output size (MB) [extra] | 26.3 | 88.7 (printpdf) | n/a |
+
+commit: cb93dff (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
 
 ### 2026-09-27, pdf-bench branch
 
