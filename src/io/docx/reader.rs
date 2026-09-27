@@ -1149,7 +1149,36 @@ impl Reader<'_> {
                         }
                         seen_checked |= name == "w:checked";
                     }
-                    "w:pict" | "w:object" | "mc:Fallback" | "w:rPrChange" if !self_closing => {
+                    "w:pict" | "w:object" if !self_closing => {
+                        match self.read_pict(reader, name) {
+                            Pict::Rule(line) => {
+                                // A horizontal rule: the paragraph's bottom border.
+                                let mut own = self.document.paragraph_properties(paragraph);
+                                own.border = Some(crate::document::ParagraphBorder {
+                                    top: false,
+                                    bottom: true,
+                                    left: false,
+                                    right: false,
+                                    line,
+                                });
+                                paragraph.properties =
+                                    self.document.intern_paragraph_properties(own);
+                            }
+                            Pict::Image(image) => {
+                                let id = self.document.push_image(image);
+                                paragraph.runs.push(Run {
+                                    style,
+                                    properties,
+                                    link,
+                                    revision,
+                                    content: Inline::Image(id),
+                                });
+                            }
+                            Pict::Blocks(mut blocks) => self.pending_blocks.append(&mut blocks),
+                            Pict::None => {}
+                        }
+                    }
+                    "mc:Fallback" | "w:rPrChange" if !self_closing => {
                         skip_element(reader, name);
                     }
                     _ => {}
@@ -1305,6 +1334,9 @@ impl Reader<'_> {
                         "w:pBdr" if !self_closing => {
                             header.properties.border = read_paragraph_border(reader);
                         }
+                        "w:pageBreakBefore" => {
+                            header.properties.page_break_before = Some(toggle(value));
+                        }
                         "w:contextualSpacing" => {
                             header.properties.contextual_spacing = Some(toggle(value));
                         }
@@ -1456,6 +1488,13 @@ impl Reader<'_> {
                                 _ => None,
                             };
                         }
+                        "w:vanish" => read.properties.hidden = Some(toggle(value)),
+                        "w:position" => {
+                            read.properties.shift = value
+                                .and_then(|v| v.parse::<f32>().ok())
+                                .map(|half| half / 2.0)
+                                .filter(|shift| *shift != 0.0);
+                        }
                         "w:caps" => {
                             read.properties.caps =
                                 if toggle(value) { Some(Caps::All) } else { None };
@@ -1508,6 +1547,10 @@ impl Reader<'_> {
                         {
                             header.page.height = height;
                         }
+                    }
+                    "w:pgNumType" => {
+                        header.page.page_number_start =
+                            attribute(&attributes, "w:start").and_then(|start| start.parse().ok());
                     }
                     "w:pgMar" => {
                         let fields: [(&str, &mut f32); 6] = [
@@ -1627,6 +1670,8 @@ impl Reader<'_> {
         let borders = sides.resolve();
         table.borders = Some(borders);
         table.cell_margins = Some(sides.cell_margins());
+        table.alignment = sides.alignment;
+        table.indent = sides.indent;
         outline_ghost_cells(&mut table.rows, &occupied, borders);
         // A grid may declare more columns than any row reaches (Google Docs and
         // some templates pad tblGrid); Word lays out only the occupied ones, so
@@ -1751,6 +1796,7 @@ impl Reader<'_> {
         let mut media: Option<MediaId> = None;
         let mut shapes: Vec<ShapeRead> = Vec::new();
         let mut chart: Option<String> = None;
+        let mut crop: Option<[f32; 4]> = None;
         // The shape being read (a `wps:wsp`).
         let mut shape = ShapeRead::default();
         let mut shape_frame: Option<[f32; 4]> = None;
@@ -1818,6 +1864,18 @@ impl Reader<'_> {
                             None => {}
                         }
                     }
+                    // A cropped picture: thousandths of a percent cut per edge.
+                    "a:srcRect" => {
+                        let edge = |key: &str| {
+                            attribute(&attributes, key)
+                                .and_then(|value| value.parse::<f32>().ok())
+                                .map_or(0.0, |value| value / 100_000.0)
+                        };
+                        let edges = [edge("l"), edge("t"), edge("r"), edge("b")];
+                        if edges.iter().any(|edge| *edge != 0.0) {
+                            crop = Some(edges);
+                        }
+                    }
                     "c:chart" => {
                         chart = attribute(&attributes, "r:id").map(str::to_string);
                     }
@@ -1844,6 +1902,18 @@ impl Reader<'_> {
                     }
                     "a:tailEnd" if in_line && in_shape_properties => {
                         shape.ends.1 = line_end(attribute(&attributes, "type"));
+                    }
+                    // A custom outline: its path, in its own units.
+                    "a:path" if in_shape_properties && !self_closing => {
+                        let size = (
+                            attribute(&attributes, "w").and_then(emu_to_points),
+                            attribute(&attributes, "h").and_then(emu_to_points),
+                        );
+                        if let Some(path) = read_custom_path(reader, size) {
+                            self.document.paths.push(path);
+                            shape.geometry =
+                                ShapeGeometry::Path((self.document.paths.len() - 1) as u32);
+                        }
                     }
                     "a:prstGeom" if in_shape_properties => {
                         shape.geometry =
@@ -2096,6 +2166,7 @@ impl Reader<'_> {
             height,
             description,
             placement,
+            crop,
         })]
     }
 
@@ -2283,6 +2354,71 @@ impl Reader<'_> {
         }
         blocks.push(Block::Table(table));
         blocks
+    }
+
+    /// A legacy VML drawing (`w:pict`, or an embedded object's `w:object`):
+    /// a horizontal rule, its picture (or an object's preview), or the text
+    /// of its text boxes.
+    fn read_pict(&mut self, reader: &mut XmlReader<'_>, element: &str) -> Pict {
+        let mut rule: Option<Border> = None;
+        let mut media: Option<MediaId> = None;
+        let mut size: Option<(f32, f32)> = None;
+        let mut blocks: Vec<Block> = Vec::new();
+        while let Some(event) = reader.next() {
+            match event {
+                XmlEvent::Start {
+                    name,
+                    attributes,
+                    self_closing,
+                } => {
+                    let style = attribute(&attributes, "style").unwrap_or("");
+                    if name.starts_with("v:") && name != "v:shapetype" && size.is_none() {
+                        let (width, height) =
+                            (vml_length(style, "width"), vml_length(style, "height"));
+                        if let (Some(width), Some(height)) = (width, height) {
+                            size = Some((width, height));
+                        }
+                    }
+                    match name {
+                        "v:rect" if attribute(&attributes, "o:hr") == Some("t") => {
+                            rule = Some(Border {
+                                width: vml_length(style, "height").unwrap_or(1.0).clamp(0.25, 6.0),
+                                color: attribute(&attributes, "fillcolor")
+                                    .map(|color| color.trim_start_matches('#'))
+                                    .and_then(parse_color),
+                            });
+                        }
+                        "v:imagedata" if media.is_none() => {
+                            media =
+                                attribute(&attributes, "r:id").and_then(|id| self.load_media(id));
+                        }
+                        "w:txbxContent" if !self_closing => {
+                            blocks.extend(self.read_blocks(reader, "w:txbxContent"));
+                        }
+                        _ => {}
+                    }
+                }
+                XmlEvent::End { name } if name == element => break,
+                _ => {}
+            }
+        }
+        if let Some(line) = rule {
+            return Pict::Rule(line);
+        }
+        if !blocks.is_empty() {
+            return Pict::Blocks(blocks);
+        }
+        match (media, size) {
+            (Some(media), Some((width, height))) => Pict::Image(InlineImage {
+                media,
+                width,
+                height,
+                description: None,
+                placement: Placement::Inline,
+                crop: None,
+            }),
+            _ => Pict::None,
+        }
     }
 
     fn load_media(&mut self, relationship_id: &str) -> Option<MediaId> {
@@ -2930,6 +3066,132 @@ fn symbol_bullet(text: &str) -> String {
         .collect()
 }
 
+/// A DrawingML custom path (`a:path`): its moves, lines, curves (quadratic
+/// ones raised to cubic), and closes, in points of its own box.
+fn read_custom_path(
+    reader: &mut XmlReader<'_>,
+    size: (Option<f32>, Option<f32>),
+) -> Option<crate::document::ShapePath> {
+    use crate::document::{PathStep, ShapePath};
+    let mut steps = Vec::new();
+    let mut command = "";
+    let mut points: Vec<(f32, f32)> = Vec::new();
+    let mut last = (0.0f32, 0.0f32);
+    while let Some(event) = reader.next() {
+        match event {
+            XmlEvent::Start {
+                name, attributes, ..
+            } => match name {
+                "a:moveTo" | "a:lnTo" | "a:cubicBezTo" | "a:quadBezTo" => {
+                    command = name;
+                    points.clear();
+                }
+                "a:close" => steps.push(PathStep::Close),
+                "a:pt" => {
+                    let x = attribute(&attributes, "x")
+                        .and_then(emu_to_points)
+                        .unwrap_or(0.0);
+                    let y = attribute(&attributes, "y")
+                        .and_then(emu_to_points)
+                        .unwrap_or(0.0);
+                    points.push((x, y));
+                }
+                _ => {}
+            },
+            XmlEvent::End { name } => match name {
+                "a:path" => break,
+                "a:moveTo" | "a:lnTo" | "a:cubicBezTo" | "a:quadBezTo" => {
+                    let step = match (command, points.as_slice()) {
+                        ("a:moveTo", [p, ..]) => Some(PathStep::Move(p.0, p.1)),
+                        ("a:lnTo", [p, ..]) => Some(PathStep::Line(p.0, p.1)),
+                        ("a:cubicBezTo", [a, b, c, ..]) => Some(PathStep::Curve([*a, *b, *c])),
+                        ("a:quadBezTo", [c, e, ..]) => {
+                            // Raised to a cubic: controls two-thirds toward the quadratic's.
+                            let toward = |from: (f32, f32)| {
+                                (
+                                    from.0 + 2.0 / 3.0 * (c.0 - from.0),
+                                    from.1 + 2.0 / 3.0 * (c.1 - from.1),
+                                )
+                            };
+                            Some(PathStep::Curve([toward(last), toward(*e), *e]))
+                        }
+                        _ => None,
+                    };
+                    if let Some(step) = step {
+                        if let Some(end) = points.last() {
+                            last = *end;
+                        }
+                        steps.push(step);
+                    }
+                }
+                _ => {}
+            },
+            XmlEvent::Text(_) => {}
+        }
+    }
+    if steps.is_empty() {
+        return None;
+    }
+    let (width, height) = match size {
+        (Some(width), Some(height)) => (width, height),
+        _ => {
+            // Without a stated size, the path's own extent.
+            let (mut w, mut h) = (0.0f32, 0.0f32);
+            for step in &steps {
+                let points: Vec<(f32, f32)> = match *step {
+                    PathStep::Move(x, y) | PathStep::Line(x, y) => vec![(x, y)],
+                    PathStep::Curve(points) => points.to_vec(),
+                    PathStep::Close => Vec::new(),
+                };
+                for (x, y) in points {
+                    w = w.max(x);
+                    h = h.max(y);
+                }
+            }
+            (w, h)
+        }
+    };
+    Some(ShapePath {
+        width,
+        height,
+        steps,
+    })
+}
+
+/// What a legacy VML drawing holds.
+enum Pict {
+    /// A horizontal rule, drawn with this line.
+    Rule(Border),
+    Image(InlineImage),
+    /// Text box contents, to follow the paragraph.
+    Blocks(Vec<Block>),
+    None,
+}
+
+/// A length from a VML style (`width:72pt`, `height:1.5in`), in points.
+fn vml_length(style: &str, key: &str) -> Option<f32> {
+    let value = style.split(';').find_map(|part| {
+        let (name, value) = part.split_once(':')?;
+        (name.trim() == key).then(|| value.trim())
+    })?;
+    let number_end = value
+        .find(|character: char| {
+            !(character.is_ascii_digit() || character == '.' || character == '-')
+        })
+        .unwrap_or(value.len());
+    let number: f32 = value[..number_end].parse().ok()?;
+    let factor = match &value[number_end..] {
+        "pt" => 1.0,
+        "in" => 72.0,
+        "cm" => 72.0 / 2.54,
+        "mm" => 72.0 / 25.4,
+        "pc" => 12.0,
+        "px" | "" => 0.75,
+        _ => return None,
+    };
+    Some(number * factor)
+}
+
 /// A chart series as read: its name, and its categories and values by index.
 type ChartSeries = (String, Vec<(usize, String)>, Vec<(usize, String)>);
 
@@ -3175,6 +3437,30 @@ mod tests {
         assert_eq!((tabs[0].position, tabs[0].leader), (450.0, Some('.')));
         assert_eq!(tabs[0].alignment, crate::document::TabAlignment::Right);
         assert_eq!(tabs[1].alignment, crate::document::TabAlignment::Decimal);
+    }
+
+    #[test]
+    fn a_vml_horizontal_rule_is_the_paragraphs_bottom_border() {
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="v" xmlns:o="o""#;
+        let document = format!(
+            r##"<w:document {w}><w:body><w:p><w:r><w:pict><v:rect style="width:0;height:1.5pt" o:hr="t" fillcolor="#A0A0A0" stroked="f"/></w:pict></w:r></w:p></w:body></w:document>"##
+        );
+        let read = read_docx(&package(&document, &format!("<w:styles {w}/>"))).unwrap();
+        let Some(Block::Paragraph(paragraph)) = read.sections[0].blocks.first() else {
+            panic!("a paragraph");
+        };
+        let border = read.paragraph_properties(paragraph).border.expect("a rule");
+        assert!(border.bottom && !border.top);
+        assert_eq!(border.line.width, 1.5);
+        assert_eq!(
+            border.line.color,
+            Some(Color {
+                red: 0xA0,
+                green: 0xA0,
+                blue: 0xA0
+            })
+        );
+        assert_eq!(vml_length("width:1in;height:2cm", "width"), Some(72.0));
     }
 
     #[test]
@@ -3430,6 +3716,8 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> Color {
 struct TableSides {
     sides: [Option<Option<Border>>; 6],
     margins: [Option<f32>; 4],
+    alignment: Option<Alignment>,
+    indent: Option<f32>,
 }
 
 impl TableSides {
@@ -3447,7 +3735,12 @@ impl TableSides {
                 *margin = fallback;
             }
         }
-        TableSides { sides, margins }
+        TableSides {
+            sides,
+            margins,
+            alignment: self.alignment.or(base.alignment),
+            indent: self.indent.or(base.indent),
+        }
     }
 
     /// The cell margins, with Word's defaults where nothing states them
@@ -3492,6 +3785,17 @@ fn read_table_properties(reader: &mut XmlReader<'_>) -> (Option<String>, TableSi
                 "w:tblStyle" => style = attribute(&attributes, "w:val").map(str::to_string),
                 "w:tblBorders" if !self_closing => in_borders = true,
                 "w:tblCellMar" if !self_closing => in_margins = true,
+                "w:jc" if !in_margins && !in_borders => {
+                    borders.alignment = match attribute(&attributes, "w:val") {
+                        Some("center") => Some(Alignment::Center),
+                        Some("right" | "end") => Some(Alignment::Right),
+                        Some("left" | "start") => Some(Alignment::Left),
+                        _ => None,
+                    };
+                }
+                "w:tblInd" if matches!(attribute(&attributes, "w:type"), None | Some("dxa")) => {
+                    borders.indent = attribute(&attributes, "w:w").and_then(twips_to_points);
+                }
                 side if in_margins => {
                     let index = match side {
                         "w:top" => 0,

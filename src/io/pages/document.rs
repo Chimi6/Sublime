@@ -744,6 +744,15 @@ impl Reader<'_> {
                     let (headers, footers) = self.section_page_text(section_object, previous);
                     current.headers = headers;
                     current.footers = footers;
+                    // Page numbering that restarts (kind 1) at a number.
+                    if let Some(section) = self.graph.object(section_object) {
+                        let section = View::of(section);
+                        if section.integer("section_page_number_kind") == Some(1) {
+                            current.page.page_number_start = section
+                                .integer("section_page_number_start")
+                                .map(|start| start.max(0) as u32);
+                        }
+                    }
                 }
                 if let Some(layout_object) = layout_here {
                     current.columns = self.column_count(layout_object);
@@ -1269,7 +1278,18 @@ impl Reader<'_> {
                 &data,
                 &starts,
             );
-            for table in self.pending_blocks.drain(..) {
+            // A table takes its place from the paragraph holding it: that
+            // paragraph's alignment and left indent, as Pages lays it.
+            let holder = self.document.effective_paragraph(&paragraph);
+            for mut table in self.pending_blocks.drain(..) {
+                if let Block::Table(table) = &mut table {
+                    table.alignment = table.alignment.or(holder.alignment.filter(|alignment| {
+                        matches!(alignment, Alignment::Center | Alignment::Right)
+                    }));
+                    table.indent = table
+                        .indent
+                        .or(holder.left_indent.filter(|indent| *indent > 0.0));
+                }
                 blocks.push((start_units, table));
             }
             blocks.push((start_units, Block::Paragraph(paragraph)));
@@ -1797,6 +1817,7 @@ impl Reader<'_> {
             height,
             description,
             placement,
+            crop: None,
         })
     }
 
@@ -1951,6 +1972,8 @@ impl Reader<'_> {
             columns,
             borders: None,
             cell_margins: padding,
+            alignment: None,
+            indent: None,
         })
     }
 
@@ -2578,6 +2601,7 @@ fn paragraph_properties(view: View<'_>) -> ParagraphProperties {
         contextual_spacing: None,
         border: None,
         tabs: None,
+        page_break_before: view.boolean("page_break_before"),
     }
 }
 
@@ -2615,6 +2639,8 @@ impl Reader<'_> {
             language: view
                 .string("language")
                 .map(|language| self.document.intern_string(language)),
+            hidden: None,
+            shift: view.float("baseline_shift").filter(|shift| *shift != 0.0),
         }
     }
 }
@@ -2688,6 +2714,7 @@ fn page_setup(root: View<'_>) -> PageSetup {
         footer_distance: root
             .float("footer_margin")
             .unwrap_or(default.footer_distance),
+        page_number_start: None,
     }
 }
 

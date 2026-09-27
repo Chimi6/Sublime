@@ -316,7 +316,9 @@ impl<'a> Emitter<'a, '_> {
     fn code_block(&mut self, paragraph: &'a Paragraph) {
         let mut text = String::new();
         for run in &paragraph.runs {
-            if self.document.is_deleted(run) {
+            if self.document.is_deleted(run)
+                || self.document.effective_run(paragraph, run).hidden == Some(true)
+            {
                 continue;
             }
             match run.content {
@@ -352,7 +354,9 @@ impl<'a> Emitter<'a, '_> {
         let mut runs = std::mem::take(&mut self.run_scratch);
         runs.clear();
         for run in &paragraph.runs {
-            if self.document.is_deleted(run) {
+            if self.document.is_deleted(run)
+                || self.document.effective_run(paragraph, run).hidden == Some(true)
+            {
                 continue;
             }
             let mut effective = if own_formatting_only {

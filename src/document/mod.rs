@@ -369,6 +369,8 @@ pub struct PageSetup {
     /// the bottom edge.
     pub header_distance: f32,
     pub footer_distance: f32,
+    /// The number the section's pages start counting from, when it restarts.
+    pub page_number_start: Option<u32>,
 }
 
 impl Default for PageSetup {
@@ -383,6 +385,7 @@ impl Default for PageSetup {
             margin_right: 72.0,
             header_distance: 36.0,
             footer_distance: 36.0,
+            page_number_start: None,
         }
     }
 }
@@ -438,6 +441,8 @@ pub struct ParagraphProperties {
     pub border: Option<ParagraphBorder>,
     /// Its tab stops, an index into `Document::tab_sets`.
     pub tabs: Option<u32>,
+    /// Starts on a new page.
+    pub page_break_before: Option<bool>,
 }
 
 /// The lines around a paragraph: which sides, drawn with one line.
@@ -483,6 +488,10 @@ pub struct RunProperties {
     pub baseline: Option<Baseline>,
     pub caps: Option<Caps>,
     pub language: Option<Id>,
+    /// Text the source hides (Word's hidden text): kept, but not shown.
+    pub hidden: Option<bool>,
+    /// Raised (positive) or lowered text, in points.
+    pub shift: Option<f32>,
 }
 
 impl RunProperties {
@@ -495,7 +504,8 @@ impl RunProperties {
             };
         }
         take!(
-            font, size, bold, italic, underline, strike, color, highlight, baseline, caps, language
+            font, size, bold, italic, underline, strike, color, highlight, baseline, caps,
+            language, hidden, shift
         );
     }
 
@@ -527,7 +537,8 @@ impl ParagraphProperties {
             background,
             contextual_spacing,
             border,
-            tabs
+            tabs,
+            page_break_before
         );
     }
 
@@ -615,6 +626,9 @@ pub struct InlineImage {
     pub height: f32,
     pub description: Option<String>,
     pub placement: Placement,
+    /// The share of the picture cut from each edge (left, top, right,
+    /// bottom; 0.1 is a tenth), when it is cropped.
+    pub crop: Option<[f32; 4]>,
 }
 
 /// Where an image sits: in the text line, or floating beside it.
@@ -667,6 +681,10 @@ pub struct Table {
     pub borders: Option<TableBorders>,
     /// The space between a cell's edges and its text, when the source states it.
     pub cell_margins: Option<CellMargins>,
+    /// Where the table sits across the text column, when stated.
+    pub alignment: Option<Alignment>,
+    /// Its indent from the left margin, in points, when stated.
+    pub indent: Option<f32>,
 }
 
 /// Cell padding in points.

@@ -734,6 +734,51 @@ fn build_char_style(
         push_field(tree, &mut props, properties, "underline", Node::Uint(1))?;
         count += 1;
     }
+    if format.strike {
+        push_field(tree, &mut props, properties, "strikethru", Node::Uint(1))?;
+        count += 1;
+    }
+    if format.baseline != 0 {
+        push_field(
+            tree,
+            &mut props,
+            properties,
+            "superscript",
+            Node::Uint(u64::from(format.baseline)),
+        )?;
+        count += 1;
+    }
+    if format.caps != 0 {
+        push_field(
+            tree,
+            &mut props,
+            properties,
+            "capitalization",
+            Node::Uint(u64::from(format.caps)),
+        )?;
+        count += 1;
+    }
+    if let Some(shift) = format.shift {
+        push_field(
+            tree,
+            &mut props,
+            properties,
+            "baseline_shift",
+            Node::Float(shift as f32 / 100.0),
+        )?;
+        count += 1;
+    }
+    if let Some(highlight) = format.highlight {
+        let color_first = build_color(tree, highlight)?;
+        push_field(
+            tree,
+            &mut props,
+            properties,
+            "background_color",
+            Node::Message(color_first),
+        )?;
+        count += 1;
+    }
     if let Some(color) = format.color {
         let color_first = build_color(tree, color)?;
         push_field(
@@ -3026,6 +3071,14 @@ struct Format {
     /// The font name, interned in `Document::strings`.
     font: Option<Id>,
     color: Option<Color>,
+    strike: bool,
+    /// 1 superscript, 2 subscript (Pages' codes).
+    baseline: u8,
+    /// 1 all caps, 2 small caps (Pages' codes).
+    caps: u8,
+    highlight: Option<Color>,
+    /// Raised or lowered, in hundredths of a point.
+    shift: Option<i32>,
 }
 
 impl Format {
@@ -3036,7 +3089,15 @@ impl Format {
     /// Whether the run carries formatting beyond bold and italic, which the
     /// theme's own styles cannot express and so must be synthesised.
     fn has_direct(&self) -> bool {
-        self.underline || self.size.is_some() || self.font.is_some() || self.color.is_some()
+        self.underline
+            || self.size.is_some()
+            || self.font.is_some()
+            || self.color.is_some()
+            || self.strike
+            || self.baseline != 0
+            || self.caps != 0
+            || self.highlight.is_some()
+            || self.shift.is_some()
     }
 }
 
@@ -3278,11 +3339,24 @@ impl Walk {
             self.text.push('\n');
             self.offset += 1;
         }
+        // The paragraph holding the table places it: aligned across the
+        // column, or indented from the margin, as Pages keeps a Word table's.
+        let indent = table.indent.map(|points| (points * 100.0).round() as i32);
+        let anchor = ParaFormat {
+            alignment: table.alignment.map(|alignment| match alignment {
+                crate::document::Alignment::Right => 1,
+                crate::document::Alignment::Center => 2,
+                _ => 0,
+            }),
+            left_indent: indent,
+            first_line_indent: indent,
+            ..ParaFormat::default()
+        };
         self.paragraphs.push(ParagraphMark {
             offset: self.offset,
             style_name: None,
             list: None,
-            format: ParaFormat::default(),
+            format: anchor,
             contextual: false,
             list_indents: None,
         });
@@ -3441,7 +3515,11 @@ impl Walk {
         });
         self.take_break();
         for run in &paragraph.runs {
-            if document.is_deleted(run) {
+            // Deleted text, and text the source hides (Pages has no hidden
+            // text), are not shown.
+            if document.is_deleted(run)
+                || document.effective_run(paragraph, run).hidden == Some(true)
+            {
                 continue;
             }
             if let Inline::Image(id) = run.content {
@@ -3739,7 +3817,11 @@ fn flatten_lines(
             offset += utf16_len(&piece);
         }
         for run in &paragraph.runs {
-            if document.is_deleted(run) {
+            // Deleted text, and text the source hides (Pages has no hidden
+            // text), are not shown.
+            if document.is_deleted(run)
+                || document.effective_run(paragraph, run).hidden == Some(true)
+            {
                 continue;
             }
             let format = run_format(document, paragraph, run);
@@ -3799,6 +3881,19 @@ fn run_format(document: &Document, paragraph: &Paragraph, run: &crate::document:
             .map(|points| (points * 2.0).round().clamp(1.0, 65535.0) as u16),
         font: properties.font,
         color: properties.color,
+        strike: properties.strike.unwrap_or(false),
+        baseline: match properties.baseline {
+            Some(crate::document::Baseline::Superscript) => 1,
+            Some(crate::document::Baseline::Subscript) => 2,
+            None => 0,
+        },
+        caps: match properties.caps {
+            Some(crate::document::Caps::All) => 1,
+            Some(crate::document::Caps::Small) => 2,
+            None => 0,
+        },
+        highlight: properties.highlight,
+        shift: properties.shift.map(|shift| (shift * 100.0).round() as i32),
     }
 }
 
@@ -5101,6 +5196,7 @@ mod tests {
             height: 0.0,
             description: Some("a test image".into()),
             placement: Placement::Inline,
+            crop: None,
         });
         let Some(Block::Paragraph(paragraph)) = document.sections[0].blocks.first_mut() else {
             panic!("a paragraph");
@@ -5618,6 +5714,32 @@ fn set_page_setup(
     }
     let landscape = u64::from(page.width > page.height);
     set_field_uint(tree, first, "orientation", landscape);
+    // Page numbering that restarts: the template's section starts at a number
+    // (kind 1) instead of continuing (kind 0).
+    if let Some(start) = page.page_number_start {
+        for entry in &mut package.entries {
+            let Entry::Stream(stream) = entry else {
+                continue;
+            };
+            let sections: Vec<u32> = stream
+                .objects
+                .iter()
+                .filter_map(|object| object.messages.first().map(|message| message.first))
+                .filter(|first| {
+                    field_entry(&stream.tree, *first, "section_page_number_kind").is_some()
+                })
+                .collect();
+            for first in sections {
+                set_field_uint(&mut stream.tree, first, "section_page_number_kind", 1);
+                set_field_uint(
+                    &mut stream.tree,
+                    first,
+                    "section_page_number_start",
+                    u64::from(start),
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -7378,6 +7500,7 @@ struct ParaFormat {
     border: Option<(u64, i32, (u8, u8, u8))>,
     /// Its tab stops, an index into the document's tab sets.
     tabs: Option<u32>,
+    page_break_before: Option<bool>,
 }
 
 impl ParaFormat {
@@ -7393,6 +7516,7 @@ impl ParaFormat {
             self.border.is_some(),
             self.border.is_some(),
             self.tabs.is_some(),
+            self.page_break_before.is_some(),
         ]
         .iter()
         .filter(|set| **set)
@@ -7464,6 +7588,7 @@ fn para_format(document: &Document, paragraph: &Paragraph) -> ParaFormat {
             })
             .filter(|(positions, _, _)| *positions != 0),
         tabs: properties.tabs,
+        page_break_before: properties.page_break_before,
     }
 }
 
@@ -7551,6 +7676,15 @@ fn synthesize_para_styles(
         }
         if let Some(value) = format.space_before {
             push_field(tree, &mut props, properties, "space_before", points(value))?;
+        }
+        if let Some(page_break) = format.page_break_before {
+            push_field(
+                tree,
+                &mut props,
+                properties,
+                "page_break_before",
+                Node::Bool(page_break),
+            )?;
         }
         if let Some(tabs) = format.tabs.and_then(|index| tab_sets.get(index as usize)) {
             let tabs_archive = child_message(properties, "tabs")?;
