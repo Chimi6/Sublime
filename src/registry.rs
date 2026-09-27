@@ -190,6 +190,7 @@ mod tests {
                 "ppm",
                 "qoi",
                 "text",
+                "tga",
                 "toml",
                 "tsv",
                 "webp",
