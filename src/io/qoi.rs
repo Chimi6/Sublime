@@ -48,39 +48,30 @@ fn hash(pixel: Pixel) -> usize {
     (spread.wrapping_mul(0x0300_0700_0005_000b) >> 56) as usize & 63
 }
 
-/// The input, read a piece at a time.
+/// The input, read a piece at a time into `buffer[..end]`.
 struct Pieces<'a> {
     reader: &'a mut dyn Read,
     buffer: Vec<u8>,
-    at: usize,
     end: usize,
 }
 
 impl Pieces<'_> {
-    #[inline]
-    fn byte(&mut self) -> Result<u8, RowsError> {
-        if self.at == self.end {
-            self.refill()?;
-        }
-        let byte = self.buffer[self.at];
-        self.at += 1;
-        Ok(byte)
-    }
-
+    /// Moves the unread bytes from `at` to the front and reads until at
+    /// least `wanted` are held or the input ends. Returns the new `at`
+    /// (zero).
     #[cold]
-    fn refill(&mut self) -> Result<(), RowsError> {
-        loop {
-            match self.reader.read(&mut self.buffer) {
-                Ok(0) => return fail("QOI data ends before the last pixel"),
-                Ok(count) => {
-                    self.at = 0;
-                    self.end = count;
-                    return Ok(());
-                }
+    fn top_up(&mut self, at: usize, wanted: usize) -> Result<usize, RowsError> {
+        self.buffer.copy_within(at..self.end, 0);
+        self.end -= at;
+        while self.end < wanted {
+            match self.reader.read(&mut self.buffer[self.end..]) {
+                Ok(0) => break,
+                Ok(count) => self.end += count,
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(RowsError::Io(error)),
             }
         }
+        Ok(0)
     }
 }
 
@@ -113,34 +104,62 @@ pub fn read_qoi_rows(reader: &mut dyn Read, sink: &mut dyn RowSink) -> Result<()
     };
     // The colorspace byte (header[13]) is informative only.
     sink.start(width, height, color).map_err(RowsError::Io)?;
-    let channels = usize::from(channels);
     let mut input = Pieces {
         reader,
         buffer: vec![0; PIECE],
-        at: 0,
         end: 0,
     };
-    let mut row = vec![0u8; width as usize * channels];
+    match channels {
+        3 => decode_rows::<3>(&mut input, sink, width, height),
+        _ => decode_rows::<4>(&mut input, sink, width, height),
+    }
+}
+
+/// The chunk loop for `N` channels (a constant, so each pixel's copy into
+/// the row is a fixed-size store rather than a call).
+fn decode_rows<const N: usize>(
+    input: &mut Pieces<'_>,
+    sink: &mut dyn RowSink,
+    width: u32,
+    height: u32,
+) -> Result<(), RowsError> {
+    // The read position and the chunk bytes in locals: through the piece
+    // struct every byte reloaded its position and checked for a refill.
+    let mut at = 0usize;
+    let mut row = vec![0u8; width as usize * N];
     let mut index = [[0u8; 4]; 64];
     let mut pixel: Pixel = [0, 0, 0, 255];
     let mut run = 0u32;
     for _ in 0..height {
-        for cell in row.chunks_exact_mut(channels) {
+        for cell in row.chunks_exact_mut(N) {
             if run > 0 {
                 run -= 1;
             } else {
-                let first = input.byte()?;
+                // The longest chunk is five bytes.
+                if input.end - at < 5 {
+                    at = input.top_up(at, 5)?;
+                }
+                let bytes = &input.buffer[at..input.end];
+                let Some(&first) = bytes.first() else {
+                    return fail("QOI data ends before the last pixel");
+                };
+                let length = match first {
+                    OP_RGB => 4,
+                    OP_RGBA => 5,
+                    _ if first & MASK == OP_LUMA => 2,
+                    _ => 1,
+                };
+                if bytes.len() < length {
+                    return fail("QOI data ends before the last pixel");
+                }
                 match first {
                     OP_RGB => {
-                        pixel[0] = input.byte()?;
-                        pixel[1] = input.byte()?;
-                        pixel[2] = input.byte()?;
+                        pixel[0] = bytes[1];
+                        pixel[1] = bytes[2];
+                        pixel[2] = bytes[3];
                     }
                     OP_RGBA => {
-                        pixel[0] = input.byte()?;
-                        pixel[1] = input.byte()?;
-                        pixel[2] = input.byte()?;
-                        pixel[3] = input.byte()?;
+                        pixel = [bytes[1], bytes[2], bytes[3], bytes[4]];
                     }
                     _ => match first & MASK {
                         OP_INDEX => pixel = index[usize::from(first)],
@@ -150,7 +169,7 @@ pub fn read_qoi_rows(reader: &mut dyn Read, sink: &mut dyn RowSink) -> Result<()
                             pixel[2] = pixel[2].wrapping_add((first & 3).wrapping_sub(2));
                         }
                         OP_LUMA => {
-                            let second = input.byte()?;
+                            let second = bytes[1];
                             let green = (first & 0x3f).wrapping_sub(32);
                             pixel[0] = pixel[0]
                                 .wrapping_add(green.wrapping_sub(8).wrapping_add(second >> 4));
@@ -161,9 +180,10 @@ pub fn read_qoi_rows(reader: &mut dyn Read, sink: &mut dyn RowSink) -> Result<()
                         _ => run = u32::from(first & 0x3f),
                     },
                 }
+                at += length;
                 index[hash(pixel)] = pixel;
             }
-            cell.copy_from_slice(&pixel[..channels]);
+            cell.copy_from_slice(&pixel[..N]);
         }
         sink.row(&row).map_err(RowsError::Io)?;
     }
