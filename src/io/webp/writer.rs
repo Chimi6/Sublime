@@ -453,31 +453,12 @@ fn write_image(bits: &mut BitWriter, pixels: &[u32], width: usize, main: bool, c
     let alpha = byte_table(&codes[3]);
     let distances = pack(&codes[4]);
     let put_packed = |bits: &mut BitWriter, entry: u32| bits.put(entry & 0xffff, entry >> 16);
-    let mut next_copy = 0;
-    let mut at = 0;
-    while at < pixels.len() {
-        let word = at >> 6;
-        let bit = at & 63;
-        if (copy_bits[word] >> bit) & 1 != 0 {
-            let copy = copies[next_copy];
-            next_copy += 1;
-            let length = (copy >> 1) as usize;
-            let distance = if copy & 1 != 0 { width } else { 1 };
-            let (symbol, extra, extra_bits) = prefix_encode(length);
-            put_packed(bits, green[256 + symbol]);
-            bits.put(extra, extra_bits);
-            let (symbol, extra, extra_bits) = prefix_encode(distance_code(distance, width));
-            put_packed(bits, distances[symbol]);
-            bits.put(extra, extra_bits);
-            at += length;
-            continue;
-        }
-        // One write of at most sixty bits; a cached pixel is its index
-        // and three empty codes.
-        let pixel = pixels[at];
-        let cached = (cached_bits[word] >> bit) & 1 != 0;
+    // One write of at most sixty bits per literal; a cached pixel is its
+    // index and three empty codes.
+    let cache_shift = cache_bits.max(1);
+    let literal = |bits: &mut BitWriter, pixel: u32, cached: bool| {
         let green_symbol = if cached {
-            280 + cache_index_bits(pixel, cache_bits.max(1))
+            280 + cache_index_bits(pixel, cache_shift)
         } else {
             ((pixel >> 8) & 0xff) as usize
         };
@@ -495,6 +476,38 @@ fn write_image(bits: &mut BitWriter, pixels: &[u32], width: usize, main: bool, c
         value |= u64::from(a & 0xffff) << length;
         length += a >> 16;
         bits.put_wide(value, length);
+    };
+    let mut next_copy = 0;
+    let mut at = 0;
+    while at < pixels.len() {
+        let word = at >> 6;
+        let bit = at & 63;
+        // A whole word of literals (most of a photo): no copy tests, the
+        // cache bits shifted out of a register.
+        if bit == 0 && copy_bits[word] == 0 && at + 64 <= pixels.len() {
+            let mut cached_word = cached_bits[word];
+            for pixel in &pixels[at..at + 64] {
+                literal(bits, *pixel, cached_word & 1 != 0);
+                cached_word >>= 1;
+            }
+            at += 64;
+            continue;
+        }
+        if (copy_bits[word] >> bit) & 1 != 0 {
+            let copy = copies[next_copy];
+            next_copy += 1;
+            let length = (copy >> 1) as usize;
+            let distance = if copy & 1 != 0 { width } else { 1 };
+            let (symbol, extra, extra_bits) = prefix_encode(length);
+            put_packed(bits, green[256 + symbol]);
+            bits.put(extra, extra_bits);
+            let (symbol, extra, extra_bits) = prefix_encode(distance_code(distance, width));
+            put_packed(bits, distances[symbol]);
+            bits.put(extra, extra_bits);
+            at += length;
+            continue;
+        }
+        literal(bits, pixels[at], (cached_bits[word] >> bit) & 1 != 0);
         at += 1;
     }
 }
