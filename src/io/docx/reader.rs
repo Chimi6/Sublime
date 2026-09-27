@@ -78,12 +78,15 @@ pub fn read_docx(bytes: &[u8]) -> Result<Document, DocxError> {
         rels: Vec::new(),
         page: 0,
         even_headers: false,
+        pending_floating: Vec::new(),
+        theme_colors: HashMap::new(),
         after_note_mark: false,
     };
     reader.read_styles();
     reader.read_numbering();
     reader.read_settings();
     reader.rels = reader.relationships(&document_part);
+    reader.read_theme();
     reader.read_notes("footnotes.xml", "w:footnote");
     reader.read_notes("endnotes.xml", "w:endnote");
     let body = reader
@@ -215,6 +218,12 @@ struct Reader<'a> {
     /// Pages begun so far, by explicit breaks, for floating objects.
     page: u32,
     even_headers: bool,
+    /// Floating objects of the section being read, by index, with the bases
+    /// their offsets are measured from.
+    pending_floating: Vec<(usize, AnchorBase, AnchorBase)>,
+    /// The theme's colour scheme (dk1, lt1, accent1, ...), for colours Word
+    /// gives by scheme name.
+    theme_colors: HashMap<String, Color>,
     /// A note mark was just read; the space Word puts after it is not text.
     after_note_mark: bool,
 }
@@ -245,6 +254,65 @@ impl Reader<'_> {
             return Some(relationship.target.trim_start_matches('/').to_string());
         }
         Some(format!("{}{}", self.base, relationship.target))
+    }
+
+    /// Reads the theme's colour scheme through the document's theme relationship.
+    fn read_theme(&mut self) {
+        let Some(id) = self
+            .rels
+            .iter()
+            .find(|relationship| relationship.kind.ends_with("/theme"))
+            .map(|relationship| relationship.id.clone())
+        else {
+            return;
+        };
+        let Some(part) = self.target(&id) else {
+            return;
+        };
+        let Some(text) = self.part_text(&part) else {
+            return;
+        };
+        let mut reader = XmlReader::new(&text);
+        let mut in_scheme = false;
+        let mut slot: Option<String> = None;
+        while let Some(event) = reader.next() {
+            match event {
+                XmlEvent::Start { name: "a:clrScheme", .. } => in_scheme = true,
+                XmlEvent::End { name: "a:clrScheme" } => break,
+                XmlEvent::Start { name, attributes, .. } if in_scheme => match name {
+                    "a:srgbClr" => {
+                        if let (Some(key), Some(color)) =
+                            (slot.take(), attribute(&attributes, "val").and_then(parse_color))
+                        {
+                            self.theme_colors.insert(key, color);
+                        }
+                    }
+                    "a:sysClr" => {
+                        if let (Some(key), Some(color)) =
+                            (slot.take(), attribute(&attributes, "lastClr").and_then(parse_color))
+                        {
+                            self.theme_colors.insert(key, color);
+                        }
+                    }
+                    other => slot = other.strip_prefix("a:").map(str::to_string),
+                },
+                _ => {}
+            }
+        }
+    }
+
+    /// A scheme colour by name (with Word's aliases bg1/tx1/bg2/tx2), after its
+    /// luminance, shade, and tint modifiers.
+    fn theme_color(&self, name: &str, modifiers: &[(String, f32)]) -> Option<Color> {
+        let key = match name {
+            "bg1" => "lt1",
+            "tx1" => "dk1",
+            "bg2" => "lt2",
+            "tx2" => "dk2",
+            other => other,
+        };
+        let base = *self.theme_colors.get(key)?;
+        Some(apply_color_modifiers(base, modifiers))
     }
 
     fn hyperlink_target(&self, id: &str) -> Option<String> {
@@ -638,6 +706,19 @@ impl Reader<'_> {
         if start == SectionStart::NewPage && !self.document.sections.is_empty() {
             self.page += 1;
         }
+        // Offsets from the margin (or, approximately, from the anchoring
+        // paragraph, taken as the top of the text area) become page
+        // coordinates now that the section's margins are known.
+        for (index, horizontal, vertical) in std::mem::take(&mut self.pending_floating) {
+            if let Some(object) = self.document.floating.get_mut(index) {
+                if horizontal != AnchorBase::Page {
+                    object.x += header.page.margin_left;
+                }
+                if vertical != AnchorBase::Page {
+                    object.y += header.page.margin_top;
+                }
+            }
+        }
         self.document.sections.push(Section {
             page: header.page,
             columns: header.columns.max(1),
@@ -1001,7 +1082,14 @@ impl Reader<'_> {
                                         content: Inline::Image(id),
                                     });
                                 }
-                                Drawn::Floating(object) => self.document.floating.push(object),
+                                Drawn::Floating(object, horizontal, vertical) => {
+                                    self.pending_floating.push((
+                                        self.document.floating.len(),
+                                        horizontal,
+                                        vertical,
+                                    ));
+                                    self.document.floating.push(object);
+                                }
                             }
                         }
                     }
@@ -1499,6 +1587,13 @@ impl Reader<'_> {
         let mut text_box: Option<(Vec<Block>, Option<Color>)> = None;
         let mut fill: Option<Color> = None;
         let mut in_shape_properties = false;
+        // A shape's own fill (in spPr, outside its outline) or, failing that,
+        // its style's fill reference; theme colours resolve through the theme.
+        let mut in_line = false;
+        let mut no_fill = false;
+        let mut in_fill_ref = false;
+        let mut style_fill: Option<Color> = None;
+        let mut scheme: Option<PendingSchemeColor> = None;
         while let Some(event) = reader.next() {
             match event {
                 XmlEvent::Start {
@@ -1550,8 +1645,36 @@ impl Reader<'_> {
                         }
                     }
                     "wps:spPr" if !self_closing => in_shape_properties = true,
-                    "a:srgbClr" if in_shape_properties && fill.is_none() => {
+                    "a:ln" if !self_closing => in_line = true,
+                    "a:noFill" if in_shape_properties && !in_line => no_fill = true,
+                    "a:fillRef" if !self_closing => {
+                        in_fill_ref = attribute(&attributes, "idx").is_some_and(|idx| idx != "0");
+                    }
+                    "a:srgbClr" if in_shape_properties && !in_line && fill.is_none() => {
                         fill = attribute(&attributes, "val").and_then(parse_color);
+                    }
+                    "a:srgbClr" if in_fill_ref && style_fill.is_none() => {
+                        style_fill = attribute(&attributes, "val").and_then(parse_color);
+                    }
+                    "a:schemeClr" if (in_shape_properties && !in_line && fill.is_none())
+                        || (in_fill_ref && style_fill.is_none()) =>
+                    {
+                        let target_is_style = !in_shape_properties || in_line;
+                        let name = attribute(&attributes, "val").unwrap_or("").to_string();
+                        if self_closing {
+                            let color = self.theme_color(&name, &[]);
+                            if target_is_style { style_fill = color } else { fill = color }
+                        } else {
+                            scheme = Some((name, Vec::new(), target_is_style));
+                        }
+                    }
+                    "a:lumMod" | "a:lumOff" | "a:shade" | "a:tint" if scheme.is_some() => {
+                        if let (Some((_, modifiers, _)), Some(value)) = (
+                            scheme.as_mut(),
+                            attribute(&attributes, "val").and_then(|v| v.parse::<f32>().ok()),
+                        ) {
+                            modifiers.push((name.to_string(), value / 100_000.0));
+                        }
                     }
                     "w:txbxContent" if !self_closing => {
                         let blocks = self.read_blocks(reader, "w:txbxContent");
@@ -1565,34 +1688,55 @@ impl Reader<'_> {
                 XmlEvent::End { name } => match name {
                     "w:drawing" => break,
                     "wps:spPr" => in_shape_properties = false,
+                    "a:ln" => in_line = false,
+                    "a:fillRef" => in_fill_ref = false,
+                    "a:schemeClr" => {
+                        if let Some((name, modifiers, target_is_style)) = scheme.take() {
+                            let color = self.theme_color(&name, &modifiers);
+                            if target_is_style {
+                                style_fill = style_fill.or(color);
+                            } else {
+                                fill = fill.or(color);
+                            }
+                        }
+                    }
                     _ => {}
                 },
                 XmlEvent::Text(_) => {}
             }
         }
+        let fill = if no_fill { None } else { fill.or(style_fill) };
         if let Some((blocks, _)) = text_box {
-            return Some(Drawn::Floating(FloatingObject {
-                page: self.page,
-                x: horizontal.offset,
-                y: vertical.offset,
-                width,
-                height,
-                content: FloatingContent::TextBox { blocks, fill },
-            }));
+            return Some(Drawn::Floating(
+                FloatingObject {
+                    page: self.page,
+                    x: horizontal.offset,
+                    y: vertical.offset,
+                    width,
+                    height,
+                    content: FloatingContent::TextBox { blocks, fill },
+                },
+                horizontal.from,
+                vertical.from,
+            ));
         }
         let media = media?;
         // A picture positioned on the page (both axes) is page furniture,
         // not part of the text flow; the writer puts floating objects
         // there.
         if anchored && horizontal.from == AnchorBase::Page && vertical.from == AnchorBase::Page {
-            return Some(Drawn::Floating(FloatingObject {
-                page: self.page,
-                x: horizontal.offset,
-                y: vertical.offset,
-                width,
-                height,
-                content: FloatingContent::Image(media),
-            }));
+            return Some(Drawn::Floating(
+                FloatingObject {
+                    page: self.page,
+                    x: horizontal.offset,
+                    y: vertical.offset,
+                    width,
+                    height,
+                    content: FloatingContent::Image(media),
+                },
+                AnchorBase::Page,
+                AnchorBase::Page,
+            ));
         }
         let placement = if anchored {
             Placement::Floating {
@@ -1653,7 +1797,9 @@ enum RunControl {
 
 enum Drawn {
     Image(InlineImage),
-    Floating(FloatingObject),
+    /// A page-positioned object, with what its x and y offsets are measured
+    /// from (converted to page coordinates once the section's margins are known).
+    Floating(FloatingObject, AnchorBase, AnchorBase),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2041,5 +2187,89 @@ mod tests {
             panic!("an OLE file is not a Word package");
         };
         assert!(error.to_string().contains("password-protected"));
+    }
+}
+
+/// A scheme colour being read: its name, its modifiers so far, and whether
+/// it belongs to the shape's style (fill reference) rather than its own fill.
+type PendingSchemeColor = (String, Vec<(String, f32)>, bool);
+
+/// Applies DrawingML colour modifiers: luminance scale and offset (in HSL),
+/// shade (toward black), and tint (toward white).
+fn apply_color_modifiers(color: Color, modifiers: &[(String, f32)]) -> Color {
+    let (mut hue, mut saturation, mut lightness) = rgb_to_hsl(color);
+    for (name, value) in modifiers {
+        match name.as_str() {
+            "lumMod" => lightness = (lightness * value).clamp(0.0, 1.0),
+            "lumOff" => lightness = (lightness + value).clamp(0.0, 1.0),
+            "shade" | "tint" => {
+                let current = hsl_to_rgb(hue, saturation, lightness);
+                let mut rgb = [current.red as f32, current.green as f32, current.blue as f32];
+                for channel in &mut rgb {
+                    *channel = if name == "shade" {
+                        *channel * value
+                    } else {
+                        255.0 - (255.0 - *channel) * value
+                    };
+                }
+                let adjusted = Color {
+                    red: rgb[0].round().clamp(0.0, 255.0) as u8,
+                    green: rgb[1].round().clamp(0.0, 255.0) as u8,
+                    blue: rgb[2].round().clamp(0.0, 255.0) as u8,
+                };
+                (hue, saturation, lightness) = rgb_to_hsl(adjusted);
+            }
+            _ => {}
+        }
+    }
+    hsl_to_rgb(hue, saturation, lightness)
+}
+
+fn rgb_to_hsl(color: Color) -> (f32, f32, f32) {
+    let r = color.red as f32 / 255.0;
+    let g = color.green as f32 / 255.0;
+    let b = color.blue as f32 / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let lightness = (max + min) / 2.0;
+    if (max - min).abs() < f32::EPSILON {
+        return (0.0, 0.0, lightness);
+    }
+    let delta = max - min;
+    let saturation = if lightness > 0.5 { delta / (2.0 - max - min) } else { delta / (max + min) };
+    let hue = if (max - r).abs() < f32::EPSILON {
+        ((g - b) / delta).rem_euclid(6.0)
+    } else if (max - g).abs() < f32::EPSILON {
+        (b - r) / delta + 2.0
+    } else {
+        (r - g) / delta + 4.0
+    } / 6.0;
+    (hue, saturation, lightness)
+}
+
+fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> Color {
+    let channel = |t: f32| {
+        let q = if lightness < 0.5 { lightness * (1.0 + saturation) } else { lightness + saturation - lightness * saturation };
+        let p = 2.0 * lightness - q;
+        let t = t.rem_euclid(1.0);
+        let value = if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 0.5 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        };
+        (value * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+    if saturation == 0.0 {
+        let gray = (lightness * 255.0).round().clamp(0.0, 255.0) as u8;
+        return Color { red: gray, green: gray, blue: gray };
+    }
+    Color {
+        red: channel(hue + 1.0 / 3.0),
+        green: channel(hue),
+        blue: channel(hue - 1.0 / 3.0),
     }
 }

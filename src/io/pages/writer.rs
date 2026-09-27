@@ -174,6 +174,7 @@ fn rebuild_body(
 ) -> Result<(), PackageError> {
     let body = flatten(document);
     let areas = document.sections.first().map(|section| page_areas(document, section)).unwrap_or_default();
+    let boxes = text_boxes(document);
     let mut next_id = max_identifier(package) + 1;
     let mut next_data_id = max_data_id(package) + 1;
 
@@ -197,6 +198,9 @@ fn rebuild_body(
                 }))
                 .chain(areas.iter().flat_map(|area| {
                     area.content.marks.iter().map(|(_, format)| *format).collect::<Vec<_>>()
+                }))
+                .chain(boxes.iter().flat_map(|text_box| {
+                    text_box.content.marks.iter().map(|(_, format)| *format).collect::<Vec<_>>()
                 }))
                 .filter(Format::has_direct);
             synthesize_char_styles(
@@ -243,6 +247,9 @@ fn rebuild_body(
                 let parent = area_paragraph_style(package, area).unwrap_or(cell.paragraph);
                 needed.extend(area.content.paragraphs.iter().map(|(_, format)| (parent, *format)));
             }
+            for text_box in &boxes {
+                needed.extend(text_box.content.paragraphs.iter().map(|(_, format)| (cell.paragraph, *format)));
+            }
             synthesize_para_styles(package, needed, sheet, &mut next_id)?
         }
         _ => (HashMap::new(), Vec::new()),
@@ -250,6 +257,7 @@ fn rebuild_body(
 
     if let Some(styles) = cell_styles {
         write_page_areas(package, &areas, &all_formats, styles, &para_styles, &mut next_id)?;
+        write_text_boxes(package, &boxes, &all_formats, styles, &para_styles, &mut next_id)?;
     }
 
     // The template carries one table: a document with more gets a clone of
@@ -822,7 +830,7 @@ fn reuse_table(
                 *next_id += 2;
                 let attachments = create_number_attachments(stream, &cell.fields, next_id)?;
                 let (message, refs) =
-                    build_text_storage(&mut stream.tree, cell, formats, styles, 5, &attachments, paras)?;
+                    build_text_storage(&mut stream.tree, cell, formats, styles, Some(5), &attachments, paras)?;
                 let info = build_archive_info(&mut stream.tree, storage_id, STORAGE_ARCHIVE)?;
                 add_object_references(&mut stream.tree, info, &refs)?;
                 new_objects.push(Object {
@@ -3530,13 +3538,16 @@ fn build_text_storage(
     cell: &CellContent,
     formats: &HashMap<Format, u64>,
     styles: CellStyles,
-    kind: u64,
+    kind: Option<u64>,
     attachments: &[(u32, u64)],
     paras: &ParaStyles,
 ) -> Result<(u32, Vec<u64>), PackageError> {
     let storage = message_ref("TSWP.StorageArchive")?;
     let mut chain = Chain::new();
-    push_field(tree, &mut chain, storage, "kind", Node::Uint(kind))?;
+    // A shape's text storage carries no kind, as Pages writes it.
+    if let Some(kind) = kind {
+        push_field(tree, &mut chain, storage, "kind", Node::Uint(kind))?;
+    }
     push_field(
         tree,
         &mut chain,
@@ -6021,7 +6032,7 @@ fn write_page_areas(
         let stream = stream_containing(package, storage_id)?;
         let attachments = create_number_attachments(stream, &area.content.fields, next_id)?;
         let (message, refs) =
-            build_text_storage(&mut stream.tree, &area.content, formats, area_styles, 1, &attachments, paras)?;
+            build_text_storage(&mut stream.tree, &area.content, formats, area_styles, Some(1), &attachments, paras)?;
         let object = stream
             .objects
             .iter_mut()
@@ -6430,4 +6441,309 @@ fn area_paragraph_style(package: &Package, area: &PageArea) -> Option<u64> {
         }
     }
     None
+}
+
+// ----- text boxes -----
+
+const SHAPE_INFO: u32 = 2011;
+const SHAPE_STYLE: u32 = 2025;
+const STANDIN_CAPTION: u32 = 3097;
+const FLOATING_DRAWABLES: u32 = 10010;
+const DRAWABLES_ZORDER: u32 = 10015;
+
+/// A Word text box to write as a Pages shape floating on its page.
+struct TextBox {
+    fill: Option<crate::document::Color>,
+    page: u32,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    content: CellContent,
+}
+
+/// The document's text boxes, their text flattened like a cell's.
+fn text_boxes(document: &Document) -> Vec<TextBox> {
+    document
+        .floating
+        .iter()
+        .filter_map(|floating| match &floating.content {
+            crate::document::FloatingContent::TextBox { blocks, fill } => {
+                let content = flatten_lines(document, &block_lines(blocks));
+                (!content.text.trim().is_empty() || !content.fields.is_empty()).then(|| TextBox {
+                    fill: *fill,
+                    page: floating.page,
+                    x: floating.x,
+                    y: floating.y,
+                    width: floating.width.max(12.0),
+                    height: floating.height.max(12.0),
+                    content,
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Writes each text box as a Pages shape (the "Body" shape style, a text
+/// storage of its own) floating on its page at its position, listed in the
+/// document's floating drawables and z-order as Pages lists its own.
+fn write_text_boxes(
+    package: &mut Package,
+    boxes: &[TextBox],
+    formats: &HashMap<Format, u64>,
+    styles: CellStyles,
+    paras: &ParaStyles,
+    next_id: &mut u64,
+) -> Result<(), PackageError> {
+    if boxes.is_empty() {
+        return Ok(());
+    }
+    let shape_style = shape_style_identified(package, "textbox-0-shapestyle")
+        .ok_or_else(|| malformed("template has no text box shape style"))?;
+    // A filled box gets a variation of the text-box style with that fill: text
+    // set in white on a coloured shape would otherwise vanish.
+    let mut fills: Vec<crate::document::Color> = boxes.iter().filter_map(|text_box| text_box.fill).collect();
+    fills.sort_by_key(|color| (color.red, color.green, color.blue));
+    fills.dedup();
+    let fill_styles = match stylesheet_identifier(package) {
+        Some(sheet) if !fills.is_empty() => create_fill_styles(package, shape_style, &fills, sheet, next_id)?,
+        _ => HashMap::new(),
+    };
+    let stream = document_stream(package)?;
+    let (floating_id, zorder_id) = {
+        let find = |kind| {
+            stream
+                .objects
+                .iter()
+                .find(|object| first_type(object) == Some(kind))
+                .map(|object| object.identifier)
+        };
+        (
+            find(FLOATING_DRAWABLES).ok_or_else(|| malformed("no floating drawables"))?,
+            find(DRAWABLES_ZORDER).ok_or_else(|| malformed("no drawables z-order"))?,
+        )
+    };
+    let shape_info = message_ref("TSWP.ShapeInfoArchive")?;
+    let shape = child_message(shape_info, "super")?;
+    let drawable = child_message(shape, "super")?;
+    let geometry = child_message(drawable, "geometry")?;
+    let point = message_ref("TSP.Point")?;
+    let size = message_ref("TSP.Size")?;
+    let wrap = child_message(drawable, "exterior_text_wrap")?;
+    let path_source = child_message(shape, "pathsource")?;
+    let bezier = child_message(path_source, "bezier_path_source")?;
+    let caption = message_ref("TSD.StandinCaptionArchive")?;
+    let _ = caption;
+
+    let mut placed: Vec<(u32, u64)> = Vec::new();
+    for text_box in boxes {
+        let storage_id = *next_id;
+        let title_id = *next_id + 1;
+        let caption_id = *next_id + 2;
+        let shape_id = *next_id + 3;
+        *next_id += 4;
+        let attachments = create_number_attachments(stream, &text_box.content.fields, next_id)?;
+        let tree = &mut stream.tree;
+        let (storage_first, storage_refs) =
+            build_text_storage(tree, &text_box.content, formats, styles, None, &attachments, paras)?;
+        let mut objects = vec![(storage_id, STORAGE_ARCHIVE, storage_first, storage_refs)];
+        for id in [title_id, caption_id] {
+            objects.push((id, STANDIN_CAPTION, NONE, Vec::new()));
+        }
+
+        // The drawable: geometry at the page position, wrap, captions.
+        let mut position = Chain::new();
+        push_field(tree, &mut position, point, "x", Node::Float(text_box.x))?;
+        push_field(tree, &mut position, point, "y", Node::Float(text_box.y))?;
+        let mut extent = Chain::new();
+        push_field(tree, &mut extent, size, "width", Node::Float(text_box.width))?;
+        push_field(tree, &mut extent, size, "height", Node::Float(text_box.height))?;
+        let mut geo = Chain::new();
+        push_field(tree, &mut geo, geometry, "position", Node::Message(position.first))?;
+        push_field(tree, &mut geo, geometry, "size", Node::Message(extent.first))?;
+        push_field(tree, &mut geo, geometry, "flags", Node::Uint(3))?;
+        push_field(tree, &mut geo, geometry, "angle", Node::Float(0.0))?;
+        let mut wrap_chain = Chain::new();
+        push_field(tree, &mut wrap_chain, wrap, "type", Node::Uint(4))?;
+        push_field(tree, &mut wrap_chain, wrap, "direction", Node::Uint(2))?;
+        push_field(tree, &mut wrap_chain, wrap, "fit_type", Node::Uint(1))?;
+        push_field(tree, &mut wrap_chain, wrap, "margin", Node::Float(12.0))?;
+        push_field(tree, &mut wrap_chain, wrap, "alpha_threshold", Node::Float(0.5))?;
+        push_field(tree, &mut wrap_chain, wrap, "is_html_wrap", Node::Bool(false))?;
+        let mut draw = Chain::new();
+        push_field(tree, &mut draw, drawable, "geometry", Node::Message(geo.first))?;
+        push_field(tree, &mut draw, drawable, "exterior_text_wrap", Node::Message(wrap_chain.first))?;
+        push_field(tree, &mut draw, drawable, "locked", Node::Bool(false))?;
+        push_field(tree, &mut draw, drawable, "aspect_ratio_locked", Node::Bool(false))?;
+        push_field(tree, &mut draw, drawable, "title", Node::Reference(title_id))?;
+        push_field(tree, &mut draw, drawable, "caption", Node::Reference(caption_id))?;
+        push_field(tree, &mut draw, drawable, "title_hidden", Node::Bool(false))?;
+        push_field(tree, &mut draw, drawable, "caption_hidden", Node::Bool(false))?;
+
+        // The shape: style and a rectangular path at the box's size.
+        let mut natural = Chain::new();
+        push_field(tree, &mut natural, size, "width", Node::Float(text_box.width))?;
+        push_field(tree, &mut natural, size, "height", Node::Float(text_box.height))?;
+        let path = build_traced_path(tree, text_box.width, text_box.height)?;
+        let mut bezier_chain = Chain::new();
+        push_field(tree, &mut bezier_chain, bezier, "naturalSize", Node::Message(natural.first))?;
+        push_field(tree, &mut bezier_chain, bezier, "path", Node::Message(path))?;
+        let mut source = Chain::new();
+        push_field(tree, &mut source, path_source, "horizontalFlip", Node::Bool(false))?;
+        push_field(tree, &mut source, path_source, "verticalFlip", Node::Bool(false))?;
+        push_field(tree, &mut source, path_source, "bezier_path_source", Node::Message(bezier_chain.first))?;
+        let mut shape_chain = Chain::new();
+        push_field(tree, &mut shape_chain, shape, "super", Node::Message(draw.first))?;
+        let style = text_box
+            .fill
+            .and_then(|color| fill_styles.get(&color).copied())
+            .unwrap_or(shape_style);
+        push_field(tree, &mut shape_chain, shape, "style", Node::Reference(style))?;
+        push_field(tree, &mut shape_chain, shape, "pathsource", Node::Message(source.first))?;
+        push_field(tree, &mut shape_chain, shape, "strokePatternOffsetDistance", Node::Float(0.0))?;
+        let mut info_chain = Chain::new();
+        push_field(tree, &mut info_chain, shape_info, "super", Node::Message(shape_chain.first))?;
+        push_field(tree, &mut info_chain, shape_info, "deprecated_storage", Node::Reference(storage_id))?;
+        push_field(tree, &mut info_chain, shape_info, "owned_storage", Node::Reference(storage_id))?;
+        push_field(tree, &mut info_chain, shape_info, "is_text_box", Node::Bool(true))?;
+        objects.push((shape_id, SHAPE_INFO, info_chain.first, vec![title_id, caption_id, style, storage_id]));
+
+        for (id, kind, first, refs) in objects {
+            let info = build_archive_info(tree, id, kind)?;
+            add_object_references(tree, info, &refs)?;
+            stream.objects.push(Object {
+                identifier: id,
+                info,
+                messages: vec![ObjectMessage { message_type: kind, first }],
+            });
+        }
+        placed.push((text_box.page, shape_id));
+    }
+
+    // List each shape under its page, and on top in the z-order.
+    let floating = message_ref("TP.FloatingDrawablesArchive")?;
+    let group = child_message(floating, "page_groups")?;
+    let entry = child_message(group, "drawables")?;
+    let zorder = message_ref("TP.DrawablesZOrderArchive")?;
+    let tree = &mut stream.tree;
+    let (floating_first, floating_info) = stream
+        .objects
+        .iter()
+        .find(|object| object.identifier == floating_id)
+        .map(|object| (object.messages[0].first, object.info))
+        .ok_or_else(|| malformed("floating drawables missing"))?;
+    let mut pages: Vec<u32> = placed.iter().map(|(page, _)| *page).collect();
+    pages.sort_unstable();
+    pages.dedup();
+    let mut fields: Vec<(u32, Node)> = tree.chain(floating_first).map(|(_, e)| (e.number, e.value)).collect();
+    let groups_number = floating.slot_named("page_groups").map(|(_, f)| f.number).ok_or_else(|| malformed("no page_groups"))?;
+    for page in pages {
+        let mut group_chain = Chain::new();
+        push_field(tree, &mut group_chain, group, "page_index", Node::Uint(u64::from(page)))?;
+        for (_, shape_id) in placed.iter().filter(|(p, _)| *p == page) {
+            let mut item = Chain::new();
+            push_field(tree, &mut item, entry, "drawable", Node::Reference(*shape_id))?;
+            push_field(tree, &mut group_chain, group, "drawables", Node::Message(item.first))?;
+        }
+        fields.push((groups_number, Node::Message(group_chain.first)));
+    }
+    let mut chain = Chain::new();
+    for (number, value) in fields {
+        let slot = floating.slot(number).ok_or_else(|| malformed("floating field without slot"))?;
+        let field = floating.field_at(slot).ok_or_else(|| malformed("floating slot out of range"))?;
+        tree.push_known(&mut chain, floating, slot, field, number, value).map_err(tree_error)?;
+    }
+    let shape_ids: Vec<u64> = placed.iter().map(|(_, id)| *id).collect();
+    add_object_references(tree, floating_info, &shape_ids)?;
+    if let Some(object) = stream.objects.iter_mut().find(|object| object.identifier == floating_id) {
+        object.messages[0].first = chain.first;
+    }
+    let (zorder_first, zorder_info) = stream
+        .objects
+        .iter()
+        .find(|object| object.identifier == zorder_id)
+        .map(|object| (object.messages[0].first, object.info))
+        .ok_or_else(|| malformed("z-order missing"))?;
+    for id in &shape_ids {
+        append_message_reference(&mut stream.tree, zorder, zorder_first, "drawables", *id)?;
+    }
+    add_object_references(&mut stream.tree, zorder_info, &shape_ids)?;
+    Ok(())
+}
+
+/// The template's shape style with style identifier `identifier` (at
+/// `super.super.style_identifier`), such as Pages' "textbox-0-shapestyle".
+fn shape_style_identified(package: &Package, identifier: &str) -> Option<u64> {
+    for entry in &package.entries {
+        let Entry::Stream(stream) = entry else {
+            continue;
+        };
+        for object in &stream.objects {
+            if first_type(object) != Some(SHAPE_STYLE) {
+                continue;
+            }
+            let first = object.messages.first()?.first;
+            let found = message_field(&stream.tree, first, "super")
+                .and_then(|base| message_field(&stream.tree, base, "super"))
+                .and_then(|style| str_field(&stream.tree, style, "style_identifier"));
+            if found == Some(identifier) {
+                return Some(object.identifier);
+            }
+        }
+    }
+    None
+}
+
+/// Creates, in the document stream, a variation of `parent` (a shape style)
+/// per colour with only its fill overridden, registered with the stylesheet.
+fn create_fill_styles(
+    package: &mut Package,
+    parent: u64,
+    colors: &[crate::document::Color],
+    stylesheet: u64,
+    next_id: &mut u64,
+) -> Result<HashMap<crate::document::Color, u64>, PackageError> {
+    let archive = message_ref("TSWP.ShapeStyleArchive")?;
+    let drawing = child_message(archive, "super")?;
+    let base = child_message(drawing, "super")?;
+    let properties = child_message(drawing, "shape_properties")?;
+    let fill = child_message(properties, "fill")?;
+    let mut out = HashMap::new();
+    let stream = document_stream(package)?;
+    for color in colors {
+        let id = *next_id;
+        *next_id += 1;
+        let tree = &mut stream.tree;
+        let mut style = Chain::new();
+        push_field(tree, &mut style, base, "parent", Node::Reference(parent))?;
+        push_field(tree, &mut style, base, "is_variation", Node::Bool(true))?;
+        push_field(tree, &mut style, base, "stylesheet", Node::Reference(stylesheet))?;
+        let color_first = build_color(tree, *color)?;
+        let mut fill_chain = Chain::new();
+        push_field(tree, &mut fill_chain, fill, "color", Node::Message(color_first))?;
+        let mut props = Chain::new();
+        push_field(tree, &mut props, properties, "fill", Node::Message(fill_chain.first))?;
+        let mut drawing_chain = Chain::new();
+        push_field(tree, &mut drawing_chain, drawing, "super", Node::Message(style.first))?;
+        push_field(tree, &mut drawing_chain, drawing, "override_count", Node::Uint(1))?;
+        push_field(tree, &mut drawing_chain, drawing, "shape_properties", Node::Message(props.first))?;
+        let mut chain = Chain::new();
+        push_field(tree, &mut chain, archive, "super", Node::Message(drawing_chain.first))?;
+        push_field(tree, &mut chain, archive, "override_count", Node::Uint(0))?;
+        let info = build_archive_info(tree, id, SHAPE_STYLE)?;
+        add_object_references(tree, info, &[parent, stylesheet])?;
+        stream.objects.push(Object {
+            identifier: id,
+            info,
+            messages: vec![ObjectMessage {
+                message_type: SHAPE_STYLE,
+                first: chain.first,
+            }],
+        });
+        out.insert(*color, id);
+    }
+    let pairs: Vec<(u64, u64)> = out.values().map(|id| (parent, *id)).collect();
+    register_in_stylesheet(package, stylesheet, &pairs)?;
+    Ok(out)
 }
