@@ -813,6 +813,8 @@ impl DocxWriter {
             TextWrap::Around => "<wp:wrapSquare wrapText=\"bothSides\"/>",
             TextWrap::TopAndBottom => "<wp:wrapTopAndBottom/>",
             TextWrap::None => "<wp:wrapNone/>",
+            // Only a shape is written in the line itself (below).
+            TextWrap::Inline => "<wp:wrapTopAndBottom/>",
         };
         // Word measures an anchored object from its paragraph.
         let from_v = if object.follows_text {
@@ -904,12 +906,28 @@ impl DocxWriter {
                 } else {
                     ("<wps:cNvSpPr/>", String::new())
                 };
+                // A shape in the text line sits in it; any other is anchored.
+                let (frame, frame_end) = if object.wrap == TextWrap::Inline {
+                    (
+                        format!(
+                            "<wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\"><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>"
+                        ),
+                        "</wp:inline>",
+                    )
+                } else {
+                    (
+                        format!(
+                            "<wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"{from_v}\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>{wrap_xml}",
+                            251_658_240 + number,
+                            emu(object.x),
+                            emu(object.y),
+                        ),
+                        "</wp:anchor>",
+                    )
+                };
                 let _ = write!(
                     out,
-                    "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"{from_v}\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>{wrap_xml}<wp:docPr id=\"{number}\" name=\"Shape {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{SHAPE}\"><wps:wsp>{kind}<wps:spPr><a:xfrm{flips}><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm>{geometry_xml}{fill_xml}{line_xml}</wps:spPr>{body}<wps:bodyPr wrap=\"square\" lIns=\"50800\" tIns=\"50800\" rIns=\"50800\" bIns=\"50800\" anchor=\"t\"><a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
-                    251_658_240 + number,
-                    emu(object.x),
-                    emu(object.y),
+                    "<w:r><w:drawing>{frame}<wp:docPr id=\"{number}\" name=\"Shape {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{SHAPE}\"><wps:wsp>{kind}<wps:spPr><a:xfrm{flips}><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm>{geometry_xml}{fill_xml}{line_xml}</wps:spPr>{body}<wps:bodyPr wrap=\"square\" lIns=\"50800\" tIns=\"50800\" rIns=\"50800\" bIns=\"50800\" anchor=\"t\"><a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic>{frame_end}</w:drawing></w:r>",
                 );
             }
         }

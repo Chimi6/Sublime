@@ -110,6 +110,9 @@ pub enum TextWrap {
     TopAndBottom,
     /// Not at all: it sits over (or under) the text.
     None,
+    /// In the text line, like a character, at its anchor (which it moves
+    /// with); its position is unused.
+    Inline,
 }
 
 #[derive(Debug, Clone, PartialEq)]

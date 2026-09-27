@@ -1294,7 +1294,7 @@ impl Reader<'_> {
                 start += leading.len_utf8();
                 start_units += 1;
             }
-            let paragraph = self.paragraph(
+            let mut paragraph = self.paragraph(
                 &text[start..end],
                 start,
                 start_units,
@@ -1309,6 +1309,31 @@ impl Reader<'_> {
                 &data,
                 &starts,
             );
+            // A paragraph without text is as tall as its mark: the font and
+            // size of the newline that ends it.
+            if end < bytes.len()
+                && !paragraph
+                    .runs
+                    .iter()
+                    .any(|run| matches!(run.content, Inline::Text(_)))
+            {
+                let end_units = start_units + text[start..end].encode_utf16().count();
+                if let (_, Some(id)) = self.run_formatting(end_units, &character_styles) {
+                    let mark = self.document.run_properties(&Run {
+                        style: None,
+                        properties: Some(id),
+                        link: None,
+                        revision: None,
+                        content: Inline::LineBreak,
+                    });
+                    if mark.size.is_some() || mark.font.is_some() {
+                        let mut own = self.document.paragraph_run_properties(&paragraph);
+                        own.size = mark.size.or(own.size);
+                        own.font = mark.font.or(own.font);
+                        paragraph.run_properties = self.document.intern_run_properties(own);
+                    }
+                }
+            }
             // A table takes its place from the paragraph holding it: that
             // paragraph's alignment and left indent, as Pages lays it.
             let holder = self.document.effective_paragraph(&paragraph);
@@ -1778,23 +1803,24 @@ impl Reader<'_> {
             let image = self.image(view, attachment)?;
             return Some(Inline::Image(self.document.push_image(image)));
         }
-        // A shape placed from its paragraph moves with the text: anchored
-        // here, measured from the paragraph's top (and the page's left edge
-        // or its own position).
+        // A shape in the text moves with it: in the line itself (wrap type
+        // 0), or anchored here, measured from the paragraph's top (and the
+        // page's left edge or its own position).
+        let wrap_type = view
+            .message("super")
+            .and_then(|shape| shape.message("super"))
+            .and_then(|base| base.message("exterior_text_wrap"))
+            .and_then(|wrap| wrap.integer("type"));
+        let v_offset = attachment
+            .float("v_offset")
+            .filter(|value| value.is_finite());
         if view
             .message("super")
             .and_then(|shape| shape.message("pathsource"))
             .is_some()
+            && view.reference("toc_settings").is_none()
             && attachment.integer("v_offset_type").unwrap_or(0) == 0
-            && view
-                .message("super")
-                .and_then(|shape| shape.message("super"))
-                .and_then(|base| base.message("exterior_text_wrap"))
-                .and_then(|wrap| wrap.integer("type"))
-                != Some(0)
-            && let Some(v_offset) = attachment
-                .float("v_offset")
-                .filter(|value| value.is_finite())
+            && (wrap_type == Some(0) || v_offset.is_some())
         {
             let index = self.document.floating.len();
             self.floating_object(drawable, 0, 0.0, 0.0);
@@ -1804,7 +1830,13 @@ impl Reader<'_> {
             }
             let object = &mut self.document.floating[index];
             object.follows_text = true;
-            object.y = v_offset;
+            if wrap_type == Some(0) {
+                object.wrap = crate::document::TextWrap::Inline;
+                object.x = 0.0;
+                object.y = 0.0;
+                return Some(Inline::Anchor(index as crate::document::Id));
+            }
+            object.y = v_offset.unwrap_or(0.0);
             if attachment.integer("h_offset_type") == Some(2)
                 && let Some(h_offset) = attachment
                     .float("h_offset")

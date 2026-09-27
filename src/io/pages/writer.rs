@@ -471,7 +471,9 @@ fn rebuild_body(
             continue;
         };
         let object = &document.floating[*index];
-        let attach_id = anchor_attachment(package, *shape, object.x, object.y, &mut next_id)?;
+        let inline = object.wrap == crate::document::TextWrap::Inline;
+        let attach_id =
+            anchor_attachment(package, *shape, inline, object.x, object.y, &mut next_id)?;
         anchors.push((*offset, attach_id));
         anchored_shapes.push(*shape);
     }
@@ -3287,6 +3289,7 @@ fn flatten(document: &Document) -> Body {
         layouts: Vec::new(),
         pending_layout: None,
         anchored: Vec::new(),
+        terminator: Format::default(),
     };
     let mut previous: Option<ColumnLayout> = None;
     for (index, section) in document.sections.iter().enumerate() {
@@ -3355,6 +3358,8 @@ struct Walk {
     pending_layout: Option<Option<ColumnLayout>>,
     /// Drawables anchored in the text: (offset, index in `Document::floating`).
     anchored: Vec<(u32, usize)>,
+    /// The current paragraph's mark formatting, for the newline ending it.
+    terminator: Format,
 }
 
 /// Pages' column-break character (as Pages imports a Word column break).
@@ -3552,6 +3557,7 @@ impl Walk {
         self.link_mark(None);
         self.text.push(ATTACHMENT);
         self.offset += 1;
+        self.terminator = Format::default();
     }
 
     fn paragraph(&mut self, document: &Document, paragraph: &Paragraph) {
@@ -3570,12 +3576,16 @@ impl Walk {
             self.pending_break = true;
             return;
         }
+        // The previous paragraph ends with its mark, in the paragraph's own
+        // font and size (not the template's base): a paragraph without text
+        // is as tall as its mark, as in Word.
         if !self.paragraphs.is_empty() {
-            self.mark(Format::default());
+            self.mark(self.terminator);
             self.link_mark(None);
             self.text.push('\n');
             self.offset += 1;
         }
+        self.terminator = mark_format(document, paragraph);
         let style_name = paragraph
             .style
             .map(|style| document.styles.paragraph[style].name.clone());
@@ -3612,7 +3622,7 @@ impl Walk {
                 if document.floating.get(index).is_some_and(|object| {
                     object.follows_text && text_box(document, object).is_some()
                 }) {
-                    self.mark(Format::default());
+                    self.mark(self.terminator);
                     self.link_mark(None);
                     self.anchored.push((self.offset, index));
                     self.text.push(ATTACHMENT);
@@ -3972,6 +3982,23 @@ fn flatten_lines(
 }
 
 /// A run's own bold and italic, independent of the paragraph.
+/// The font and size of a paragraph's mark, which set an empty line's height.
+fn mark_format(document: &Document, paragraph: &Paragraph) -> Format {
+    let mark = crate::document::Run {
+        style: None,
+        properties: None,
+        link: None,
+        revision: None,
+        content: Inline::LineBreak,
+    };
+    let format = run_format(document, paragraph, &mark);
+    Format {
+        size: format.size,
+        font: format.font,
+        ..Format::default()
+    }
+}
+
 fn run_format(document: &Document, paragraph: &Paragraph, run: &crate::document::Run) -> Format {
     // The run's effective formatting: the paragraph style's, overlaid with the
     // character style's, overlaid with the run's own — so a font, size, or
@@ -8126,6 +8153,14 @@ fn text_boxes(document: &Document, anchored: &[(u32, usize)]) -> Vec<TextBox> {
             // cell, say) goes on its page, from the top of the text area.
             if floating.follows_text && !text_box.anchored {
                 text_box.y += top;
+                if text_box.wrap == crate::document::TextWrap::Inline {
+                    text_box.wrap = crate::document::TextWrap::TopAndBottom;
+                }
+            }
+            // One in the text line sits at its character.
+            if text_box.anchored && text_box.wrap == crate::document::TextWrap::Inline {
+                text_box.x = 0.0;
+                text_box.y = 0.0;
             }
             Some(text_box)
         })
@@ -8354,6 +8389,7 @@ fn write_text_boxes(
             crate::document::TextWrap::TopAndBottom => (2, 0, 0.0),
             crate::document::TextWrap::None => (5, 1, 0.0),
             crate::document::TextWrap::Around => (4, 1, 12.0),
+            crate::document::TextWrap::Inline => (0, 0, 0.0),
         };
         let mut wrap_chain = Chain::new();
         push_field(tree, &mut wrap_chain, wrap, "type", Node::Uint(wrap_type))?;
@@ -9830,6 +9866,7 @@ fn append_to_zorder(package: &mut Package, ids: &[u64]) -> Result<(), PackageErr
 fn anchor_attachment(
     package: &mut Package,
     drawable: u64,
+    inline: bool,
     x: f32,
     y: f32,
     next_id: &mut u64,
@@ -9845,7 +9882,15 @@ fn anchor_attachment(
         "drawable",
         Node::Reference(drawable),
     )?;
-    push_field(tree, &mut chain, attachment, "h_offset_type", Node::Uint(2))?;
+    // One in the text line has no offsets (zero, as Pages rewrites NaN).
+    let (h_type, x, y) = if inline { (0, 0.0, 0.0) } else { (2, x, y) };
+    push_field(
+        tree,
+        &mut chain,
+        attachment,
+        "h_offset_type",
+        Node::Uint(h_type),
+    )?;
     push_field(tree, &mut chain, attachment, "h_offset", Node::Float(x))?;
     push_field(tree, &mut chain, attachment, "v_offset_type", Node::Uint(0))?;
     push_field(tree, &mut chain, attachment, "v_offset", Node::Float(y))?;
