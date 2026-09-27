@@ -912,7 +912,9 @@ fn reuse_table(
             let stream = stream_containing(package, table.rich_text_id)?;
             let covered = mark.covered();
             for (index, cell) in mark.cells.iter().enumerate() {
-                if covered.contains(&index) {
+                // An empty cell has no text storage: Pages writes it as a bare
+                // record naming its styles, and an empty storage is "repaired".
+                if covered.contains(&index) || cell.is_empty() {
                     continue;
                 }
                 let storage_id = *next_id;
@@ -1026,7 +1028,7 @@ fn reuse_table(
             build_style_list(tree, &style_entries)
         })?;
         add_object_refs(package, table.style_id, &references)?;
-        let rich_cells = (cells - covered.len()) as u64;
+        let rich_cells = rich.len() as u64;
         set_list_refcount(
             package,
             table.format_id,
@@ -1035,12 +1037,13 @@ fn reuse_table(
         )?;
     }
 
+    let styled = cell_styles.is_some();
     rewrite_object(package, table.tile_id, |tree| {
-        build_tile(tree, mark, &rich, &cell_style_keys)
+        build_tile(tree, mark, &rich, &cell_style_keys, styled)
     })?;
-    // When every cell is rich its text lives in its own storage, so the string
+    // When cells are rich their text lives in their own storages, so the string
     // table stays empty (as Pages writes it); otherwise plain cells use it.
-    let string_cells: &[CellContent] = if rich.is_empty() { &mark.cells } else { &[] };
+    let string_cells: &[CellContent] = if styled { &[] } else { &mark.cells };
     rewrite_object(package, table.string_id, |tree| {
         build_string_list(tree, string_cells)
     })?;
@@ -2942,6 +2945,13 @@ struct CellContent {
     paragraphs: Vec<(u32, ParaFormat)>,
 }
 
+impl CellContent {
+    /// No text at all (a field stands in the text as U+FFFC, so it counts).
+    fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+}
+
 /// A table anchored at a `U+FFFC` character: its offset and its grid of cell
 /// content, with the column widths, row heights, and header-row count.
 struct TableMark {
@@ -3806,12 +3816,12 @@ fn build_text_storage(
     // one entry per paragraph even where neighbours share a style: a storage
     // whose paragraph table skips a paragraph start is "repaired" by Pages,
     // which resets every paragraph to the default style.
-    let length = utf16_len(&cell.text);
+    // (A trailing break starts an empty last paragraph at the very end.)
     let mut starts = vec![0u32];
     let mut offset = 0u32;
     for character in cell.text.chars() {
         offset += character.len_utf16() as u32;
-        if character == '\n' && offset < length {
+        if character == '\n' {
             starts.push(offset);
         }
     }
@@ -3864,6 +3874,10 @@ fn build_text_storage(
         .collect();
     if char_entries.first().is_none_or(|(offset, _)| *offset != 0) {
         char_entries.insert(0, (0, Some(styles.base_char)));
+    }
+    // Empty text has no characters to style; an entry there is out of range.
+    if cell.text.is_empty() {
+        char_entries.clear();
     }
     for (_, id) in &char_entries {
         if let Some(id) = id
@@ -4244,6 +4258,7 @@ fn build_tile(
     mark: &TableMark,
     rich: &HashMap<usize, u32>,
     cell_styles: &HashMap<usize, u32>,
+    styled: bool,
 ) -> Result<u32, PackageError> {
     let tile = message_ref("TST.Tile")?;
     let row_info = message_ref("TST.TileRowInfo")?;
@@ -4280,10 +4295,12 @@ fn build_tile(
             let key = cell as u32 + 1;
             let slot = column * 2;
             offsets[slot..slot + 2].copy_from_slice(&(buffer.len() as u16).to_le_bytes());
+            let style = cell_styles.get(&cell).copied().unwrap_or(CELL_STYLE_KEY);
             if covered.contains(&cell) {
                 buffer.extend_from_slice(&covered_record_bytes());
+            } else if styled && !rich.contains_key(&cell) {
+                buffer.extend_from_slice(&empty_record_bytes(style));
             } else {
-                let style = cell_styles.get(&cell).copied().unwrap_or(CELL_STYLE_KEY);
                 buffer.extend_from_slice(&cell_record_bytes(key, rich.get(&cell).copied(), style));
             }
         }
@@ -4387,6 +4404,18 @@ fn cell_record_bytes(string_key: u32, rich_key: Option<u32>, cell_style_key: u32
             bytes
         }
     }
+}
+
+/// An empty cell's record, as Pages writes one: no value, only its cell
+/// and text styles.
+fn empty_record_bytes(cell_style_key: u32) -> Vec<u8> {
+    let mut bytes = vec![0u8; 20];
+    bytes[0] = 5;
+    // cell_style | text_style
+    bytes[8..12].copy_from_slice(&(0x20u32 | 0x40).to_le_bytes());
+    bytes[12..16].copy_from_slice(&cell_style_key.to_le_bytes());
+    bytes[16..20].copy_from_slice(&TEXT_STYLE_KEY.to_le_bytes());
+    bytes
 }
 
 /// Pushes a scalar or reference field by name onto a chain.
