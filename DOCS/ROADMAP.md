@@ -148,7 +148,7 @@ lossless and universal.
 | Netpbm | ppm, pgm, pbm, pam | [x] | A | S | Shipped 0.22.0 (`DOCS/formats/netpbm.md`): every form read, each kind written. |
 | QOI | qoi | [x] | B | S | Shipped 0.22.0 (`DOCS/formats/qoi.md`): both ways, streaming, `qoi.h`'s bytes. |
 | farbfeld | ff | [ ] | B | S | Tiny format. |
-| TGA | tga | [ ] | B | S | Games and textures; RLE. |
+| TGA | tga | [x] | B | S | Shipped 0.22.0 (`DOCS/formats/tga.md`): every common layout read, RLE written. |
 | PCX | pcx | [ ] | C | S | DOS-era; RLE. |
 | ICO, CUR, ICNS | ico, cur, icns | [ ] | A | S | Icon containers (PNG and BMP inside); PNG <-> ICO is a constant developer need. |
 | SVG | svg | [ ] | B | XL | Rasterizing SVG is a renderer (paths, strokes, text, filters). A subset rasterizer (paths, basic shapes, fills, strokes) is L and covers most icons. SVG -> PNG only. |

@@ -25,6 +25,7 @@ pub mod ppm_png;
 pub mod qoi_png;
 pub mod webp_png;
 pub mod text_markdown;
+pub mod tga_png;
 pub mod toml_json;
 pub mod xlsx_csv;
 pub mod xml_json;
@@ -59,6 +60,7 @@ pub const NAMES: &[&str] = &[
     "webp-png",
     "qoi-png",
     "ppm-png",
+    "tga-png",
     "yaml-json",
 ];
 
@@ -92,6 +94,7 @@ pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
         "webp-png" => webp_png::run(mode, args),
         "qoi-png" => qoi_png::run(mode, args),
         "ppm-png" => ppm_png::run(mode, args),
+        "tga-png" => tga_png::run(mode, args),
         "yaml-json" => yaml_json::run(mode, args),
         other => Err(format!(
             "unknown pair '{other}'; known: {}",

@@ -90,6 +90,15 @@ pub static PAM: Format = Format {
     category: Category::Image,
 };
 
+pub static TGA: Format = Format {
+    id: "tga",
+    display_name: "Truevision TGA image",
+    extensions: &["tga", "icb", "vda", "vst"],
+    // No signature at the start; a TGA 2.0 file ends in one.
+    magic: None,
+    category: Category::Image,
+};
+
 pub static QOI: Format = Format {
     id: "qoi",
     display_name: "QOI image",
