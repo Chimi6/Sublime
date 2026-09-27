@@ -639,6 +639,7 @@ impl<'s> DocumentBuilder<'s> {
                     header_rows: table.header_rows,
                     columns: vec![width; columns],
                     borders: None,
+                    cell_margins: None,
                 }));
             }
             TagEnd::TableHead => {
