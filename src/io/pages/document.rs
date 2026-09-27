@@ -569,6 +569,8 @@ const CELL_FIELDS: [(u32, usize); 21] = [
 #[derive(Default)]
 struct CellRecord {
     kind: u8,
+    /// A number stored as decimal128, written out exactly.
+    decimal: Option<String>,
     double: Option<f64>,
     seconds: Option<f64>,
     string: Option<u32>,
@@ -594,6 +596,7 @@ fn cell_record(bytes: &[u8]) -> Option<CellRecord> {
         }
         let field = bytes.get(offset..offset + size)?;
         match flag {
+            0x1 => record.decimal = decimal128_text(field),
             0x2 => record.double = Some(f64::from_le_bytes(field.try_into().ok()?)),
             0x4 => record.seconds = Some(f64::from_le_bytes(field.try_into().ok()?)),
             0x8 => record.string = Some(u32::from_le_bytes(field.try_into().ok()?)),
@@ -605,6 +608,40 @@ fn cell_record(bytes: &[u8]) -> Option<CellRecord> {
         offset += size;
     }
     Some(record)
+}
+
+/// A cell's decimal128 number (as Pages stores it: a binary mantissa and a
+/// biased power of ten) as exact decimal text, e.g. `42.5` or `-3`.
+fn decimal128_text(bytes: &[u8]) -> Option<String> {
+    let bytes: [u8; 16] = bytes.try_into().ok()?;
+    let negative = bytes[15] & 0x80 != 0;
+    let exponent = ((i32::from(bytes[15] & 0x7F) << 7) | i32::from(bytes[14] >> 1)) - 0x1820;
+    let mut mantissa = u128::from(bytes[14] & 1);
+    for byte in bytes[..14].iter().rev() {
+        mantissa = mantissa * 256 + u128::from(*byte);
+    }
+    let digits = mantissa.to_string();
+    let mut text = if exponent >= 0 {
+        if mantissa == 0 {
+            "0".to_string()
+        } else {
+            digits + &"0".repeat(exponent as usize)
+        }
+    } else {
+        let shift = (-exponent) as usize;
+        let padded = format!("{digits:0>width$}", width = shift + 1);
+        let (whole, fraction) = padded.split_at(padded.len() - shift);
+        let fraction = fraction.trim_end_matches('0');
+        if fraction.is_empty() {
+            whole.to_string()
+        } else {
+            format!("{whole}.{fraction}")
+        }
+    };
+    if negative && text != "0" {
+        text.insert(0, '-');
+    }
+    Some(text)
 }
 
 /// The lookup tables of one table's data store.
@@ -758,6 +795,30 @@ impl Reader<'_> {
         if !children.is_empty() {
             for child in children {
                 self.floating_object(child, page, x, y);
+            }
+            return;
+        }
+        // A table placed on the page: a text box holding it.
+        if let Some(model) = view.reference("tableModel") {
+            let Some(table) = self.table(model) else {
+                return;
+            };
+            if width > 0.0 && height > 0.0 {
+                self.document.floating.push(FloatingObject {
+                    page,
+                    x,
+                    y,
+                    width,
+                    height,
+                    content: FloatingContent::TextBox {
+                        blocks: vec![Block::Table(table)],
+                        fill: None,
+                        line: None,
+                        geometry: Default::default(),
+                        flip: (false, false),
+                        ends: (None, None),
+                    },
+                });
             }
             return;
         }
@@ -1814,7 +1875,10 @@ impl Reader<'_> {
                 return;
             }
             3 => record.string.and_then(|id| lists.strings.get(&id)).cloned(),
-            2 | 10 => record.double.map(format_number),
+            2 | 10 => record
+                .decimal
+                .clone()
+                .or_else(|| record.double.map(format_number)),
             6 => record.double.map(|value| {
                 if value != 0.0 {
                     "TRUE".to_string()
@@ -1840,6 +1904,15 @@ impl Reader<'_> {
             paragraph.style = style;
             paragraph.properties = properties;
             paragraph.run_properties = run;
+        }
+        // Pages sets numbers and dates against the right edge unless the
+        // cell's style aligns them.
+        if matches!(record.kind, 2 | 5 | 7 | 10) {
+            let mut properties = self.document.paragraph_properties(&paragraph);
+            if properties.alignment.is_none() {
+                properties.alignment = Some(Alignment::Right);
+                paragraph.properties = self.document.intern_paragraph_properties(properties);
+            }
         }
         let span = self.document.push_text(&text);
         paragraph.runs.push(Run {
@@ -2585,3 +2658,33 @@ fn number_format(number_type: i64, tiered: bool) -> NumberFormat {
 
 /// The em a list's label-to-text gap is measured in: Pages' body text size.
 const LIST_EM: f32 = 11.0;
+
+#[cfg(test)]
+mod decimal_tests {
+    use super::decimal128_text;
+
+    fn encode(mantissa: u128, exponent: i32, negative: bool) -> Vec<u8> {
+        let mut bytes = mantissa.to_le_bytes().to_vec();
+        let biased = (exponent + 0x1820) as u32;
+        bytes[14] = (bytes[14] & 1) | ((biased & 0x7F) << 1) as u8;
+        bytes[15] = ((biased >> 7) & 0x7F) as u8 | if negative { 0x80 } else { 0 };
+        bytes
+    }
+
+    #[test]
+    fn decimal128_numbers_read_exactly() {
+        assert_eq!(decimal128_text(&encode(3, 0, false)).as_deref(), Some("3"));
+        assert_eq!(
+            decimal128_text(&encode(4250, -2, false)).as_deref(),
+            Some("42.5")
+        );
+        assert_eq!(
+            decimal128_text(&encode(5, -3, true)).as_deref(),
+            Some("-0.005")
+        );
+        assert_eq!(
+            decimal128_text(&encode(12, 2, false)).as_deref(),
+            Some("1200")
+        );
+    }
+}
