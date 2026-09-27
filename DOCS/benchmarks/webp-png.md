@@ -1,6 +1,6 @@
 # WebP <-> PNG
 
-**Latest** (2026-09-26, first WebP: every memory line PASSES (lossy decode at 4 MB against the crate's 74); five speed lines FAIL: lossless decode on the photo 53.1 against 54.0 MB/s, lossy decode 64.7 against 66.1 (photo) and 242.6 against 260.3 (flat), lossless encode 182.9 against 421.4 (photo) and 428.1 against 559.2 (flat); our lossless files are 4% smaller than image-webp's on the photo)
+**Latest** (2026-09-27, encoder margins: the flat encode now PASSES (659 against 597 MB/s, at 52 MB against 113) and the photo encode is 248 against 396 MB/s, from 183; every memory line PASSES; the four decode lines sit within 1 to 6% of the reference either way and change sign between runs)
 
 ## Purpose
 
@@ -59,6 +59,28 @@ median wall clock of the whole process, peak resident memory from GNU
 
 ## Results
 
+### 2026-09-27, encoder margins
+
+commit: d1dc7cc (on the `webp-speed` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| webp (lossless) -> png, photo (45.8 MB of pixels, 25.8 MB on disk): throughput (MB/s of decoded pixels) | 52.5 | 53.2 (image + png) | FAIL |
+| webp (lossless) -> png, photo: peak memory (MB) | 100.7 | 173.6 (image + png) | PASS |
+| webp (lossy) -> png, photo (45.8 MB of pixels, 0.3 MB on disk): throughput (MB/s of decoded pixels) | 65.3 | 65.7 (image + png) | FAIL |
+| webp (lossy) -> png, photo: peak memory (MB) | 4.6 | 74.7 (image + png) | PASS |
+| png -> webp (lossless), photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 247.5 | 395.7 (png + image) | FAIL |
+| png -> webp (lossless), photo: peak memory (MB) | 95.4 | 140.2 (png + image) | PASS |
+| png -> webp (lossless), photo: output size (MB) [extra] | 27.4 | 28.5 (image); 25.8 (libwebp, default effort) | n/a |
+| webp (lossless) -> png, flat (45.8 MB of pixels, 0.0 MB on disk): throughput (MB/s of decoded pixels) | 496.3 | 526.4 (image + png) | FAIL |
+| webp (lossless) -> png, flat: peak memory (MB) | 94.3 | 111.6 (image + png) | PASS |
+| webp (lossy) -> png, flat (45.8 MB of pixels, 0.1 MB on disk): throughput (MB/s of decoded pixels) | 251.2 | 260.1 (image + png) | FAIL |
+| webp (lossy) -> png, flat: peak memory (MB) | 4.1 | 74.2 (image + png) | PASS |
+| png -> webp (lossless), flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 659.0 | 596.7 (png + image) | PASS |
+| png -> webp (lossless), flat: peak memory (MB) | 52.1 | 112.8 (png + image) | PASS |
+| png -> webp (lossless), flat: output size (MB) [extra] | 0.0 | 0.0 (image); 0.0 (libwebp, default effort) | n/a |
+
 ### 2026-09-26, first WebP
 
 commit: c71023b (on the `webp` branch, before its merge)
@@ -84,19 +106,38 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(
 ## Conclusions
 
 Decoding is correct to the bit against libwebp and at parity with
-image-webp in its core: in process, the lossy flat and photo decodes
-take 114 and 171 ms in image-webp and about 126 and 175 in ours; the
-lossless decode ties. The small misses on the pipeline lines come from
-the rest of each pipeline and move with the machine. Memory is our
-win throughout, most of all on lossy input, which streams by
+image-webp in its core. The decode lines are whole pipelines whose
+larger part is the PNG write; they land within 1 to 6% of the
+reference and the lossless flat line passed in one run and failed in
+the next. The png crate's writer (per-row adaptive filters at its
+balanced level) writes photo PNGs 5 to 10% smaller than ours at about
+the same speed: that is the PNG writer's lever, not WebP's. Memory is
+our win throughout, most of all on lossy input, which streams by
 macroblock row at 4 MB.
 
-The lossless encoder is not at the reference's speed. Configured as
-image-webp's encoder is (a fixed predictor, no cache), ours writes the
-same size in about 2.4 times its core time; with its color cache and
-per-tile predictor search it writes 4% smaller on the synthetic photo
-and 9% smaller on a real one, at 2.3 times the time. Against libwebp,
-measured by hand on the same photo, ours is faster than libwebp's
-fastest setting (0.32 against 0.40 s of encode) and 5% smaller than
-its output; libwebp's default effort is 6% smaller again and takes
-9.3 s. The levers left are in `STATE.md`.
+The encoder margins (2026-09-27) came from the patterns file's own
+lessons, applied to the encoder: predictors as byte loops over whole
+rows (the compiler vectorizes them), the first pass's decisions
+recorded as two bits per pixel so the writing pass replays them
+instead of searching and hashing again, that first pass as one
+function with its state in locals (a closure's captured position was
+reloaded per pixel), the palette built as rows arrive with a byte per
+pixel, and four predictor candidates where six chose nearly the same
+tiles. The photo encode went from 183 to 248 MB/s at identical
+output; the flat one from 428 to 659 and passes, at half the memory.
+
+The photo encode still misses, and by design: image-webp writes a
+fixed predictor with no color cache. Configured the same way ours is
+now at parity on a real photo (test1, 0.15 s both) and 1.5 times its
+time on the synthetic one. The cache and the predictor search are what
+make our files smaller: without the cache a real photo grows 8%
+(test1) to 37% (a 150-megapixel PNG), and against image-webp ours are
+9% and 28% smaller on those two. Against libwebp, ours is faster than
+its fastest setting and smaller than its output; libwebp's default
+effort is 6% smaller again at thirty times the time.
+
+What is left, in `STATE.md`: an entropy estimate in place of summed
+residual magnitudes for choosing tile predictors (one fixed predictor
+beat the per-tile choice on each real image, so the choice is the size
+lever too), and `--quality` as encode effort, as cwebp reads it for
+lossless output.

@@ -918,7 +918,7 @@ impl<'a> WebpRows<'a> {
     }
 
     /// Converts one row to ARGB words in `target`, noting alpha.
-    fn to_argb(&mut self, pixels: &[u8], target: &mut [u32]) {
+    fn argb_row(&mut self, pixels: &[u8], target: &mut [u32]) {
         match self.color {
             ColorType::Gray => {
                 for (argb, value) in target.iter_mut().zip(pixels) {
@@ -1015,14 +1015,14 @@ impl RowSink for WebpRows<'_> {
     fn row(&mut self, pixels: &[u8]) -> io::Result<()> {
         if self.palette.is_some() {
             let mut scratch = std::mem::take(&mut self.scratch);
-            self.to_argb(pixels, &mut scratch);
+            self.argb_row(pixels, &mut scratch);
             self.scratch = scratch;
             self.index_row();
         } else {
             let start = self.pixels.len();
             self.pixels.resize(start + self.width, 0);
             let mut target = std::mem::take(&mut self.pixels);
-            self.to_argb(pixels, &mut target[start..]);
+            self.argb_row(pixels, &mut target[start..]);
             self.pixels = target;
         }
         self.rows_seen += 1;
