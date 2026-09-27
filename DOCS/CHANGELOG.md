@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Changed
+
+- Image pairs are generated from one table of codecs, each saying what its reader and its writer lose: every reader reaches every writer, and each pair's fidelity carries both texts (a new raster format is one table row).
+
 ## [0.21.0] - 2026-09-27
 
 WebP, both ways: the lossless and lossy decoders bit-exact with

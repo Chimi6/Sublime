@@ -1,6 +1,8 @@
 //! The one list of converters. Adding a converter is one line here plus one
 //! `pub mod` line in `src/converters/mod.rs`.
 
+use std::sync::OnceLock;
+
 use crate::converter::Converter;
 use crate::converters::csv_to_json;
 use crate::converters::csv_to_xlsx;
@@ -38,7 +40,7 @@ use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 64] = [
+static CONVERTERS: [&dyn Converter; 52] = [
     &csv_to_json::CSV_TO_JSON,
     &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
@@ -91,22 +93,18 @@ static CONVERTERS: [&dyn Converter; 64] = [
     &rows_document::TSV_TO_MARKDOWN,
     &rows_document::MARKDOWN_TO_CSV,
     &rows_document::MARKDOWN_TO_TSV,
-    &image::PNG_TO_BMP,
-    &image::BMP_TO_PNG,
-    &image::JPEG_TO_PNG,
-    &image::JPEG_TO_BMP,
-    &image::PNG_TO_JPEG,
-    &image::BMP_TO_JPEG,
-    &image::WEBP_TO_PNG,
-    &image::WEBP_TO_BMP,
-    &image::WEBP_TO_JPEG,
-    &image::PNG_TO_WEBP,
-    &image::BMP_TO_WEBP,
-    &image::JPEG_TO_WEBP,
 ];
 
+/// The listed converters and the generated image pairs, gathered once.
 pub fn all_converters() -> &'static [&'static dyn Converter] {
-    &CONVERTERS
+    static ALL: OnceLock<Vec<&'static dyn Converter>> = OnceLock::new();
+    ALL.get_or_init(|| {
+        let mut all: Vec<&'static dyn Converter> = CONVERTERS.to_vec();
+        for pair in image::pairs() {
+            all.push(pair);
+        }
+        all
+    })
 }
 
 /// Every format referenced by a registered converter, unique, sorted by id.

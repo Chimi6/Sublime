@@ -7,7 +7,7 @@
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor, Read};
 
-use sublime::converters::image::{JPEG_TO_PNG, PNG_TO_JPEG};
+use sublime::converters::image as image_pairs;
 
 use crate::common::run_ours;
 
@@ -15,8 +15,8 @@ pub fn run(mode: &str, args: &[String]) -> Result<(), String> {
     match (mode, args) {
         ("gen-photo", [side, path]) => generate(side, path, true),
         ("gen-flat", [side, path]) => generate(side, path, false),
-        ("ours-jpeg-png", [input, output]) => run_ours(&JPEG_TO_PNG, input, output),
-        ("ours-png-jpeg", [input, output]) => run_ours(&PNG_TO_JPEG, input, output),
+        ("ours-jpeg-png", [input, output]) => run_ours(image_pairs::pair("jpeg", "png"), input, output),
+        ("ours-png-jpeg", [input, output]) => run_ours(image_pairs::pair("png", "jpeg"), input, output),
         ("crates-jpeg-png", [input, output]) => crates_jpeg_to_png(input, output),
         ("crates-png-jpeg", [input, output]) => crates_png_to_jpeg(input, output),
         ("crates-png-jpeg-encoder", [input, output]) => crate_jpeg_encoder(input, output),
