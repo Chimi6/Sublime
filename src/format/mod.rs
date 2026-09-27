@@ -127,7 +127,12 @@ pub fn find_by_extension(
     Err(FormatError::UnknownExtension(extension))
 }
 
-/// Finds a format whose magic bytes prefix `head`.
+/// A magic byte that matches any byte, for signatures with a field in
+/// the middle (RIFF files carry their size before the form type).
+pub const MAGIC_ANY: u8 = b'?';
+
+/// Finds a format whose magic bytes prefix `head`; `MAGIC_ANY` in a
+/// magic matches any byte.
 pub fn find_by_magic(
     head: &[u8],
     known: &[&'static Format],
@@ -137,7 +142,14 @@ pub fn find_by_magic(
             Some(magic) => magic,
             None => continue,
         };
-        if head.starts_with(magic) {
+        if head.len() < magic.len() {
+            continue;
+        }
+        let matches = magic
+            .iter()
+            .zip(head)
+            .all(|(expected, actual)| *expected == MAGIC_ANY || expected == actual);
+        if matches {
             return Ok(format);
         }
     }
@@ -207,6 +219,14 @@ mod tests {
         let head = [0x89, b'P', b'N', b'G', 0x0D, 0x0A];
         let found = find_by_magic(&head, &known()).unwrap();
         assert_eq!(found.id, "pngish");
+    }
+
+    #[test]
+    fn a_wildcard_byte_matches_any_byte() {
+        let head = b"RIFF\x10\x20\x30\x40WEBPVP8L";
+        let found = find_by_magic(head, &[&formats::WEBP]).unwrap();
+        assert_eq!(found.id, "webp");
+        assert!(find_by_magic(b"RIFF\x10\x20\x30\x40WAVEfmt ", &[&formats::WEBP]).is_err());
     }
 
     #[test]

@@ -2,26 +2,23 @@
 //! one writer out of it. A pair is a `ImagePair` value naming its two
 //! formats, its fidelity, and the reader's notes to report.
 
-use std::io::{Read, Write};
+use std::io::Write;
 
 use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
-use crate::image::Image;
-use crate::io::bmp::{BmpError, BmpRows, BmpRowsError, read_bmp, read_bmp_rows, write_bmp};
-use crate::io::jpeg::{
-    DEFAULT_QUALITY, JpegError, JpegNotes, JpegRows, read_jpeg_from, read_jpeg_rows, write_jpeg,
-};
-use crate::io::png::{
-    PngError, PngNotes, PngRows, RowsError, read_png_from, read_png_rows, write_png,
-};
+use crate::io::bmp::{BmpError, BmpRows, BmpRowsError, read_bmp_rows};
+use crate::io::jpeg::{DEFAULT_QUALITY, JpegError, JpegNotes, JpegRows, read_jpeg_rows};
+use crate::io::png::{PngError, PngNotes, PngRows, RowSink, RowsError, read_png_rows};
+use crate::io::webp::{WebpNotes, WebpRows, read_webp_rows};
 
 #[derive(Clone, Copy)]
 pub enum ImageFormat {
     Png,
     Bmp,
     Jpeg,
+    Webp,
 }
 
 pub struct ImagePair {
@@ -61,111 +58,66 @@ impl Converter for ImagePair {
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
         let quality = context.options.quality.unwrap_or(DEFAULT_QUALITY);
-        // Row by row wherever the reader can hand rows over and the
-        // writer can take them; no image is held on these paths.
-        if let ImageFormat::Jpeg = self.read {
-            let notes = match self.write {
-                ImageFormat::Png => {
-                    let mut rows = PngRows::new(output);
-                    read_jpeg_rows(&mut input, &mut rows)
-                }
-                ImageFormat::Bmp => {
-                    let mut rows = BmpRows::new(output);
-                    read_jpeg_rows(&mut input, &mut rows)
-                }
-                ImageFormat::Jpeg => {
-                    let mut rows = JpegRows::new(output, quality);
-                    read_jpeg_rows(&mut input, &mut rows)
-                }
-            };
-            let notes = match notes {
-                Ok(notes) => notes,
-                Err(RowsError::Png(error)) => return Err(error.into()),
-                Err(RowsError::Io(error)) => return Err(error.into()),
-            };
-            report_jpeg_notes(notes, context);
-            return Ok(());
+        // Every pair streams: the reader hands rows to the writer and no
+        // image is held beyond what a format itself needs (a bottom-up
+        // BMP's pixel data, a WebP's bitstream, an interlaced PNG).
+        match self.write {
+            ImageFormat::Png => {
+                let mut rows = PngRows::new(output);
+                read_rows(self.read, &mut input, &mut rows, self.name, context)
+            }
+            ImageFormat::Bmp => {
+                let mut rows = BmpRows::new(output);
+                read_rows(self.read, &mut input, &mut rows, self.name, context)
+            }
+            ImageFormat::Jpeg => {
+                let mut rows = JpegRows::new(output, quality);
+                read_rows(self.read, &mut input, &mut rows, self.name, context)
+            }
+            ImageFormat::Webp => {
+                let mut rows = WebpRows::new(output);
+                read_rows(self.read, &mut input, &mut rows, self.name, context)
+            }
         }
-        if let ImageFormat::Jpeg = self.write {
-            let mut rows = JpegRows::new(output, quality);
-            return match self.read {
-                ImageFormat::Png => {
-                    let notes = match read_png_rows(&mut input, &mut rows) {
-                        Ok(notes) => notes,
-                        Err(RowsError::Png(error)) => return Err(error.into()),
-                        Err(RowsError::Io(error)) => return Err(error.into()),
-                    };
-                    report_png_notes(notes, self.name, context);
-                    Ok(())
-                }
-                ImageFormat::Bmp => match read_bmp_rows(&mut input, &mut rows) {
-                    Ok(()) => Ok(()),
-                    Err(BmpRowsError::Bmp(error)) => Err(error.into()),
-                    Err(BmpRowsError::Io(error)) => Err(error.into()),
-                },
-                ImageFormat::Jpeg => unreachable!("handled above"),
-            };
-        }
-        if matches!(
-            (self.read, self.write),
-            (ImageFormat::Png, ImageFormat::Bmp)
-        ) {
-            // Row by row: no image is held, and the BMP is written
-            // top-down as rows come out of the unfilter.
-            let mut rows = BmpRows::new(output);
-            let notes = match read_png_rows(&mut input, &mut rows) {
-                Ok(notes) => notes,
-                Err(RowsError::Png(error)) => return Err(error.into()),
-                Err(RowsError::Io(error)) => return Err(error.into()),
-            };
-            report_png_notes(notes, self.name, context);
-            return Ok(());
-        }
-        if matches!(
-            (self.read, self.write),
-            (ImageFormat::Bmp, ImageFormat::Png)
-        ) {
-            // Row by row: a top-down BMP streams, a bottom-up one is held
-            // once as file bytes; the PNG writer needs only the row above.
-            let mut rows = PngRows::new(output);
-            return match read_bmp_rows(&mut input, &mut rows) {
-                Ok(()) => Ok(()),
-                Err(BmpRowsError::Bmp(error)) => Err(error.into()),
-                Err(BmpRowsError::Io(error)) => Err(error.into()),
-            };
-        }
-        let image = read(self.read, &mut input, self.name, context)?;
-        write(self.write, &image, output)?;
-        output.flush()?;
-        Ok(())
     }
 }
 
-/// PNG streams from the input; BMP, being uncompressed and random
-/// access, is read whole.
-fn read(
+fn rows_error(error: RowsError) -> ConvertError {
+    match error {
+        RowsError::Png(error) => error.into(),
+        RowsError::Io(error) => error.into(),
+    }
+}
+
+/// Reads `format` from the input into `sink`, reporting what the reader
+/// dropped.
+fn read_rows(
     format: ImageFormat,
     input: &mut Input<'_>,
+    sink: &mut dyn RowSink,
     name: &'static str,
     context: &mut Context<'_>,
-) -> Result<Image, ConvertError> {
+) -> Result<(), ConvertError> {
     match format {
         ImageFormat::Png => {
-            let (image, notes) = read_png_from(input)?;
+            let notes = read_png_rows(input, sink).map_err(rows_error)?;
             report_png_notes(notes, name, context);
-            Ok(image)
         }
-        ImageFormat::Bmp => {
-            let mut bytes = Vec::new();
-            input.read_to_end(&mut bytes)?;
-            Ok(read_bmp(&bytes)?)
-        }
+        ImageFormat::Bmp => match read_bmp_rows(input, sink) {
+            Ok(()) => {}
+            Err(BmpRowsError::Bmp(error)) => return Err(error.into()),
+            Err(BmpRowsError::Io(error)) => return Err(error.into()),
+        },
         ImageFormat::Jpeg => {
-            let (image, notes) = read_jpeg_from(input)?;
+            let notes = read_jpeg_rows(input, sink).map_err(rows_error)?;
             report_jpeg_notes(notes, context);
-            Ok(image)
+        }
+        ImageFormat::Webp => {
+            let notes = read_webp_rows(input, sink).map_err(rows_error)?;
+            report_webp_notes(notes, context);
         }
     }
+    Ok(())
 }
 
 fn report_png_notes(notes: PngNotes, name: &'static str, context: &mut Context<'_>) {
@@ -193,13 +145,16 @@ fn report_jpeg_notes(notes: JpegNotes, context: &mut Context<'_>) {
     }
 }
 
-fn write(format: ImageFormat, image: &Image, output: &mut dyn Write) -> Result<(), ConvertError> {
-    match format {
-        ImageFormat::Png => write_png(image, output)?,
-        ImageFormat::Bmp => write_bmp(image, output)?,
-        ImageFormat::Jpeg => write_jpeg(image, output, DEFAULT_QUALITY)?,
+fn report_webp_notes(notes: WebpNotes, context: &mut Context<'_>) {
+    for name in notes.dropped {
+        context.warning(format!("{name} chunk dropped (metadata is not carried)"));
     }
-    Ok(())
+    if notes.frames_dropped > 0 {
+        context.warning(format!(
+            "an animation: the first frame is kept and {} more are dropped",
+            notes.frames_dropped
+        ));
+    }
 }
 
 impl From<JpegError> for ConvertError {
@@ -296,6 +251,64 @@ pub static BMP_TO_JPEG: ImagePair = ImagePair {
     read: ImageFormat::Bmp,
     write: ImageFormat::Jpeg,
     fidelity: Fidelity::Lossy(JPEG_LOSS),
+};
+
+const WEBP_DECODE_NOTE: &str = "pixels as decoded (a lossy WebP decodes exactly as libwebp does); an animation keeps its first frame; metadata (ICC, Exif, XMP) is dropped";
+const TO_WEBP_NOTE: &str =
+    "lossless WebP of the 8-bit pixels: 16-bit samples become 8-bit and metadata is dropped";
+
+pub static WEBP_TO_PNG: ImagePair = ImagePair {
+    name: "webp-to-png",
+    from: &formats::WEBP,
+    to: &formats::PNG,
+    read: ImageFormat::Webp,
+    write: ImageFormat::Png,
+    fidelity: Fidelity::Conditional(WEBP_DECODE_NOTE),
+};
+
+pub static WEBP_TO_BMP: ImagePair = ImagePair {
+    name: "webp-to-bmp",
+    from: &formats::WEBP,
+    to: &formats::BMP,
+    read: ImageFormat::Webp,
+    write: ImageFormat::Bmp,
+    fidelity: Fidelity::Conditional(WEBP_DECODE_NOTE),
+};
+
+pub static WEBP_TO_JPEG: ImagePair = ImagePair {
+    name: "webp-to-jpeg",
+    from: &formats::WEBP,
+    to: &formats::JPEG,
+    read: ImageFormat::Webp,
+    write: ImageFormat::Jpeg,
+    fidelity: Fidelity::Lossy(JPEG_LOSS),
+};
+
+pub static PNG_TO_WEBP: ImagePair = ImagePair {
+    name: "png-to-webp",
+    from: &formats::PNG,
+    to: &formats::WEBP,
+    read: ImageFormat::Png,
+    write: ImageFormat::Webp,
+    fidelity: Fidelity::Conditional(TO_WEBP_NOTE),
+};
+
+pub static BMP_TO_WEBP: ImagePair = ImagePair {
+    name: "bmp-to-webp",
+    from: &formats::BMP,
+    to: &formats::WEBP,
+    read: ImageFormat::Bmp,
+    write: ImageFormat::Webp,
+    fidelity: Fidelity::Lossless,
+};
+
+pub static JPEG_TO_WEBP: ImagePair = ImagePair {
+    name: "jpeg-to-webp",
+    from: &formats::JPEG,
+    to: &formats::WEBP,
+    read: ImageFormat::Jpeg,
+    write: ImageFormat::Webp,
+    fidelity: Fidelity::Conditional(JPEG_DECODE_NOTE),
 };
 
 #[cfg(test)]

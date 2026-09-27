@@ -50,6 +50,14 @@ pub static JPEG: Format = Format {
     category: Category::Image,
 };
 
+pub static WEBP: Format = Format {
+    id: "webp",
+    display_name: "WebP image",
+    extensions: &["webp"],
+    magic: Some(b"RIFF????WEBP"),
+    category: Category::Image,
+};
+
 pub static BMP: Format = Format {
     id: "bmp",
     display_name: "Windows bitmap",

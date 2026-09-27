@@ -17,6 +17,7 @@ pub mod scan;
 pub mod snappy;
 pub mod text;
 pub mod toml;
+pub mod webp;
 pub mod xlsx;
 pub mod xml;
 pub mod yaml;
