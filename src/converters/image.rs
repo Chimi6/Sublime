@@ -15,6 +15,7 @@ use crate::io::jpeg::{DEFAULT_QUALITY, JpegError, JpegNotes, JpegRows, read_jpeg
 use crate::io::netpbm::{Kind, NetpbmNotes, NetpbmRows, read_netpbm_rows};
 use crate::io::png::{PngError, PngNotes, PngRows, RowSink, RowsError, read_png_rows};
 use crate::io::qoi::{QoiRows, read_qoi_rows};
+use crate::io::tga::{TgaRows, read_tga_rows};
 use crate::io::webp::{Effort, WebpNotes, WebpRows, read_webp_rows};
 
 #[derive(Clone, Copy)]
@@ -25,6 +26,7 @@ pub enum ImageFormat {
     Webp,
     Qoi,
     Netpbm(Kind),
+    Tga,
 }
 
 pub struct ImagePair {
@@ -93,6 +95,10 @@ impl Converter for ImagePair {
                 let mut rows = NetpbmRows::new(output, kind);
                 read_rows(self.read, &mut input, &mut rows, self.name, context)
             }
+            ImageFormat::Tga => {
+                let mut rows = TgaRows::new(output);
+                read_rows(self.read, &mut input, &mut rows, self.name, context)
+            }
         }
     }
 }
@@ -132,6 +138,7 @@ fn read_rows(
             report_webp_notes(notes, context);
         }
         ImageFormat::Qoi => read_qoi_rows(input, sink).map_err(rows_error)?,
+        ImageFormat::Tga => read_tga_rows(input, sink).map_err(rows_error)?,
         ImageFormat::Netpbm(_) => {
             let notes = read_netpbm_rows(input, sink).map_err(rows_error)?;
             report_netpbm_notes(notes, name, context);
@@ -236,7 +243,7 @@ struct Codec {
 
 const JPEG_LOSS: &str = "JPEG is lossy: the image is re-encoded at the quality given (85 by default, 4:2:0 chroma below 90) and alpha is flattened onto white";
 
-static CODECS: [Codec; 9] = [
+static CODECS: [Codec; 10] = [
     Codec {
         format: &formats::PNG,
         kind: ImageFormat::Png,
@@ -297,6 +304,14 @@ static CODECS: [Codec; 9] = [
         format: &formats::PAM,
         kind: ImageFormat::Netpbm(Kind::Pam),
         read: Fidelity::Conditional(NETPBM_READ),
+        write: Fidelity::Lossless,
+    },
+    Codec {
+        format: &formats::TGA,
+        kind: ImageFormat::Tga,
+        read: Fidelity::Conditional(
+            "the ID field and any TGA 2.0 extension area (thumbnail, author, dates) are dropped",
+        ),
         write: Fidelity::Lossless,
     },
 ];
