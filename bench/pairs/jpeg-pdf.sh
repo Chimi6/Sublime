@@ -10,6 +10,13 @@
 # else one ImageMagick makes at quality 85 from bench/data/stock.png,
 # adds [stock] rows that time the copy itself.
 
+# Each throughput line times 100 runs back to back (the output removed
+# before each, both sides alike): one run is a millisecond or so, which
+# three single runs time as noise. Memory is from single runs.
+# A loop GNU time can run: bash -c "$repeated" _ <runs> <output> <command...>.
+repeat=100
+repeated='runs="$1"; output="$2"; shift 2; for _ in $(seq "$runs"); do rm -f -- "$output"; "$@" || exit 1; done'
+
 run_pair() {
   local shapes=""
   for shape in photo flat; do
@@ -35,13 +42,18 @@ run_pair() {
     [ "$shape" = stock ] && { jpg="$stock"; tag=" [stock]"; }
     pdf="$data/e$shape.pdf"
     jpg_bytes="$(wc -c < "$jpg" | tr -d ' ')"
+    local runs=$((jpg_bytes * repeat))
+    ours="$(time_cmd ours bash -c "$repeated" _ "$repeat" "$data/out-$shape-ours.pdf" "$sublime" -q convert "$jpg" "$data/out-$shape-ours.pdf")"
+    crates="$(time_cmd crates bash -c "$repeated" _ "$repeat" "$data/out-$shape-crates.pdf" "$bench" jpeg-pdf crates-jpeg-pdf "$jpg" "$data/out-$shape-crates.pdf")"
+    row "jpeg -> pdf, ${shape} ($(mb "$jpg_bytes") MB): throughput (MB/s of JPEG, $repeat runs)$tag" "$(mbps "$runs" "$(seconds_of "$ours")")" "$(mbps "$runs" "$(seconds_of "$crates")") (lopdf)" "$(pass "$(echo "$(seconds_of "$ours") <= $(seconds_of "$crates")" | bc -l)")"
     ours="$(time_cmd ours "$sublime" -q convert "$jpg" "$data/out-$shape-ours.pdf")"
     crates="$(time_cmd crates "$bench" jpeg-pdf crates-jpeg-pdf "$jpg" "$data/out-$shape-crates.pdf")"
-    row "jpeg -> pdf, ${shape} ($(mb "$jpg_bytes") MB): throughput (MB/s of JPEG)$tag" "$(mbps "$jpg_bytes" "$(seconds_of "$ours")")" "$(mbps "$jpg_bytes" "$(seconds_of "$crates")") (lopdf)" "$(pass "$(echo "$(seconds_of "$ours") <= $(seconds_of "$crates")" | bc -l)")"
     row "jpeg -> pdf, ${shape}: peak memory (MB)$tag" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$crates")") (lopdf)" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$crates")" | bc -l)")"
+    ours="$(time_cmd ours bash -c "$repeated" _ "$repeat" "$data/out-$shape-ours.jpg" "$sublime" -q convert "$pdf" "$data/out-$shape-ours.jpg")"
+    crates="$(time_cmd crates bash -c "$repeated" _ "$repeat" "$data/out-$shape-crates.jpg" "$bench" jpeg-pdf crates-pdf-jpeg "$pdf" "$data/out-$shape-crates.jpg")"
+    row "pdf -> jpeg, ${shape} ($(mb "$jpg_bytes") MB): throughput (MB/s of JPEG, $repeat runs)$tag" "$(mbps "$runs" "$(seconds_of "$ours")")" "$(mbps "$runs" "$(seconds_of "$crates")") (lopdf)" "$(pass "$(echo "$(seconds_of "$ours") <= $(seconds_of "$crates")" | bc -l)")"
     ours="$(time_cmd ours "$sublime" -q convert "$pdf" "$data/out-$shape-ours.jpg")"
     crates="$(time_cmd crates "$bench" jpeg-pdf crates-pdf-jpeg "$pdf" "$data/out-$shape-crates.jpg")"
-    row "pdf -> jpeg, ${shape} ($(mb "$jpg_bytes") MB): throughput (MB/s of JPEG)$tag" "$(mbps "$jpg_bytes" "$(seconds_of "$ours")")" "$(mbps "$jpg_bytes" "$(seconds_of "$crates")") (lopdf)" "$(pass "$(echo "$(seconds_of "$ours") <= $(seconds_of "$crates")" | bc -l)")"
     row "pdf -> jpeg, ${shape}: peak memory (MB)$tag" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$crates")") (lopdf)" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$crates")" | bc -l)")"
     cmp -s "$jpg" "$data/out-$shape-ours.jpg" || echo "warning: ours did not return the same JPEG bytes" >&2
     rm -f "$data/out-$shape-"*

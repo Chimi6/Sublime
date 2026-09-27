@@ -1,8 +1,6 @@
 # JPEG <-> PDF
 
-**Latest** (2026-09-27, pdf-bench branch: every line PASSES by the
-interleaved timing below; one harness line reads FAIL at the
-millisecond scale)
+**Latest** (2026-09-27, pdf-bench branch: every line PASSES)
 
 ## Purpose
 
@@ -33,23 +31,22 @@ stock photograph (`bench/data/stock.jpg`, or one ImageMagick makes at
 quality 85 from `bench/data/stock.png`, `[stock]`); the PDF inputs
 are the reference's own output for each.
 
-**Statistics.** `bench/run.sh jpeg-pdf`: three runs per command, median
-wall clock of the whole process, peak resident memory from GNU `time`;
-outputs are removed before each run. Every command here finishes in one
-to ten milliseconds, where three runs time process start and the file
-system more than the copy, and the harness's throughput lines swing by
-several times from run to run. The timing that decides the pass lines
-is interleaved: each of the four commands run in turn, 200 rounds, on
-the stock inputs.
+**Statistics.** `bench/run.sh jpeg-pdf`: every command here finishes in
+one to ten milliseconds, where a single run times process start and the
+file system more than the copy, and three single runs swung by several
+times from run to run. So each throughput line times 100 runs back to
+back (the output removed before each, both sides alike), three times,
+and takes the median; memory is the peak resident size of single runs
+from GNU `time`.
 
 ## Threats to validity
 
-- Throughput at this scale is mostly process start; the memory lines
-  and the interleaved medians are the stable measures.
+- Throughput at this scale still includes process start and file
+  creation on both sides; it ranks the whole command, not the copy.
 
 ## Results
 
-### 2026-09-27, pdf-bench branch
+### 2026-09-27, pdf-bench branch (single runs)
 
 Interleaved, 200 rounds, stock (3.2 MB JPEG), milliseconds:
 
@@ -61,22 +58,8 @@ Interleaved, 200 rounds, stock (3.2 MB JPEG), milliseconds:
 Flat (0.3 MB), jpeg -> pdf, 300 rounds: ours 0.990 ms median, lopdf
 1.359 ms.
 
-The harness:
-
-| Target | Ours | Reference | Result |
-|---|---|---|---|
-| jpeg -> pdf, photo (1.6 MB): throughput (MB/s of JPEG) | 433.4 | 100.4 (lopdf) | PASS |
-| jpeg -> pdf, photo: peak memory (MB) | 5.3 | 9.1 (lopdf) | PASS |
-| pdf -> jpeg, photo (1.6 MB): throughput (MB/s of JPEG) | 358.0 | 84.4 (lopdf) | PASS |
-| pdf -> jpeg, photo: peak memory (MB) | 7.0 | 8.5 (lopdf) | PASS |
-| jpeg -> pdf, flat (0.3 MB): throughput (MB/s of JPEG) | 126.0 | 31.7 (lopdf) | PASS |
-| jpeg -> pdf, flat: peak memory (MB) | 4.0 | 6.3 (lopdf) | PASS |
-| pdf -> jpeg, flat (0.3 MB): throughput (MB/s of JPEG) | 30.1 | 20.8 (lopdf) | PASS |
-| pdf -> jpeg, flat: peak memory (MB) | 4.5 | 5.7 (lopdf) | PASS |
-| jpeg -> pdf, stock (3.2 MB): throughput (MB/s of JPEG) [stock] | 175.9 | 207.2 (lopdf) | FAIL |
-| jpeg -> pdf, stock: peak memory (MB) [stock] | 6.7 | 12.1 (lopdf) | PASS |
-| pdf -> jpeg, stock (3.2 MB): throughput (MB/s of JPEG) [stock] | 157.9 | 129.1 (lopdf) | PASS |
-| pdf -> jpeg, stock: peak memory (MB) [stock] | 10.0 | 11.7 (lopdf) | PASS |
-
-commit: b853f53
-machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+With three single runs a command, the harness's throughput lines
+flipped between runs (the stock jpeg -> pdf line read 698.6 against
+159.3 MB/s, then 175.9 against 207.2), and at the release commit three
+lines read FAIL; the interleaved timing above had ours ahead on every
+command. The harness now times 100 runs back to back.
