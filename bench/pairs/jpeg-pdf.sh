@@ -10,12 +10,37 @@
 # else one ImageMagick makes at quality 85 from bench/data/stock.png,
 # adds [stock] rows that time the copy itself.
 
-# Each throughput line times 100 runs back to back (the output removed
-# before each, both sides alike): one run is a millisecond or so, which
-# three single runs time as noise. Memory is from single runs.
-# A loop GNU time can run: bash -c "$repeated" _ <runs> <output> <command...>.
-repeat=100
-repeated='runs="$1"; output="$2"; shift 2; for _ in $(seq "$runs"); do rm -f -- "$output"; "$@" || exit 1; done'
+# Each command here takes a millisecond to ten, where single runs time
+# the machine's noise and back-to-back blocks catch its slow spells
+# unevenly. So throughput alternates the two commands for 101 rounds
+# (the outputs removed before each run) and takes each side's median
+# run; memory is from single runs under GNU time.
+rounds=101
+
+# Prints the median seconds of ours and of the reference, alternated:
+# interleave <ours output> <reference output> -- <ours...> -- <reference...>
+interleave() {
+  local ours_out="$1" crates_out="$2"; shift 3
+  local ours=() crates=()
+  while [ "$1" != "--" ]; do ours+=("$1"); shift; done
+  shift
+  crates=("$@")
+  local ours_times=() crates_times=() start end
+  # Microseconds from bash's clock (5.0 and later), no fork per reading.
+  for _ in $(seq "$rounds"); do
+    rm -f -- "$ours_out"
+    start="${EPOCHREALTIME/[.,]/}"; "${ours[@]}" || return 1; end="${EPOCHREALTIME/[.,]/}"
+    ours_times+=($((end - start)))
+    rm -f -- "$crates_out"
+    start="${EPOCHREALTIME/[.,]/}"; "${crates[@]}" || return 1; end="${EPOCHREALTIME/[.,]/}"
+    crates_times+=($((end - start)))
+  done
+  local middle=$((rounds / 2 + 1))
+  local ours_median crates_median
+  ours_median="$(printf '%s\n' "${ours_times[@]}" | sort -n | sed -n "${middle}p")"
+  crates_median="$(printf '%s\n' "${crates_times[@]}" | sort -n | sed -n "${middle}p")"
+  echo "$(echo "$ours_median / 1000000" | bc -l) $(echo "$crates_median / 1000000" | bc -l)"
+}
 
 run_pair() {
   local shapes=""
@@ -42,16 +67,16 @@ run_pair() {
     [ "$shape" = stock ] && { jpg="$stock"; tag=" [stock]"; }
     pdf="$data/e$shape.pdf"
     jpg_bytes="$(wc -c < "$jpg" | tr -d ' ')"
-    local runs=$((jpg_bytes * repeat))
-    ours="$(time_cmd ours bash -c "$repeated" _ "$repeat" "$data/out-$shape-ours.pdf" "$sublime" -q convert "$jpg" "$data/out-$shape-ours.pdf")"
-    crates="$(time_cmd crates bash -c "$repeated" _ "$repeat" "$data/out-$shape-crates.pdf" "$bench" jpeg-pdf crates-jpeg-pdf "$jpg" "$data/out-$shape-crates.pdf")"
-    row "jpeg -> pdf, ${shape} ($(mb "$jpg_bytes") MB): throughput (MB/s of JPEG, $repeat runs)$tag" "$(mbps "$runs" "$(seconds_of "$ours")")" "$(mbps "$runs" "$(seconds_of "$crates")") (lopdf)" "$(pass "$(echo "$(seconds_of "$ours") <= $(seconds_of "$crates")" | bc -l)")"
+    local medians
+    medians="$(interleave "$data/out-$shape-ours.pdf" "$data/out-$shape-crates.pdf" -- "$sublime" -q convert "$jpg" "$data/out-$shape-ours.pdf" -- "$bench" jpeg-pdf crates-jpeg-pdf "$jpg" "$data/out-$shape-crates.pdf")"
+    ours="${medians% *}"; crates="${medians#* }"
+    row "jpeg -> pdf, ${shape} ($(mb "$jpg_bytes") MB): throughput (MB/s of JPEG, median of $rounds alternated runs)$tag" "$(mbps "$jpg_bytes" "$ours")" "$(mbps "$jpg_bytes" "$crates") (lopdf)" "$(pass "$(echo "$ours <= $crates" | bc -l)")"
     ours="$(time_cmd ours "$sublime" -q convert "$jpg" "$data/out-$shape-ours.pdf")"
     crates="$(time_cmd crates "$bench" jpeg-pdf crates-jpeg-pdf "$jpg" "$data/out-$shape-crates.pdf")"
     row "jpeg -> pdf, ${shape}: peak memory (MB)$tag" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$crates")") (lopdf)" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$crates")" | bc -l)")"
-    ours="$(time_cmd ours bash -c "$repeated" _ "$repeat" "$data/out-$shape-ours.jpg" "$sublime" -q convert "$pdf" "$data/out-$shape-ours.jpg")"
-    crates="$(time_cmd crates bash -c "$repeated" _ "$repeat" "$data/out-$shape-crates.jpg" "$bench" jpeg-pdf crates-pdf-jpeg "$pdf" "$data/out-$shape-crates.jpg")"
-    row "pdf -> jpeg, ${shape} ($(mb "$jpg_bytes") MB): throughput (MB/s of JPEG, $repeat runs)$tag" "$(mbps "$runs" "$(seconds_of "$ours")")" "$(mbps "$runs" "$(seconds_of "$crates")") (lopdf)" "$(pass "$(echo "$(seconds_of "$ours") <= $(seconds_of "$crates")" | bc -l)")"
+    medians="$(interleave "$data/out-$shape-ours.jpg" "$data/out-$shape-crates.jpg" -- "$sublime" -q convert "$pdf" "$data/out-$shape-ours.jpg" -- "$bench" jpeg-pdf crates-pdf-jpeg "$pdf" "$data/out-$shape-crates.jpg")"
+    ours="${medians% *}"; crates="${medians#* }"
+    row "pdf -> jpeg, ${shape} ($(mb "$jpg_bytes") MB): throughput (MB/s of JPEG, median of $rounds alternated runs)$tag" "$(mbps "$jpg_bytes" "$ours")" "$(mbps "$jpg_bytes" "$crates") (lopdf)" "$(pass "$(echo "$ours <= $crates" | bc -l)")"
     ours="$(time_cmd ours "$sublime" -q convert "$pdf" "$data/out-$shape-ours.jpg")"
     crates="$(time_cmd crates "$bench" jpeg-pdf crates-pdf-jpeg "$pdf" "$data/out-$shape-crates.jpg")"
     row "pdf -> jpeg, ${shape}: peak memory (MB)$tag" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$crates")") (lopdf)" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$crates")" | bc -l)")"
