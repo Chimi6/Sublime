@@ -2224,11 +2224,14 @@ impl Reader<'_> {
                 )),
                 _ => ListLabel::None,
             };
-            let indent = indents.get(level).copied().unwrap_or(0.0);
+            // `indents` places the label; `text_indents` is the gap from the
+            // label to the text, in ems of the body text.
+            let label_indent = indents.get(level).copied().unwrap_or(0.0);
+            let gap = text_indents.get(level).copied().unwrap_or(0.0) * LIST_EM;
             levels.push(ListLevel {
                 label,
-                indent,
-                label_indent: indent + text_indents.get(level).copied().unwrap_or(0.0),
+                indent: label_indent + gap,
+                label_indent,
             });
         }
         let id = self.document.styles.list.len();
@@ -2498,3 +2501,6 @@ fn number_format(number_type: i64, tiered: bool) -> NumberFormat {
         tiered,
     }
 }
+
+/// The em a list's label-to-text gap is measured in: Pages' body text size.
+const LIST_EM: f32 = 11.0;
