@@ -28,6 +28,9 @@ use crate::io::zip::{ZipArchive, ZipError};
 #[derive(Debug)]
 pub enum DocxError {
     Zip(ZipError),
+    /// An OLE compound file: a password-protected (encrypted) `.docx` or a
+    /// legacy binary `.doc`, neither of which is a Word package.
+    Compound,
     /// A required part is missing or not text.
     Part(&'static str),
 }
@@ -36,6 +39,10 @@ impl fmt::Display for DocxError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DocxError::Zip(error) => write!(formatter, "not a Word package: {error:?}"),
+            DocxError::Compound => write!(
+                formatter,
+                "this is a password-protected .docx or a legacy .doc (an OLE compound file), not a Word package; remove the password or save it as .docx in Word first"
+            ),
             DocxError::Part(name) => write!(formatter, "Word package has no readable {name}"),
         }
     }
@@ -47,6 +54,10 @@ const OFFICE_DOCUMENT_REL: &str = "officeDocument/2006/relationships/officeDocum
 
 /// Reads the document out of a `.docx` file's bytes.
 pub fn read_docx(bytes: &[u8]) -> Result<Document, DocxError> {
+    const COMPOUND_FILE: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+    if bytes.starts_with(&COMPOUND_FILE) {
+        return Err(DocxError::Compound);
+    }
     let archive = ZipArchive::parse(bytes).map_err(DocxError::Zip)?;
     let document_part = main_part(&archive);
     let base = part_directory(&document_part);
@@ -2008,5 +2019,20 @@ fn plain_run(content: Inline) -> Run {
         link: None,
         revision: None,
         content,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_an_encrypted_or_legacy_file() {
+        let mut bytes = vec![0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+        bytes.extend_from_slice(&[0; 504]);
+        let Err(error) = read_docx(&bytes) else {
+            panic!("an OLE file is not a Word package");
+        };
+        assert!(error.to_string().contains("password-protected"));
     }
 }
