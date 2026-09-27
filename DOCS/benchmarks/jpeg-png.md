@@ -1,6 +1,6 @@
 # JPEG <-> PNG
 
-**Latest** (2026-09-27, the lazy deflate: every line PASSES; jpeg -> png on the photo 99.9 against 41.4 MB/s (from 87.4) with a smaller PNG)
+**Latest** (2026-09-27, 0.22.0 release: every line PASSES)
 
 ## Purpose
 
@@ -78,6 +78,26 @@ median wall clock of the whole process, peak resident memory from GNU
   session; a line near parity is a coin toss between runs.
 
 ## Results
+
+### 2026-09-27, 0.22.0 release
+
+commit: 89d3694 (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| jpeg -> png, photo (45.8 MB of pixels, 1.6 MB on disk): throughput (MB/s of decoded pixels) | 102.3 | 41.7 (image + png) | PASS |
+| jpeg -> png, photo: peak memory (MB) | 6.2 | 70.3 (image + png) | PASS |
+| png -> jpeg, photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 505.5 | 445.1 (png + jpeg-encoder); 262.9 (png + image) | PASS |
+| png -> jpeg, photo: peak memory (MB) | 4.5 | 51.1 (png + jpeg-encoder); 51.6 (png + image) | PASS |
+| png -> jpeg, photo: output size (MB) at quality 85 [extra] | 1.5 | 1.6 (jpeg-encoder); 2.0 (image) | n/a |
+| png -> jpeg, photo: PSNR against the source (dB) at quality 85 [extra] | 36.19 | 35.90 (jpeg-encoder); 36.47 (image) | n/a |
+| jpeg -> png, flat (45.8 MB of pixels, 0.3 MB on disk): throughput (MB/s of decoded pixels) | 710.3 | 637.0 (image + png) | PASS |
+| jpeg -> png, flat: peak memory (MB) | 5.3 | 52.6 (image + png) | PASS |
+| png -> jpeg, flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 608.4 | 450.5 (png + jpeg-encoder); 223.0 (png + image) | PASS |
+| png -> jpeg, flat: peak memory (MB) | 4.7 | 51.0 (png + jpeg-encoder); 51.2 (png + image) | PASS |
+| png -> jpeg, flat: output size (MB) at quality 85 [extra] | 0.3 | 0.3 (jpeg-encoder); 0.5 (image) | n/a |
+| png -> jpeg, flat: PSNR against the source (dB) at quality 85 [extra] | 32.39 | 32.39 (jpeg-encoder); 56.88 (image) | n/a |
 
 ### 2026-09-27, the lazy deflate
 

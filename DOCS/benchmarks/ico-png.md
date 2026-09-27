@@ -1,6 +1,6 @@
 # ICO <-> PNG
 
-**Latest** (2026-09-27, first ICO: an icon from a large picture PASSES with a margin (93.5 against 130.2 ms on the 4000 by 4000 photo, 44.8 against 87.4 on the flat image, at 5 to 6 MB against 51 to 52) and writes smaller icons (56 against 103 KB); the 256-pixel lines take a few milliseconds and flip with machine load (the ICO decode passed at 11.2 against 23.2 ms in one run and failed at 27.1 against 16.8 in the next); making an icon from a 256 source is slower than the crate's (8.4 ms in process against about 5 for its whole run), because the image crate writes its icon's PNGs at its fast level and its icon is 78% larger)
+**Latest** (2026-09-27, 0.22.0 release: every line PASSES but the icon from a 256 source, milliseconds slower than the image crate's for an icon 44% smaller (its PNGs at its fast level), recorded as a decision)
 
 ## Purpose
 
@@ -43,6 +43,25 @@ wall clock of the whole process, peak resident memory from GNU `time`.
   deflate against its fast level), so the icons differ in bytes.
 
 ## Results
+
+### 2026-09-27, 0.22.0 release
+
+commit: 89d3694 (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| ico -> png, 256 icon (0.1 MB): wall time (ms) | 10.1 | 12.2 (image + png) | PASS |
+| ico -> png, 256 icon: peak memory (MB) | 4.8 | 6.8 (image + png) | PASS |
+| png -> ico, icon256 (0.0 MB in): wall time (ms) | 24.1 | 20.4 (png + image) | FAIL |
+| png -> ico, icon256: peak memory (MB) | 5.1 | 6.6 (png + image) | PASS |
+| png -> ico, icon256: output size (KB) [extra] | 56.8 | 101.3 (image) | n/a |
+| png -> ico, jphoto (29.0 MB in): wall time (ms) | 94.7 | 132.1 (png + image) | PASS |
+| png -> ico, jphoto: peak memory (MB) | 5.7 | 51.5 (png + image) | PASS |
+| png -> ico, jphoto: output size (KB) [extra] | 56.4 | 103.0 (image) | n/a |
+| png -> ico, jflat (1.6 MB in): wall time (ms) | 41.9 | 88.7 (png + image) | PASS |
+| png -> ico, jflat: peak memory (MB) | 5.6 | 52.0 (png + image) | PASS |
+| png -> ico, jflat: output size (KB) [extra] | 108.0 | 153.3 (image) | n/a |
 
 ### 2026-09-27, first ICO
 
