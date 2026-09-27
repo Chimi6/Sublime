@@ -6,6 +6,22 @@ section under a version heading.
 
 ## [Unreleased]
 
+WebP, both ways: the lossless and lossy decoders bit-exact with
+libwebp, and a lossless encoder.
+
+### Added
+
+- WebP (`src/io/webp`): the RIFF container in its simple and extended forms (alpha, metadata chunks reported, an animation's first frame placed on its canvas); the lossless bitstream (VP8L: prefix codes, meta codes, the color cache, LZ77, and the predictor, cross-color, subtract-green, and color-indexing transforms); lossy key frames (VP8: segmentation, both loop filters, every intra mode, with libwebp's fancy upsampling and color conversion), streaming by macroblock row. All 224 Pillow-written fixtures decode bit for bit to libwebp's pixels (`tests/webp_suite.rs`). Map in `DOCS/formats/webp.md`.
+- A lossless WebP writer: a palette with packed indices for images of up to 256 colors; otherwise subtract-green and a predictor chosen per 16x16 tile, runs, a color cache, and one set of prefix codes, in two passes that hold no symbol stream. Pillow reads its files to the same pixels.
+- `webp -> png`, `webp -> bmp`, `webp -> jpeg`, `png -> webp`, `bmp -> webp`, `jpeg -> webp`. Every image pair now streams through one path: the reader hands rows to whichever writer.
+- Magic bytes may hold a wildcard byte, so a RIFF form (`RIFF????WEBP`) is told apart from other RIFF files.
+- Benchmark pair `webp-png` against the `image` crate (image-webp) with libwebp's size as context.
+- The binary size budget is raised 2.1 -> 2.25 MB and the WebAssembly budget 1.05 -> 1.1 MB for WebP (two decoders, an encoder, and the VP8 tables: 125 KB).
+
+### Changed
+
+- The Huffman code builder behind deflate (and now WebP) sorts once and merges from two queues, O(n log n) where it re-sorted per merge; large alphabets build in microseconds.
+
 ## [0.20.1] - 2026-09-26
 
 JPEG encode margins: chroma from summed RGB.

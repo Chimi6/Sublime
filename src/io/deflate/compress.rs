@@ -258,7 +258,7 @@ fn eight(input: &[u8], at: usize) -> [u8; 8] {
 
 /// Canonical code lengths for `frequencies`, none longer than `limit`.
 /// Frequencies are halved and the tree rebuilt until the limit holds.
-fn code_lengths(frequencies: &[u32], limit: u8) -> Vec<u8> {
+pub(crate) fn code_lengths(frequencies: &[u32], limit: u8) -> Vec<u8> {
     let mut weights: Vec<u32> = frequencies.to_vec();
     loop {
         let lengths = huffman_lengths(&weights);
@@ -273,56 +273,64 @@ fn code_lengths(frequencies: &[u32], limit: u8) -> Vec<u8> {
     }
 }
 
-/// Unlimited Huffman code lengths by repeated merging of the two lightest
-/// nodes. A single used symbol gets length one, as deflate requires.
+/// Unlimited Huffman code lengths by merging the two lightest nodes, with
+/// the leaves sorted once and merged nodes kept in a second queue (they
+/// are made in nondecreasing weight order): O(n log n). A single used
+/// symbol gets length one, as deflate requires.
 fn huffman_lengths(weights: &[u32]) -> Vec<u8> {
     let count = weights.len();
     let mut lengths = vec![0u8; count];
-    let mut nodes: Vec<(u64, usize)> = weights
+    let mut leaves: Vec<(u64, usize)> = weights
         .iter()
         .enumerate()
         .filter(|(_, weight)| **weight > 0)
         .map(|(symbol, weight)| (u64::from(*weight), symbol))
         .collect();
-    if nodes.is_empty() {
+    if leaves.is_empty() {
         return lengths;
     }
-    if nodes.len() == 1 {
-        lengths[nodes[0].1] = 1;
+    if leaves.len() == 1 {
+        lengths[leaves[0].1] = 1;
         return lengths;
     }
-    // Node ids: symbols first, then internal nodes; parents track depth.
-    let mut parents: Vec<usize> = vec![usize::MAX; count];
-    let mut next_id = count;
-    let mut heap: Vec<(u64, usize)> = std::mem::take(&mut nodes);
-    while heap.len() > 1 {
-        heap.sort_unstable_by_key(|node| std::cmp::Reverse(node.0));
-        let (weight_a, node_a) = heap.pop().unwrap_or((0, 0));
-        let (weight_b, node_b) = heap.pop().unwrap_or((0, 0));
-        let id = next_id;
-        next_id += 1;
-        parents.push(usize::MAX);
+    leaves.sort_unstable();
+    let leaf_count = leaves.len();
+    // Node ids: leaves 0..leaf_count in sorted order, then merged nodes.
+    let mut parents: Vec<usize> = vec![usize::MAX; 2 * leaf_count - 1];
+    let mut merged: Vec<u64> = Vec::with_capacity(leaf_count - 1);
+    let (mut next_leaf, mut next_merged) = (0usize, 0usize);
+    for id in leaf_count..2 * leaf_count - 1 {
+        let mut take = || {
+            let leaf_first = next_merged >= merged.len()
+                || (next_leaf < leaf_count && leaves[next_leaf].0 <= merged[next_merged]);
+            if leaf_first {
+                next_leaf += 1;
+                (leaves[next_leaf - 1].0, next_leaf - 1)
+            } else {
+                next_merged += 1;
+                (merged[next_merged - 1], leaf_count + next_merged - 1)
+            }
+        };
+        let (weight_a, node_a) = take();
+        let (weight_b, node_b) = take();
         parents[node_a] = id;
         parents[node_b] = id;
-        heap.push((weight_a + weight_b, id));
+        merged.push(weight_a + weight_b);
     }
-    for (symbol, length) in lengths.iter_mut().enumerate() {
-        if weights[symbol] == 0 {
-            continue;
-        }
-        let mut depth = 0u8;
-        let mut node = symbol;
-        while parents[node] != usize::MAX {
-            node = parents[node];
-            depth = depth.saturating_add(1);
-        }
-        *length = depth;
+    // Parents always have higher ids: depths fill from the root down.
+    let root = 2 * leaf_count - 2;
+    let mut depths = vec![0u8; 2 * leaf_count - 1];
+    for id in (0..root).rev() {
+        depths[id] = depths[parents[id]].saturating_add(1);
+    }
+    for (index, (_, symbol)) in leaves.iter().enumerate() {
+        lengths[*symbol] = depths[index];
     }
     lengths
 }
 
 /// Canonical codes from lengths, bit-reversed for LSB-first output.
-fn canonical_codes(lengths: &[u8]) -> Vec<u16> {
+pub(crate) fn canonical_codes(lengths: &[u8]) -> Vec<u16> {
     let mut counts = [0u16; 16];
     for length in lengths {
         counts[usize::from(*length)] += 1;
