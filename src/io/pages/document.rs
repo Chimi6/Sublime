@@ -1879,6 +1879,21 @@ impl Reader<'_> {
         let body_fill = view
             .reference("body_cell_style")
             .and_then(|style| self.cell_fill(style));
+        // The cells' padding, from the body cell style: Word's cell margins.
+        // A Pages row's size includes it; a Word row's height does too, but
+        // Word adds the margins it states, so the height leaves them out.
+        let padding = view.reference("body_cell_style").and_then(|style| {
+            self.cell_property(style, |properties| {
+                let padding = properties.message("padding")?;
+                Some(crate::document::CellMargins {
+                    top: padding.float("top").unwrap_or(0.0),
+                    bottom: padding.float("bottom").unwrap_or(0.0),
+                    left: padding.float("left").unwrap_or(0.0),
+                    right: padding.float("right").unwrap_or(0.0),
+                })
+            })
+        });
+        let vertical_padding = padding.map_or(0.0, |padding| padding.top + padding.bottom);
         let mut rows: Vec<Row> = (0..row_count)
             .map(|row| Row {
                 cells: (0..column_count)
@@ -1893,7 +1908,7 @@ impl Reader<'_> {
                         ..Cell::default()
                     })
                     .collect(),
-                height: Some(heights[row]).filter(|height| *height > 0.0),
+                height: Some(heights[row] - vertical_padding).filter(|height| *height > 0.0),
             })
             .collect();
         if let Some(tiles) = store.message("tiles") {
@@ -1935,7 +1950,7 @@ impl Reader<'_> {
             header_rows,
             columns,
             borders: None,
-            cell_margins: None,
+            cell_margins: padding,
         })
     }
 
