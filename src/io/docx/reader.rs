@@ -1686,12 +1686,12 @@ impl Reader<'_> {
                 } => match name {
                     "w:tcPr" if !self_closing => {
                         let read = read_cell_properties(reader);
-                        span = read.0;
-                        merge = read.1;
-                        cell.background = read.2;
-                        cell.borders = read.3;
-                        cell.vertical_alignment = read.4;
-                        cell.margins = read.5;
+                        span = read.span;
+                        merge = read.merge;
+                        cell.background = read.background;
+                        cell.borders = read.borders;
+                        cell.vertical_alignment = read.vertical;
+                        cell.margins = read.margins;
                     }
                     "w:p" => {
                         if self_closing {
@@ -2366,17 +2366,18 @@ fn read_num(reader: &mut XmlReader<'_>) -> (i64, Option<u32>) {
     (abstract_id, start)
 }
 
-/// (grid span, vertical merge, background, edges, vertical alignment)
-fn read_cell_properties(
-    reader: &mut XmlReader<'_>,
-) -> (
-    u32,
-    VerticalMerge,
-    Option<Color>,
-    CellBorders,
-    Option<VerticalAlignment>,
-    [Option<f32>; 4],
-) {
+/// A cell's `w:tcPr` as read.
+struct CellProperties {
+    span: u32,
+    merge: VerticalMerge,
+    background: Option<Color>,
+    borders: CellBorders,
+    vertical: Option<VerticalAlignment>,
+    /// Top, bottom, left, right.
+    margins: [Option<f32>; 4],
+}
+
+fn read_cell_properties(reader: &mut XmlReader<'_>) -> CellProperties {
     let mut span = 1u32;
     let mut merge = VerticalMerge::None;
     let mut background = None;
@@ -2440,7 +2441,14 @@ fn read_cell_properties(
             _ => {}
         }
     }
-    (span.max(1), merge, background, borders, vertical, margins)
+    CellProperties {
+        span: span.max(1),
+        merge,
+        background,
+        borders,
+        vertical,
+        margins,
+    }
 }
 
 /// A grid position no cell occupies: empty, with no lines of its own.
