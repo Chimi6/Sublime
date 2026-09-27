@@ -7,7 +7,8 @@ use crate::cli::args::LogFormat;
 use crate::cli::render::json_lines::write_hop;
 use crate::cli::{CliError, ExitCode};
 use crate::converter::{Converter, FidelityKind};
-use crate::format::Category;
+use crate::converters::image;
+use crate::format::{Category, Format};
 use crate::io::json::JsonWriter;
 use crate::planner::{self, Plan, PlanOptions};
 use crate::registry;
@@ -169,7 +170,7 @@ pub fn render_markdown() -> String {
     }
 
     text.push_str("\n## Map\n\n");
-    text.push_str("One graph per category and one for the crossings between them. One arrow per converter: solid for lossless, labeled for conditional, dotted for lossy; longer paths chain them. A stadium-shaped format has a converter into another category.\n\n");
+    text.push_str("One graph per category and one for the crossings between them. One arrow per converter: solid for lossless, labeled for conditional, dotted for lossy; longer paths chain them. A stadium-shaped format has a converter into another category. A category whose pairs all go through a hub (image: every reader decodes to pixels, every writer encodes from them) draws the hub instead of every pair: an arrow in for each reader and out for each writer, styled by what that side loses. Under each graph, a grid gives every pair at a glance: ● lossless, ◐ conditional, ○ lossy, blank for no path, over one hop or several (the Paths table above has the notes).\n\n");
     text.push_str(&render_mermaid());
     text
 }
@@ -194,6 +195,7 @@ fn render_mermaid() -> String {
     let mut text = String::new();
     let mut categories: Vec<Category> = formats.iter().map(|format| format.category).collect();
     categories.dedup();
+    let plans = all_plans();
     for category in &categories {
         text.push_str("### ");
         text.push_str(category.label());
@@ -203,10 +205,33 @@ fn render_mermaid() -> String {
             push_node(&mut text, format.id, crosses(format.id));
             text.push('\n');
         }
+        // A category whose pairs are generated through a hub draws the
+        // hub: each format's reader into it and its writer out of it.
+        let hub: Vec<_> = image::codecs()
+            .filter(|(format, _, _)| format.category == *category)
+            .collect();
+        if !hub.is_empty() {
+            text.push_str("  ");
+            text.push_str(HUB);
+            text.push_str("{{");
+            text.push_str(HUB);
+            text.push_str("}}\n");
+            for (format, read, write) in &hub {
+                if let Some(read) = read {
+                    push_edge(&mut text, format.id, arrow_for_kind(read.kind()), HUB);
+                }
+                if let Some(write) = write {
+                    push_edge(&mut text, HUB, arrow_for_kind(write.kind()), format.id);
+                }
+            }
+        }
         for converter in converters {
             let same =
                 converter.from().category == *category && converter.to().category == *category;
-            if same {
+            let through_hub = image::pairs()
+                .iter()
+                .any(|pair| pair.name == converter.name());
+            if same && !through_hub {
                 push_edge(
                     &mut text,
                     converter.from().id,
@@ -216,6 +241,7 @@ fn render_mermaid() -> String {
             }
         }
         text.push_str("```\n\n");
+        push_matrix(&mut text, &formats, *category, &plans);
     }
     let crossing: Vec<&&dyn Converter> = converters
         .iter()
@@ -255,12 +281,64 @@ fn render_mermaid() -> String {
     text
 }
 
+/// The hub node in a category drawn as a hub (image: decoded pixels).
+const HUB: &str = "pixels";
+
 fn arrow_for(converter: &dyn Converter) -> &'static str {
-    match converter.fidelity().kind() {
+    arrow_for_kind(converter.fidelity().kind())
+}
+
+fn arrow_for_kind(kind: FidelityKind) -> &'static str {
+    match kind {
         FidelityKind::Lossless => " --> ",
         FidelityKind::Conditional => " -- conditional --> ",
         FidelityKind::Lossy => " -. lossy .-> ",
     }
+}
+
+/// A from-by-to grid of a category's formats: each cell the worst
+/// fidelity of the path between them, over one hop or several.
+fn push_matrix(text: &mut String, formats: &[&Format], category: Category, plans: &[Plan]) {
+    let members: Vec<&str> = formats
+        .iter()
+        .filter(|format| format.category == category)
+        .map(|format| format.id)
+        .collect();
+    text.push_str("| from \\ to |");
+    for id in &members {
+        text.push(' ');
+        text.push_str(id);
+        text.push_str(" |");
+    }
+    text.push_str("\n|---|");
+    for _ in &members {
+        text.push_str(":-:|");
+    }
+    text.push('\n');
+    for from in &members {
+        text.push_str("| **");
+        text.push_str(from);
+        text.push_str("** |");
+        for to in &members {
+            let cell = if from == to {
+                "·"
+            } else {
+                plans
+                    .iter()
+                    .find(|plan| plan.from().id == *from && plan.to().id == *to)
+                    .map_or("", |plan| match plan.worst_fidelity() {
+                        FidelityKind::Lossless => "●",
+                        FidelityKind::Conditional => "◐",
+                        FidelityKind::Lossy => "○",
+                    })
+            };
+            text.push(' ');
+            text.push_str(cell);
+            text.push_str(" |");
+        }
+        text.push('\n');
+    }
+    text.push('\n');
 }
 
 /// A format node: a stadium when it has a converter across categories.
