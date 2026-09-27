@@ -150,7 +150,8 @@ lossless and universal.
 | farbfeld | ff | [ ] | B | S | Tiny format. |
 | TGA | tga | [x] | B | S | Shipped 0.22.0 (`DOCS/formats/tga.md`): every common layout read, RLE written. |
 | PCX | pcx | [ ] | C | S | DOS-era; RLE. |
-| ICO, CUR, ICNS | ico, cur, icns | [ ] | A | S | Icon containers (PNG and BMP inside); PNG <-> ICO is a constant developer need. |
+| ICO, CUR | ico, cur | [x] | A | S | Shipped 0.22.0 (`DOCS/formats/ico.md`): the largest entry read, icons written with the standard sizes. |
+| ICNS | icns | [ ] | A | S | Apple's icon container (PNG and JPEG 2000 inside). |
 | SVG | svg | [ ] | B | XL | Rasterizing SVG is a renderer (paths, strokes, text, filters). A subset rasterizer (paths, basic shapes, fills, strokes) is L and covers most icons. SVG -> PNG only. |
 | PSD | psd | [ ] | B | M | Composite image extraction is straightforward; layers to PNGs is a step more. |
 | GIMP XCF | xcf | [ ] | C | M | Layers and tiles; composite export. |

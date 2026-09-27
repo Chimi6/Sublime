@@ -6,6 +6,7 @@ pub mod csv;
 pub mod deflate;
 pub mod docx;
 pub mod html;
+pub mod ico;
 pub mod iwa;
 pub mod jpeg;
 pub mod json;
