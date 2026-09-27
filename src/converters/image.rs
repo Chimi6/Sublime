@@ -14,7 +14,7 @@ use crate::io::bmp::{BmpError, BmpRows, BmpRowsError, read_bmp_rows};
 use crate::io::ico::{IcoNotes, IcoRows, read_ico_rows};
 use crate::io::jpeg::{DEFAULT_QUALITY, JpegError, JpegNotes, JpegRows, read_jpeg_rows};
 use crate::io::netpbm::{Kind, NetpbmNotes, NetpbmRows, read_netpbm_rows};
-use crate::io::pdf::PdfDocument;
+use crate::io::pdf::{PdfDocument, PdfNotes, page_jpeg, read_pdf_rows};
 use crate::io::png::{PngError, PngNotes, PngRows, RowSink, RowsError, read_png_rows};
 use crate::io::qoi::{QoiRows, read_qoi_rows};
 use crate::io::tga::{TgaRows, read_tga_rows};
@@ -84,6 +84,25 @@ impl Converter for ImagePair {
             ImageFormat::Bmp => {
                 let mut rows = BmpRows::new(output);
                 read_rows(self.read, &mut input, &mut rows, self.name, context)
+            }
+            // A PDF page whose image is a plain JPEG gives its bytes.
+            ImageFormat::Jpeg if self.read == ImageFormat::Pdf => {
+                let mut pdf = Vec::new();
+                input.read_to_end(&mut pdf)?;
+                let embedded = page_jpeg(&pdf, context.options.page).map_err(|failure| {
+                    ConvertError::Malformed {
+                        location: Location::default(),
+                        message: failure.0,
+                    }
+                })?;
+                if let Some(jpeg) = embedded {
+                    output.write_all(&jpeg)?;
+                    return Ok(());
+                }
+                let mut rows = JpegRows::new(output, quality);
+                let mut bytes = &pdf[..];
+                let mut again = Input::Stream(&mut bytes);
+                read_rows(self.read, &mut again, &mut rows, self.name, context)
             }
             ImageFormat::Jpeg => {
                 let mut rows = JpegRows::new(output, quality);
@@ -196,9 +215,8 @@ fn read_rows(
             report_ico_notes(notes, context);
         }
         ImageFormat::Pdf => {
-            return Err(ConvertError::Unsupported(
-                "reading PDF is not supported yet".to_string(),
-            ));
+            let notes = read_pdf_rows(input, sink, context.options.page).map_err(rows_error)?;
+            report_pdf_notes(notes, name, context);
         }
         ImageFormat::Tiff => {
             let notes = read_tiff_rows(input, sink).map_err(rows_error)?;
@@ -264,6 +282,35 @@ fn report_tiff_notes(notes: TiffNotes, name: &'static str, context: &mut Context
         context.warning(format!(
             "the first page is kept and {} more are dropped",
             notes.other_pages
+        ));
+    }
+    if notes.sixteen_bit {
+        context.loss(
+            name,
+            Location::default(),
+            "16-bit samples reduced to 8 bits",
+        );
+    }
+    if notes.cmyk {
+        context.loss(
+            name,
+            Location::default(),
+            "CMYK converted to RGB without a color profile",
+        );
+    }
+}
+
+fn report_pdf_notes(notes: PdfNotes, name: &'static str, context: &mut Context<'_>) {
+    if notes.pages > 1 && context.options.page.is_none() {
+        context.warning(format!(
+            "page 1 of {} is read (choose another with --page)",
+            notes.pages
+        ));
+    }
+    if notes.other_images > 0 {
+        context.warning(format!(
+            "the page's largest image is kept and {} other images are dropped",
+            notes.other_images
         ));
     }
     if notes.sixteen_bit {
@@ -439,7 +486,9 @@ static CODECS: [Codec; 14] = [
     Codec {
         format: &formats::PDF,
         kind: ImageFormat::Pdf,
-        read: None,
+        read: Some(Fidelity::Conditional(
+            "the chosen page's largest image is read (--page, the first by default); a page's vector content is not rendered, and other pages and images are dropped",
+        )),
         write: Some(Fidelity::Lossless),
     },
     Codec {

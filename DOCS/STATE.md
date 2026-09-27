@@ -6,7 +6,7 @@ describes.
 
 ## Now
 
-- 2026-09-27: PDF output from images (`src/io/pdf`), the first half of 0.23: a page of each image at its own size, JPEGs embedded unchanged, merges of several images into one PDF on the command line. Reading PDF (a page's image, `--page`) is next (`temp/pdf-0.23-plan.md`).
+- 2026-09-27: Images <-> PDF (`src/io/pdf`), 0.23's scope: a page of each image at its own size (JPEGs embedded unchanged), merges of several images into one PDF on the command line, and a page's largest image read back to any image format with `--page`, through a PDF object model that reads cross-reference streams and object streams and repairs broken cross references. The benchmark pairs and the release are next.
 - 2026-09-27: TIFF (`src/io/tiff.rs`): the first page read in the common layouts (strips and tiles, chunky and planar, none, LZW, deflate, PackBits, the predictor, 1 to 16 bits, gray, palette, RGB, CMYK, both alphas) and 8-bit deflate strips written; every `tiff-png` line passes, memory 5 to 59 MB against 53 to 886. That completes 0.22's image set.
 - 2026-09-27: ICO and CUR (`src/io/ico.rs`) with the first image operation, an area-averaging downscale (`src/image/resize.rs`): icons are read to their largest entry and written with the standard sizes from one streaming downscale. `ico-png`: an icon from a large picture passes with a margin; the 256-pixel lines are a few milliseconds and flip with load, and a 256-source icon is slower than the image crate's (its fast-level PNGs make it 78% larger).
 - 2026-09-27: TGA (`src/io/tga.rs`): every common layout read and top-down RLE written as Pillow writes it; bottom-up files hold their bytes and decode last row first. Every `tga-png` line passes; the flat decode is within 1%.
@@ -87,6 +87,7 @@ WebP color cache stays).
 - `tga-png` flat decode: 468.4 against 466.1 MB/s, within noise. Lever: the two passes over held RLE could be one, recording row starts while decoding into the last rows' slots.
 - `qoi-png` stock encode: a tie (754 against 750 to 753 ms direct). The time is the PNG decode of an RGBA photo whose rows are 77% Paeth; spiked 2026-09-27: the Paeth unfilter as an `[i16; 4]` pixel (1.6x slower) and as 16-bit lanes of one word (8% slower); the scalar form stays. The QOI encode side is at parity with the qoi crate.
 - `ico-png` 256-pixel lines: milliseconds, flipping with load; the icon from a 256 source takes 8.4 ms in process against the crate's 5 for its whole run, the seven PNG encodes at our default level (44% smaller icons). Levers: the deflate matcher on dense repeats (zlib 6 takes as long on those bytes; libdeflate's structure), or a faster level for entries under 64. Spiked 2026-09-27: a nice length of 64 makes the dense-repeat deflate a third faster at 0.3% of size, still short of the crate's whole run at its fast level (its icon 78% larger).
+- PDF reader: CCITT fax (Group 4) and JBIG2 images, the black-and-white scan formats, are refused; a CCITT decoder would serve TIFF fax files too. Encrypted PDFs are refused, even those with an empty user password (RC4 and AES). An image is decoded whole before its rows go out.
 - `xlsx -> csv` memory: 425 MB against calamine's 593 (the sheet part is inflated whole); a windowed inflate feeding the XML reader would make it constant.
 
 - 2026-09-26: JPEG leftovers:

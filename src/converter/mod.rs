@@ -248,6 +248,9 @@ pub struct ConvertOptions {
     /// JPEG when absent), or a lossless writer's effort (WebP: 50 and
     /// under fastest, 90 and up smallest).
     pub quality: Option<u8>,
+    /// The page to read from a paged document (PDF): 1-based, the first
+    /// when absent.
+    pub page: Option<u32>,
 }
 
 /// One edge in the format graph. Implement this and add one line to
