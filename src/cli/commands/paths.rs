@@ -170,33 +170,23 @@ pub fn render_markdown() -> String {
     }
 
     text.push_str("\n## Map\n\n");
-    text.push_str("One graph per category and one for the crossings between them. Arrows are colored by what they lose: green lossless, amber conditional, red and dotted lossy; a two-headed arrow converts both ways at that fidelity, and longer paths chain arrows. The image category draws its hub instead of every pair: every reader decodes to pixels and every writer encodes from them, so its formats are grouped by what they lose on the way in and on the way out. A stadium-shaped format has a converter into another category. Under each graph, a grid gives every pair at a glance (rows from, columns to): 🟢 lossless, 🟡 conditional, 🔴 lossy, blank for no path, over one hop or several; the Paths table above has the notes.\n\n");
+    text.push_str("One graph per category and one for the crossings between them. A line joins two formats with a converter between them, in either direction; the image category joins every format to its pixel hub instead, since every image converts through it. The grid under each graph gives every pair (rows from, columns to): ● lossless, ■ conditional, ▲ lossy, with the number of hops (1 is a direct converter), blank for no path. The Paths table above has each path and what it loses.\n\n");
     text.push_str(&render_mermaid());
     text
 }
 
 /// The map at the bottom of DOCS/FORMATS.md: one Mermaid graph per
 /// category and a last graph of the converters that cross categories.
-/// Every arrow is colored by what it loses (green lossless, amber
-/// conditional, red and dotted lossy), and a pair converted each way at
-/// the same fidelity is one two-headed arrow. The image category, whose
-/// pairs are all generated through its pixel hub, draws the hub: its
-/// readers grouped by what they lose on the way in, its writers by what
-/// they lose on the way out. A format with a converter into another
-/// category is a stadium (`([id])`); in the crossing graph the other
-/// category is a hexagon (`{{label}}`) standing for the hub behind it.
-/// Under each category's graph, a grid gives every pair's fidelity.
+/// A graph shows only which formats convert directly: one plain line
+/// per pair with a converter either way. The image category, whose
+/// pairs are all generated through its pixel hub, draws the hub with a
+/// line to each format instead of every pair. What a conversion loses
+/// and how many hops it takes are in the grid under each graph.
 #[inline(never)]
 fn render_mermaid() -> String {
     let mut formats = registry::all_formats();
     formats.sort_by(|left, right| (left.category, left.id).cmp(&(right.category, right.id)));
     let converters = registry::all_converters();
-    let crosses = |id: &str| {
-        converters.iter().any(|converter| {
-            (converter.from().id == id || converter.to().id == id)
-                && converter.from().category != converter.to().category
-        })
-    };
     let plans = all_plans();
     let mut text = String::new();
     let mut categories: Vec<Category> = formats.iter().map(|format| format.category).collect();
@@ -204,83 +194,59 @@ fn render_mermaid() -> String {
     for category in &categories {
         text.push_str("### ");
         text.push_str(category.label());
-        text.push_str("\n\n");
-        let mut graph = Graph::default();
+        text.push_str("\n\n```mermaid\ngraph LR\n");
+        let mut lines: Vec<(String, String)> = Vec::new();
         if *category == Category::Image {
-            push_hub(&mut graph, *category);
-        } else {
-            for format in formats.iter().filter(|format| format.category == *category) {
-                graph.node(format.id, "", crosses(format.id));
+            // Every other format on the hub's left, so the spokes split
+            // over two short columns rather than one long one.
+            let spokes = image::codecs().filter(|(format, _, _)| format.category == *category);
+            for (index, (format, _, _)) in spokes.enumerate() {
+                if index % 2 == 0 {
+                    add_line(&mut lines, format.id, HUB);
+                } else {
+                    add_line(&mut lines, HUB, format.id);
+                }
+            }
+            text.push_str(&format!("  {HUB}{{{{\"{HUB} hub\"}}}}\n"));
+        }
+        for converter in converters {
+            let inside =
+                converter.from().category == *category && converter.to().category == *category;
+            if inside && !through_hub(*converter) {
+                add_line(&mut lines, converter.from().id, converter.to().id);
             }
         }
-        let inside: Vec<Edge> = converters
-            .iter()
-            .filter(|converter| {
-                converter.from().category == *category
-                    && converter.to().category == *category
-                    && !through_hub(**converter)
-            })
-            .map(|converter| Edge {
-                from: converter.from().id.to_string(),
-                to: converter.to().id.to_string(),
-                kind: converter.fidelity().kind(),
-            })
-            .collect();
-        graph.edges(&inside);
-        text.push_str(&graph.finish());
-        text.push('\n');
+        push_lines(&mut text, &lines);
+        text.push_str("```\n\n");
         push_matrix(&mut text, &formats, *category, &plans);
     }
     // Across categories: the other side drawn as its category.
-    let mut crossing: Vec<Edge> = Vec::new();
+    let mut crossing: Vec<(String, String)> = Vec::new();
     for converter in converters {
         let from = converter.from();
         let to = converter.to();
         if from.category == to.category {
             continue;
         }
-        let side = |format: &Format, other: Category| {
-            if format.category < other {
-                format.id.to_string()
-            } else {
-                format!(
-                    "{}{{{{{}}}}}",
-                    format.category.label(),
-                    format.category.label()
-                )
-            }
+        let (format, other) = if from.category < to.category {
+            (from, to.category)
+        } else {
+            (to, from.category)
         };
-        let edge = Edge {
-            from: side(from, to.category),
-            to: side(to, from.category),
-            kind: converter.fidelity().kind(),
-        };
-        // Pairs drawn once per fidelity: many converters meet one hub.
-        let seen = crossing
-            .iter()
-            .any(|drawn| drawn.from == edge.from && drawn.to == edge.to && drawn.kind == edge.kind);
-        if !seen {
-            crossing.push(edge);
-        }
+        let hub = format!("{}{{{{{}}}}}", other.label(), other.label());
+        add_line(&mut crossing, format.id, &hub);
     }
     if !crossing.is_empty() {
         text.push_str("### Between categories\n\n");
-        text.push_str("A format's converter into another category opens every path that category already has, so the other side is drawn as the category itself.\n\n");
-        let mut graph = Graph::default();
-        graph.edges(&crossing);
-        text.push_str(&graph.finish());
+        text.push_str("A format's converter into another category opens every path that category already has, so the other side is drawn as the category itself.\n\n```mermaid\ngraph LR\n");
+        push_lines(&mut text, &crossing);
+        text.push_str("```\n");
     }
     text
 }
 
 /// The hub node of the image category: decoded pixels.
 const HUB: &str = "pixels";
-
-const KINDS: [FidelityKind; 3] = [
-    FidelityKind::Lossless,
-    FidelityKind::Conditional,
-    FidelityKind::Lossy,
-];
 
 /// Whether a converter is one of the pairs generated through the hub.
 fn through_hub(converter: &dyn Converter) -> bool {
@@ -289,184 +255,49 @@ fn through_hub(converter: &dyn Converter) -> bool {
         .any(|pair| pair.name == converter.name())
 }
 
-fn kind_name(kind: FidelityKind) -> &'static str {
-    match kind {
-        FidelityKind::Lossless => "lossless",
-        FidelityKind::Conditional => "conditional",
-        FidelityKind::Lossy => "lossy",
+/// Adds a line between two nodes unless one is there either way.
+fn add_line(lines: &mut Vec<(String, String)>, one: &str, other: &str) {
+    let seen = lines
+        .iter()
+        .any(|(a, b)| (a == one && b == other) || (a == other && b == one));
+    if !seen {
+        lines.push((one.to_string(), other.to_string()));
     }
 }
 
-/// The grid's mark and the group titles' mark for a fidelity.
+fn push_lines(text: &mut String, lines: &[(String, String)]) {
+    // A hyphenated id is drawn under its own name, not its node id.
+    let mut labeled: Vec<&str> = Vec::new();
+    for (one, other) in lines {
+        for id in [one.as_str(), other.as_str()] {
+            if id.contains('-') && !id.contains('{') && !labeled.contains(&id) {
+                text.push_str("  ");
+                push_mermaid_id(text, id);
+                text.push_str(&format!("[\"{id}\"]\n"));
+                labeled.push(id);
+            }
+        }
+    }
+    for (one, other) in lines {
+        text.push_str("  ");
+        push_mermaid_id(text, one);
+        text.push_str(" --- ");
+        push_mermaid_id(text, other);
+        text.push('\n');
+    }
+}
+
+/// The grid's shape for a fidelity.
 fn kind_mark(kind: FidelityKind) -> &'static str {
     match kind {
-        FidelityKind::Lossless => "🟢",
-        FidelityKind::Conditional => "🟡",
-        FidelityKind::Lossy => "🔴",
-    }
-}
-
-/// Line color per fidelity, readable on light and dark pages.
-fn kind_color(kind: FidelityKind) -> &'static str {
-    match kind {
-        FidelityKind::Lossless => "#3fb950",
-        FidelityKind::Conditional => "#d29922",
-        FidelityKind::Lossy => "#f85149",
-    }
-}
-
-/// Group fill per fidelity.
-fn kind_fill(kind: FidelityKind) -> &'static str {
-    match kind {
-        FidelityKind::Lossless => "#1f3d2b",
-        FidelityKind::Conditional => "#3d3417",
-        FidelityKind::Lossy => "#3d1f20",
-    }
-}
-
-struct Edge {
-    from: String,
-    to: String,
-    kind: FidelityKind,
-}
-
-/// One Mermaid graph: nodes and edges as they are added, each edge's
-/// fidelity kept so the edges can be colored by index at the end.
-#[derive(Default)]
-struct Graph {
-    body: String,
-    kinds: Vec<FidelityKind>,
-}
-
-impl Graph {
-    fn node(&mut self, format_id: &str, side: &str, crosses: bool) {
-        self.body.push_str("  ");
-        push_mermaid_id(&mut self.body, format_id);
-        if !side.is_empty() {
-            self.body.push('_');
-            self.body.push_str(side);
-        }
-        self.body.push_str(if crosses { "([\"" } else { "[\"" });
-        self.body.push_str(format_id);
-        self.body.push_str(if crosses { "\"])\n" } else { "\"]\n" });
-    }
-
-    /// One edge between two node ids (already Mermaid ids or shapes).
-    fn edge(&mut self, from: &str, to: &str, kind: FidelityKind, both_ways: bool) {
-        let line = match (kind, both_ways) {
-            (FidelityKind::Lossy, true) => " <-.-> ",
-            (FidelityKind::Lossy, false) => " -.-> ",
-            (_, true) => " <--> ",
-            (_, false) => " --> ",
-        };
-        self.body.push_str("  ");
-        push_mermaid_id(&mut self.body, from);
-        self.body.push_str(line);
-        push_mermaid_id(&mut self.body, to);
-        self.body.push('\n');
-        self.kinds.push(kind);
-    }
-
-    /// Edges between formats; a pair each way at one fidelity is drawn
-    /// once, two-headed, from the side that sorts first.
-    fn edges(&mut self, edges: &[Edge]) {
-        for edge in edges {
-            let reverse = edges.iter().any(|other| {
-                other.from == edge.to && other.to == edge.from && other.kind == edge.kind
-            });
-            if reverse && edge.from > edge.to {
-                continue;
-            }
-            self.edge(&edge.from, &edge.to, edge.kind, reverse);
-        }
-    }
-
-    fn finish(self) -> String {
-        let mut text = String::from("```mermaid\ngraph LR\n");
-        text.push_str(&self.body);
-        for kind in KINDS {
-            let indexes: Vec<String> = self
-                .kinds
-                .iter()
-                .enumerate()
-                .filter(|(_, edge)| **edge == kind)
-                .map(|(index, _)| index.to_string())
-                .collect();
-            if !indexes.is_empty() {
-                text.push_str(&format!(
-                    "  linkStyle {} stroke:{},stroke-width:2px\n",
-                    indexes.join(","),
-                    kind_color(kind)
-                ));
-            }
-        }
-        text.push_str("```\n");
-        text
-    }
-}
-
-/// The image category as its hub: one group per fidelity on each side,
-/// one arrow per group.
-fn push_hub(graph: &mut Graph, category: Category) {
-    let codecs: Vec<_> = image::codecs()
-        .filter(|(format, _, _)| format.category == category)
-        .collect();
-    let reads: Vec<(&Format, FidelityKind)> = codecs
-        .iter()
-        .filter_map(|(format, read, _)| read.map(|read| (*format, read.kind())))
-        .collect();
-    let writes: Vec<(&Format, FidelityKind)> = codecs
-        .iter()
-        .filter_map(|(format, _, write)| write.map(|write| (*format, write.kind())))
-        .collect();
-    push_groups(graph, "read", &reads);
-    graph.body.push_str(&format!("  {HUB}{{{{{HUB}}}}}\n"));
-    push_groups(graph, "write", &writes);
-    for kind in KINDS {
-        if reads.iter().any(|(_, read)| *read == kind) {
-            graph.edge(&format!("read_{}", kind_name(kind)), HUB, kind, false);
-        }
-    }
-    for kind in KINDS {
-        if writes.iter().any(|(_, write)| *write == kind) {
-            graph.edge(HUB, &format!("write_{}", kind_name(kind)), kind, false);
-        }
-    }
-}
-
-/// One subgraph per fidelity on one side of the hub: `read_lossless`
-/// holds the formats read without loss, and so on. A node id carries
-/// the side, since a format may be on both.
-fn push_groups(graph: &mut Graph, side: &str, members: &[(&Format, FidelityKind)]) {
-    for kind in KINDS {
-        let group: Vec<&Format> = members
-            .iter()
-            .filter(|(_, member)| *member == kind)
-            .map(|(format, _)| *format)
-            .collect();
-        if group.is_empty() {
-            continue;
-        }
-        let name = kind_name(kind);
-        graph.body.push_str(&format!(
-            "  subgraph {side}_{name}[\"{} {side} {name}\"]\n",
-            kind_mark(kind)
-        ));
-        for format in group {
-            graph.body.push_str("  ");
-            graph.node(format.id, side, false);
-        }
-        graph.body.push_str("  end\n");
-        graph.body.push_str(&format!(
-            "  style {side}_{name} fill:{},stroke:{},color:#e6edf3\n",
-            kind_fill(kind),
-            kind_color(kind)
-        ));
+        FidelityKind::Lossless => "●",
+        FidelityKind::Conditional => "■",
+        FidelityKind::Lossy => "▲",
     }
 }
 
 /// A from-by-to grid of a category's formats: each cell the worst
-/// fidelity of the path between them, over one hop or several.
+/// fidelity of the path between them and its number of hops.
 fn push_matrix(text: &mut String, formats: &[&Format], category: Category, plans: &[Plan]) {
     let members: Vec<&str> = formats
         .iter()
@@ -490,15 +321,17 @@ fn push_matrix(text: &mut String, formats: &[&Format], category: Category, plans
         text.push_str("** |");
         for to in &members {
             let cell = if from == to {
-                "·"
+                "·".to_string()
             } else {
                 plans
                     .iter()
                     .find(|plan| plan.from().id == *from && plan.to().id == *to)
-                    .map_or("", |plan| kind_mark(plan.worst_fidelity()))
+                    .map_or(String::new(), |plan| {
+                        format!("{} {}", kind_mark(plan.worst_fidelity()), plan.hops.len())
+                    })
             };
             text.push(' ');
-            text.push_str(cell);
+            text.push_str(&cell);
             text.push_str(" |");
         }
         text.push('\n');

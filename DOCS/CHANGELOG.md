@@ -8,7 +8,7 @@ section under a version heading.
 
 ### Changed
 
-- The format map in `DOCS/FORMATS.md` (`sublime paths --markdown`) is readable at size: arrows are colored by fidelity instead of labeled, a pair converted both ways at one fidelity is one two-headed arrow, the image category draws its pixel hub with its formats grouped by what reading and writing lose (5 arrows where every pair took 120), and each category has a from-by-to fidelity grid.
+- The format map in `DOCS/FORMATS.md` (`sublime paths --markdown`) is readable at size: a graph shows only which formats convert directly, one plain line per pair, and the image category joins each format to its pixel hub (13 lines where every pair took 120 arrows). Under each graph a from-by-to grid gives every pair's fidelity as a shape (● lossless, ■ conditional, ▲ lossy) and its number of hops.
 
 ## [0.23.0] - 2026-09-27
 
