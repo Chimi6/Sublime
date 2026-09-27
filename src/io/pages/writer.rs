@@ -1076,9 +1076,17 @@ fn reuse_table(
     // (the template's) reads past the grid and aborts.
     if let Some(sidecar_id) = object_reference(package, table.model_id, "stroke_sidecar") {
         let (cols, rows) = (mark.columns as u64, mark.rows as u64);
+        // The table's own lines, as the stroke layers Pages keeps for a Word
+        // table: per column its left and right edge, per row its top and bottom.
+        let layers = match mark.borders {
+            Some(borders) => build_stroke_layers(package, sidecar_id, mark, borders, next_id)?,
+            None => StrokeLayers::default(),
+        };
         rewrite_object_with(package, sidecar_id, |tree, old_first| {
-            rebuild_stroke_sidecar(tree, old_first, cols, rows)
+            rebuild_stroke_sidecar(tree, old_first, cols, rows, &layers)
         })?;
+        let references: Vec<u64> = layers.all().collect();
+        add_object_refs(package, sidecar_id, &references)?;
     }
     // The drawable frame Pages lays the table into: sized to the table itself,
     // or it squeezes the columns and clips the rows to the template's frame.
@@ -1126,6 +1134,7 @@ fn rebuild_stroke_sidecar(
     old_first: u32,
     columns: u64,
     rows: u64,
+    layers: &StrokeLayers,
 ) -> Result<u32, PackageError> {
     let sidecar = message_ref("TST.StrokeSidecarArchive")?;
     let dropped = [
@@ -1163,6 +1172,16 @@ fn rebuild_stroke_sidecar(
         Node::Uint(columns),
     )?;
     push_field(tree, &mut chain, sidecar, "row_count", Node::Uint(rows))?;
+    for (name, ids) in [
+        ("left_column_stroke_layers", &layers.left),
+        ("right_column_stroke_layers", &layers.right),
+        ("top_row_stroke_layers", &layers.top),
+        ("bottom_row_stroke_layers", &layers.bottom),
+    ] {
+        for id in ids {
+            push_field(tree, &mut chain, sidecar, name, Node::Reference(*id))?;
+        }
+    }
     Ok(chain.first)
 }
 
@@ -2938,6 +2957,10 @@ struct TableMark {
     merges: Vec<(usize, usize, usize, usize)>,
     /// Row-major cell background colours (shading), `None` for none.
     backgrounds: Vec<Option<crate::document::Color>>,
+    /// The table's grid lines, when the source states them.
+    borders: Option<crate::document::TableBorders>,
+    /// Row-major cells' own edges, over the table's lines.
+    cell_borders: Vec<crate::document::CellBorders>,
 }
 
 impl TableMark {
@@ -3101,9 +3124,11 @@ impl Walk {
             }
         }
         let mut backgrounds = vec![None; rows * columns];
+        let mut cell_borders = vec![crate::document::CellBorders::default(); rows * columns];
         for (r, row) in table.rows.iter().enumerate() {
             for (c, cell) in row.cells.iter().enumerate().take(columns) {
                 backgrounds[r * columns + c] = cell.background;
+                cell_borders[r * columns + c] = cell.borders;
             }
         }
         let mut merges = Vec::new();
@@ -3133,6 +3158,8 @@ impl Walk {
             heights,
             merges,
             backgrounds,
+            borders: table.borders,
+            cell_borders,
         });
         self.mark(Format::default());
         self.link_mark(None);
@@ -7998,4 +8025,251 @@ fn create_unbanded_table_style(
     });
     register_in_stylesheet(package, stylesheet, &[(parent, id)])?;
     Ok(id)
+}
+
+// ----- table borders -----
+
+const STROKE_LAYER: u32 = 6306;
+
+/// Stroke layer objects for a table's sidecar, by side.
+#[derive(Default)]
+struct StrokeLayers {
+    left: Vec<u64>,
+    right: Vec<u64>,
+    top: Vec<u64>,
+    bottom: Vec<u64>,
+}
+
+impl StrokeLayers {
+    fn all(&self) -> impl Iterator<Item = u64> + '_ {
+        self.left
+            .iter()
+            .chain(&self.right)
+            .chain(&self.top)
+            .chain(&self.bottom)
+            .copied()
+    }
+}
+
+/// Creates the stroke layers for a table's borders in the sidecar's stream:
+/// a line where the source draws one (solid), an empty stroke where it draws
+/// none, one run per stretch of identical cell edges along a column or row.
+fn build_stroke_layers(
+    package: &mut Package,
+    sidecar_id: u64,
+    mark: &TableMark,
+    borders: crate::document::TableBorders,
+    next_id: &mut u64,
+) -> Result<StrokeLayers, PackageError> {
+    let layer = message_ref("TST.StrokeLayerArchive")?;
+    let run = child_message(layer, "stroke_runs")?;
+    let stroke = child_message(run, "stroke")?;
+    let pattern = child_message(stroke, "pattern")?;
+    let stream = stream_containing(package, sidecar_id)?;
+    let (columns, rows) = (mark.columns, mark.rows);
+    let mut layers = StrokeLayers::default();
+    let edges = |index: usize| mark.cell_borders.get(index).copied().unwrap_or_default();
+    // The vertical line left of grid column `x` in row `r`, and the
+    // horizontal line above grid row `y` in column `c`.
+    let vertical = |x: usize, r: usize| {
+        let table = if x == 0 {
+            borders.left
+        } else if x == columns {
+            borders.right
+        } else {
+            borders.inside_vertical
+        };
+        let before = (x > 0).then(|| edges(r * columns + x - 1).right).flatten();
+        let after = (x < columns).then(|| edges(r * columns + x).left).flatten();
+        edge_line(table, before, after)
+    };
+    let horizontal = |y: usize, c: usize| {
+        let table = if y == 0 {
+            borders.top
+        } else if y == rows {
+            borders.bottom
+        } else {
+            borders.inside_horizontal
+        };
+        let before = (y > 0)
+            .then(|| edges((y - 1) * columns + c).bottom)
+            .flatten();
+        let after = (y < rows).then(|| edges(y * columns + c).top).flatten();
+        edge_line(table, before, after)
+    };
+    // (side, index, the line on each cell edge along it)
+    let mut plan: Vec<(u8, usize, Vec<Option<crate::document::Border>>)> = Vec::new();
+    for column in 0..columns {
+        plan.push((0, column, (0..rows).map(|r| vertical(column, r)).collect()));
+        plan.push((
+            1,
+            column,
+            (0..rows).map(|r| vertical(column + 1, r)).collect(),
+        ));
+    }
+    for row in 0..rows {
+        plan.push((2, row, (0..columns).map(|c| horizontal(row, c)).collect()));
+        plan.push((
+            3,
+            row,
+            (0..columns).map(|c| horizontal(row + 1, c)).collect(),
+        ));
+    }
+    for (side, index, segments) in plan {
+        let tree = &mut stream.tree;
+        let mut runs: Vec<u32> = Vec::new();
+        let mut origin = 0;
+        while origin < segments.len() {
+            let line = segments[origin];
+            let length = segments[origin..]
+                .iter()
+                .take_while(|other| **other == line)
+                .count();
+            runs.push(build_stroke_run(
+                tree,
+                (run, stroke, pattern),
+                origin,
+                length,
+                line,
+            )?);
+            origin += length;
+        }
+        let mut chain = Chain::new();
+        push_field(
+            tree,
+            &mut chain,
+            layer,
+            "row_column_index",
+            Node::Uint(index as u64),
+        )?;
+        for first in runs {
+            push_field(tree, &mut chain, layer, "stroke_runs", Node::Message(first))?;
+        }
+        let id = *next_id;
+        *next_id += 1;
+        let info = build_archive_info(tree, id, STROKE_LAYER)?;
+        stream.objects.push(Object {
+            identifier: id,
+            info,
+            messages: vec![ObjectMessage {
+                message_type: STROKE_LAYER,
+                first: chain.first,
+            }],
+        });
+        match side {
+            0 => layers.left.push(id),
+            1 => layers.right.push(id),
+            2 => layers.top.push(id),
+            _ => layers.bottom.push(id),
+        }
+    }
+    Ok(layers)
+}
+
+/// The line on one shared cell edge: the cells' own statements over the
+/// table's, and where the two cells disagree, the heavier line.
+fn edge_line(
+    table: Option<crate::document::Border>,
+    before: Option<Option<crate::document::Border>>,
+    after: Option<Option<crate::document::Border>>,
+) -> Option<crate::document::Border> {
+    match (before, after) {
+        (None, None) => table,
+        (Some(line), None) | (None, Some(line)) => line,
+        (Some(a), Some(b)) => match (a, b) {
+            (Some(a), Some(b)) => Some(if b.width > a.width { b } else { a }),
+            (line, None) | (None, line) => line,
+        },
+    }
+}
+
+/// One stroke run of a stroke layer: `length` cells from `origin`, solid
+/// (pattern type 1) where there is a line, empty (type 2) where there is none.
+fn build_stroke_run(
+    tree: &mut Tree,
+    (run, stroke, pattern): (MessageRef, MessageRef, MessageRef),
+    origin: usize,
+    length: usize,
+    line: Option<crate::document::Border>,
+) -> Result<u32, PackageError> {
+    let black = crate::document::Color {
+        red: 0,
+        green: 0,
+        blue: 0,
+    };
+    let color = build_color(tree, line.and_then(|line| line.color).unwrap_or(black))?;
+    let mut pattern_chain = Chain::new();
+    push_field(
+        tree,
+        &mut pattern_chain,
+        pattern,
+        "type",
+        Node::Uint(if line.is_some() { 1 } else { 2 }),
+    )?;
+    push_field(tree, &mut pattern_chain, pattern, "phase", Node::Float(0.0))?;
+    push_field(tree, &mut pattern_chain, pattern, "count", Node::Uint(0))?;
+    for _ in 0..6 {
+        push_field(
+            tree,
+            &mut pattern_chain,
+            pattern,
+            "pattern",
+            Node::Float(0.0),
+        )?;
+    }
+    let mut stroke_chain = Chain::new();
+    push_field(
+        tree,
+        &mut stroke_chain,
+        stroke,
+        "color",
+        Node::Message(color),
+    )?;
+    push_field(
+        tree,
+        &mut stroke_chain,
+        stroke,
+        "width",
+        Node::Float(line.map_or(1.0, |line| line.width)),
+    )?;
+    push_field(tree, &mut stroke_chain, stroke, "cap", Node::Uint(0))?;
+    push_field(tree, &mut stroke_chain, stroke, "join", Node::Uint(0))?;
+    push_field(
+        tree,
+        &mut stroke_chain,
+        stroke,
+        "miter_limit",
+        Node::Float(4.0),
+    )?;
+    push_field(
+        tree,
+        &mut stroke_chain,
+        stroke,
+        "pattern",
+        Node::Message(pattern_chain.first),
+    )?;
+    let mut run_chain = Chain::new();
+    push_field(
+        tree,
+        &mut run_chain,
+        run,
+        "origin",
+        Node::Uint(origin as u64),
+    )?;
+    push_field(
+        tree,
+        &mut run_chain,
+        run,
+        "length",
+        Node::Uint(length as u64),
+    )?;
+    push_field(
+        tree,
+        &mut run_chain,
+        run,
+        "stroke",
+        Node::Message(stroke_chain.first),
+    )?;
+    push_field(tree, &mut run_chain, run, "order", Node::Uint(1))?;
+    Ok(run_chain.first)
 }

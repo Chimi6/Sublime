@@ -472,6 +472,27 @@ pub struct Table {
     pub header_rows: u32,
     /// Column widths in points.
     pub columns: Vec<f32>,
+    /// The table's grid lines, when the source states them (`None` leaves a
+    /// writer's own default).
+    pub borders: Option<TableBorders>,
+}
+
+/// A table's outer edges and inner grid lines; `None` on a side is no line.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TableBorders {
+    pub top: Option<Border>,
+    pub bottom: Option<Border>,
+    pub left: Option<Border>,
+    pub right: Option<Border>,
+    pub inside_horizontal: Option<Border>,
+    pub inside_vertical: Option<Border>,
+}
+
+/// One drawn line: its width in points and colour (black when unset).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Border {
+    pub width: f32,
+    pub color: Option<Color>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -490,6 +511,18 @@ pub struct Cell {
     pub row_span: u32,
     pub background: Option<Color>,
     pub merge: Merge,
+    /// The cell's own edges, over the table's grid lines.
+    pub borders: CellBorders,
+}
+
+/// A cell's edges as the source states them: `None` leaves the table's line,
+/// `Some(None)` removes it, `Some(Some(line))` draws that line.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CellBorders {
+    pub top: Option<Option<Border>>,
+    pub bottom: Option<Option<Border>>,
+    pub left: Option<Option<Border>>,
+    pub right: Option<Option<Border>>,
 }
 
 /// A cell's part in a merged region: the grid keeps every cell, and the

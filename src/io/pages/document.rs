@@ -1718,6 +1718,7 @@ impl Reader<'_> {
             rows,
             header_rows,
             columns,
+            borders: None,
         })
     }
 
