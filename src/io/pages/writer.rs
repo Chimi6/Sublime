@@ -3257,10 +3257,47 @@ impl Walk {
                 }
             }
         }
+        // A row Word leaves to its content starts one body line tall (plus the
+        // cell margins); Pages grows it to fit taller content, as Word does.
+        let (pad_top, pad_bottom) = table
+            .cell_margins
+            .map_or((TEMPLATE_CELL_PADDING, TEMPLATE_CELL_PADDING), |margins| {
+                (margins.top, margins.bottom)
+            });
+        let line = default_font_size(document) * 1.2 + pad_top + pad_bottom;
         let heights = table
             .rows
             .iter()
-            .map(|row| row.height.unwrap_or(0.0))
+            .map(|row| {
+                // Word counts a cell's space before its first paragraph and
+                // after its last in the row; Pages lays neither out in a cell.
+                let spacing = row
+                    .cells
+                    .iter()
+                    .filter(|cell| cell.merge == crate::document::Merge::Origin)
+                    .map(|cell| {
+                        let mut paragraphs = Vec::new();
+                        collect_paragraphs(&cell.blocks, &mut paragraphs);
+                        let before = paragraphs.first().map_or(0.0, |paragraph| {
+                            document
+                                .effective_paragraph(paragraph)
+                                .space_before
+                                .unwrap_or(0.0)
+                        });
+                        let after = paragraphs.last().map_or(0.0, |paragraph| {
+                            document
+                                .effective_paragraph(paragraph)
+                                .space_after
+                                .unwrap_or(0.0)
+                        });
+                        before.max(0.0) + after.max(0.0)
+                    })
+                    .fold(0.0f32, f32::max);
+                let content = line + spacing;
+                row.height
+                    .filter(|height| *height > 0.0)
+                    .map_or(content, |height| height.max(content))
+            })
             .collect();
         self.tables.push(TableMark {
             offset: self.offset,
