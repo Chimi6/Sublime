@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-09-27: TGA (`src/io/tga.rs`): every common layout read and top-down RLE written as Pillow writes it; bottom-up files hold their bytes and decode last row first. Every `tga-png` line passes; the flat decode is within 1%.
 - 2026-09-27: Netpbm (`src/io/netpbm.rs`): every form P1 to P7 read, PBM, PGM, PPM, and PAM written (Pillow's bytes for the first three), streaming rows both ways; `ppm-png` decode passes everywhere, encode passes on the flat and stock shapes and ties on the photo.
 - 2026-09-27: QOI both ways (`src/io/qoi.rs`): decoded to Pillow's pixels and written as Pillow's bytes on 60 fixtures, streaming a row at a time both ways; every `qoi-png` line passes at 4 to 5 MB against the crates' 52 to 524. Image pairs are now generated from one codec table (`src/converters/image.rs`), so every raster format reaches every other.
 - 2026-09-26: WebP both ways (`src/io/webp`): lossless and lossy decode bit-exact with libwebp on 224 fixtures, lossy streaming by macroblock row at 4 MB, and a lossless encoder whose files are 4 to 9% smaller than image-webp's and faster to write than libwebp's fastest setting. Pair `webp-png`: memory passes everywhere, five speed lines fail (Blockers).
@@ -80,6 +81,7 @@ WebP color cache stays).
 - Markdown dense parse: level with `pulldown-cmark`, not ahead; the arena-shrinking spike under Spikes is the lever.
 - `qoi-png` thin margins: the photo decode (65.3 against 64.7 MB/s, the PNG write of a noise photo is most of it) and the stock encode (583.8 against 582.0, a tie). Levers: the deflate noise path (shared with the WebP lossless decode line), and the PNG reader's unfilter on large RGBA images.
 - `ppm-png` photo encode: a tie (86 to 89 ms against 88 to 90 direct; the harness read 834 against 888 MB/s). The time is the PNG decode, the inflater level with the png crate's fdeflate; the lever is the inflater's decode structure. CRC-32 over the IDAT chunks is 7% of it.
+- `tga-png` flat decode: 468.4 against 466.1 MB/s, within noise. Lever: the two passes over held RLE could be one, recording row starts while decoding into the last rows' slots.
 - `xlsx -> csv` memory: 425 MB against calamine's 593 (the sheet part is inflated whole); a windowed inflate feeding the XML reader would make it constant.
 
 - 2026-09-26: JPEG leftovers:

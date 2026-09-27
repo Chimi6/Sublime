@@ -175,7 +175,7 @@ fn read_layout(source: &mut Source<'_>) -> Result<Layout, RowsError> {
         (2, 24) => (Pixel::Bgr, ColorType::Rgb, 3),
         (2, 32) if alpha_bits > 0 => (Pixel::Bgra { alpha: true }, ColorType::Rgba, 4),
         (2, 32) => (Pixel::Bgra { alpha: false }, ColorType::Rgb, 4),
-        (1 | 2 | 3, _) => return fail("TGA pixel depth not supported"),
+        (1..=3, _) => return fail("TGA pixel depth not supported"),
         _ => return fail("not a TGA file"),
     };
     if image_type & !0x0b != 0 {

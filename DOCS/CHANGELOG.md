@@ -8,6 +8,7 @@ section under a version heading.
 
 ### Added
 
+- TGA both ways (`src/io/tga.rs`): every common layout read (color-mapped, truecolor, gray; raw and RLE; 15 to 32 bits; both orientations), top-down RLE written as Pillow writes it; a bottom-up file holds its bytes, not its pixels. Pair `tga-png` against the image and png crates. Map in `DOCS/formats/tga.md`.
 - Netpbm (`src/io/netpbm.rs`): PBM, PGM, PPM in plain and raw forms and PAM, one streaming reader for every form and a writer for each kind, to and from every image format. Pair `ppm-png` against the image and png crates. Map in `DOCS/formats/netpbm.md`.
 - QOI both ways (`src/io/qoi.rs`): a streaming reader and a writer that produces `qoi.h`'s bytes, to and from every image format. Pair `qoi-png` against the qoi and png crates. Map in `DOCS/formats/qoi.md`.
 
