@@ -83,7 +83,18 @@ pub enum FloatingContent {
         geometry: ShapeGeometry,
         /// Mirrored left-right, top-bottom.
         flip: (bool, bool),
+        /// Marks at a line's start and end.
+        ends: (Option<LineEnd>, Option<LineEnd>),
     },
+}
+
+/// A mark drawn at the end of a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LineEnd {
+    Arrow,
+    OpenArrow,
+    Diamond,
+    Circle,
 }
 
 /// A shape's outline, from Word's preset shapes.
