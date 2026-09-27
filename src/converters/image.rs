@@ -560,6 +560,21 @@ pub fn pairs() -> &'static [ImagePair] {
     })
 }
 
+/// Every codec's format with what its reader and its writer lose
+/// (`None` where it has no reader or no writer): the hub the pairs are
+/// generated from, which the format map draws.
+pub fn codecs() -> impl Iterator<
+    Item = (
+        &'static Format,
+        Option<&'static Fidelity>,
+        Option<&'static Fidelity>,
+    ),
+> {
+    CODECS
+        .iter()
+        .map(|codec| (codec.format, codec.read.as_ref(), codec.write.as_ref()))
+}
+
 /// The pair from one format id to another (`pair("png", "bmp")`).
 pub fn pair(from: &str, to: &str) -> &'static ImagePair {
     pairs()

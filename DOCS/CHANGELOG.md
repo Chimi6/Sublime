@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Changed
+
+- The format map in `DOCS/FORMATS.md` (`sublime paths --markdown`) draws the image category as its pixel hub, each format's reader in and writer out (25 arrows where every pair took 120), and puts a from-by-to fidelity grid under each category's graph.
+
 ## [0.23.0] - 2026-09-27
 
 ### Added
