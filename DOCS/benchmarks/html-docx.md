@@ -1,6 +1,6 @@
 # HTML -> Word
 
-**Latest** (2026-09-24, pandoc reference wired on an Apple M1 Max: html -> docx 153.0 MB/s of input plus uncompressed output on the markup-dense shape and 150.1 on prose, at 24.2 and 12.8 MB peak, orders of magnitude faster and leaner than pandoc; every line PASSES)
+**Latest** (2026-09-27, the lazy deflate and the faster bit writer: 332.4 MB/s on the markup-dense shape (from 217.8) and 423.7 on prose (from 288.9); every line PASSES)
 
 ## Purpose
 
@@ -52,6 +52,20 @@ bytes (`unzip -l`), with the rate per input byte as an extra row.
   the honest one.
 
 ## Results
+
+### 2026-09-27, the lazy deflate and the faster bit writer
+
+commit: a5c702a (on the `webp-spikes` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| html -> docx, markup-dense (26.6 MB in + 90.7 MB out): throughput (MB/s of input plus uncompressed output) | 327.7 | 1.6 (pandoc) | PASS |
+| html -> docx, markup-dense: throughput (MB/s of input) [extra] | 74.4 | recorded | n/a |
+| html -> docx, markup-dense: peak memory (MB) | 57.9 | 11670.6 (pandoc) | PASS |
+| html -> docx, prose (12.1 MB in + 20.2 MB out): throughput (MB/s of input plus uncompressed output) | 427.0 | 3.3 (pandoc) | PASS |
+| html -> docx, prose: throughput (MB/s of input) [extra] | 160.0 | recorded | n/a |
+| html -> docx, prose: peak memory (MB) | 30.4 | 1433.1 (pandoc) | PASS |
 
 ### 2026-09-24, pandoc reference wired
 

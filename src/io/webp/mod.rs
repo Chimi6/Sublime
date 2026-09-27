@@ -9,7 +9,7 @@ mod tables;
 pub mod writer;
 
 pub use reader::{WebpNotes, read_webp, read_webp_from, read_webp_rows};
-pub use writer::{WebpRows, write_webp};
+pub use writer::{Effort, WebpRows, write_webp, write_webp_with};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebpError(pub String);

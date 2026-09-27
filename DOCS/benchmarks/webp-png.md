@@ -1,6 +1,6 @@
 # WebP <-> PNG
 
-**Latest** (2026-09-27, encoder margins: the flat encode now PASSES (659 against 597 MB/s, at 52 MB against 113) and the photo encode is 248 against 396 MB/s, from 183; every memory line PASSES; the four decode lines sit within 1 to 6% of the reference either way and change sign between runs)
+**Latest** (2026-09-27, lazy deflate, effort levels: both lossy decode lines now PASS (photo 80.7 against 66.5 MB/s: the PNG write is faster and smaller), both flat decodes and the flat encode PASS; two lines FAIL: the lossless photo decode by 2% (the PNG write of a noise photo, 7% smaller than the png crate's) and the photo encode, 249 against 428 MB/s, the price of the color cache and predictor search that make real photos 9 to 28% smaller)
 
 ## Purpose
 
@@ -58,6 +58,28 @@ median wall clock of the whole process, peak resident memory from GNU
   between runs.
 
 ## Results
+
+### 2026-09-27, lazy deflate, effort levels
+
+commit: afaff87 (on the `webp-spikes` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| webp (lossless) -> png, photo (45.8 MB of pixels, 25.8 MB on disk): throughput (MB/s of decoded pixels) | 53.1 | 54.4 (image + png) | FAIL |
+| webp (lossless) -> png, photo: peak memory (MB) | 101.9 | 173.8 (image + png) | PASS |
+| webp (lossy) -> png, photo (45.8 MB of pixels, 0.3 MB on disk): throughput (MB/s of decoded pixels) | 80.7 | 66.5 (image + png) | PASS |
+| webp (lossy) -> png, photo: peak memory (MB) | 4.7 | 74.7 (image + png) | PASS |
+| png -> webp (lossless), photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 249.3 | 428.4 (png + image) | FAIL |
+| png -> webp (lossless), photo: peak memory (MB) | 95.9 | 140.7 (png + image) | PASS |
+| png -> webp (lossless), photo: output size (MB) [extra] | 27.4 | 28.5 (image); 25.8 (libwebp, default effort) | n/a |
+| webp (lossless) -> png, flat (45.8 MB of pixels, 0.0 MB on disk): throughput (MB/s of decoded pixels) | 583.3 | 533.5 (image + png) | PASS |
+| webp (lossless) -> png, flat: peak memory (MB) | 95.4 | 111.5 (image + png) | PASS |
+| webp (lossy) -> png, flat (45.8 MB of pixels, 0.1 MB on disk): throughput (MB/s of decoded pixels) | 269.2 | 266.9 (image + png) | PASS |
+| webp (lossy) -> png, flat: peak memory (MB) | 4.8 | 74.0 (image + png) | PASS |
+| png -> webp (lossless), flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 671.6 | 604.0 (png + image) | PASS |
+| png -> webp (lossless), flat: peak memory (MB) | 52.6 | 112.5 (png + image) | PASS |
+| png -> webp (lossless), flat: output size (MB) [extra] | 0.0 | 0.0 (image); 0.0 (libwebp, default effort) | n/a |
 
 ### 2026-09-27, encoder margins
 
@@ -136,8 +158,22 @@ make our files smaller: without the cache a real photo grows 8%
 its fastest setting and smaller than its output; libwebp's default
 effort is 6% smaller again at thirty times the time.
 
-What is left, in `STATE.md`: an entropy estimate in place of summed
-residual magnitudes for choosing tile predictors (one fixed predictor
-beat the per-tile choice on each real image, so the choice is the size
-lever too), and `--quality` as encode effort, as cwebp reads it for
-lossless output.
+The second round (2026-09-27) found the decode lines' time in the PNG
+write, and the PNG write's in deflate: our default level wrote 8% more
+than zlib's level 6 on the same filtered bytes, and three times more
+on a flat image. The default level is now zlib's lazy evaluation with
+two changes found here: chains hashed on four bytes, and a price check
+that takes a short match only when the last block's codes make it
+cheaper than its literals (on a filtered photograph most are not:
+literals alone beat zlib's level 6 there). With it the PNGs are smaller
+than the png crate's on every photo line and the writes faster; the
+lossy decode lines pass. The lossless photo decode is 2% short and its
+PNG 7% smaller than the reference's.
+
+`--quality` now sets lossless WebP effort, as cwebp reads it: 50 and
+under writes the gradient predictor without a search (0.22 s on the
+photo, and on a 150-megapixel graphic smaller than the default), 90 and
+up chooses predictors by an entropy estimate on every row (1 to 1.5%
+smaller than the default, 40% slower). No level wins the photo encode
+line while the color cache is on, and the cache is what makes real
+photos 8 to 37% smaller; the line stays a known miss by design.
