@@ -21,7 +21,7 @@ use crate::document::{
     LineSpacing, ListItem, ListLabel, ListLevel, ListStyle, Media, MediaId, Merge, NoteId,
     NumberFormat, NumberKind, PageSetup, PageVariants, Paragraph, ParagraphProperties,
     ParagraphStyle, Placement, Revision, RevisionKind, Row, Run, RunProperties, Section,
-    SectionStart, Span, StyleId, Table, TableBorders,
+    SectionStart, Span, StyleId, Table, TableBorders, VerticalAlignment,
 };
 use crate::io::xml::{XmlEvent, XmlReader};
 use crate::io::zip::{ZipArchive, ZipError};
@@ -1131,7 +1131,7 @@ impl Reader<'_> {
                         }
                     }
                     "w:drawing" if !self_closing => {
-                        if let Some(content) = self.read_drawing(reader) {
+                        for content in self.read_drawing(reader) {
                             match content {
                                 Drawn::Image(image) => {
                                     let id = self.document.push_image(image);
@@ -1692,6 +1692,7 @@ impl Reader<'_> {
                         merge = read.1;
                         cell.background = read.2;
                         cell.borders = read.3;
+                        cell.vertical_alignment = read.4;
                     }
                     "w:p" => {
                         if self_closing {
@@ -1717,10 +1718,11 @@ impl Reader<'_> {
 
     // ----- drawings -----
 
-    /// A drawing: a picture, inline or anchored, or a text box (a floating
-    /// object). Groups yield their first picture or text box.
+    /// A drawing: a picture, inline or anchored, or text boxes (floating
+    /// objects) — every text box of a group, placed where the group puts it.
+    /// A group without text yields its first picture.
     #[inline(never)]
-    fn read_drawing(&mut self, reader: &mut XmlReader<'_>) -> Option<Drawn> {
+    fn read_drawing(&mut self, reader: &mut XmlReader<'_>) -> Vec<Drawn> {
         let mut width = 0.0f32;
         let mut height = 0.0f32;
         let mut description: Option<String> = None;
@@ -1735,7 +1737,14 @@ impl Reader<'_> {
         };
         let mut position_axis: Option<bool> = None;
         let mut media: Option<MediaId> = None;
-        let mut text_box: Option<(Vec<Block>, Option<Color>)> = None;
+        let mut text_boxes: Vec<GroupTextBox> = Vec::new();
+        let mut shape_boxes = 0usize;
+        let mut shape_frame: Option<[f32; 4]> = None;
+        // The group's frame and its children's coordinate space (EMU).
+        let mut group: Option<([f32; 4], [f32; 4])> = None;
+        let mut in_group_properties = false;
+        let mut frame = [0.0f32; 4];
+        let mut child_frame = [0.0f32; 4];
         let mut fill: Option<Color> = None;
         let mut in_shape_properties = false;
         // A shape's own fill (in spPr, outside its outline) or, failing that,
@@ -1796,6 +1805,41 @@ impl Reader<'_> {
                         }
                     }
                     "wps:spPr" if !self_closing => in_shape_properties = true,
+                    "wps:wsp" if !self_closing => {
+                        shape_boxes = text_boxes.len();
+                        shape_frame = None;
+                        fill = None;
+                        style_fill = None;
+                        no_fill = false;
+                    }
+                    "wpg:grpSpPr" if !self_closing && group.is_none() => {
+                        in_group_properties = true;
+                    }
+                    "a:off" | "a:ext" | "a:chOff" | "a:chExt"
+                        if in_group_properties || in_shape_properties =>
+                    {
+                        let (first, second) = if name.ends_with("Off") || name.ends_with("off") {
+                            ("x", "y")
+                        } else {
+                            ("cx", "cy")
+                        };
+                        let value = |key: &str| {
+                            attribute(&attributes, key)
+                                .and_then(|value| value.parse::<f32>().ok())
+                                .unwrap_or(0.0)
+                        };
+                        let pair = [value(first), value(second)];
+                        let (target, at) = match name {
+                            "a:off" => (&mut frame, 0),
+                            "a:ext" => (&mut frame, 2),
+                            "a:chOff" => (&mut child_frame, 0),
+                            _ => (&mut child_frame, 2),
+                        };
+                        target[at..at + 2].copy_from_slice(&pair);
+                        if in_shape_properties && name == "a:ext" {
+                            shape_frame = Some(frame);
+                        }
+                    }
                     "a:ln" if !self_closing => in_line = true,
                     "a:noFill" if in_shape_properties && !in_line => no_fill = true,
                     "a:fillRef" if !self_closing => {
@@ -1834,9 +1878,7 @@ impl Reader<'_> {
                     }
                     "w:txbxContent" if !self_closing => {
                         let blocks = self.read_blocks(reader, "w:txbxContent");
-                        if text_box.is_none() {
-                            text_box = Some((blocks, None));
-                        }
+                        text_boxes.push((blocks, shape_frame, None));
                     }
                     "mc:Fallback" if !self_closing => skip_element(reader, name),
                     _ => {}
@@ -1844,6 +1886,16 @@ impl Reader<'_> {
                 XmlEvent::End { name } => match name {
                     "w:drawing" => break,
                     "wps:spPr" => in_shape_properties = false,
+                    "wpg:grpSpPr" if in_group_properties => {
+                        in_group_properties = false;
+                        group = Some((frame, child_frame));
+                    }
+                    "wps:wsp" => {
+                        let shape_fill = if no_fill { None } else { fill.or(style_fill) };
+                        for text_box in &mut text_boxes[shape_boxes..] {
+                            text_box.2 = shape_fill;
+                        }
+                    }
                     "a:ln" => in_line = false,
                     "a:fillRef" => in_fill_ref = false,
                     "a:schemeClr" => {
@@ -1861,27 +1913,48 @@ impl Reader<'_> {
                 XmlEvent::Text(_) => {}
             }
         }
-        let fill = if no_fill { None } else { fill.or(style_fill) };
-        if let Some((blocks, _)) = text_box {
-            return Some(Drawn::Floating(
-                FloatingObject {
-                    page: self.page,
-                    x: horizontal.offset,
-                    y: vertical.offset,
-                    width,
-                    height,
-                    content: FloatingContent::TextBox { blocks, fill },
-                },
-                horizontal.from,
-                vertical.from,
-            ));
+        if !text_boxes.is_empty() {
+            // A child's frame maps from the group's child space onto the
+            // drawing's extent; a lone shape fills the drawing.
+            let place = |child: Option<[f32; 4]>| match (group, child) {
+                (Some((_, space)), Some([x, y, w, h])) if space[2] > 0.0 && space[3] > 0.0 => {
+                    let (scale_x, scale_y) = (width / space[2], height / space[3]);
+                    [
+                        (x - space[0]) * scale_x,
+                        (y - space[1]) * scale_y,
+                        w * scale_x,
+                        h * scale_y,
+                    ]
+                }
+                _ => [0.0, 0.0, width, height],
+            };
+            return text_boxes
+                .into_iter()
+                .map(|(blocks, child, fill)| {
+                    let [x, y, box_width, box_height] = place(child);
+                    Drawn::Floating(
+                        FloatingObject {
+                            page: self.page,
+                            x: horizontal.offset + x,
+                            y: vertical.offset + y,
+                            width: box_width,
+                            height: box_height,
+                            content: FloatingContent::TextBox { blocks, fill },
+                        },
+                        horizontal.from,
+                        vertical.from,
+                    )
+                })
+                .collect();
         }
-        let media = media?;
+        let Some(media) = media else {
+            return Vec::new();
+        };
         // A picture positioned on the page (both axes) is page furniture,
         // not part of the text flow; the writer puts floating objects
         // there.
         if anchored && horizontal.from == AnchorBase::Page && vertical.from == AnchorBase::Page {
-            return Some(Drawn::Floating(
+            return vec![Drawn::Floating(
                 FloatingObject {
                     page: self.page,
                     x: horizontal.offset,
@@ -1892,7 +1965,7 @@ impl Reader<'_> {
                 },
                 AnchorBase::Page,
                 AnchorBase::Page,
-            ));
+            )];
         }
         let placement = if anchored {
             Placement::Floating {
@@ -1902,13 +1975,13 @@ impl Reader<'_> {
         } else {
             Placement::Inline
         };
-        Some(Drawn::Image(InlineImage {
+        vec![Drawn::Image(InlineImage {
             media,
             width,
             height,
             description,
             placement,
-        }))
+        })]
     }
 
     fn load_media(&mut self, relationship_id: &str) -> Option<MediaId> {
@@ -1945,6 +2018,11 @@ struct RunRead {
     properties: RunProperties,
     style: Option<StyleId>,
 }
+
+/// A text box read from a drawing: its blocks, its shape's frame (x, y,
+/// width, height in the group's coordinates, EMU), and its fill once its
+/// shape closes.
+type GroupTextBox = (Vec<Block>, Option<[f32; 4]>, Option<Color>);
 
 enum RunControl {
     None,
@@ -2074,7 +2152,7 @@ fn read_level(reader: &mut XmlReader<'_>) -> (ListLevel, u32) {
     }
     let label = match format {
         "none" => ListLabel::None,
-        "bullet" => ListLabel::Text(text),
+        "bullet" => ListLabel::Text(symbol_bullet(&text)),
         _ => {
             let kind = match format {
                 "lowerLetter" => NumberKind::LowerLetter,
@@ -2133,15 +2211,22 @@ fn read_num(reader: &mut XmlReader<'_>) -> (i64, Option<u32>) {
     (abstract_id, start)
 }
 
-/// (grid span, vertical merge, background, edges)
+/// (grid span, vertical merge, background, edges, vertical alignment)
 fn read_cell_properties(
     reader: &mut XmlReader<'_>,
-) -> (u32, VerticalMerge, Option<Color>, CellBorders) {
+) -> (
+    u32,
+    VerticalMerge,
+    Option<Color>,
+    CellBorders,
+    Option<VerticalAlignment>,
+) {
     let mut span = 1u32;
     let mut merge = VerticalMerge::None;
     let mut background = None;
     let mut borders = CellBorders::default();
     let mut in_borders = false;
+    let mut vertical = None;
     while let Some(event) = reader.next() {
         match event {
             XmlEvent::Start {
@@ -2162,6 +2247,14 @@ fn read_cell_properties(
                 }
                 "w:shd" => background = attribute(&attributes, "w:fill").and_then(parse_color),
                 "w:tcBorders" if !self_closing => in_borders = true,
+                "w:vAlign" => {
+                    vertical = match attribute(&attributes, "w:val") {
+                        Some("top") => Some(VerticalAlignment::Top),
+                        Some("center") => Some(VerticalAlignment::Center),
+                        Some("bottom") => Some(VerticalAlignment::Bottom),
+                        _ => None,
+                    };
+                }
                 "w:top" if in_borders => borders.top = Some(border_line(&attributes)),
                 "w:bottom" if in_borders => borders.bottom = Some(border_line(&attributes)),
                 "w:left" | "w:start" if in_borders => borders.left = Some(border_line(&attributes)),
@@ -2175,7 +2268,7 @@ fn read_cell_properties(
             _ => {}
         }
     }
-    (span.max(1), merge, background, borders)
+    (span.max(1), merge, background, borders, vertical)
 }
 
 /// A grid position no cell occupies: empty, with no lines of its own.
@@ -2391,6 +2484,25 @@ fn symbol_text(code: Option<&str>) -> Option<String> {
     Some(ch.to_string())
 }
 
+/// A bullet as its Unicode character: Word draws the common bullets from the
+/// Symbol and Wingdings fonts, whose private-use codes show as boxes in any
+/// other font.
+fn symbol_bullet(text: &str) -> String {
+    text.chars()
+        .map(|character| match character as u32 {
+            0xF0B7 => '\u{2022}',          // Symbol: bullet
+            0xF0A7 | 0xF06E => '\u{25AA}', // Wingdings: small square
+            0xF0A8 => '\u{25E6}',          // Wingdings: white bullet
+            0xF0D8 => '\u{27A2}',          // Wingdings: arrowhead
+            0xF0FC => '\u{2713}',          // Wingdings: check mark
+            0xF076 => '\u{2756}',          // Wingdings: diamond
+            0xF06C => '\u{25CF}',          // Wingdings: black circle
+            0xF0E0 => '\u{27A4}',          // Wingdings: arrow
+            _ => character,
+        })
+        .collect()
+}
+
 fn plain_run(content: Inline) -> Run {
     Run {
         style: None,
@@ -2494,6 +2606,53 @@ mod tests {
     }
 
     #[test]
+    fn every_text_box_of_a_group_is_kept_where_the_group_puts_it() {
+        let ns = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="wp" xmlns:a="a" xmlns:wpg="wpg" xmlns:wps="wps""#;
+        let shape = |x: u32, text: &str, fill: &str| {
+            format!(
+                r#"<wps:wsp><wps:spPr><a:xfrm><a:off x="{x}" y="100"/><a:ext cx="200" cy="100"/></a:xfrm>{fill}</wps:spPr>
+                <wps:txbx><w:txbxContent><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:txbxContent></wps:txbx></wps:wsp>"#
+            )
+        };
+        let document = format!(
+            r#"<w:document {ns}><w:body><w:p><w:r><w:drawing><wp:anchor>
+            <wp:positionH relativeFrom="page"><wp:posOffset>127000</wp:posOffset></wp:positionH>
+            <wp:positionV relativeFrom="page"><wp:posOffset>254000</wp:posOffset></wp:positionV>
+            <wp:extent cx="508000" cy="254000"/><a:graphic><a:graphicData><wpg:wgp>
+            <wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="508000" cy="254000"/><a:chOff x="0" y="0"/><a:chExt cx="400" cy="200"/></a:xfrm></wpg:grpSpPr>
+            {}{}</wpg:wgp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p></w:body></w:document>"#,
+            shape(
+                0,
+                "first",
+                r#"<a:solidFill><a:srgbClr val="FF0000"/></a:solidFill>"#
+            ),
+            shape(200, "second", ""),
+        );
+        let read = read_docx(&package(&document, "<w:styles/>")).unwrap();
+        assert_eq!(read.floating.len(), 2, "both boxes survive");
+        let (first, second) = (&read.floating[0], &read.floating[1]);
+        // The group is 40 x 20 points over a 400 x 200 child space.
+        assert_eq!(
+            (first.x, first.y, first.width, first.height),
+            (10.0, 30.0, 20.0, 10.0)
+        );
+        assert_eq!((second.x, second.width), (30.0, 20.0));
+        let fill = |object: &FloatingObject| match &object.content {
+            FloatingContent::TextBox { fill, .. } => *fill,
+            FloatingContent::Image(_) => panic!("a text box"),
+        };
+        assert_eq!(
+            fill(first),
+            Some(Color {
+                red: 255,
+                green: 0,
+                blue: 0
+            })
+        );
+        assert_eq!(fill(second), None, "a shape's fill is its own");
+    }
+
+    #[test]
     fn table_borders_come_from_the_style_table_and_cells() {
         let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
         let styles = format!(
@@ -2507,7 +2666,7 @@ mod tests {
             <w:top w:val="double" w:sz="16" w:color="FF0000"/><w:bottom w:val="nil"/>
             </w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="100"/><w:gridCol w:w="100"/></w:tblGrid>
             <w:tr><w:tc><w:tcPr><w:tcBorders><w:right w:val="nil"/><w:bottom w:val="single" w:sz="8"/>
-            </w:tcBorders></w:tcPr><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr></w:tbl></w:body></w:document>"#
+            </w:tcBorders><w:vAlign w:val="center"/></w:tcPr><w:p/></w:tc><w:tc><w:p/></w:tc></w:tr></w:tbl></w:body></w:document>"#
         );
         let read = read_docx(&package(&document, &styles)).unwrap();
         let Some(Block::Table(table)) = read.sections[0].blocks.first() else {
@@ -2534,6 +2693,11 @@ mod tests {
         assert_eq!(cell.right, Some(None));
         assert_eq!(cell.bottom.flatten().map(|line| line.width), Some(1.0));
         assert_eq!(cell.top, None);
+        assert_eq!(
+            table.rows[0].cells[0].vertical_alignment,
+            Some(VerticalAlignment::Center)
+        );
+        assert_eq!(table.rows[0].cells[1].vertical_alignment, None);
     }
 }
 

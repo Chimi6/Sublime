@@ -152,6 +152,62 @@ pub enum NumberKind {
     UpperRoman,
 }
 
+impl NumberFormat {
+    /// The label for `number`, e.g. `3.` or `(c)`.
+    pub fn label(&self, number: u32) -> String {
+        self.pattern.replace("%1", &self.kind.format(number))
+    }
+}
+
+impl NumberKind {
+    /// `number` in this style: 4, d, D, iv, IV. Letters run a..z, then aa..zz
+    /// as Word counts them.
+    pub fn format(self, number: u32) -> String {
+        match self {
+            NumberKind::Decimal => number.to_string(),
+            NumberKind::LowerLetter | NumberKind::UpperLetter => {
+                let base = if self == NumberKind::LowerLetter {
+                    b'a'
+                } else {
+                    b'A'
+                };
+                let index = number.max(1) - 1;
+                let letter = (base + (index % 26) as u8) as char;
+                letter.to_string().repeat(index as usize / 26 + 1)
+            }
+            NumberKind::LowerRoman | NumberKind::UpperRoman => {
+                let mut rest = number.max(1);
+                let mut out = String::new();
+                for (value, digits) in [
+                    (1000, "m"),
+                    (900, "cm"),
+                    (500, "d"),
+                    (400, "cd"),
+                    (100, "c"),
+                    (90, "xc"),
+                    (50, "l"),
+                    (40, "xl"),
+                    (10, "x"),
+                    (9, "ix"),
+                    (5, "v"),
+                    (4, "iv"),
+                    (1, "i"),
+                ] {
+                    while rest >= value {
+                        out.push_str(digits);
+                        rest -= value;
+                    }
+                }
+                if self == NumberKind::UpperRoman {
+                    out.to_uppercase()
+                } else {
+                    out
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Section {
     pub page: PageSetup,
@@ -524,6 +580,16 @@ pub struct Cell {
     pub merge: Merge,
     /// The cell's own edges, over the table's grid lines.
     pub borders: CellBorders,
+    /// Where the cell's content sits between its top and bottom edges, when
+    /// the source says.
+    pub vertical_alignment: Option<VerticalAlignment>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VerticalAlignment {
+    Top,
+    Center,
+    Bottom,
 }
 
 /// A cell's edges as the source states them: `None` leaves the table's line,
@@ -816,4 +882,25 @@ fn intern(table: &mut Vec<String>, ids: &mut HashMap<String, usize>, text: &str)
     table.push(text.to_string());
     ids.insert(text.to_string(), id);
     id as Id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numbers_are_labelled_as_word_counts() {
+        let label = |kind, pattern: &str, number| {
+            NumberFormat {
+                kind,
+                pattern: pattern.to_string(),
+            }
+            .label(number)
+        };
+        assert_eq!(label(NumberKind::Decimal, "%1.", 12), "12.");
+        assert_eq!(label(NumberKind::LowerLetter, "(%1)", 3), "(c)");
+        assert_eq!(label(NumberKind::UpperLetter, "%1)", 28), "BB)");
+        assert_eq!(label(NumberKind::LowerRoman, "%1.", 14), "xiv.");
+        assert_eq!(label(NumberKind::UpperRoman, "%1", 1994), "MCMXCIV");
+    }
 }
