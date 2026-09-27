@@ -326,6 +326,35 @@ impl<'a> JpegRows<'a> {
         let channels = self.color.channels();
         let y_index = self.rows_in_band;
         let width = self.width;
+        if self.subsampled {
+            let padded = self.padded_width;
+            let (luma_plane, rgb_plane) = self.band.split_at_mut(1);
+            let luma = &mut luma_plane[0][y_index * padded..(y_index + 1) * padded];
+            let rgb = &mut rgb_plane[0][y_index * padded * 3..(y_index + 1) * padded * 3];
+            if self.color == ColorType::Rgb {
+                rgb[..width * 3].copy_from_slice(&pixels[..width * 3]);
+            } else {
+                for (target, cell) in rgb.chunks_exact_mut(3).zip(pixels.chunks_exact(channels)) {
+                    target[0] = flatten(cell[0], cell[3]);
+                    target[1] = flatten(cell[1], cell[3]);
+                    target[2] = flatten(cell[2], cell[3]);
+                }
+            }
+            for (y, pixel) in luma[..width].iter_mut().zip(rgb.chunks_exact(3)) {
+                *y = luma_of(pixel[0], pixel[1], pixel[2]);
+            }
+            // Pad the right edge by replication, as libjpeg does.
+            let last = luma[width - 1];
+            for value in &mut luma[width..] {
+                *value = last;
+            }
+            let last_pixel = [rgb[width * 3 - 3], rgb[width * 3 - 2], rgb[width * 3 - 1]];
+            for pixel in rgb[width * 3..].chunks_exact_mut(3) {
+                pixel.copy_from_slice(&last_pixel);
+            }
+            self.rows_in_band += 1;
+            return;
+        }
         if self.color == ColorType::Rgb {
             // The common case as one pass over the row.
             let start = y_index * self.padded_width;
@@ -395,7 +424,7 @@ impl<'a> JpegRows<'a> {
         // Pad the bottom by replicating the last row taken.
         let rows = self.band_rows;
         for plane in self.band.iter_mut() {
-            let stride = self.padded_width;
+            let stride = plane.len() / rows;
             let last = self.rows_in_band - 1;
             for y in self.rows_in_band..rows {
                 let (before, after) = plane.split_at_mut(y * stride);
@@ -434,32 +463,43 @@ impl<'a> JpegRows<'a> {
                 }
             }
             if !self.gray() {
-                for component in 1..3 {
-                    let x0 = mcu_x * mcu;
-                    let plane = &self.band[component];
-                    if self.subsampled {
-                        for row in 0..8 {
-                            let upper_start = (row * 2) * self.padded_width + x0;
-                            let upper = &plane[upper_start..upper_start + 16];
-                            let lower_start = upper_start + self.padded_width;
-                            let lower = &plane[lower_start..lower_start + 16];
-                            let out = &mut samples[row * 8..row * 8 + 8];
-                            for (column, ((a, b), target)) in upper
-                                .chunks_exact(2)
-                                .zip(lower.chunks_exact(2))
-                                .zip(out.iter_mut())
-                                .enumerate()
-                            {
-                                let sum = i32::from(a[0])
-                                    + i32::from(a[1])
-                                    + i32::from(b[0])
-                                    + i32::from(b[1]);
-                                // libjpeg's alternating bias keeps the average unbiased.
-                                let bias = 1 + (column as i32 & 1);
-                                *target = ((sum + bias) >> 2) - 128;
-                            }
+                let x0 = mcu_x * mcu;
+                let mut chroma = [[0i32; 64]; 2];
+                if self.subsampled {
+                    // Each chroma sample from the sum of a 2x2 block's RGB:
+                    // the conversion is linear, so this is the average of
+                    // the four pixels' chroma, rounded once.
+                    let rgb = &self.band[1];
+                    let stride = self.padded_width * 3;
+                    for row in 0..8 {
+                        let upper =
+                            &rgb[(row * 2) * stride + x0 * 3..(row * 2) * stride + x0 * 3 + 48];
+                        let lower = &rgb
+                            [(row * 2 + 1) * stride + x0 * 3..(row * 2 + 1) * stride + x0 * 3 + 48];
+                        for column in 0..8 {
+                            let a = &upper[column * 6..column * 6 + 6];
+                            let b = &lower[column * 6..column * 6 + 6];
+                            let red = i32::from(a[0])
+                                + i32::from(a[3])
+                                + i32::from(b[0])
+                                + i32::from(b[3]);
+                            let green = i32::from(a[1])
+                                + i32::from(a[4])
+                                + i32::from(b[1])
+                                + i32::from(b[4]);
+                            let blue = i32::from(a[2])
+                                + i32::from(a[5])
+                                + i32::from(b[2])
+                                + i32::from(b[5]);
+                            chroma[0][row * 8 + column] =
+                                (-11_059 * red - 21_709 * green + 32_768 * blue + (1 << 17)) >> 18;
+                            chroma[1][row * 8 + column] =
+                                (32_768 * red - 27_439 * green - 5_329 * blue + (1 << 17)) >> 18;
                         }
-                    } else {
+                    }
+                } else {
+                    for (component, samples) in chroma.iter_mut().enumerate() {
+                        let plane = &self.band[component + 1];
                         for row in 0..8 {
                             let start = row * self.padded_width + x0;
                             let source = &plane[start..start + 8];
@@ -470,14 +510,16 @@ impl<'a> JpegRows<'a> {
                             }
                         }
                     }
-                    fdct(&samples, &mut coefficients);
+                }
+                for (index, samples) in chroma.iter().enumerate() {
+                    fdct(samples, &mut coefficients);
                     let codes = (&self.codes[2], &self.codes[3]);
                     encode_block(
                         &mut bits,
                         &coefficients,
                         &self.chroma_quant,
                         &self.chroma_reciprocal,
-                        &mut self.predictions[component],
+                        &mut self.predictions[index + 1],
                         codes,
                     );
                 }
@@ -495,6 +537,12 @@ impl<'a> JpegRows<'a> {
 fn flatten(value: u8, alpha: u8) -> u8 {
     let (value, alpha) = (u32::from(value), u32::from(alpha));
     ((value * alpha + 255 * (255 - alpha) + 127) / 255) as u8
+}
+
+/// Luma alone, with libjpeg's constants.
+#[inline]
+fn luma_of(r: u8, g: u8, b: u8) -> u8 {
+    ((19_595 * i32::from(r) + 38_470 * i32::from(g) + 7_471 * i32::from(b) + (1 << 15)) >> 16) as u8
 }
 
 /// libjpeg's fixed-point RGB to YCbCr (`jccolor.c`).
@@ -641,27 +689,36 @@ fn encode_block(
         (u32::from(code) << size) | value_bits,
         u32::from(length) + size,
     );
-    let mut run = 0u32;
-    for position in &ZIGZAG_TO_NATURAL[1..] {
+    // The AC coefficients in zigzag order, and a mask with bit k set when
+    // coefficient k is nonzero: the coding loop jumps from one nonzero
+    // coefficient to the next by counting zeros in the mask (libjpeg-
+    // turbo's approach) instead of testing all 63.
+    let mut zigzag = [0i32; 64];
+    let mut nonzero: u64 = 0;
+    for (k, position) in ZIGZAG_TO_NATURAL.iter().enumerate().skip(1) {
         let value = quantized[*position];
-        if value == 0 {
-            run += 1;
-            continue;
-        }
+        zigzag[k] = value;
+        nonzero |= u64::from(value != 0) << k;
+    }
+    let mut last = 0u32;
+    while nonzero != 0 {
+        let k = nonzero.trailing_zeros();
+        nonzero &= nonzero - 1;
+        let mut run = k - last - 1;
+        last = k;
         while run > 15 {
             let (length, code) = ac_codes.table[0xF0];
             bits.put(u32::from(code), u32::from(length));
             run -= 16;
         }
-        let (size, value_bits) = magnitude(value);
+        let (size, value_bits) = magnitude(zigzag[k as usize]);
         let (length, code) = ac_codes.table[((run << 4) | size) as usize];
         bits.put(
             (u32::from(code) << size) | value_bits,
             u32::from(length) + size,
         );
-        run = 0;
     }
-    if run > 0 {
+    if last < 63 {
         let (length, code) = ac_codes.table[0x00];
         bits.put(u32::from(code), u32::from(length));
     }
@@ -698,9 +755,20 @@ impl RowSink for JpegRows<'_> {
         let mcu = self.band_rows;
         self.padded_width = self.width.div_ceil(mcu) * mcu;
         let planes = if self.gray() { 1 } else { 3 };
-        self.band = (0..planes)
-            .map(|_| vec![0u8; self.band_rows * self.padded_width])
-            .collect();
+        self.band = if self.subsampled {
+            // Luma at full resolution, and the band's RGB rows: chroma is
+            // computed per 2x2 block from the summed RGB when the band is
+            // encoded, a quarter of the chroma arithmetic of converting
+            // every pixel and averaging after.
+            vec![
+                vec![0u8; self.band_rows * self.padded_width],
+                vec![0u8; self.band_rows * self.padded_width * 3],
+            ]
+        } else {
+            (0..planes)
+                .map(|_| vec![0u8; self.band_rows * self.padded_width])
+                .collect()
+        };
         self.luma_quant = scaled(&STD_LUMA_QUANT, self.quality);
         self.chroma_quant = scaled(&STD_CHROMA_QUANT, self.quality);
         self.luma_reciprocal = reciprocals(&self.luma_quant);
