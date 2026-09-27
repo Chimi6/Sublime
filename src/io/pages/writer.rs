@@ -255,20 +255,30 @@ fn rebuild_body(
     // reuses it; any others clone it so every image reaches Pages, each with its
     // own objects and data files.
     if let Some(prototype) = collect_template_images(package).first().copied() {
+        // Data already written, by digest: Pages keys its data store by digest
+        // and aborts on two files with the same one, so a picture used twice
+        // shares one data file between its images.
+        let mut written: HashMap<Vec<u8>, (u64, Option<u64>)> = HashMap::new();
         for (index, mark) in body.images.iter().enumerate() {
             let bytes = document.media[mark.media].bytes.clone();
+            let digest = sha1(&bytes).to_vec();
             let attach_id = if index == 0 {
                 reuse_image(package, &prototype, mark, &bytes)?;
+                written.insert(digest, (prototype.data_id, prototype.thumb_id));
                 prototype.attach_id
             } else {
-                clone_image(
+                let shared = written.get(&digest).copied();
+                let (attach, full, thumb) = clone_image(
                     package,
                     &prototype,
                     mark,
                     &bytes,
+                    shared,
                     &mut next_id,
                     &mut next_data_id,
-                )?
+                )?;
+                written.entry(digest).or_insert((full, thumb));
+                attach
             };
             anchors.push((mark.offset, attach_id));
         }
@@ -1428,19 +1438,27 @@ fn clone_image(
     proto: &TemplateImage,
     mark: &ImageMark,
     bytes: &[u8],
+    shared: Option<(u64, Option<u64>)>,
     next_object_id: &mut u64,
     next_data_id: &mut u64,
-) -> Result<u64, PackageError> {
+) -> Result<(u64, u64, Option<u64>), PackageError> {
     let new_image_id = *next_object_id;
     let new_attach_id = *next_object_id + 1;
     *next_object_id += 2;
-    let new_full = *next_data_id;
-    *next_data_id += 1;
-    let new_thumb = proto.thumb_id.map(|_| {
-        let id = *next_data_id;
-        *next_data_id += 1;
-        id
-    });
+    // Reuse the data of an identical picture already written, or take new ids.
+    let (new_full, new_thumb) = match shared {
+        Some((full, thumb)) => (full, thumb.or(proto.thumb_id.map(|_| full))),
+        None => {
+            let full = *next_data_id;
+            *next_data_id += 1;
+            let thumb = proto.thumb_id.map(|_| {
+                let id = *next_data_id;
+                *next_data_id += 1;
+                id
+            });
+            (full, thumb)
+        }
+    };
 
     let extension = image_extension(bytes);
     let full_name = format!("image-{new_full}.{extension}");
@@ -1495,6 +1513,17 @@ fn clone_image(
         rebuild_inline_attachment(tree, old_first)
     })?;
 
+    if shared.is_some() {
+        // The data exists: record this image as one more user of it.
+        add_data_user(package, new_full, new_image_id)?;
+        if let Some(thumb) = new_thumb
+            && thumb != new_full
+        {
+            add_data_user(package, thumb, new_image_id)?;
+        }
+        return Ok((new_attach_id, new_full, new_thumb));
+    }
+
     // Add the data files and clone their metadata entries under the new ids.
     add_data_file(package, &full_name, bytes);
     clone_data_metadata(
@@ -1521,7 +1550,7 @@ fn clone_image(
             new_image_id,
         )?;
     }
-    Ok(new_attach_id)
+    Ok((new_attach_id, new_full, new_thumb))
 }
 
 /// Clones the package-metadata entries for a data reference under a new id: its
@@ -1894,6 +1923,24 @@ fn rebuild_image_super(
         .ok_or_else(|| malformed("image drawable has no geometry"))?;
     let new_geometry = rebuild_geometry(tree, geometry_first, width, height)?;
     let mut overrides = vec![("geometry", Node::Message(new_geometry))];
+    // An inline image wraps as Pages' own inline pictures do (type 0, no fit,
+    // no margin); the template picture's floating wrap would pin every clone
+    // to its fixed spot on the page.
+    if let Some(wrap_first) = message_field(tree, super_first, "exterior_text_wrap") {
+        let wrap = message_ref("TSD.ExteriorTextWrapArchive")?;
+        let inline_wrap = rebuild_message(
+            tree,
+            wrap,
+            wrap_first,
+            vec![
+                ("type", Node::Uint(0)),
+                ("fit_type", Node::Uint(0)),
+                ("margin", Node::Float(0.0)),
+            ],
+            &[],
+        )?;
+        overrides.push(("exterior_text_wrap", Node::Message(inline_wrap)));
+    }
     if let Some(description) = &mark.description {
         let span = tree
             .push_bytes(description.as_bytes())
@@ -1912,11 +1959,19 @@ fn rebuild_geometry(
 ) -> Result<u32, PackageError> {
     let geometry = message_ref("TSD.GeometryArchive")?;
     let size = build_size(tree, width, height)?;
+    // Inline, the text line places the picture; its own position is the origin.
+    let point = message_ref("TSP.Point")?;
+    let mut position = Chain::new();
+    push_field(tree, &mut position, point, "x", Node::Float(0.0))?;
+    push_field(tree, &mut position, point, "y", Node::Float(0.0))?;
     rebuild_message(
         tree,
         geometry,
         geometry_first,
-        vec![("size", Node::Message(size))],
+        vec![
+            ("size", Node::Message(size)),
+            ("position", Node::Message(position.first)),
+        ],
         &[],
     )
 }
@@ -5840,4 +5895,29 @@ fn create_number_attachments(
         out.push((offset, id));
     }
     Ok(out)
+}
+
+/// Records `object_id` as a user of data `data_id` in the component's data
+/// references, as Pages does when several images share one data file.
+fn add_data_user(package: &mut Package, data_id: u64, object_id: u64) -> Result<(), PackageError> {
+    let (stream, meta_first) =
+        metadata_message(package).ok_or_else(|| malformed("package metadata is missing"))?;
+    let tree = &mut stream.tree;
+    let Some((_, reference)) = component_data_reference(tree, meta_first, data_id) else {
+        return Ok(());
+    };
+    let Some(list) = message_field(tree, reference, "object_reference_list") else {
+        return Ok(());
+    };
+    let copy = clone_chain(tree, list, &mut |_| {})?;
+    set_field_uint(tree, copy, "object_identifier", object_id);
+    let components = message_of(
+        message_ref("TSP.PackageMetadata")?
+            .field_named("components")
+            .ok_or_else(|| malformed("metadata has no components"))?
+            .kind,
+    )?;
+    let reference_ref = child_message(components, "data_references")?;
+    append_message_field(tree, reference_ref, reference, "object_reference_list", copy)?;
+    Ok(())
 }
