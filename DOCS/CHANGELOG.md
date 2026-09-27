@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-09-26
+
+JPEG encode margins: chroma from summed RGB.
+
 ### Changed
 
 - The JPEG encoder computes 4:2:0 chroma once per 2x2 block from the block's summed RGB (the conversion is linear, so this is the average of the four pixels' chroma, rounded once instead of twice): a quarter of the chroma arithmetic and no downsampling pass. The photo encode runs 151 ms against jpeg-encoder's 163 where it was level, at the same or higher PSNR. The Huffman coder walks nonzero AC coefficients by a 64-bit mask, as libjpeg-turbo does.
