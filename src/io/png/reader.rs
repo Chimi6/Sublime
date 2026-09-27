@@ -389,7 +389,7 @@ impl Decoder {
             }
         }
         let want = OUTPUT_STEP.max(self.rows.row_len());
-        while !piece.is_empty() {
+        loop {
             if self.inflater.is_done() {
                 let room = 4 - self.trailer.len();
                 self.trailer
@@ -402,13 +402,23 @@ impl Decoder {
                 .map_err(|error| PngError(format!("bad deflate data: {error}")))?;
             piece = &piece[consumed..];
             self.deliver(sink.as_deref_mut())?;
-            if matches!(progress, Progress::Done) {
-                let leftover = self.inflater.leftover();
-                self.trailer
-                    .extend_from_slice(&leftover[..leftover.len().min(4)]);
+            match progress {
+                Progress::Done => {
+                    let leftover = self.inflater.leftover();
+                    self.trailer
+                        .extend_from_slice(&leftover[..leftover.len().min(4)]);
+                }
+                // The inflater may hold input it has not decoded yet (a
+                // small chunk that inflates far past `want`): keep going
+                // even when this piece is used up.
+                Progress::OutputFull => {}
+                Progress::NeedInput => {
+                    if piece.is_empty() {
+                        return Ok(());
+                    }
+                }
             }
         }
-        Ok(())
     }
 
     /// Moves every complete row out of the inflater into the image.
