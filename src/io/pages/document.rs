@@ -837,25 +837,48 @@ impl Reader<'_> {
                 Block::Paragraph(paragraph) => !paragraph.runs.is_empty(),
                 Block::Table(_) => true,
             });
-            if !has_text {
+            let shape = view.message("super");
+            let style = shape.and_then(|shape| shape.reference("style"));
+            let fill = style.and_then(|style| self.shape_fill(style));
+            let line = style.and_then(|style| self.shape_stroke(style));
+            // A shape that holds no text and draws nothing leaves no trace.
+            if !has_text && fill.is_none() && line.is_none() {
                 return;
             }
-            let fill = view
-                .message("super")
-                .and_then(|shape| shape.reference("style"))
-                .and_then(|style| self.shape_fill(style));
+            let source = shape.and_then(|shape| shape.message("pathsource"));
+            let flip = (
+                source
+                    .and_then(|s| s.boolean("horizontalFlip"))
+                    .unwrap_or(false),
+                source
+                    .and_then(|s| s.boolean("verticalFlip"))
+                    .unwrap_or(false),
+            );
+            let geometry = source
+                .and_then(|source| source.message("bezier_path_source"))
+                .and_then(|bezier| self.shape_path(bezier))
+                .unwrap_or_default();
             FloatingContent::TextBox {
                 blocks,
                 fill,
-                line: None,
-                geometry: Default::default(),
-                flip: (false, false),
+                line,
+                geometry,
+                flip,
                 ends: (None, None),
             }
         } else {
             return;
         };
-        if width <= 0.0 || height <= 0.0 {
+        // A flat (or upright) line has no height (or width); anything else
+        // needs both.
+        let is_line = matches!(
+            content,
+            FloatingContent::TextBox {
+                geometry: crate::document::ShapeGeometry::Line,
+                ..
+            }
+        );
+        if width <= 0.0 && height <= 0.0 || !is_line && (width <= 0.0 || height <= 0.0) {
             return;
         }
         self.document.floating.push(FloatingObject {
@@ -869,6 +892,89 @@ impl Reader<'_> {
     }
 
     /// The solid fill of a shape style, through its parents.
+    /// A shape style's outline, through its parents: a solid stroke's width
+    /// and colour, or `None` when it draws none.
+    fn shape_stroke(&self, style: u64) -> Option<crate::document::Border> {
+        let mut current = Some(style);
+        for _ in 0..64 {
+            let message = self.graph.object(current?)?;
+            let base = View::of(message).message("super")?;
+            if let Some(stroke) = base
+                .message("shape_properties")
+                .and_then(|properties| properties.message("stroke"))
+            {
+                let solid = stroke
+                    .message("pattern")
+                    .and_then(|pattern| pattern.integer("type"))
+                    == Some(1);
+                let width = stroke.float("width").unwrap_or(0.0);
+                return (solid && width > 0.0).then(|| crate::document::Border {
+                    width,
+                    color: stroke.message("color").and_then(color),
+                });
+            }
+            current = base.message("super").and_then(|s| s.reference("parent"));
+        }
+        None
+    }
+
+    /// A shape's Bézier outline as model geometry: a plain rectangle or a
+    /// line as such, any other path kept whole.
+    fn shape_path(&mut self, bezier: View<'_>) -> Option<crate::document::ShapeGeometry> {
+        use crate::document::{PathStep, ShapeGeometry, ShapePath};
+        let size = bezier.message("naturalSize")?;
+        let (width, height) = (size.float("width")?, size.float("height")?);
+        let mut steps = Vec::new();
+        for element in bezier.message("path")?.messages("elements") {
+            let points: Vec<(f32, f32)> = element
+                .messages("points")
+                .into_iter()
+                .map(|point| {
+                    (
+                        point.float("x").unwrap_or(0.0),
+                        point.float("y").unwrap_or(0.0),
+                    )
+                })
+                .collect();
+            let step = match (element.integer("type")?, points.as_slice()) {
+                (1, [p, ..]) => PathStep::Move(p.0, p.1),
+                (2, [p, ..]) => PathStep::Line(p.0, p.1),
+                (4, [a, b, c, ..]) => PathStep::Curve([*a, *b, *c]),
+                (5, _) => PathStep::Close,
+                _ => continue,
+            };
+            steps.push(step);
+        }
+        let lines = steps
+            .iter()
+            .filter(|step| matches!(step, PathStep::Line(..)))
+            .count();
+        let curves = steps.iter().any(|step| matches!(step, PathStep::Curve(_)));
+        if !curves && lines == 1 && steps.len() == 2 {
+            return Some(ShapeGeometry::Line);
+        }
+        let corners = [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)];
+        let near =
+            |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 0.5 && (a.1 - b.1).abs() < 0.5;
+        let points: Vec<(f32, f32)> = steps
+            .iter()
+            .filter_map(|step| match *step {
+                PathStep::Move(x, y) | PathStep::Line(x, y) => Some((x, y)),
+                _ => None,
+            })
+            .collect();
+        if !curves && points.len() >= 4 && points[..4].iter().zip(corners).all(|(a, b)| near(*a, b))
+        {
+            return Some(ShapeGeometry::Rectangle);
+        }
+        self.document.paths.push(ShapePath {
+            width,
+            height,
+            steps,
+        });
+        Some(ShapeGeometry::Path((self.document.paths.len() - 1) as u32))
+    }
+
     fn shape_fill(&self, style: u64) -> Option<Color> {
         let mut current = Some(style);
         let mut depth = 0;

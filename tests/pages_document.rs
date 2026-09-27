@@ -400,8 +400,17 @@ fn sections_split_at_section_and_layout_breaks() {
 #[test]
 fn floating_text_boxes_and_images_are_collected() {
     let document = read("native-objects");
-    assert_eq!(document.floating.len(), 3);
+    // Two grouped shapes, the lone shape, and the line.
+    assert_eq!(document.floating.len(), 4);
     let lone = &document.floating[2];
+    assert!(matches!(
+        document.floating[3].content,
+        FloatingContent::TextBox {
+            geometry: sublime::document::ShapeGeometry::Line,
+            line: Some(_),
+            ..
+        }
+    ));
     assert_eq!(
         (lone.x, lone.y, lone.width, lone.height),
         (72.0, 260.0, 220.0, 90.0)

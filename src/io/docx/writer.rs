@@ -775,7 +775,15 @@ impl DocxWriter {
                 self.render_image(document, &image, out);
                 out.push_str("</w:r>");
             }
-            FloatingContent::TextBox { blocks, fill, .. } => {
+            FloatingContent::TextBox {
+                blocks,
+                fill,
+                line,
+                geometry,
+                flip,
+                ..
+            } => {
+                let has_text = !blocks.is_empty();
                 let mut content = String::new();
                 self.render_blocks(document, blocks, &mut content);
                 if content.is_empty() {
@@ -792,9 +800,34 @@ impl DocxWriter {
                     ),
                     None => "<a:noFill/>".to_string(),
                 };
+                let line_xml = match line {
+                    Some(line) => format!(
+                        "<a:ln w=\"{}\"><a:solidFill><a:srgbClr val=\"{}\"/></a:solidFill></a:ln>",
+                        emu(line.width),
+                        line.color
+                            .map_or_else(|| "000000".to_string(), |color| color.hex())
+                    ),
+                    None => "<a:ln><a:noFill/></a:ln>".to_string(),
+                };
+                let geometry_xml = geometry_xml(document, *geometry);
+                let flips = format!(
+                    "{}{}",
+                    if flip.0 { " flipH=\"1\"" } else { "" },
+                    if flip.1 { " flipV=\"1\"" } else { "" }
+                );
+                // A shape with text holds it in a text box body; one without
+                // is only drawn.
+                let (kind, body) = if has_text {
+                    (
+                        "<wps:cNvSpPr txBox=\"1\"/>",
+                        format!("<wps:txbx><w:txbxContent>{content}</w:txbxContent></wps:txbx>"),
+                    )
+                } else {
+                    ("<wps:cNvSpPr/>", String::new())
+                };
                 let _ = write!(
                     out,
-                    "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/><wp:wrapSquare wrapText=\"bothSides\"/><wp:docPr id=\"{number}\" name=\"Text Box {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{SHAPE}\"><wps:wsp><wps:cNvSpPr txBox=\"1\"/><wps:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>{fill_xml}<a:ln><a:noFill/></a:ln></wps:spPr><wps:txbx><w:txbxContent>{content}</w:txbxContent></wps:txbx><wps:bodyPr wrap=\"square\" lIns=\"50800\" tIns=\"50800\" rIns=\"50800\" bIns=\"50800\" anchor=\"t\"><a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
+                    "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/><wp:wrapSquare wrapText=\"bothSides\"/><wp:docPr id=\"{number}\" name=\"Shape {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{SHAPE}\"><wps:wsp>{kind}<wps:spPr><a:xfrm{flips}><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm>{geometry_xml}{fill_xml}{line_xml}</wps:spPr>{body}<wps:bodyPr wrap=\"square\" lIns=\"50800\" tIns=\"50800\" rIns=\"50800\" bIns=\"50800\" anchor=\"t\"><a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
                     251_658_240 + number,
                     emu(object.x),
                     emu(object.y),
@@ -1587,6 +1620,59 @@ fn border_xml(name: &str, side: Option<Option<crate::document::Border>>, out: &m
         }
         None => {}
     }
+}
+
+/// A shape's outline in DrawingML: a preset by name, or its own path.
+fn geometry_xml(document: &Document, geometry: crate::document::ShapeGeometry) -> String {
+    use crate::document::{PathStep, ShapeGeometry as G};
+    let preset = match geometry {
+        G::Rectangle => "rect",
+        G::RoundedRectangle => "roundRect",
+        G::Ellipse => "ellipse",
+        G::Triangle => "triangle",
+        G::RightTriangle => "rtTriangle",
+        G::Diamond => "diamond",
+        G::Pentagon => "pentagon",
+        G::Hexagon => "hexagon",
+        G::Octagon => "octagon",
+        G::Star => "star5",
+        G::RightArrow => "rightArrow",
+        G::LeftArrow => "leftArrow",
+        G::UpArrow => "upArrow",
+        G::DownArrow => "downArrow",
+        G::Line => "line",
+        G::Path(index) => {
+            let Some(path) = document.paths.get(index as usize) else {
+                return "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>".to_string();
+            };
+            let point = |(x, y): (f32, f32)| format!("<a:pt x=\"{}\" y=\"{}\"/>", emu(x), emu(y));
+            let mut commands = String::new();
+            for step in &path.steps {
+                match *step {
+                    PathStep::Move(x, y) => {
+                        let _ = write!(commands, "<a:moveTo>{}</a:moveTo>", point((x, y)));
+                    }
+                    PathStep::Line(x, y) => {
+                        let _ = write!(commands, "<a:lnTo>{}</a:lnTo>", point((x, y)));
+                    }
+                    PathStep::Curve(points) => {
+                        commands.push_str("<a:cubicBezTo>");
+                        for p in points {
+                            commands.push_str(&point(p));
+                        }
+                        commands.push_str("</a:cubicBezTo>");
+                    }
+                    PathStep::Close => commands.push_str("<a:close/>"),
+                }
+            }
+            return format!(
+                "<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l=\"0\" t=\"0\" r=\"r\" b=\"b\"/><a:pathLst><a:path w=\"{}\" h=\"{}\">{commands}</a:path></a:pathLst></a:custGeom>",
+                emu(path.width.max(0.01)),
+                emu(path.height.max(0.01))
+            );
+        }
+    };
+    format!("<a:prstGeom prst=\"{preset}\"><a:avLst/></a:prstGeom>")
 }
 
 #[cfg(test)]
