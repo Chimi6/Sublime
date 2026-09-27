@@ -61,6 +61,19 @@ pub fn write(document: &Document) -> Result<Vec<u8>, PackageError> {
     if let Some(section) = document.sections.first() {
         set_page_setup(&mut package, &section.page)?;
     }
+    // A document without headers (or footers) turns them off, as Pages
+    // imports one, so its body can start at the page's edge.
+    set_header_footer_visibility(
+        &mut package,
+        document
+            .sections
+            .iter()
+            .any(|section| !section.headers.is_empty()),
+        document
+            .sections
+            .iter()
+            .any(|section| !section.footers.is_empty()),
+    );
     // Declare every cross-component reference and UUID-map every text storage
     // the rewrite introduced, as Pages requires to load the package.
     reconcile_components(&mut package)?;
@@ -192,7 +205,7 @@ fn rebuild_body(
         .first()
         .map(|section| page_areas(document, section))
         .unwrap_or_default();
-    let boxes = text_boxes(document);
+    let boxes = text_boxes(document, &body.anchored);
     let mut next_id = max_identifier(package) + 1;
     let mut next_data_id = max_data_id(package) + 1;
 
@@ -309,6 +322,8 @@ fn rebuild_body(
 
     // Drawables floating on their pages: (page, drawable).
     let mut placed: Vec<(u32, u64)> = Vec::new();
+    // Drawables anchored in the body text: (index in the floating list, shape).
+    let mut in_text: Vec<(usize, u64)> = Vec::new();
     if let Some(styles) = cell_styles {
         write_page_areas(
             package,
@@ -318,7 +333,7 @@ fn rebuild_body(
             &para_styles,
             &mut next_id,
         )?;
-        placed = write_text_boxes(
+        let written = write_text_boxes(
             package,
             &boxes,
             &document.paths,
@@ -327,6 +342,8 @@ fn rebuild_body(
             &para_styles,
             &mut next_id,
         )?;
+        placed = written.on_pages;
+        in_text = written.anchored;
     }
 
     // The template carries one table: a document with more gets a clone of
@@ -446,8 +463,28 @@ fn rebuild_body(
         add_section_drawables(package, &repeated)?;
     }
     place_floating(package, &placed)?;
+    // A drawable moving with the text: an attachment at its object
+    // character, from the page's left edge and the paragraph's top.
+    let mut anchored_shapes = Vec::new();
+    for (offset, index) in &body.anchored {
+        let Some((_, shape)) = in_text.iter().find(|(at, _)| at == index) else {
+            continue;
+        };
+        let object = &document.floating[*index];
+        let attach_id = anchor_attachment(package, *shape, object.x, object.y, &mut next_id)?;
+        anchors.push((*offset, attach_id));
+        anchored_shapes.push(*shape);
+    }
+    append_to_zorder(package, &anchored_shapes)?;
     // Attachments anchor by ascending character offset in one table.
     anchors.sort_by_key(|(offset, _)| *offset);
+
+    let layout_entries = match stylesheet_id {
+        Some(sheet) if !body.layouts.is_empty() => {
+            column_entries(package, &body.layouts, sheet, &mut next_id)?
+        }
+        _ => Vec::new(),
+    };
 
     let stream = document_stream(package)?;
     let body_id = body_storage_identifier(stream)?;
@@ -480,10 +517,12 @@ fn rebuild_body(
         &anchors,
         &smart_entries,
         &para_styles,
+        &layout_entries,
     )?;
     stream.objects[index].messages[0].first = new_first;
     let info = stream.objects[index].info;
     let mut references: Vec<u64> = list_refs;
+    references.extend(layout_entries.iter().map(|(_, id)| *id));
     references.extend(anchors.iter().map(|(_, id)| *id));
     references.extend(link_objects.iter().map(|object| object.identifier));
     references.extend(style_refs);
@@ -2790,6 +2829,7 @@ fn build_storage(
     anchors: &[(u32, u64)],
     smart_entries: &[(u32, Option<u64>)],
     paras: &ParaStyles,
+    layouts: &[(u32, u64)],
 ) -> Result<(u32, Vec<u64>), PackageError> {
     let storage = message_ref("TSWP.StorageArchive")?;
     let has_tables = !anchors.is_empty();
@@ -2816,6 +2856,9 @@ fn build_storage(
     ];
     if has_links {
         owned.push("table_smartfield");
+    }
+    if !layouts.is_empty() {
+        owned.push("table_layout_style");
     }
     // Collect the kept fields before touching the tree (an immutable borrow).
     let mut kept: Vec<(u32, Node)> = Vec::new();
@@ -2957,6 +3000,15 @@ fn build_storage(
             "table_para_starts",
             &dedup_data(start_entries),
         )?;
+    }
+
+    // Column layouts, from offset 0 like the other tables.
+    if !layouts.is_empty() {
+        let entries: Vec<(u32, Option<u64>)> = layouts
+            .iter()
+            .map(|(offset, id)| (*offset, Some(*id)))
+            .collect();
+        emit_reference_table(tree, &mut chain, storage, "table_layout_style", &entries)?;
     }
 
     // One bidirectional-text entry for the whole text, as Pages writes it.
@@ -3212,6 +3264,8 @@ struct Body {
     link_marks: Vec<LinkMark>,
     tables: Vec<TableMark>,
     images: Vec<ImageMark>,
+    layouts: Vec<(u32, Option<ColumnLayout>)>,
+    anchored: Vec<(u32, usize)>,
 }
 
 /// Flattens the document into one text string (paragraphs joined by `\n`)
@@ -3230,16 +3284,29 @@ fn flatten(document: &Document) -> Body {
         current_link: None,
         pending_break: false,
         list_counters: ListCounters::default(),
+        layouts: Vec::new(),
+        pending_layout: None,
+        anchored: Vec::new(),
     };
+    let mut previous: Option<ColumnLayout> = None;
     for (index, section) in document.sections.iter().enumerate() {
         // A section that starts a new page breaks the page before it.
         if index > 0 && section.start != crate::document::SectionStart::Continuous {
             walk.pending_break = true;
         }
+        // A change of columns starts a new layout at the section's first
+        // paragraph, as Pages lays out a Word section's columns.
+        let layout = column_layout(section);
+        if index == 0 && layout.is_some() || index > 0 && layout != previous {
+            walk.pending_layout = Some(layout.clone());
+        }
+        previous = layout;
         walk.blocks(document, &section.blocks);
     }
     apply_contextual_spacing(&mut walk.paragraphs);
     Body {
+        layouts: walk.layouts,
+        anchored: walk.anchored,
         text: walk.text,
         paragraphs: walk.paragraphs,
         char_marks: walk.char_marks,
@@ -3282,7 +3349,16 @@ struct Walk {
     pending_break: bool,
     /// Numbering for list items inside table cells, continuing across cells.
     list_counters: ListCounters,
+    /// Where the column layout changes: (offset, layout; `None` one column).
+    layouts: Vec<(u32, Option<ColumnLayout>)>,
+    /// A layout waiting for the next paragraph to start it.
+    pending_layout: Option<Option<ColumnLayout>>,
+    /// Drawables anchored in the text: (offset, index in `Document::floating`).
+    anchored: Vec<(u32, usize)>,
 }
+
+/// Pages' column-break character (as Pages imports a Word column break).
+const COLUMN_BREAK: char = '\u{C}';
 
 /// Pages' page-break character, which opens the paragraph after the break.
 const PAGE_BREAK: char = '\u{5}';
@@ -3360,6 +3436,7 @@ impl Walk {
             contextual: false,
             list_indents: None,
         });
+        self.take_layout();
         self.take_break();
         let columns = table.columns.len();
         let rows = table.rows.len();
@@ -3513,6 +3590,7 @@ impl Walk {
                 .unwrap_or(false),
             list_indents: list_indents(document, paragraph),
         });
+        self.take_layout();
         self.take_break();
         for run in &paragraph.runs {
             // Deleted text, and text the source hides (Pages has no hidden
@@ -3528,14 +3606,32 @@ impl Walk {
                 }
                 continue;
             }
+            // A drawable moving with the text sits at its object character.
+            if let Inline::Anchor(index) = run.content {
+                let index = index as usize;
+                if document.floating.get(index).is_some_and(|object| {
+                    object.follows_text && text_box(document, object).is_some()
+                }) {
+                    self.mark(Format::default());
+                    self.link_mark(None);
+                    self.anchored.push((self.offset, index));
+                    self.text.push(ATTACHMENT);
+                    self.offset += 1;
+                }
+                continue;
+            }
             let raw = match run.content {
                 Inline::Text(span) => document.text(span),
                 Inline::Tab => "\t",
                 Inline::LineBreak => "\u{2028}",
-                Inline::PageBreak => {
+                Inline::PageBreak | Inline::ColumnBreak => {
                     self.mark(Format::default());
                     self.link_mark(None);
-                    self.text.push(PAGE_BREAK);
+                    self.text.push(if run.content == Inline::PageBreak {
+                        PAGE_BREAK
+                    } else {
+                        COLUMN_BREAK
+                    });
                     self.offset += 1;
                     self.continue_paragraph();
                     continue;
@@ -3550,6 +3646,15 @@ impl Walk {
             self.link_mark(run.link);
             self.text.push_str(&piece);
             self.offset += utf16_len(&piece);
+        }
+    }
+
+    /// Starts a pending column layout at the paragraph just begun.
+    fn take_layout(&mut self) {
+        if let Some(layout) = self.pending_layout.take()
+            && let Some(mark) = self.paragraphs.last()
+        {
+            self.layouts.push((mark.offset, layout));
         }
     }
 
@@ -5742,6 +5847,30 @@ fn set_page_setup(
     }
     Ok(())
 }
+
+/// Turns the document's headers and footers on or off.
+fn set_header_footer_visibility(package: &mut Package, headers: bool, footers: bool) {
+    for entry in &mut package.entries {
+        let Entry::Stream(stream) = entry else {
+            continue;
+        };
+        let settings: Vec<u32> = stream
+            .objects
+            .iter()
+            .filter(|object| first_type(object) == Some(SETTINGS_ARCHIVE))
+            .map(|object| object.messages[0].first)
+            .collect();
+        for first in settings {
+            for (name, on) in [("headers", headers), ("footers", footers)] {
+                if let Some(index) = field_entry(&stream.tree, first, name) {
+                    stream.tree.entries[index as usize].value = Node::Bool(on);
+                }
+            }
+        }
+    }
+}
+
+const SETTINGS_ARCHIVE: u32 = 10012;
 
 // ----- table cloning -----
 
@@ -7972,104 +8101,136 @@ struct TextBox {
     width: f32,
     height: f32,
     content: CellContent,
+    /// Its index in `Document::floating`.
+    index: usize,
+    /// Anchored in the body text rather than placed on its page.
+    anchored: bool,
+    wrap: crate::document::TextWrap,
 }
 
 /// The document's text boxes, their text flattened like a cell's.
-fn text_boxes(document: &Document) -> Vec<TextBox> {
+fn text_boxes(document: &Document, anchored: &[(u32, usize)]) -> Vec<TextBox> {
+    let top = document
+        .sections
+        .first()
+        .map_or(0.0, |section| section.page.margin_top);
     document
         .floating
         .iter()
-        .filter_map(|floating| match &floating.content {
-            crate::document::FloatingContent::TextBox {
-                blocks,
-                fill,
-                line,
-                geometry,
-                flip,
-                ..
-            } => {
-                let mut content =
-                    flatten_lines(document, &block_lines(blocks), &mut ListCounters::default());
-                let has_text = !content.text.trim().is_empty() || !content.fields.is_empty();
-                // A line keeps its thin extent; a box needs room for its text.
-                let least = if *geometry == crate::document::ShapeGeometry::Line {
-                    1.0
-                } else {
-                    12.0
-                };
-                // Pages judges a shape's empty text storage invalid and
-                // repairs it on load; a lone space keeps it well formed.
-                if content.text.is_empty() {
-                    content.text.push(' ');
-                }
-                (has_text || fill.is_some() || line.is_some()).then(|| TextBox {
-                    fill: *fill,
-                    line: *line,
-                    geometry: *geometry,
-                    flip: *flip,
-                    page: floating.page,
-                    x: floating.x,
-                    y: floating.y,
-                    width: floating.width.max(least),
-                    height: floating.height.max(least),
-                    content,
-                })
+        .enumerate()
+        .filter_map(|(index, floating)| {
+            let mut text_box = text_box(document, floating)?;
+            text_box.index = index;
+            text_box.anchored = anchored.iter().any(|(_, at)| *at == index);
+            // One moving with text the body could not hold (in a table
+            // cell, say) goes on its page, from the top of the text area.
+            if floating.follows_text && !text_box.anchored {
+                text_box.y += top;
             }
-            // A chart Pages cannot draw from here keeps its data: a box of
-            // tab-separated lines, a series per column.
-            crate::document::FloatingContent::Chart(chart) => {
-                let mut lines = vec![
-                    std::iter::once(String::new())
-                        .chain(chart.series.iter().map(|series| series.name.clone()))
-                        .collect::<Vec<_>>()
-                        .join("\t"),
-                ];
-                for (index, category) in chart.categories.iter().enumerate() {
-                    let values = chart.series.iter().map(|series| {
-                        series
-                            .values
-                            .get(index)
-                            .copied()
-                            .flatten()
-                            .map(|value| value.to_string())
-                            .unwrap_or_default()
-                    });
-                    lines.push(
-                        std::iter::once(category.clone())
-                            .chain(values)
-                            .collect::<Vec<_>>()
-                            .join("\t"),
-                    );
-                }
-                let mut text = String::new();
-                let mut paragraphs = Vec::new();
-                for line in &lines {
-                    if !text.is_empty() {
-                        text.push('\n');
-                    }
-                    paragraphs.push((utf16_len(&text), ParaFormat::default()));
-                    text.push_str(line);
-                }
-                Some(TextBox {
-                    fill: None,
-                    line: None,
-                    geometry: crate::document::ShapeGeometry::Rectangle,
-                    flip: (false, false),
-                    page: floating.page,
-                    x: floating.x,
-                    y: floating.y,
-                    width: floating.width.max(12.0),
-                    height: floating.height.max(12.0),
-                    content: CellContent {
-                        text,
-                        paragraphs,
-                        ..CellContent::default()
-                    },
-                })
-            }
-            _ => None,
+            Some(text_box)
         })
         .collect()
+}
+
+/// A floating object as a text box, when it draws or holds anything.
+fn text_box(document: &Document, floating: &crate::document::FloatingObject) -> Option<TextBox> {
+    match &floating.content {
+        crate::document::FloatingContent::TextBox {
+            blocks,
+            fill,
+            line,
+            geometry,
+            flip,
+            ..
+        } => {
+            let mut content =
+                flatten_lines(document, &block_lines(blocks), &mut ListCounters::default());
+            let has_text = !content.text.trim().is_empty() || !content.fields.is_empty();
+            // A line keeps its thin extent; a box needs room for its text.
+            let least = if *geometry == crate::document::ShapeGeometry::Line {
+                1.0
+            } else {
+                12.0
+            };
+            // Pages judges a shape's empty text storage invalid and
+            // repairs it on load; a lone space keeps it well formed.
+            if content.text.is_empty() {
+                content.text.push(' ');
+            }
+            (has_text || fill.is_some() || line.is_some()).then(|| TextBox {
+                fill: *fill,
+                line: *line,
+                geometry: *geometry,
+                flip: *flip,
+                page: floating.page,
+                x: floating.x,
+                y: floating.y,
+                // A shape without text keeps its own (thin) extent.
+                width: floating.width.max(if has_text { least } else { 1.0 }),
+                height: floating.height.max(if has_text { least } else { 1.0 }),
+                content,
+                index: 0,
+                anchored: false,
+                wrap: floating.wrap,
+            })
+        }
+        // A chart Pages cannot draw from here keeps its data: a box of
+        // tab-separated lines, a series per column.
+        crate::document::FloatingContent::Chart(chart) => {
+            let mut lines = vec![
+                std::iter::once(String::new())
+                    .chain(chart.series.iter().map(|series| series.name.clone()))
+                    .collect::<Vec<_>>()
+                    .join("\t"),
+            ];
+            for (index, category) in chart.categories.iter().enumerate() {
+                let values = chart.series.iter().map(|series| {
+                    series
+                        .values
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .map(|value| value.to_string())
+                        .unwrap_or_default()
+                });
+                lines.push(
+                    std::iter::once(category.clone())
+                        .chain(values)
+                        .collect::<Vec<_>>()
+                        .join("\t"),
+                );
+            }
+            let mut text = String::new();
+            let mut paragraphs = Vec::new();
+            for line in &lines {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                paragraphs.push((utf16_len(&text), ParaFormat::default()));
+                text.push_str(line);
+            }
+            Some(TextBox {
+                fill: None,
+                line: None,
+                geometry: crate::document::ShapeGeometry::Rectangle,
+                flip: (false, false),
+                page: floating.page,
+                x: floating.x,
+                y: floating.y,
+                width: floating.width.max(12.0),
+                height: floating.height.max(12.0),
+                content: CellContent {
+                    text,
+                    paragraphs,
+                    ..CellContent::default()
+                },
+                index: 0,
+                anchored: false,
+                wrap: floating.wrap,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Writes each text box as a Pages shape (the "Body" shape style, a text
@@ -8084,9 +8245,9 @@ fn write_text_boxes(
     styles: CellStyles,
     paras: &ParaStyles,
     next_id: &mut u64,
-) -> Result<Vec<(u32, u64)>, PackageError> {
+) -> Result<PlacedBoxes, PackageError> {
     if boxes.is_empty() {
-        return Ok(Vec::new());
+        return Ok(PlacedBoxes::default());
     }
     let shape_style = shape_style_identified(package, "textbox-0-shapestyle")
         .ok_or_else(|| malformed("template has no text box shape style"))?;
@@ -8115,6 +8276,7 @@ fn write_text_boxes(
         _ => HashMap::new(),
     };
     let stream = document_stream(package)?;
+    let body_id = body_storage_identifier(stream)?;
     let shape_info = message_ref("TSWP.ShapeInfoArchive")?;
     let shape = child_message(shape_info, "super")?;
     let drawable = child_message(shape, "super")?;
@@ -8127,7 +8289,7 @@ fn write_text_boxes(
     let caption = message_ref("TSD.StandinCaptionArchive")?;
     let _ = caption;
 
-    let mut placed: Vec<(u32, u64)> = Vec::new();
+    let mut placed = PlacedBoxes::default();
     for text_box in boxes {
         let storage_id = *next_id;
         let title_id = *next_id + 1;
@@ -8186,11 +8348,24 @@ fn write_text_boxes(
         )?;
         push_field(tree, &mut geo, geometry, "flags", Node::Uint(3))?;
         push_field(tree, &mut geo, geometry, "angle", Node::Float(0.0))?;
+        // Pages' wrap types, as it imports Word's: 2 above and below, 5
+        // none, 4 around.
+        let (wrap_type, fit_type, margin) = match text_box.wrap {
+            crate::document::TextWrap::TopAndBottom => (2, 0, 0.0),
+            crate::document::TextWrap::None => (5, 1, 0.0),
+            crate::document::TextWrap::Around => (4, 1, 12.0),
+        };
         let mut wrap_chain = Chain::new();
-        push_field(tree, &mut wrap_chain, wrap, "type", Node::Uint(4))?;
+        push_field(tree, &mut wrap_chain, wrap, "type", Node::Uint(wrap_type))?;
         push_field(tree, &mut wrap_chain, wrap, "direction", Node::Uint(2))?;
-        push_field(tree, &mut wrap_chain, wrap, "fit_type", Node::Uint(1))?;
-        push_field(tree, &mut wrap_chain, wrap, "margin", Node::Float(12.0))?;
+        push_field(
+            tree,
+            &mut wrap_chain,
+            wrap,
+            "fit_type",
+            Node::Uint(fit_type),
+        )?;
+        push_field(tree, &mut wrap_chain, wrap, "margin", Node::Float(margin))?;
         push_field(
             tree,
             &mut wrap_chain,
@@ -8213,6 +8388,15 @@ fn write_text_boxes(
             "geometry",
             Node::Message(geo.first),
         )?;
+        if text_box.anchored {
+            push_field(
+                tree,
+                &mut draw,
+                drawable,
+                "parent",
+                Node::Reference(body_id),
+            )?;
+        }
         push_field(
             tree,
             &mut draw,
@@ -8369,12 +8553,11 @@ fn write_text_boxes(
             "is_text_box",
             Node::Bool(true),
         )?;
-        objects.push((
-            shape_id,
-            SHAPE_INFO,
-            info_chain.first,
-            vec![title_id, caption_id, style, storage_id],
-        ));
+        let mut shape_refs = vec![title_id, caption_id, style, storage_id];
+        if text_box.anchored {
+            shape_refs.push(body_id);
+        }
+        objects.push((shape_id, SHAPE_INFO, info_chain.first, shape_refs));
 
         for (id, kind, first, refs) in objects {
             let info = build_archive_info(tree, id, kind)?;
@@ -8388,10 +8571,22 @@ fn write_text_boxes(
                 }],
             });
         }
-        placed.push((text_box.page, shape_id));
+        if text_box.anchored {
+            placed.anchored.push((text_box.index, shape_id));
+        } else {
+            placed.on_pages.push((text_box.page, shape_id));
+        }
     }
 
     Ok(placed)
+}
+
+/// Written text boxes: those on pages as (page, shape), and those anchored
+/// in the text as (index in `Document::floating`, shape).
+#[derive(Default)]
+struct PlacedBoxes {
+    on_pages: Vec<(u32, u64)>,
+    anchored: Vec<(usize, u64)>,
 }
 
 /// The template's shape style with style identifier `identifier` (at
@@ -9531,24 +9726,16 @@ fn place_floating(package: &mut Package, placed: &[(u32, u64)]) -> Result<(), Pa
         return Ok(());
     }
     let stream = document_stream(package)?;
-    let (floating_id, zorder_id) = {
-        let find = |kind| {
-            stream
-                .objects
-                .iter()
-                .find(|object| first_type(object) == Some(kind))
-                .map(|object| object.identifier)
-        };
-        (
-            find(FLOATING_DRAWABLES).ok_or_else(|| malformed("no floating drawables"))?,
-            find(DRAWABLES_ZORDER).ok_or_else(|| malformed("no drawables z-order"))?,
-        )
-    };
+    let floating_id = stream
+        .objects
+        .iter()
+        .find(|object| first_type(object) == Some(FLOATING_DRAWABLES))
+        .map(|object| object.identifier)
+        .ok_or_else(|| malformed("no floating drawables"))?;
     // List each drawable under its page, and on top in the z-order.
     let floating = message_ref("TP.FloatingDrawablesArchive")?;
     let group = child_message(floating, "page_groups")?;
     let entry = child_message(group, "drawables")?;
-    let zorder = message_ref("TP.DrawablesZOrderArchive")?;
     let tree = &mut stream.tree;
     let (floating_first, floating_info) = stream
         .objects
@@ -9615,17 +9802,66 @@ fn place_floating(package: &mut Package, placed: &[(u32, u64)]) -> Result<(), Pa
     {
         object.messages[0].first = chain.first;
     }
+    append_to_zorder(package, &shape_ids)
+}
+
+/// Lists drawables on top in the document's z-order.
+fn append_to_zorder(package: &mut Package, ids: &[u64]) -> Result<(), PackageError> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let stream = document_stream(package)?;
+    let zorder = message_ref("TP.DrawablesZOrderArchive")?;
     let (zorder_first, zorder_info) = stream
         .objects
         .iter()
-        .find(|object| object.identifier == zorder_id)
+        .find(|object| first_type(object) == Some(DRAWABLES_ZORDER))
         .map(|object| (object.messages[0].first, object.info))
         .ok_or_else(|| malformed("z-order missing"))?;
-    for id in &shape_ids {
+    for id in ids {
         append_message_reference(&mut stream.tree, zorder, zorder_first, "drawables", *id)?;
     }
-    add_object_references(&mut stream.tree, zorder_info, &shape_ids)?;
+    add_object_references(&mut stream.tree, zorder_info, ids)?;
     Ok(())
+}
+
+/// A drawable attachment anchoring `drawable` in the body text, offset from
+/// the page's left edge and the anchoring paragraph's top.
+fn anchor_attachment(
+    package: &mut Package,
+    drawable: u64,
+    x: f32,
+    y: f32,
+    next_id: &mut u64,
+) -> Result<u64, PackageError> {
+    let stream = document_stream(package)?;
+    let attachment = message_ref("TSWP.DrawableAttachmentArchive")?;
+    let tree = &mut stream.tree;
+    let mut chain = Chain::new();
+    push_field(
+        tree,
+        &mut chain,
+        attachment,
+        "drawable",
+        Node::Reference(drawable),
+    )?;
+    push_field(tree, &mut chain, attachment, "h_offset_type", Node::Uint(2))?;
+    push_field(tree, &mut chain, attachment, "h_offset", Node::Float(x))?;
+    push_field(tree, &mut chain, attachment, "v_offset_type", Node::Uint(0))?;
+    push_field(tree, &mut chain, attachment, "v_offset", Node::Float(y))?;
+    let id = *next_id;
+    *next_id += 1;
+    let info = build_archive_info(tree, id, DRAWABLE_ATTACHMENT)?;
+    add_object_references(tree, info, &[drawable])?;
+    stream.objects.push(Object {
+        identifier: id,
+        info,
+        messages: vec![ObjectMessage {
+            message_type: DRAWABLE_ATTACHMENT,
+            first: chain.first,
+        }],
+    });
+    Ok(id)
 }
 
 /// Turns a cloned inline image into one floating on its page at (x, y): its
@@ -9822,4 +10058,246 @@ fn add_section_drawables(package: &mut Package, drawables: &[u64]) -> Result<(),
     }
     add_object_references(&mut stream.tree, info, drawables)?;
     Ok(())
+}
+
+// ----- columns -----
+
+/// A section's columns as Pages keeps them: shares of the text width, as
+/// bits so the layout can key a map. `(count, gap)` for equal columns, or the
+/// first width then each (gap, width) pair for columns of their own widths.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+enum ColumnLayout {
+    Equal(u16, u32),
+    Unequal(u32, Vec<(u32, u32)>),
+}
+
+/// The column layout of a section with more than one column.
+fn column_layout(section: &crate::document::Section) -> Option<ColumnLayout> {
+    if section.columns <= 1 {
+        return None;
+    }
+    let page = &section.page;
+    let text_width = (page.width - page.margin_left - page.margin_right).max(1.0);
+    let share = |points: f32| (points / text_width).clamp(0.0, 1.0).to_bits();
+    if section.column_widths.len() == usize::from(section.columns) {
+        let widths = &section.column_widths;
+        let following = widths
+            .windows(2)
+            .map(|pair| (share(pair[0].1), share(pair[1].0)))
+            .collect();
+        return Some(ColumnLayout::Unequal(share(widths[0].0), following));
+    }
+    Some(ColumnLayout::Equal(
+        section.columns,
+        share(section.column_gap.unwrap_or(36.0)),
+    ))
+}
+
+/// Creates a `TSWP.ColumnStyleArchive` variation of the template's column
+/// style for each distinct layout (in the stylesheet's stream, registered
+/// there), keyed by layout.
+fn create_column_styles(
+    package: &mut Package,
+    layouts: &[ColumnLayout],
+    parent: u64,
+    stylesheet: u64,
+    next_id: &mut u64,
+) -> Result<HashMap<ColumnLayout, u64>, PackageError> {
+    let archive = message_ref("TSWP.ColumnStyleArchive")?;
+    let base = child_message(archive, "super")?;
+    let properties = child_message(archive, "column_properties")?;
+    let columns = child_message(properties, "columns")?;
+    let equal = child_message(columns, "equal_columns")?;
+    let unequal = child_message(columns, "non_equal_columns")?;
+    let gap_width = child_message(unequal, "following")?;
+    let mut out = HashMap::new();
+    let mut pairs = Vec::new();
+    let stream = stream_containing(package, stylesheet)?;
+    for layout in layouts {
+        if out.contains_key(layout) {
+            continue;
+        }
+        let tree = &mut stream.tree;
+        let id = *next_id;
+        *next_id += 1;
+        let mut super_chain = Chain::new();
+        push_field(
+            tree,
+            &mut super_chain,
+            base,
+            "parent",
+            Node::Reference(parent),
+        )?;
+        push_field(
+            tree,
+            &mut super_chain,
+            base,
+            "is_variation",
+            Node::Bool(true),
+        )?;
+        push_field(
+            tree,
+            &mut super_chain,
+            base,
+            "stylesheet",
+            Node::Reference(stylesheet),
+        )?;
+        let mut columns_chain = Chain::new();
+        match layout {
+            ColumnLayout::Equal(count, gap) => {
+                let mut equal_chain = Chain::new();
+                push_field(
+                    tree,
+                    &mut equal_chain,
+                    equal,
+                    "count",
+                    Node::Uint(u64::from(*count)),
+                )?;
+                push_field(
+                    tree,
+                    &mut equal_chain,
+                    equal,
+                    "gap",
+                    Node::Float(f32::from_bits(*gap)),
+                )?;
+                push_field(
+                    tree,
+                    &mut columns_chain,
+                    columns,
+                    "equal_columns",
+                    Node::Message(equal_chain.first),
+                )?;
+            }
+            ColumnLayout::Unequal(first, following) => {
+                let mut unequal_chain = Chain::new();
+                push_field(
+                    tree,
+                    &mut unequal_chain,
+                    unequal,
+                    "first",
+                    Node::Float(f32::from_bits(*first)),
+                )?;
+                for (gap, width) in following {
+                    let mut pair = Chain::new();
+                    push_field(
+                        tree,
+                        &mut pair,
+                        gap_width,
+                        "gap",
+                        Node::Float(f32::from_bits(*gap)),
+                    )?;
+                    push_field(
+                        tree,
+                        &mut pair,
+                        gap_width,
+                        "width",
+                        Node::Float(f32::from_bits(*width)),
+                    )?;
+                    push_field(
+                        tree,
+                        &mut unequal_chain,
+                        unequal,
+                        "following",
+                        Node::Message(pair.first),
+                    )?;
+                }
+                push_field(
+                    tree,
+                    &mut columns_chain,
+                    columns,
+                    "non_equal_columns",
+                    Node::Message(unequal_chain.first),
+                )?;
+            }
+        }
+        let mut properties_chain = Chain::new();
+        push_field(
+            tree,
+            &mut properties_chain,
+            properties,
+            "columns",
+            Node::Message(columns_chain.first),
+        )?;
+        let mut chain = Chain::new();
+        push_field(
+            tree,
+            &mut chain,
+            archive,
+            "super",
+            Node::Message(super_chain.first),
+        )?;
+        push_field(tree, &mut chain, archive, "override_count", Node::Uint(1))?;
+        push_field(
+            tree,
+            &mut chain,
+            archive,
+            "column_properties",
+            Node::Message(properties_chain.first),
+        )?;
+        let info = build_archive_info(tree, id, COLUMN_STYLE)?;
+        add_object_references(tree, info, &[parent, stylesheet])?;
+        stream.objects.push(Object {
+            identifier: id,
+            info,
+            messages: vec![ObjectMessage {
+                message_type: COLUMN_STYLE,
+                first: chain.first,
+            }],
+        });
+        out.insert(layout.clone(), id);
+        pairs.push((parent, id));
+    }
+    register_in_stylesheet(package, stylesheet, &pairs)?;
+    Ok(out)
+}
+
+const COLUMN_STYLE: u32 = 2024;
+
+/// The body's column-layout entries: the template's own (one-column) layout
+/// where a section has one column, a variation of it for each other layout,
+/// always starting at offset 0. Empty when the template has no layout table.
+fn column_entries(
+    package: &mut Package,
+    layouts: &[(u32, Option<ColumnLayout>)],
+    stylesheet: u64,
+    next_id: &mut u64,
+) -> Result<Vec<(u32, u64)>, PackageError> {
+    let base = {
+        let stream = document_stream(package)?;
+        let body_id = body_storage_identifier(stream)?;
+        let first = stream
+            .objects
+            .iter()
+            .find(|object| object.identifier == body_id)
+            .and_then(|object| object.messages.first())
+            .map(|message| message.first);
+        first.and_then(|first| {
+            let table = message_field(&stream.tree, first, "table_layout_style")?;
+            let entry = message_field(&stream.tree, table, "entries")?;
+            match field_value(&stream.tree, entry, "object")? {
+                Node::Reference(identifier) => Some(identifier),
+                _ => None,
+            }
+        })
+    };
+    let Some(base) = base else {
+        return Ok(Vec::new());
+    };
+    let distinct: Vec<ColumnLayout> = layouts
+        .iter()
+        .filter_map(|(_, layout)| layout.clone())
+        .collect();
+    let styles = create_column_styles(package, &distinct, base, stylesheet, next_id)?;
+    let mut entries: Vec<(u32, u64)> = Vec::new();
+    if layouts.first().is_none_or(|(offset, _)| *offset != 0) {
+        entries.push((0, base));
+    }
+    for (offset, layout) in layouts {
+        let id = layout
+            .as_ref()
+            .and_then(|layout| styles.get(layout))
+            .copied();
+        entries.push((*offset, id.unwrap_or(base)));
+    }
+    Ok(entries)
 }

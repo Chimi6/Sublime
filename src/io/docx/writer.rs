@@ -14,8 +14,8 @@ use std::io;
 use crate::document::{
     Alignment, Anchor, AnchorBase, Baseline, Block, Caps, Document, FloatingContent, Inline,
     InlineImage, LineSpacing, ListLabel, Merge, NumberKind, Paragraph, ParagraphProperties,
-    Placement, RevisionKind, Run, RunProperties, Section, SectionStart, Table, VerticalAlignment,
-    mathml_text,
+    Placement, RevisionKind, Run, RunProperties, Section, SectionStart, Table, TextWrap,
+    VerticalAlignment, mathml_text,
 };
 use crate::io::deflate::Level;
 use crate::io::xml::{escape_attribute, escape_text};
@@ -316,7 +316,8 @@ impl DocxWriter {
     fn floating_due(&mut self, document: &Document, page: u32, all: bool) -> Vec<usize> {
         let mut due = Vec::new();
         for (index, object) in document.floating.iter().enumerate() {
-            if self.floating_done[index] {
+            // One moving with the text is written at its anchor run.
+            if self.floating_done[index] || object.follows_text {
                 continue;
             }
             if all || object.page <= page {
@@ -649,6 +650,17 @@ impl DocxWriter {
             );
             return;
         }
+        // An object moving with the text is drawn at its anchor.
+        if let Inline::Anchor(index) = run.content {
+            if document
+                .floating
+                .get(index as usize)
+                .is_some_and(|object| object.follows_text)
+            {
+                self.render_floating(document, index as usize, out);
+            }
+            return;
+        }
         out.push_str("<w:r>");
         out.push_str(&properties);
         let deleted = document.is_deleted(run);
@@ -667,6 +679,7 @@ impl DocxWriter {
                 let _ = write!(out, "</{element}>");
             }
             Inline::PageBreak => out.push_str("<w:br w:type=\"page\"/>"),
+            Inline::ColumnBreak => out.push_str("<w:br w:type=\"column\"/>"),
             // Equations are written as their text until Office Math is
             // supported.
             Inline::Math(span) => {
@@ -684,7 +697,7 @@ impl DocxWriter {
                     self.render_image(document, image, out);
                 }
             }
-            Inline::PageNumber | Inline::PageCount => {}
+            Inline::PageNumber | Inline::PageCount | Inline::Anchor(_) => {}
         }
         out.push_str("</w:r>");
     }
@@ -789,8 +802,23 @@ impl DocxWriter {
             offset: object.x,
         };
         let vertical = Anchor {
-            from: AnchorBase::Page,
+            from: if object.follows_text {
+                AnchorBase::Line
+            } else {
+                AnchorBase::Page
+            },
             offset: object.y,
+        };
+        let wrap_xml = match object.wrap {
+            TextWrap::Around => "<wp:wrapSquare wrapText=\"bothSides\"/>",
+            TextWrap::TopAndBottom => "<wp:wrapTopAndBottom/>",
+            TextWrap::None => "<wp:wrapNone/>",
+        };
+        // Word measures an anchored object from its paragraph.
+        let from_v = if object.follows_text {
+            "paragraph"
+        } else {
+            "page"
         };
         match &object.content {
             FloatingContent::Image(media) => {
@@ -817,7 +845,7 @@ impl DocxWriter {
                 let number = self.drawings;
                 let _ = write!(
                     out,
-                    "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{}\" cy=\"{}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/><wp:wrapSquare wrapText=\"bothSides\"/><wp:docPr id=\"{number}\" name=\"Chart {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{CHART}\"><c:chart xmlns:c=\"{CHART}\" r:id=\"rId{}\"/></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
+                    "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"{from_v}\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{}\" cy=\"{}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>{wrap_xml}<wp:docPr id=\"{number}\" name=\"Chart {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{CHART}\"><c:chart xmlns:c=\"{CHART}\" r:id=\"rId{}\"/></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
                     251_658_240 + number,
                     emu(object.x),
                     emu(object.y),
@@ -878,7 +906,7 @@ impl DocxWriter {
                 };
                 let _ = write!(
                     out,
-                    "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/><wp:wrapSquare wrapText=\"bothSides\"/><wp:docPr id=\"{number}\" name=\"Shape {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{SHAPE}\"><wps:wsp>{kind}<wps:spPr><a:xfrm{flips}><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm>{geometry_xml}{fill_xml}{line_xml}</wps:spPr>{body}<wps:bodyPr wrap=\"square\" lIns=\"50800\" tIns=\"50800\" rIns=\"50800\" bIns=\"50800\" anchor=\"t\"><a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
+                    "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"{from_v}\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>{wrap_xml}<wp:docPr id=\"{number}\" name=\"Shape {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{SHAPE}\"><wps:wsp>{kind}<wps:spPr><a:xfrm{flips}><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm>{geometry_xml}{fill_xml}{line_xml}</wps:spPr>{body}<wps:bodyPr wrap=\"square\" lIns=\"50800\" tIns=\"50800\" rIns=\"50800\" bIns=\"50800\" anchor=\"t\"><a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
                     251_658_240 + number,
                     emu(object.x),
                     emu(object.y),
@@ -1020,11 +1048,29 @@ impl DocxWriter {
             let _ = write!(xml, "<w:pgNumType w:start=\"{start}\"/>");
         }
         if section.columns > 1 {
-            let _ = write!(
-                xml,
-                "<w:cols w:num=\"{}\" w:space=\"708\"/>",
-                section.columns
-            );
+            let gap = section.column_gap.map_or(708, twips);
+            if section.column_widths.is_empty() {
+                let _ = write!(
+                    xml,
+                    "<w:cols w:num=\"{}\" w:space=\"{gap}\"/>",
+                    section.columns
+                );
+            } else {
+                let _ = write!(
+                    xml,
+                    "<w:cols w:num=\"{}\" w:space=\"{gap}\" w:equalWidth=\"0\">",
+                    section.columns
+                );
+                for (width, space) in &section.column_widths {
+                    let _ = write!(
+                        xml,
+                        "<w:col w:w=\"{}\" w:space=\"{}\"/>",
+                        twips(*width),
+                        twips(*space)
+                    );
+                }
+                xml.push_str("</w:cols>");
+            }
         }
         if section.headers.first.is_some() || section.footers.first.is_some() {
             xml.push_str("<w:titlePg/>");

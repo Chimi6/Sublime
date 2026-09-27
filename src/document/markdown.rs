@@ -176,7 +176,7 @@ impl<'a> Emitter<'a, '_> {
         let has_content = paragraph.runs.iter().any(|run| {
             !matches!(
                 run.content,
-                Inline::PageBreak | Inline::PageNumber | Inline::PageCount
+                Inline::PageBreak | Inline::ColumnBreak | Inline::PageNumber | Inline::PageCount
             )
         });
         let kind = paragraph
@@ -568,7 +568,12 @@ impl<'a> Emitter<'a, '_> {
             Inline::Math(span) => self.sink.event(Event::Code(Cow::Owned(mathml_text(
                 self.document.text(span),
             )))),
-            Inline::PageBreak | Inline::PageNumber | Inline::PageCount => {}
+            // Floating objects are written after the body.
+            Inline::PageBreak
+            | Inline::ColumnBreak
+            | Inline::PageNumber
+            | Inline::PageCount
+            | Inline::Anchor(_) => {}
         }
     }
 
