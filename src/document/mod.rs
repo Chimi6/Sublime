@@ -85,6 +85,9 @@ pub struct StyleTable {
     pub paragraph: Vec<ParagraphStyle>,
     pub character: Vec<CharacterStyle>,
     pub list: Vec<ListStyle>,
+    /// The paragraph style a paragraph without one of its own takes (Word's
+    /// `w:default="1"` style, usually Normal), if the source names one.
+    pub default_paragraph: Option<StyleId>,
 }
 
 impl StyleTable {
@@ -667,7 +670,7 @@ impl Document {
     /// A paragraph's effective paragraph formatting: its style's, then its
     /// own.
     pub fn effective_paragraph(&self, paragraph: &Paragraph) -> ParagraphProperties {
-        let mut properties = match paragraph.style {
+        let mut properties = match paragraph.style.or(self.styles.default_paragraph) {
             Some(style) => self.paragraph_style_properties(style),
             None => ParagraphProperties::default(),
         };
@@ -679,7 +682,7 @@ impl Document {
     /// character formatting, then character style, then the run's own.
     #[inline(never)]
     pub fn effective_run(&self, paragraph: &Paragraph, run: &Run) -> RunProperties {
-        let mut properties = match paragraph.style {
+        let mut properties = match paragraph.style.or(self.styles.default_paragraph) {
             Some(style) => self.paragraph_style_run(style),
             None => RunProperties::default(),
         };
