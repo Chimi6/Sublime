@@ -1375,6 +1375,13 @@ impl Reader<'_> {
         }
         table.header_rows = header_rows;
         table.rows = resolve_merges(rows);
+        // A grid may declare more columns than any row reaches (Google Docs and
+        // some templates pad tblGrid); Word lays out only the occupied ones, so
+        // the unused trailing columns are dropped rather than rendered empty.
+        let used = table.rows.iter().map(|row| row.cells.len()).max().unwrap_or(0);
+        if used > 0 && used < table.columns.len() {
+            table.columns.truncate(used);
+        }
         table
     }
 
