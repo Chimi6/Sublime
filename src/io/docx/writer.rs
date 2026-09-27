@@ -1102,7 +1102,15 @@ impl DocxWriter {
                             NumberKind::LowerRoman => "lowerRoman",
                             NumberKind::UpperRoman => "upperRoman",
                         },
-                        number.pattern.replace("%1", &format!("%{}", level + 1)),
+                        {
+                            // A tiered level leads with its parents' numbers.
+                            let parents: String = if number.tiered {
+                                (1..=level).map(|parent| format!("%{parent}.")).collect()
+                            } else {
+                                String::new()
+                            };
+                            parents + &number.pattern.replace("%1", &format!("%{}", level + 1))
+                        },
                     ),
                 };
                 let left = twips(definition.indent);

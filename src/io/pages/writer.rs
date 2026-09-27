@@ -3555,10 +3555,28 @@ impl ListCounters {
             .get(item.style)?
             .levels
             .get(item.level as usize)?;
+        let count = *count;
         match &level.label {
             crate::document::ListLabel::None => None,
             crate::document::ListLabel::Text(text) => Some(text.clone()),
-            crate::document::ListLabel::Number(format) => Some(format.label(*count)),
+            crate::document::ListLabel::Number(format) if format.tiered => {
+                // Its parents' numbers lead: 1.2.3.
+                let style = document.styles.list.get(item.style)?;
+                let mut label = String::new();
+                for parent in 0..item.level {
+                    let number = self.counts.get(&(item.style, parent)).copied().unwrap_or(1);
+                    let kind = match style.levels.get(parent as usize).map(|level| &level.label) {
+                        Some(crate::document::ListLabel::Number(parent_format)) => {
+                            parent_format.kind
+                        }
+                        _ => crate::document::NumberKind::Decimal,
+                    };
+                    label.push_str(&kind.format(number));
+                    label.push('.');
+                }
+                Some(label + &format.label(count))
+            }
+            crate::document::ListLabel::Number(format) => Some(format.label(count)),
         }
         .filter(|label| !label.is_empty())
     }
@@ -8724,13 +8742,17 @@ fn synthesize_list_styles(
                 Node::Uint(number),
             )?;
         }
-        for _ in 0..LIST_LEVELS {
+        for index in 0..LIST_LEVELS {
+            let tiered = matches!(
+                level(index).map(|level| &level.label),
+                Some(ListLabel::Number(format)) if format.tiered
+            );
             push_field(
                 tree,
                 &mut chain,
                 archive,
                 "tiered_numbers",
-                Node::Bool(false),
+                Node::Bool(tiered),
             )?;
         }
         let info = build_archive_info(tree, id, LIST_STYLE)?;

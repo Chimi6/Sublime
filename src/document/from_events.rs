@@ -836,6 +836,7 @@ fn built_in_styles(document: &mut Document) -> BuiltInStyles {
             label: ListLabel::Number(NumberFormat {
                 kind: NumberKind::Decimal,
                 pattern: "%1.".to_string(),
+                tiered: false,
             }),
             indent: LEVEL_INDENT * (level as f32 + 1.0),
             label_indent: LEVEL_INDENT * (level as f32 + 1.0) - 18.0,
