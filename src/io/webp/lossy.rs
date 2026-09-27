@@ -882,25 +882,21 @@ fn simple_edge(p: &mut [u8], at: usize, across: isize, along: isize, count: usiz
     }
 }
 
-/// The normal filter at one position: the eight samples across the edge
-/// are read once, decided on and filtered as locals, and only the ones
-/// that change are written back (libwebp's `FilterLoop26`/`FilterLoop24`
-/// arithmetic).
+/// The normal filter at one position, on the eight samples across the
+/// edge as locals (libwebp's `FilterLoop26`/`FilterLoop24` arithmetic).
+/// Returns whether the samples changed.
 #[inline(always)]
-fn normal_position(
-    p: &mut [u8],
-    at: usize,
-    step: usize,
+fn normal_filter(
+    samples: &mut [u8; 8],
     threshold: i32,
     interior: i32,
     hev: i32,
     macroblock_edge: bool,
-) {
-    let base = at - 4 * step;
-    let s = |k: usize| i32::from(p[base + k * step]);
+) -> bool {
+    let s = |k: usize| i32::from(samples[k]);
     let (p3, p2, p1, p0, q0, q1, q2, q3) = (s(0), s(1), s(2), s(3), s(4), s(5), s(6), s(7));
     if 4 * (p0 - q0).abs() + (p1 - q1).abs() > threshold {
-        return;
+        return false;
     }
     if (p3 - p2).abs() > interior
         || (p2 - p1).abs() > interior
@@ -909,36 +905,37 @@ fn normal_position(
         || (q2 - q1).abs() > interior
         || (q1 - q0).abs() > interior
     {
-        return;
+        return false;
     }
     if (p1 - p0).abs() > hev || (q1 - q0).abs() > hev {
         // High edge variance: the two-sample filter.
         let a = 3 * (q0 - p0) + sclip1(p1 - q1);
         let a1 = sclip2((a + 4) >> 3);
         let a2 = sclip2((a + 3) >> 3);
-        p[base + 3 * step] = clip255(p0 + a2);
-        p[base + 4 * step] = clip255(q0 - a1);
+        samples[3] = clip255(p0 + a2);
+        samples[4] = clip255(q0 - a1);
     } else if macroblock_edge {
         let a = sclip1(3 * (q0 - p0) + sclip1(p1 - q1));
         let a1 = (27 * a + 63) >> 7;
         let a2 = (18 * a + 63) >> 7;
         let a3 = (9 * a + 63) >> 7;
-        p[base + step] = clip255(p2 + a3);
-        p[base + 2 * step] = clip255(p1 + a2);
-        p[base + 3 * step] = clip255(p0 + a1);
-        p[base + 4 * step] = clip255(q0 - a1);
-        p[base + 5 * step] = clip255(q1 - a2);
-        p[base + 6 * step] = clip255(q2 - a3);
+        samples[1] = clip255(p2 + a3);
+        samples[2] = clip255(p1 + a2);
+        samples[3] = clip255(p0 + a1);
+        samples[4] = clip255(q0 - a1);
+        samples[5] = clip255(q1 - a2);
+        samples[6] = clip255(q2 - a3);
     } else {
         let a = 3 * (q0 - p0);
         let a1 = sclip2((a + 4) >> 3);
         let a2 = sclip2((a + 3) >> 3);
         let a3 = (a1 + 1) >> 1;
-        p[base + 2 * step] = clip255(p1 + a3);
-        p[base + 3 * step] = clip255(p0 + a2);
-        p[base + 4 * step] = clip255(q0 - a1);
-        p[base + 5 * step] = clip255(q1 - a3);
+        samples[2] = clip255(p1 + a3);
+        samples[3] = clip255(p0 + a2);
+        samples[4] = clip255(q0 - a1);
+        samples[5] = clip255(q1 - a3);
     }
+    true
 }
 
 /// Filters `count` positions along an edge with the normal filter:
@@ -959,7 +956,23 @@ fn normal_edge(
     let step = across as usize;
     for index in 0..count {
         let position = (at as isize + along * index as isize) as usize;
-        normal_position(p, position, step, threshold, interior, hev, macroblock_edge);
+        let base = position - 4 * step;
+        if step == 1 {
+            // Across a vertical edge the eight samples are adjacent: one
+            // bounds check for the window (image-webp's form).
+            let window: &mut [u8; 8] = (&mut p[base..base + 8]).try_into().unwrap();
+            normal_filter(window, threshold, interior, hev, macroblock_edge);
+        } else {
+            let mut samples = [0u8; 8];
+            for (k, sample) in samples.iter_mut().enumerate() {
+                *sample = p[base + k * step];
+            }
+            if normal_filter(&mut samples, threshold, interior, hev, macroblock_edge) {
+                for (k, sample) in samples.iter().enumerate().skip(1).take(6) {
+                    p[base + k * step] = *sample;
+                }
+            }
+        }
     }
 }
 
