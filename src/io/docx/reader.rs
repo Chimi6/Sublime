@@ -981,6 +981,10 @@ impl Reader<'_> {
         let mut properties: Option<u32> = None;
         let mut control = RunControl::None;
         let hidden = field == Field::Instruction || (field == Field::Result && page_field);
+        // A legacy form checkbox (`FORMCHECKBOX`): Word draws the box itself,
+        // with no result text, so its state is kept as a box character.
+        let mut checkbox: Option<bool> = None;
+        let mut seen_checked = false;
         while let Some(event) = reader.next() {
             match event {
                 XmlEvent::Start {
@@ -1119,11 +1123,34 @@ impl Reader<'_> {
                             }
                         }
                     }
+                    "w:checkBox" if !self_closing => checkbox = Some(false),
+                    // `w:checked` (the state) overrides `w:default` (the initial one).
+                    "w:default" | "w:checked" if checkbox.is_some() => {
+                        let on = !matches!(attribute(&attributes, "w:val"), Some("0" | "false"));
+                        if name == "w:checked" || !seen_checked {
+                            checkbox = Some(on);
+                        }
+                        seen_checked |= name == "w:checked";
+                    }
                     "w:pict" | "w:object" | "mc:Fallback" | "w:rPrChange" if !self_closing => {
                         skip_element(reader, name);
                     }
                     _ => {}
                 },
+                XmlEvent::End { name: "w:checkBox" } => {
+                    if let Some(checked) = checkbox.take() {
+                        let span =
+                            self.document
+                                .push_text(if checked { "\u{2612}" } else { "\u{2610}" });
+                        paragraph.runs.push(Run {
+                            style,
+                            properties,
+                            link,
+                            revision,
+                            content: Inline::Text(span),
+                        });
+                    }
+                }
                 XmlEvent::End { name: "w:r" } => break,
                 _ => {}
             }
@@ -2270,6 +2297,36 @@ mod tests {
         zip.add("word/document.xml", document.as_bytes()).unwrap();
         zip.add("word/styles.xml", styles.as_bytes()).unwrap();
         zip.finish().unwrap()
+    }
+
+    #[test]
+    fn form_checkboxes_keep_their_state_as_box_characters() {
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let checkbox = |inner: &str| {
+            format!(
+                r#"<w:r><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:sizeAuto/>{inner}</w:checkBox></w:ffData></w:fldChar></w:r>
+                <w:r><w:instrText> FORMCHECKBOX </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>"#
+            )
+        };
+        let document = format!(
+            r#"<w:document {w}><w:body><w:p>{}<w:r><w:t>a</w:t></w:r>{}<w:r><w:t>b</w:t></w:r>{}</w:p></w:body></w:document>"#,
+            checkbox(r#"<w:default w:val="1"/>"#),
+            checkbox(r#"<w:default w:val="0"/>"#),
+            checkbox(r#"<w:default w:val="1"/><w:checked w:val="0"/>"#),
+        );
+        let read = read_docx(&package(&document, &format!("<w:styles {w}/>"))).unwrap();
+        let Some(Block::Paragraph(paragraph)) = read.sections[0].blocks.first() else {
+            panic!("a paragraph");
+        };
+        let text: String = paragraph
+            .runs
+            .iter()
+            .filter_map(|run| match run.content {
+                Inline::Text(span) => Some(read.text(span)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "\u{2612}a\u{2610}b\u{2610}");
     }
 
     #[test]
