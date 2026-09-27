@@ -6,8 +6,13 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-09-27
+
 WebP, both ways: the lossless and lossy decoders bit-exact with
-libwebp, and a lossless encoder.
+libwebp, and a lossless encoder with `--quality` as its effort; a
+deflate at zlib level 6's ratio or better, so every PNG, DOCX, and
+XLSX written is smaller and faster; the `xlsx -> csv` memory
+regression of 0.19.0 fixed.
 
 ### Added
 
