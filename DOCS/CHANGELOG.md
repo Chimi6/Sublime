@@ -6,6 +6,13 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-09-27
+
+The image set: QOI, Netpbm, TGA, ICO and CUR, and TIFF, each reaching
+every other image format, with an area-averaging downscale for icons;
+a faster PNG reader that also reads the highly compressed chunks it
+refused since 0.19.0; and deflate that stops searching on noise.
+
 ### Fixed
 
 - A PNG whose small image data inflates far past the reader's step (a 1.2 KB chunk holding a 256 KB image, as Pillow writes flat icons) is read whole; the reader stopped when the chunk's bytes were used up, with output still inside the inflater, and called it cut short. In every release since 0.19.0.

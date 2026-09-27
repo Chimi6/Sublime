@@ -30,6 +30,19 @@ a comparison. Startup is implemented in `bench/src/startup.rs`.
 
 ## Results
 
+### 2026-09-27, 0.22.0 with the image set
+
+commit: a90eb92 (the release branch, versions bumped)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 2312824 | <= 2400000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 2413280 | recorded | n/a |
+| WebAssembly module (bytes) | 1134139 | <= 1200000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 467711 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.367 (spawn 0.704, floor 0.337) | < 1 | PASS |
+
 ### 2026-09-27, 0.21.0 with WebP and the lazy deflate
 
 commit: 1029e9a (main before the version bump)
@@ -344,3 +357,4 @@ read as "under a millisecond", not as a trend.
 | 0.20.0 | 2,060,344 | 2,159,264 | 2,100,000 | 982,356 | 1,050,000 |
 | 0.20.1 | 2,064,496 | 2,167,456 | 2,100,000 | 982,748 | 1,050,000 |
 | 0.21.0 | 2,200,024 | 2,302,624 | 2,250,000 | 1,063,134 | 1,100,000 |
+| 0.22.0 | 2,312,824 | 2,413,280 | 2,400,000 | 1,134,139 | 1,200,000 |

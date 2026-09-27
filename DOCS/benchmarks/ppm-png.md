@@ -1,6 +1,6 @@
 # Netpbm <-> PNG
 
-**Latest** (2026-09-27, first Netpbm: decode PASSES everywhere (75.9 against 73.7 MB/s on the photo, 1028 against 536 on the flat image, 171 against 104 on the stock photo as PAM); encode PASSES on the flat and stock shapes (1180 against 908, 671 against 637) and reads 834 against 888 on the photo, a tie by direct timing (86 to 89 ms against 88 to 90, ten runs each); 4 to 5 MB of memory everywhere against 51 to 887)
+**Latest** (2026-09-27, 0.22.0 release: every line PASSES but the PAM stock encode in the harness (695.6 against 699.1 MB/s), which leads by direct timing (659 to 697 ms against 701 to 803))
 
 ## Purpose
 
@@ -43,6 +43,29 @@ repeated runs 10 to 20% behind on 48 MB outputs.
   The photo encode line is within noise either way.
 
 ## Results
+
+### 2026-09-27, 0.22.0 release
+
+commit: 89d3694 (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| ppm -> png, photo (45.8 MB in): throughput (MB/s of input) | 188.6 | 71.0 (image + png) | PASS |
+| ppm -> png, photo: peak memory (MB) | 5.3 | 124.3 (image + png) | PASS |
+| ppm -> png, photo: output size (MB) [extra] | 25.0 | 27.1 (png) | n/a |
+| png -> ppm, photo (29.0 MB in + 45.8 MB out): throughput (MB/s of input plus output) | 893.9 | 877.2 (png + image) | PASS |
+| png -> ppm, photo: peak memory (MB) | 4.5 | 51.6 (png + image) | PASS |
+| ppm -> png, flat (45.8 MB in): throughput (MB/s of input) | 1063.9 | 569.2 (image + png) | PASS |
+| ppm -> png, flat: peak memory (MB) | 4.3 | 97.5 (image + png) | PASS |
+| ppm -> png, flat: output size (MB) [extra] | 0.1 | 0.3 (png) | n/a |
+| png -> ppm, flat (1.6 MB in + 45.8 MB out): throughput (MB/s of input plus output) | 1344.6 | 1019.9 (png + image) | PASS |
+| png -> ppm, flat: peak memory (MB) | 4.5 | 51.8 (png + image) | PASS |
+| pam -> png, stock (418.4 MB in): throughput (MB/s of input) [stock] | 167.8 | 103.8 (image + png) | PASS |
+| pam -> png, stock: peak memory (MB) [stock] | 4.7 | 886.7 (image + png) | PASS |
+| pam -> png, stock: output size (MB) [extra] | 28.9 | 44.2 (png) | n/a |
+| png -> pam, stock (24.2 MB in + 418.4 MB out): throughput (MB/s of input plus output) [stock] | 695.6 | 699.1 (png + image) | FAIL |
+| png -> pam, stock: peak memory (MB) [stock] | 4.7 | 424.2 (png + image) | PASS |
 
 ### 2026-09-27, first Netpbm
 
