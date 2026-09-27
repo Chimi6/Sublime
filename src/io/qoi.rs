@@ -243,7 +243,6 @@ impl RowSink for QoiRows<'_> {
             index: &mut self.index,
             previous: self.previous,
             run: self.run,
-            remaining: self.remaining,
         };
         match self.color {
             ColorType::Rgb => {
@@ -253,7 +252,7 @@ impl RowSink for QoiRows<'_> {
             }
             ColorType::Rgba => {
                 for cell in pixels.chunks_exact(4) {
-                    encoder.pixel([cell[0], cell[1], cell[2], cell[3]]);
+                    encoder.pixel(cell.try_into().unwrap_or([0; 4]));
                 }
             }
             ColorType::Gray => {
@@ -267,10 +266,16 @@ impl RowSink for QoiRows<'_> {
                 }
             }
         }
+        self.remaining -= (pixels.len() / self.color.channels()) as u64;
+        // A run open at the image's end closes there (qoi.h's last-pixel
+        // check, taken once per row instead of once per pixel).
+        if self.remaining == 0 && encoder.run > 0 {
+            encoder.put(OP_RUN | (encoder.run - 1));
+            encoder.run = 0;
+        }
         let written = encoder.at;
         self.previous = encoder.previous;
         self.run = encoder.run;
-        self.remaining = encoder.remaining;
         self.out.extend_from_slice(&self.scratch[..written]);
         if self.remaining == 0 {
             self.out.extend_from_slice(&END);
@@ -291,7 +296,6 @@ struct Encoder<'a> {
     index: &'a mut [Pixel; 64],
     previous: Pixel,
     run: u8,
-    remaining: u64,
 }
 
 impl Encoder<'_> {
@@ -303,11 +307,10 @@ impl Encoder<'_> {
 
     #[inline(always)]
     fn pixel(&mut self, pixel: Pixel) {
-        self.remaining -= 1;
         if u32::from_ne_bytes(pixel) == u32::from_ne_bytes(self.previous) {
             self.run += 1;
-            if self.run == 62 || self.remaining == 0 {
-                self.put(OP_RUN | (self.run - 1));
+            if self.run == 62 {
+                self.put(OP_RUN | 61);
                 self.run = 0;
             }
             return;
