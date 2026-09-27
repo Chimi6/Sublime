@@ -143,7 +143,7 @@ lossless and universal.
 | GIF | gif | [ ] | A | S | LZW both ways; animation frames. |
 | BMP | bmp | [x] | A | S | Shipped 0.19.0 (`DOCS/formats/bmp.md`): 1 to 32 bits with masks read; 24-bit and 32-bit with alpha written. RLE is refused. |
 | TIFF | tif, tiff | [ ] | A | M | Strips and tiles, common compressions (none, PackBits, LZW, deflate). Also the base of DNG and GeoTIFF. |
-| WebP | webp | [ ] | B | L | VP8 lossy decode is a real codec; lossless WebP is its own codec. Encode is XL. Consider External. |
+| WebP | webp | [x] | S | L | Merged, unreleased (`DOCS/formats/webp.md`): lossless and lossy decode bit-exact with libwebp, lossless encode. Lossy encode and animation are not written. |
 | AVIF, HEIC, JPEG XL | avif, heic, jxl | [ ] | D | XL | AV1, HEVC, and JXL codecs: External tier. |
 | Netpbm | ppm, pgm, pbm, pam | [ ] | A | S | Trivial and beloved by tooling. |
 | farbfeld, QOI | ff, qoi | [ ] | B | S | Tiny formats; QOI is a day's work and a crowd-pleaser. |
