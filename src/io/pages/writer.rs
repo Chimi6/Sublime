@@ -7813,6 +7813,7 @@ fn text_boxes(document: &Document) -> Vec<TextBox> {
                 line,
                 geometry,
                 flip,
+                ..
             } => {
                 let mut content =
                     flatten_lines(document, &block_lines(blocks), &mut ListCounters::default());
@@ -8097,6 +8098,8 @@ fn write_text_boxes(
             "pathsource",
             Node::Message(source.first),
         )?;
+        // Line ends (arrowheads) are not written: Pages needs each one's
+        // path and end point, not only its name, or it fails to open the file.
         push_field(
             tree,
             &mut shape_chain,

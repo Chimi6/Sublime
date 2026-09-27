@@ -783,6 +783,7 @@ impl Reader<'_> {
                 line: None,
                 geometry: Default::default(),
                 flip: (false, false),
+                ends: (None, None),
             }
         } else {
             return;

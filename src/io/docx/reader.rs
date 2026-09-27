@@ -1833,6 +1833,12 @@ impl Reader<'_> {
                         no_line = false;
                         style_line = None;
                     }
+                    "a:headEnd" if in_line && in_shape_properties => {
+                        shape.ends.0 = line_end(attribute(&attributes, "type"));
+                    }
+                    "a:tailEnd" if in_line && in_shape_properties => {
+                        shape.ends.1 = line_end(attribute(&attributes, "type"));
+                    }
                     "a:prstGeom" if in_shape_properties => {
                         shape.geometry =
                             preset_geometry(attribute(&attributes, "prst").unwrap_or(""));
@@ -2026,6 +2032,7 @@ impl Reader<'_> {
                                 line: shape.line,
                                 geometry: shape.geometry,
                                 flip: shape.flip,
+                                ends: shape.ends,
                             },
                         },
                         horizontal.from,
@@ -2259,6 +2266,22 @@ struct ShapeRead {
     line: Option<Border>,
     geometry: ShapeGeometry,
     flip: (bool, bool),
+    ends: (
+        Option<crate::document::LineEnd>,
+        Option<crate::document::LineEnd>,
+    ),
+}
+
+/// A DrawingML line end (`a:headEnd`, `a:tailEnd`) by its type.
+fn line_end(kind: Option<&str>) -> Option<crate::document::LineEnd> {
+    use crate::document::LineEnd;
+    match kind? {
+        "triangle" | "stealth" => Some(LineEnd::Arrow),
+        "arrow" => Some(LineEnd::OpenArrow),
+        "diamond" => Some(LineEnd::Diamond),
+        "oval" => Some(LineEnd::Circle),
+        _ => None,
+    }
 }
 
 /// Where a DrawingML colour being read goes.
