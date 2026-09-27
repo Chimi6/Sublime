@@ -30,6 +30,19 @@ a comparison. Startup is implemented in `bench/src/startup.rs`.
 
 ## Results
 
+### 2026-09-26, 0.20.1 with the JPEG margin work
+
+commit: 78a2973 (the merge of the margins branch, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 2064496 | <= 2100000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 2167456 | recorded | n/a |
+| WebAssembly module (bytes) | 982748 | <= 1050000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 405503 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.236 (spawn 0.538, floor 0.302) | < 1 | PASS |
+
 ### 2026-09-26, 0.20.0 with JPEG
 
 commit: d88773b (the merge of the JPEG branch, before the version bump)
@@ -316,3 +329,4 @@ read as "under a millisecond", not as a trend.
 | 0.18.0 | 1,868,064 | 1,966,752 | 1,900,000 | 867,813 | 900,000 |
 | 0.19.0 | 1,960,208 | 2,060,960 | 2,000,000 | 937,689 | 1,000,000 |
 | 0.20.0 | 2,060,344 | 2,159,264 | 2,100,000 | 982,356 | 1,050,000 |
+| 0.20.1 | 2,064,496 | 2,167,456 | 2,100,000 | 982,748 | 1,050,000 |
