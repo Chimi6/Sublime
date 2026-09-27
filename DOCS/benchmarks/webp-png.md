@@ -1,6 +1,6 @@
 # WebP <-> PNG
 
-**Latest** (2026-09-27, lazy deflate, effort levels: both lossy decode lines now PASS (photo 80.7 against 66.5 MB/s: the PNG write is faster and smaller), both flat decodes and the flat encode PASS; two lines FAIL: the lossless photo decode by 2% (the PNG write of a noise photo, 7% smaller than the png crate's) and the photo encode, 249 against 428 MB/s, the price of the color cache and predictor search that make real photos 9 to 28% smaller)
+**Latest** (2026-09-27, deflate stops searching on noise: every line PASSES but the lossless photo encode (258.0 against 439.9 MB/s, the owner's trade for 8 to 37% smaller real photos); the lossless photo decode now leads, 93.3 against 54.4)
 
 ## Purpose
 
@@ -58,6 +58,30 @@ median wall clock of the whole process, peak resident memory from GNU
   between runs.
 
 ## Results
+
+### 2026-09-27, deflate stops searching on noise
+
+commit: 39d8d97 (on the `deflate-noise` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| webp (lossless) -> png, photo (45.8 MB of pixels, 25.8 MB on disk): throughput (MB/s of decoded pixels) | 93.3 | 54.4 (image + png) | PASS |
+| webp (lossless) -> png, photo: peak memory (MB) | 102.2 | 174.3 (image + png) | PASS |
+| webp (lossy) -> png, photo (45.8 MB of pixels, 0.3 MB on disk): throughput (MB/s of decoded pixels) | 79.4 | 66.6 (image + png) | PASS |
+| webp (lossy) -> png, photo: peak memory (MB) | 4.7 | 75.0 (image + png) | PASS |
+| png -> webp (lossless), photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 258.0 | 439.9 (png + image) | FAIL |
+| png -> webp (lossless), photo: peak memory (MB) | 95.2 | 140.9 (png + image) | PASS |
+| png -> webp (lossless), photo: output size (MB) [extra] | 27.4 | 28.5 (image); 25.8 (libwebp, default effort) | n/a |
+| webp (lossless) -> png, flat (45.8 MB of pixels, 0.0 MB on disk): throughput (MB/s of decoded pixels) | 579.7 | 502.2 (image + png) | PASS |
+| webp (lossless) -> png, flat: peak memory (MB) | 95.4 | 112.2 (image + png) | PASS |
+| webp (lossy) -> png, flat (45.8 MB of pixels, 0.1 MB on disk): throughput (MB/s of decoded pixels) | 276.1 | 263.1 (image + png) | PASS |
+| webp (lossy) -> png, flat: peak memory (MB) | 4.6 | 74.5 (image + png) | PASS |
+| png -> webp (lossless), flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 764.7 | 590.1 (png + image) | PASS |
+| png -> webp (lossless), flat: peak memory (MB) | 52.3 | 112.6 (png + image) | PASS |
+| png -> webp (lossless), flat: output size (MB) [extra] | 0.0 | 0.0 (image); 0.0 (libwebp, default effort) | n/a |
+
+On noise the deflate searches one position in eight and writes the rest as literals; the lossless photo decode, whose time is the PNG write of a noise photograph, goes from 53.1 to 93.3 MB/s.
 
 ### 2026-09-27, lazy deflate, effort levels
 

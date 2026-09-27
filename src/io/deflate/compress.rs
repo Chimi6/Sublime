@@ -125,6 +125,11 @@ const MAXIMAL_TAIL: usize = 8;
 /// the first candidate: under a byte means noise, where walking on found
 /// nothing worth its bits.
 const NOISE: u32 = 16;
+/// On noise, one position in this many is searched and the rest written
+/// as literals: a filtered noise photograph deflates in 40% of the time
+/// and a little smaller (literals are what pays there); 16 began to lose
+/// ratio on a real photograph.
+const NOISE_STRIDE: usize = 8;
 
 /// What each symbol cost in the last block written, in bits: the price
 /// list for deciding whether a short match is cheaper than its literals.
@@ -196,6 +201,27 @@ fn deflate_lazy(input: &[u8], out: &mut Vec<u8>, is_final: bool) {
     let mut pending = false;
     let total = input.len();
     while position < total {
+        // On noise (nothing accepted lately) most positions are written
+        // as literals without a search: a search every `NOISE_STRIDE`
+        // positions keeps the average current, so matching resumes when
+        // the data turns compressible.
+        if accepted < NOISE && previous_length < MIN_MATCH && position % NOISE_STRIDE != 0 {
+            if pending {
+                symbols.push(Symbol::Literal(input[position - 1]));
+                pending = false;
+            }
+            symbols.push(Symbol::Literal(input[position]));
+            position += 1;
+            previous_length = 0;
+            if symbols.len() >= BLOCK_SYMBOLS {
+                let (literal_lengths, distance_lengths) =
+                    write_block(&mut writer, &input[block_start..position], &symbols, false);
+                costs.learn(&literal_lengths, &distance_lengths);
+                symbols.clear();
+                block_start = position;
+            }
+            continue;
+        }
         // Chains hash four bytes, as libdeflate's do: a three-byte hash
         // chained every short repeat of a photograph, walked for matches
         // the price check then refused (4% larger and slower).

@@ -13,6 +13,7 @@ section under a version heading.
 
 ### Changed
 
+- Deflate on noise searches one position in eight and writes the rest as literals (literals are what pays there): a noisy photograph's PNG writes in 40% of the time and a little smaller; the lossless WebP photo decode goes from 53 to 93 MB/s.
 - The benchmark harness removes an `out-*` output before each timed run, so both sides write a fresh file (a rename over an existing file costs a writeback on btrfs and ext4 that a truncate does not).
 - The PNG reader relies on each chunk's CRC-32 and no longer sums Adler-32 over the decoded data (the png crate skips it by default too): 7% faster on a large photo, 20% on flat images.
 - Image pairs are generated from one table of codecs, each saying what its reader and its writer lose: every reader reaches every writer, and each pair's fidelity carries both texts (a new raster format is one table row).
