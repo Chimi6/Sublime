@@ -199,13 +199,13 @@ fn rebuild_body(
     formats: &HashMap<Format, u64>,
     lists: &HashMap<String, u64>,
 ) -> Result<(), PackageError> {
-    let body = flatten(document);
-    let areas = document
+    let mut body = flatten(document);
+    let mut areas = document
         .sections
         .first()
         .map(|section| page_areas(document, section))
         .unwrap_or_default();
-    let boxes = text_boxes(document, &body.anchored);
+    let mut boxes = text_boxes(document, &body.anchored);
     let mut next_id = max_identifier(package) + 1;
     let mut next_data_id = max_data_id(package) + 1;
 
@@ -315,10 +315,48 @@ fn rebuild_body(
     // and indents, of the template list style of the same shape.
     let word_lists = match stylesheet_id {
         Some(sheet) => {
-            synthesize_list_styles(package, document, &body, lists, sheet, &mut next_id)?
+            // Items in cells, headers and footers, and text boxes too.
+            let nested: Vec<(ListItem, Option<ListIndents>)> = body
+                .tables
+                .iter()
+                .flat_map(|table| table.cells.iter())
+                .chain(areas.iter().map(|area| &area.content))
+                .chain(boxes.iter().map(|text_box| &text_box.content))
+                .flat_map(|content| content.lists.iter())
+                .map(|(_, item, indents)| (*item, *indents))
+                .collect();
+            synthesize_list_styles(
+                package,
+                document,
+                &body,
+                &nested,
+                lists,
+                sheet,
+                &mut next_id,
+            )?
         }
         None => HashMap::new(),
     };
+    // Each nested item's list style, for its storage to point at.
+    for content in body
+        .tables
+        .iter_mut()
+        .flat_map(|table| table.cells.iter_mut())
+        .chain(areas.iter_mut().map(|area| &mut area.content))
+        .chain(boxes.iter_mut().map(|text_box| &mut text_box.content))
+    {
+        content.list_styles = content
+            .lists
+            .iter()
+            .filter_map(|(offset, item, indents)| {
+                let style = word_lists
+                    .get(&(item.style, *indents))
+                    .copied()
+                    .or_else(|| list_style_for(document, lists, Some(item)))?;
+                Some((*offset, style, item.level))
+            })
+            .collect();
+    }
 
     // Drawables floating on their pages: (page, drawable).
     let mut placed: Vec<(u32, u64)> = Vec::new();
@@ -3194,6 +3232,11 @@ struct CellContent {
     fields: Vec<(u32, u64)>,
     /// Where each Pages paragraph starts, with its paragraph formatting.
     paragraphs: Vec<(u32, ParaFormat)>,
+    /// Bulleted paragraphs kept as Pages list items: where each starts, its
+    /// item, and its own indents.
+    lists: Vec<(u32, ListItem, Option<ListIndents>)>,
+    /// Those items' list styles once synthesised: (offset, style, level).
+    list_styles: Vec<(u32, u64, u8)>,
 }
 
 impl CellContent {
@@ -3869,6 +3912,7 @@ fn flatten_lines(
     let mut marks: Vec<(u32, Format)> = Vec::new();
     let mut fields: Vec<(u32, u64)> = Vec::new();
     let mut starts: Vec<(u32, ParaFormat)> = Vec::new();
+    let mut lists: Vec<(u32, ListItem, Option<ListIndents>)> = Vec::new();
     let mut current = Format::default();
     let mut offset = 0u32;
     let separator = |text: &mut String,
@@ -3912,8 +3956,25 @@ fn flatten_lines(
         if matches!(lead, None | Some('\n')) {
             starts.push((offset, para_format(document, paragraph)));
         }
-        // A list item's label, as text: Pages keeps no list styles here.
-        if let Some(label) = paragraph
+        // A bulleted item that starts a Pages paragraph is a list item of its
+        // own, as Pages imports one; a numbered one keeps its label as text,
+        // so its count runs on across cells.
+        let bulleted = paragraph.list.filter(|item| {
+            matches!(
+                document
+                    .styles
+                    .list
+                    .get(item.style)
+                    .and_then(|style| style.levels.get(usize::from(item.level)))
+                    .map(|level| &level.label),
+                Some(crate::document::ListLabel::Text(_))
+            )
+        });
+        if let Some(item) = bulleted
+            && matches!(lead, None | Some('\n'))
+        {
+            lists.push((offset, item, list_indents(document, paragraph)));
+        } else if let Some(label) = paragraph
             .list
             .as_ref()
             .and_then(|item| counters.label(document, item))
@@ -3978,10 +4039,11 @@ fn flatten_lines(
         marks,
         fields,
         paragraphs: starts,
+        lists,
+        list_styles: Vec::new(),
     }
 }
 
-/// A run's own bold and italic, independent of the paragraph.
 /// The font and size of a paragraph's mark, which set an empty line's height.
 fn mark_format(document: &Document, paragraph: &Paragraph) -> Format {
     let mark = crate::document::Run {
@@ -3991,7 +4053,12 @@ fn mark_format(document: &Document, paragraph: &Paragraph) -> Format {
         revision: None,
         content: Inline::LineBreak,
     };
-    let format = run_format(document, paragraph, &mark);
+    let mut format = run_format(document, paragraph, &mark);
+    let own = document.paragraph_mark_properties(paragraph);
+    if let Some(points) = own.size {
+        format.size = Some((points * 2.0).round().clamp(1.0, 65535.0) as u16);
+    }
+    format.font = own.font.or(format.font);
     Format {
         size: format.size,
         font: format.font,
@@ -3999,6 +4066,7 @@ fn mark_format(document: &Document, paragraph: &Paragraph) -> Format {
     }
 }
 
+/// A run's formatting in Pages' terms.
 fn run_format(document: &Document, paragraph: &Paragraph, run: &crate::document::Run) -> Format {
     // The run's effective formatting: the paragraph style's, overlaid with the
     // character style's, overlaid with the run's own — so a font, size, or
@@ -4397,13 +4465,45 @@ fn build_text_storage(
         "table_para_style",
         &paragraph_entries,
     )?;
-    emit_reference_table(
-        tree,
-        &mut chain,
-        storage,
-        "table_list_style",
-        &[(0, Some(styles.list))],
-    )?;
+    // A list item points at its list style from its start, every other
+    // paragraph at the "None" style; like the paragraph table, from 0.
+    let list_at = |start: u32| {
+        cell.list_styles
+            .iter()
+            .find(|(offset, _, _)| *offset == start)
+            .map(|(_, style, level)| (*style, *level))
+    };
+    let list_entries: Vec<(u32, Option<u64>)> = dedup(
+        paragraph_entries
+            .iter()
+            .map(|(start, _)| {
+                (
+                    *start,
+                    Some(list_at(*start).map_or(styles.list, |(style, _)| style)),
+                )
+            })
+            .collect(),
+    );
+    for (_, id) in &list_entries {
+        if let Some(id) = id
+            && !refs.contains(id)
+        {
+            refs.push(*id);
+        }
+    }
+    emit_reference_table(tree, &mut chain, storage, "table_list_style", &list_entries)?;
+    let level_entries: Vec<(u32, u64, u64)> = dedup_data(
+        paragraph_entries
+            .iter()
+            .map(|(start, _)| {
+                (
+                    *start,
+                    list_at(*start).map_or(0, |(_, level)| u64::from(level)),
+                    0,
+                )
+            })
+            .collect(),
+    );
 
     // The character table: each formatting run points at its style (a plain run
     // at the base), starting at offset 0.
@@ -4441,7 +4541,7 @@ fn build_text_storage(
         refs.extend(attachments.iter().map(|(_, id)| *id));
     }
     // The per-paragraph tables Pages expects on a cell storage.
-    emit_data_table(tree, &mut chain, storage, "table_para_data", &[(0, 0, 0)])?;
+    emit_data_table(tree, &mut chain, storage, "table_para_data", &level_entries)?;
     emit_data_table(tree, &mut chain, storage, "table_para_starts", &[(0, 0, 0)])?;
     emit_data_table(tree, &mut chain, storage, "table_para_bidi", &[(0, 0, 0)])?;
     // A shape's text takes drop caps: Pages expects its (empty) drop-cap table
@@ -7657,6 +7757,9 @@ struct ParaFormat {
     /// Its tab stops, an index into the document's tab sets.
     tabs: Option<u32>,
     page_break_before: Option<bool>,
+    /// Its text size in half-points, stated on the style so Pages measures
+    /// list gaps (in ems) against the size the text is set in.
+    font_size: Option<u16>,
 }
 
 impl ParaFormat {
@@ -7673,6 +7776,7 @@ impl ParaFormat {
             self.border.is_some(),
             self.tabs.is_some(),
             self.page_break_before.is_some(),
+            self.font_size.is_some(),
         ]
         .iter()
         .filter(|set| **set)
@@ -7745,6 +7849,7 @@ fn para_format(document: &Document, paragraph: &Paragraph) -> ParaFormat {
             .filter(|(positions, _, _)| *positions != 0),
         tabs: properties.tabs,
         page_break_before: properties.page_break_before,
+        font_size: mark_format(document, paragraph).size,
     }
 }
 
@@ -7761,6 +7866,7 @@ fn synthesize_para_styles(
     let archive = message_ref("TSWP.ParagraphStyleArchive")?;
     let base = child_message(archive, "super")?;
     let properties = child_message(archive, "para_properties")?;
+    let char_properties = child_message(archive, "char_properties")?;
     let spacing = child_message(properties, "line_spacing")?;
     let mut map: ParaStyles = HashMap::new();
     let mut created = Vec::new();
@@ -7904,12 +8010,22 @@ fn synthesize_para_styles(
             "override_count",
             Node::Uint(format.overrides()),
         )?;
+        let mut chars = Chain::new();
+        if let Some(half_points) = format.font_size {
+            push_field(
+                tree,
+                &mut chars,
+                char_properties,
+                "font_size",
+                Node::Float(f32::from(half_points) / 2.0),
+            )?;
+        }
         push_field(
             tree,
             &mut chain,
             archive,
             "char_properties",
-            Node::Message(NONE),
+            Node::Message(chars.first),
         )?;
         push_field(
             tree,
@@ -9163,6 +9279,7 @@ fn synthesize_list_styles(
     package: &mut Package,
     document: &Document,
     body: &Body,
+    nested: &[(ListItem, Option<ListIndents>)],
     lists: &HashMap<String, u64>,
     stylesheet: u64,
     next_id: &mut u64,
@@ -9176,6 +9293,7 @@ fn synthesize_list_styles(
         .paragraphs
         .iter()
         .filter_map(|mark| mark.list.as_ref().map(|item| (item, mark.list_indents)))
+        .chain(nested.iter().map(|(item, indents)| (item, *indents)))
         .collect();
     used.sort_by_key(|(item, indents)| (item.style, *indents));
     used.dedup_by_key(|(item, indents)| (item.style, *indents));
@@ -9742,11 +9860,21 @@ fn list_indents(document: &Document, paragraph: &Paragraph) -> Option<ListIndent
     let label = own
         .first_line_indent
         .unwrap_or(text - (level.indent - level.label_indent));
+    // Text that would start at (or before) its label follows the tab after
+    // the label to the next default tab stop, as in Word.
+    let text = if text <= label {
+        ((label / DEFAULT_TAB).floor() + 1.0) * DEFAULT_TAB
+    } else {
+        text
+    };
     let hundredths = |value: f32| (value * 100.0).round() as i32;
     ((hundredths(label), hundredths(text))
         != (hundredths(level.label_indent), hundredths(level.indent)))
         .then(|| (item.level, hundredths(label), hundredths(text)))
 }
+
+/// Word's default tab stop interval, in points.
+const DEFAULT_TAB: f32 = 36.0;
 
 /// Pages' paragraph borders: a rule above, below, both, or a box.
 const BORDERS_TOP: u64 = 1;

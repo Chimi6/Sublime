@@ -878,7 +878,7 @@ impl Reader<'_> {
                             .and_then(|(id, level)| self.list_item(id, level));
                         paragraph.properties =
                             self.document.intern_paragraph_properties(header.properties);
-                        paragraph.run_properties = self.document.intern_run_properties(header.mark);
+                        paragraph.mark = self.document.intern_run_properties(header.mark);
                         section = header.section;
                     }
                     "w:r" if !self_closing => {
