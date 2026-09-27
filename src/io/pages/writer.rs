@@ -31,6 +31,15 @@ const HYPERLINK_FIELD: u32 = 2032;
 const IMAGE_ARCHIVE: u32 = 3005;
 const PACKAGE_METADATA: u32 = 11006;
 const STYLESHEET: u32 = 401;
+const RICH_TEXT_PAYLOAD: u32 = 6218;
+/// Style-table keys a rich cell record names: its paragraph (text) style and
+/// its cell style, and the number-format-table key every cell shares.
+const TEXT_STYLE_KEY: u32 = 1;
+const CELL_STYLE_KEY: u32 = 2;
+const FORMAT_KEY: u32 = 1;
+/// The fixed number of per-column offset slots a tile row allocates, as Pages
+/// writes them (a 510-byte `cell_offsets` array of u16).
+const TILE_COLUMN_SLOTS: usize = 255;
 /// The object-replacement character that stands for an anchored drawable
 /// (a table here) in the body text.
 const ATTACHMENT: char = '\u{FFFC}';
@@ -42,6 +51,20 @@ pub fn write(document: &Document) -> Result<Vec<u8>, PackageError> {
     let formats = collect_char_formats(&package);
     let lists = collect_list_styles(&package);
     rebuild_body(&mut package, document, &styles, &formats, &lists)?;
+    if let Some(section) = document.sections.first() {
+        set_page_setup(&mut package, &section.page)?;
+    }
+    // Declare every cross-component reference and UUID-map every text storage
+    // the rewrite introduced, as Pages requires to load the package.
+    reconcile_components(&mut package)?;
+    // Pages allocates its own objects (view-state, undo) from the metadata's
+    // high-water mark, so it must sit above every object written here.
+    let highest = max_identifier(&package);
+    set_last_object_identifier(&mut package, highest)?;
+    // A fresh document identity per output: Pages keeps a local view-state
+    // sidecar keyed by the document UUID, and reusing the template's would pair
+    // every converted file with another file's stale objects.
+    renew_document_identity(&mut package);
     package.write(Vec::new())
 }
 
@@ -150,20 +173,70 @@ fn rebuild_body(
     lists: &HashMap<String, u64>,
 ) -> Result<(), PackageError> {
     let body = flatten(document);
-    // Rewrite one template table per model table, up to the number the
-    // template carries; each returns the attachment the body anchors it with.
+    let mut next_id = max_identifier(package) + 1;
+    let mut next_data_id = max_data_id(package) + 1;
+
+    // Synthesise a character style for every direct formatting in the body and
+    // in table cells, so both the body storage and rich cells can point at them.
+    let stylesheet_id = stylesheet_identifier(package);
+    let base_style = base_char_style(package);
+    let (all_formats, style_refs) = match (base_style, stylesheet_id) {
+        (Some(parent), Some(sheet)) => {
+            let needed = body
+                .char_marks
+                .iter()
+                .map(|mark| mark.format)
+                .chain(body.tables.iter().flat_map(|table| {
+                    table.cells.iter().flat_map(|cell| {
+                        cell.marks
+                            .iter()
+                            .map(|(_, format)| *format)
+                            .collect::<Vec<_>>()
+                    })
+                }))
+                .filter(Format::has_direct);
+            synthesize_char_styles(
+                package,
+                document,
+                formats,
+                needed,
+                parent,
+                sheet,
+                &mut next_id,
+            )?
+        }
+        _ => (formats.clone(), Vec::new()),
+    };
+
+    // The styles a rich cell references for its plain paragraphs.
+    let cell_styles = (|| {
+        Some(CellStyles {
+            stylesheet: stylesheet_id?,
+            paragraph: *styles.get("Body")?,
+            list: *lists.get("None")?,
+            base_char: base_style?,
+        })
+    })();
+
+    // Rewrite one template table per model table (with rich cells for the
+    // formatted ones); each returns the attachment the body anchors it with.
     let template_tables = collect_template_tables(package);
     let mut anchors: Vec<(u32, u64)> = Vec::new();
     for (mark, table) in body.tables.iter().zip(&template_tables) {
-        reuse_table(package, table, mark)?;
+        reuse_table(
+            package,
+            table,
+            mark,
+            &all_formats,
+            cell_styles,
+            &mut next_id,
+        )?;
         anchors.push((mark.offset, table.attach_id));
     }
     // The template carries one image as a prototype: the first model image
     // reuses it; any others clone it so every image reaches Pages, each with its
     // own objects and data files.
     if let Some(prototype) = collect_template_images(package).first().copied() {
-        let mut next_object_id = max_identifier(package) + 1;
-        let mut next_data_id = max_data_id(package) + 1;
         for (index, mark) in body.images.iter().enumerate() {
             let bytes = document.media[mark.media].bytes.clone();
             let attach_id = if index == 0 {
@@ -175,7 +248,7 @@ fn rebuild_body(
                     &prototype,
                     mark,
                     &bytes,
-                    &mut next_object_id,
+                    &mut next_id,
                     &mut next_data_id,
                 )?
             };
@@ -184,12 +257,6 @@ fn rebuild_body(
     }
     // Attachments anchor by ascending character offset in one table.
     anchors.sort_by_key(|(offset, _)| *offset);
-
-    // Identifiers are unique across the whole package, so a new hyperlink
-    // object takes the next id after the highest any stream already uses.
-    let mut next_id = max_identifier(package) + 1;
-    let stylesheet_id = stylesheet_identifier(package);
-    let base_style = base_char_style(package);
 
     let stream = document_stream(package)?;
     let body_id = body_storage_identifier(stream)?;
@@ -204,33 +271,6 @@ fn rebuild_body(
         Some(message) if message.message_type == STORAGE_ARCHIVE => message.first,
         _ => return Err(malformed("body storage is not a StorageArchive")),
     };
-
-    // A run whose formatting goes beyond bold and italic (a colour, size, font,
-    // or underline) gets a character style synthesised with all of it, added to
-    // the document stream and merged into the style map the storage looks up.
-    let mut all_formats = formats.clone();
-    let mut style_refs: Vec<u64> = Vec::new();
-    if let (Some(parent), Some(sheet)) = (base_style, stylesheet_id) {
-        let mut seen: std::collections::HashSet<Format> = std::collections::HashSet::new();
-        for mark in &body.char_marks {
-            if mark.format.has_direct() && seen.insert(mark.format) {
-                let id = next_id;
-                next_id += 1;
-                let (message, info) =
-                    build_char_style(&mut stream.tree, id, mark.format, document, parent, sheet)?;
-                stream.objects.push(Object {
-                    identifier: id,
-                    info,
-                    messages: vec![ObjectMessage {
-                        message_type: CHARACTER_STYLE,
-                        first: message,
-                    }],
-                });
-                all_formats.insert(mark.format, id);
-                style_refs.push(id);
-            }
-        }
-    }
 
     // Each link range becomes a hyperlink field object the body anchors by a
     // smart-field attribute table (like the character styles, offset-keyed).
@@ -595,9 +635,13 @@ fn base_char_style(package: &Package) -> Option<u64> {
 /// change, and the tile, string table, and header buckets holding the cells.
 struct TemplateTable {
     attach_id: u64,
+    info_id: u64,
     model_id: u64,
     tile_id: u64,
     string_id: u64,
+    rich_text_id: u64,
+    style_id: u64,
+    cell_style_id: u64,
     col_bucket_id: u64,
     row_bucket_id: u64,
 }
@@ -627,6 +671,9 @@ fn traverse_template_table(package: &Package, attach_id: u64) -> Option<Template
     let (tree, model_first) = object_message(package, model_id)?;
     let store = message_field(tree, model_first, "base_data_store")?;
     let string_id = reference_of(field_value(tree, store, "stringTable"))?;
+    let rich_text_id = reference_of(field_value(tree, store, "rich_text_table"))?;
+    let style_id = reference_of(field_value(tree, store, "styleTable"))?;
+    let cell_style_id = reference_of(field_value(tree, model_first, "body_cell_style"))?;
     let col_bucket_id = reference_of(field_value(tree, store, "columnHeaders"))?;
     let tiles = message_field(tree, store, "tiles")?;
     let one_tile = message_field(tree, tiles, "tiles")?;
@@ -635,9 +682,13 @@ fn traverse_template_table(package: &Package, attach_id: u64) -> Option<Template
     let row_bucket_id = reference_of(field_value(tree, row_headers, "buckets"))?;
     Some(TemplateTable {
         attach_id,
+        info_id,
         model_id,
         tile_id,
         string_id,
+        rich_text_id,
+        style_id,
+        cell_style_id,
         col_bucket_id,
         row_bucket_id,
     })
@@ -687,10 +738,78 @@ fn reuse_table(
     package: &mut Package,
     table: &TemplateTable,
     mark: &TableMark,
+    formats: &HashMap<Format, u64>,
+    cell_styles: Option<CellStyles>,
+    next_id: &mut u64,
 ) -> Result<(), PackageError> {
-    rewrite_object(package, table.tile_id, |tree| build_tile(tree, mark))?;
+    // Every cell becomes a rich-text cell (as Pages itself writes them): its own
+    // storage and payload objects, an entry in the table's rich-text list, and a
+    // kind-9 record in the tile that names the cell's styles. This matches the
+    // shape Pages lays out and keeps the string table empty.
+    let mut rich: HashMap<usize, u32> = HashMap::new();
+    if let Some(styles) = cell_styles {
+        let mut entries: Vec<(u32, u64)> = Vec::new();
+        let mut new_objects: Vec<Object> = Vec::new();
+        {
+            // Build the payloads and cell storages into the rich-text list's own
+            // stream: Pages loads that stream as one component and aborts if the
+            // payloads it references live elsewhere (e.g. the document stream).
+            let stream = stream_containing(package, table.rich_text_id)?;
+            for (index, cell) in mark.cells.iter().enumerate() {
+                let storage_id = *next_id;
+                let payload_id = *next_id + 1;
+                *next_id += 2;
+                let (message, refs) = build_cell_storage(&mut stream.tree, cell, formats, styles)?;
+                let info = build_archive_info(&mut stream.tree, storage_id, STORAGE_ARCHIVE)?;
+                add_object_references(&mut stream.tree, info, &refs)?;
+                new_objects.push(Object {
+                    identifier: storage_id,
+                    info,
+                    messages: vec![ObjectMessage {
+                        message_type: STORAGE_ARCHIVE,
+                        first: message,
+                    }],
+                });
+                let payload = build_rich_payload(&mut stream.tree, storage_id)?;
+                let payload_info =
+                    build_archive_info(&mut stream.tree, payload_id, RICH_TEXT_PAYLOAD)?;
+                add_object_references(&mut stream.tree, payload_info, &[storage_id])?;
+                new_objects.push(Object {
+                    identifier: payload_id,
+                    info: payload_info,
+                    messages: vec![ObjectMessage {
+                        message_type: RICH_TEXT_PAYLOAD,
+                        first: payload,
+                    }],
+                });
+                let key = entries.len() as u32 + 1;
+                rich.insert(index, key);
+                entries.push((key, payload_id));
+            }
+            stream.objects.extend(new_objects);
+        }
+        if !entries.is_empty() {
+            let payloads: Vec<u64> = entries.iter().map(|(_, id)| *id).collect();
+            rewrite_object(package, table.rich_text_id, |tree| {
+                build_rich_text_list(tree, &entries)
+            })?;
+            add_object_refs(package, table.rich_text_id, &payloads)?;
+        }
+        // The style table each rich cell record points at: key 1 the cell's
+        // paragraph (text) style, key 2 its cell style. Pages needs a cell to
+        // resolve both to lay it out.
+        rewrite_object(package, table.style_id, |tree| {
+            build_style_list(tree, styles.paragraph, table.cell_style_id)
+        })?;
+        add_object_refs(package, table.style_id, &[styles.paragraph, table.cell_style_id])?;
+    }
+
+    rewrite_object(package, table.tile_id, |tree| build_tile(tree, mark, &rich))?;
+    // When every cell is rich its text lives in its own storage, so the string
+    // table stays empty (as Pages writes it); otherwise plain cells use it.
+    let string_cells: &[CellContent] = if rich.is_empty() { &mark.cells } else { &[] };
     rewrite_object(package, table.string_id, |tree| {
-        build_string_list(tree, &mark.cells)
+        build_string_list(tree, string_cells)
     })?;
     let rows = mark.rows as u64;
     rewrite_object(package, table.col_bucket_id, |tree| {
@@ -719,7 +838,88 @@ fn reuse_table(
             build_column_row_uids(tree, cols, rows)
         })?;
     }
+    // Resize the stroke sidecar's grid: it carries the cell-border counts, and
+    // Pages lays strokes out against them before the cells, so a stale count
+    // (the template's) reads past the grid and aborts.
+    if let Some(sidecar_id) = object_reference(package, table.model_id, "stroke_sidecar") {
+        let (cols, rows) = (mark.columns as u64, mark.rows as u64);
+        rewrite_object_with(package, sidecar_id, |tree, old_first| {
+            rebuild_stroke_sidecar(tree, old_first, cols, rows)
+        })?;
+    }
+    // The drawable frame Pages lays the table into: sized to the table itself,
+    // or it squeezes the columns and clips the rows to the template's frame.
+    let width: f32 = mark.widths.iter().sum();
+    let height: f32 = heights.iter().sum();
+    set_table_frame(package, table.info_id, width, height)?;
     update_model_dims(package, table.model_id, mark)
+}
+
+/// Sets a table drawable's frame size (`super.geometry.size`).
+fn set_table_frame(
+    package: &mut Package,
+    info_id: u64,
+    width: f32,
+    height: f32,
+) -> Result<(), PackageError> {
+    let stream = stream_containing(package, info_id)?;
+    let first = stream
+        .objects
+        .iter()
+        .find(|object| object.identifier == info_id)
+        .and_then(|object| object.messages.first())
+        .map(|message| message.first)
+        .ok_or_else(|| malformed("table info is missing"))?;
+    let size = message_field(&stream.tree, first, "super")
+        .and_then(|drawable| message_field(&stream.tree, drawable, "geometry"))
+        .and_then(|geometry| message_field(&stream.tree, geometry, "size"))
+        .ok_or_else(|| malformed("table info has no geometry size"))?;
+    set_field_float(&mut stream.tree, size, "width", width);
+    set_field_float(&mut stream.tree, size, "height", height);
+    Ok(())
+}
+
+/// Resizes a `TST.StrokeSidecarArchive` to `columns` by `rows`. The grid counts
+/// and any per-column/row stroke-layer arrays are sized to the grid, so the
+/// stale ones are dropped (leaving default cell-style borders) and the counts
+/// reset; every other field is kept.
+fn rebuild_stroke_sidecar(
+    tree: &mut Tree,
+    old_first: u32,
+    columns: u64,
+    rows: u64,
+) -> Result<u32, PackageError> {
+    let sidecar = message_ref("TST.StrokeSidecarArchive")?;
+    let dropped = [
+        "column_count",
+        "row_count",
+        "left_column_stroke_layers",
+        "right_column_stroke_layers",
+        "top_row_stroke_layers",
+        "bottom_row_stroke_layers",
+    ];
+    let mut kept: Vec<(u32, Node)> = Vec::new();
+    for (_, entry) in tree.chain(old_first) {
+        let name = tree.field(entry).map(|field| field.name);
+        if name.is_some_and(|name| dropped.contains(&name)) {
+            continue;
+        }
+        kept.push((entry.number, entry.value));
+    }
+    let mut chain = Chain::new();
+    for (number, value) in kept {
+        let slot = sidecar
+            .slot(number)
+            .ok_or_else(|| malformed("sidecar field without a schema slot"))?;
+        let field = sidecar
+            .field_at(slot)
+            .ok_or_else(|| malformed("sidecar field slot out of range"))?;
+        tree.push_known(&mut chain, sidecar, slot, field, number, value)
+            .map_err(tree_error)?;
+    }
+    push_field(tree, &mut chain, sidecar, "column_count", Node::Uint(columns))?;
+    push_field(tree, &mut chain, sidecar, "row_count", Node::Uint(rows))?;
+    Ok(chain.first)
 }
 
 /// A fresh column/row UID map with one distinct UUID per column and row and
@@ -2090,6 +2290,21 @@ fn document_stream(package: &mut Package) -> Result<&mut Stream, PackageError> {
     Err(malformed("Index/Document.iwa is missing"))
 }
 
+/// The stream that holds the object with `id`. Pages loads a table's data-list
+/// stream as one component and expects the list's payloads and cell storages to
+/// live in it, so rich cells must be built into the list's own stream, not the
+/// document stream.
+fn stream_containing(package: &mut Package, id: u64) -> Result<&mut Stream, PackageError> {
+    for entry in &mut package.entries {
+        if let Entry::Stream(stream) = entry
+            && stream.objects.iter().any(|object| object.identifier == id)
+        {
+            return Ok(stream);
+        }
+    }
+    Err(malformed("the object's stream is missing"))
+}
+
 /// The identifier of the object `DocumentArchive.body_storage` points at.
 fn body_storage_identifier(stream: &Stream) -> Result<u64, PackageError> {
     let document = stream
@@ -2120,16 +2335,25 @@ fn build_storage(
     smart_entries: &[(u32, Option<u64>)],
 ) -> Result<(u32, Vec<u64>), PackageError> {
     let storage = message_ref("TSWP.StorageArchive")?;
-    // The list tables are only rewritten when the document has a list;
-    // otherwise the template's own defaults (no list, level 0) are kept.
-    let has_lists = body.paragraphs.iter().any(|mark| mark.list.is_some());
     let has_tables = !anchors.is_empty();
     let has_links = smart_entries.iter().any(|(_, object)| object.is_some());
-    // Fields the writer owns; everything else is copied from the template.
-    let mut owned = vec!["text", "table_para_style", "table_char_style"];
-    if has_lists {
-        owned.extend(["table_list_style", "table_para_data", "table_para_starts"]);
-    }
+    // Fields the writer owns; everything else is copied from the template. Every
+    // character-indexed table must be owned: the template's entries index its
+    // own (longer) body text, so copying them onto shorter text leaves indices
+    // past the end that crash layout. The list tables are always rebuilt; the
+    // metadata tables the writer has no data for are dropped (Pages defaults
+    // them) so they carry no stale indices.
+    let mut owned = vec![
+        "text",
+        "table_para_style",
+        "table_char_style",
+        "table_list_style",
+        "table_para_data",
+        "table_para_starts",
+        "table_para_bidi",
+        "table_language",
+        "table_dictation",
+    ];
     if has_tables {
         owned.push("table_attachment");
     }
@@ -2199,12 +2423,13 @@ fn build_storage(
     // already declare (the list styles); returned so the caller can add them
     // to the object's references, or the document scope prunes them away.
     let mut references: Vec<u64> = Vec::new();
-    if has_lists {
+    {
         // A list paragraph points at the template's Bullet or Numbered list
         // style and carries its nesting level; a plain one reverts to the
         // "None" style at level 0. Like the other tables, all three start at
         // offset 0. table_para_starts carries the number an ordered list
-        // restarts at.
+        // restarts at. These are rebuilt for every body (not only lists) so
+        // their character indices always match the current text.
         let list_entries: Vec<(u32, Option<u64>)> = body
             .paragraphs
             .iter()
@@ -2398,15 +2623,25 @@ struct LinkMark {
     link: Option<Id>,
 }
 
+/// One table cell's content: its text and the formatting runs within it (each
+/// a `(offset in the cell's text, format)`). A cell with only default
+/// formatting stays a plain string cell; one with any formatting becomes a
+/// rich-text cell carrying its own character styles.
+#[derive(Default)]
+struct CellContent {
+    text: String,
+    marks: Vec<(u32, Format)>,
+}
+
 /// A table anchored at a `U+FFFC` character: its offset and its grid of cell
-/// text, with the column widths, row heights, and header-row count.
+/// content, with the column widths, row heights, and header-row count.
 struct TableMark {
     offset: u32,
     rows: usize,
     columns: usize,
     header_rows: u32,
-    /// Row-major cell text, `rows * columns` entries.
-    cells: Vec<String>,
+    /// Row-major cell content, `rows * columns` entries.
+    cells: Vec<CellContent>,
     widths: Vec<f32>,
     heights: Vec<f32>,
 }
@@ -2502,10 +2737,12 @@ impl Walk {
         });
         let columns = table.columns.len();
         let rows = table.rows.len();
-        let mut cells = vec![String::new(); rows * columns];
+        let mut cells: Vec<CellContent> = (0..rows * columns)
+            .map(|_| CellContent::default())
+            .collect();
         for (r, row) in table.rows.iter().enumerate() {
             for (c, cell) in row.cells.iter().enumerate().take(columns) {
-                cells[r * columns + c] = cell_text(document, cell);
+                cells[r * columns + c] = flatten_cell(document, cell);
             }
         }
         let widths = table.columns.clone();
@@ -2554,18 +2791,19 @@ impl Walk {
                 }
                 continue;
             }
-            let piece = match run.content {
+            let raw = match run.content {
                 Inline::Text(span) => document.text(span),
                 Inline::Tab => "\t",
                 _ => continue,
             };
+            let piece = without_attachments(raw);
             if piece.is_empty() {
                 continue;
             }
             self.mark(run_format(document, paragraph, run));
             self.link_mark(run.link);
-            self.text.push_str(piece);
-            self.offset += utf16_len(piece);
+            self.text.push_str(&piece);
+            self.offset += utf16_len(&piece);
         }
     }
 
@@ -2610,27 +2848,46 @@ impl Walk {
 /// A table cell's text: its paragraphs' runs joined, paragraphs separated by
 /// a newline. Only text runs contribute; nested tables and other inlines are
 /// skipped (an MVP that carries the words).
-fn cell_text(document: &Document, cell: &crate::document::Cell) -> String {
+fn flatten_cell(document: &Document, cell: &crate::document::Cell) -> CellContent {
     let mut text = String::new();
+    let mut marks: Vec<(u32, Format)> = Vec::new();
+    let mut current = Format::default();
+    let mut offset = 0u32;
     for block in &cell.blocks {
         let Block::Paragraph(paragraph) = block else {
             continue;
         };
         if !text.is_empty() {
             text.push('\n');
+            offset += 1;
+            if current != Format::default() {
+                marks.push((offset - 1, Format::default()));
+                current = Format::default();
+            }
         }
         for run in &paragraph.runs {
             if document.is_deleted(run) {
                 continue;
             }
-            match run.content {
-                Inline::Text(span) => text.push_str(document.text(span)),
-                Inline::Tab => text.push('\t'),
-                _ => {}
+            let raw = match run.content {
+                Inline::Text(span) => document.text(span),
+                Inline::Tab => "\t",
+                _ => continue,
+            };
+            let piece = without_attachments(raw);
+            if piece.is_empty() {
+                continue;
             }
+            let format = run_format(document, paragraph, run);
+            if format != current {
+                marks.push((offset, format));
+                current = format;
+            }
+            text.push_str(&piece);
+            offset += utf16_len(&piece);
         }
     }
-    text
+    CellContent { text, marks }
 }
 
 /// A run's own bold and italic, independent of the paragraph.
@@ -2736,6 +2993,19 @@ fn utf16_len(text: &str) -> u32 {
     text.chars()
         .map(|character| character.len_utf16() as u32)
         .sum()
+}
+
+/// Drops object-replacement characters (`U+FFFC`) that a text run carries on
+/// its own — an image or drawing the reader left in the text but that has no
+/// drawable of its own here. Pages crashes laying out an attachment character
+/// with no attachment, so such orphans must not reach the text flow. Real
+/// inline images anchor through their own path and never come through here.
+fn without_attachments(piece: &str) -> std::borrow::Cow<'_, str> {
+    if piece.contains(ATTACHMENT) {
+        std::borrow::Cow::Owned(piece.chars().filter(|character| *character != ATTACHMENT).collect())
+    } else {
+        std::borrow::Cow::Borrowed(piece)
+    }
 }
 
 /// The template style identifier for a model style name, mapped to Pages'
@@ -2886,7 +3156,7 @@ const DEFAULT_ROW_HEIGHT: f32 = 20.0;
 
 /// A `stringTable` data list (listType 1): one entry per cell, keyed by cell
 /// index + 1, holding the cell's text.
-fn build_string_list(tree: &mut Tree, cells: &[String]) -> Result<u32, PackageError> {
+fn build_string_list(tree: &mut Tree, cells: &[CellContent]) -> Result<u32, PackageError> {
     let data_list = message_ref("TST.TableDataList")?;
     let entry_ref = message_ref("TST.TableDataList.ListEntry")?;
     let mut chain = Chain::new();
@@ -2898,7 +3168,7 @@ fn build_string_list(tree: &mut Tree, cells: &[String]) -> Result<u32, PackageEr
         "nextListID",
         Node::Uint(cells.len() as u64 + 1),
     )?;
-    for (index, text) in cells.iter().enumerate() {
+    for (index, cell) in cells.iter().enumerate() {
         let mut entry = Chain::new();
         push_field(
             tree,
@@ -2908,7 +3178,7 @@ fn build_string_list(tree: &mut Tree, cells: &[String]) -> Result<u32, PackageEr
             Node::Uint(index as u64 + 1),
         )?;
         push_field(tree, &mut entry, entry_ref, "refcount", Node::Uint(1))?;
-        let span = tree.push_bytes(text.as_bytes()).map_err(tree_error)?;
+        let span = tree.push_bytes(cell.text.as_bytes()).map_err(tree_error)?;
         push_field(tree, &mut entry, entry_ref, "string", Node::Str(span))?;
         push_field(
             tree,
@@ -2919,6 +3189,268 @@ fn build_string_list(tree: &mut Tree, cells: &[String]) -> Result<u32, PackageEr
         )?;
     }
     Ok(chain.first)
+}
+
+/// The style objects a rich cell storage needs to reference for plain content:
+/// a base paragraph style, a "None" list style, and a base character style.
+#[derive(Clone, Copy)]
+struct CellStyles {
+    stylesheet: u64,
+    paragraph: u64,
+    list: u64,
+    base_char: u64,
+}
+
+/// Builds a cell's rich-text storage (a `kind: 5` `TSWP.StorageArchive`): its
+/// text with a character-style table drawn from the cell's formatting runs.
+/// Returns the message chain and the style ids it references (for the object's
+/// header, so the document scope keeps them).
+fn build_cell_storage(
+    tree: &mut Tree,
+    cell: &CellContent,
+    formats: &HashMap<Format, u64>,
+    styles: CellStyles,
+) -> Result<(u32, Vec<u64>), PackageError> {
+    let storage = message_ref("TSWP.StorageArchive")?;
+    let mut chain = Chain::new();
+    push_field(tree, &mut chain, storage, "kind", Node::Uint(5))?;
+    push_field(
+        tree,
+        &mut chain,
+        storage,
+        "style_sheet",
+        Node::Reference(styles.stylesheet),
+    )?;
+    let text_span = tree.push_bytes(cell.text.as_bytes()).map_err(tree_error)?;
+    push_field(tree, &mut chain, storage, "text", Node::Str(text_span))?;
+    push_field(tree, &mut chain, storage, "in_document", Node::Bool(true))?;
+
+    let mut refs = vec![styles.paragraph, styles.list, styles.base_char];
+    emit_reference_table(
+        tree,
+        &mut chain,
+        storage,
+        "table_para_style",
+        &[(0, Some(styles.paragraph))],
+    )?;
+    emit_reference_table(
+        tree,
+        &mut chain,
+        storage,
+        "table_list_style",
+        &[(0, Some(styles.list))],
+    )?;
+
+    // The character table: each formatting run points at its style (a plain run
+    // at the base), starting at offset 0.
+    let mut char_entries: Vec<(u32, Option<u64>)> = cell
+        .marks
+        .iter()
+        .map(|(offset, format)| {
+            (
+                *offset,
+                char_style_for(*format, formats).or(Some(styles.base_char)),
+            )
+        })
+        .collect();
+    if char_entries.first().is_none_or(|(offset, _)| *offset != 0) {
+        char_entries.insert(0, (0, Some(styles.base_char)));
+    }
+    for (_, id) in &char_entries {
+        if let Some(id) = id
+            && !refs.contains(id)
+        {
+            refs.push(*id);
+        }
+    }
+    emit_reference_table(tree, &mut chain, storage, "table_char_style", &char_entries)?;
+    // The per-paragraph tables Pages expects on a cell storage.
+    emit_data_table(tree, &mut chain, storage, "table_para_data", &[(0, 0, 0)])?;
+    emit_data_table(tree, &mut chain, storage, "table_para_starts", &[(0, 0, 0)])?;
+    emit_data_table(tree, &mut chain, storage, "table_para_bidi", &[(0, 0, 0)])?;
+    Ok((chain.first, refs))
+}
+
+/// The message type of `parent`'s field called `name`.
+fn child_message(parent: MessageRef, name: &str) -> Result<MessageRef, PackageError> {
+    let (_, field) = parent
+        .slot_named(name)
+        .ok_or_else(|| malformed("field is not in the schema"))?;
+    message_of(field.kind)
+}
+
+/// Builds a `TST.RichTextPayloadArchive` pointing at a cell's storage, with the
+/// unassigned cell-id sentinel Pages writes.
+fn build_rich_payload(tree: &mut Tree, storage_id: u64) -> Result<u32, PackageError> {
+    let payload = message_ref("TST.RichTextPayloadArchive")?;
+    let cell_id = child_message(payload, "cellid")?;
+    let coord = child_message(cell_id, "expanded_coord")?;
+    let mut chain = Chain::new();
+    push_field(tree, &mut chain, payload, "storage", Node::Reference(storage_id))?;
+    let mut id_chain = Chain::new();
+    push_field(
+        tree,
+        &mut id_chain,
+        cell_id,
+        "packedData",
+        Node::Fixed32(16_777_215),
+    )?;
+    let mut coord_chain = Chain::new();
+    push_field(tree, &mut coord_chain, coord, "column", Node::Uint(32_767))?;
+    push_field(
+        tree,
+        &mut coord_chain,
+        coord,
+        "row",
+        Node::Uint(2_147_483_647),
+    )?;
+    push_field(
+        tree,
+        &mut id_chain,
+        cell_id,
+        "expanded_coord",
+        Node::Message(coord_chain.first),
+    )?;
+    push_field(
+        tree,
+        &mut chain,
+        payload,
+        "cellid",
+        Node::Message(id_chain.first),
+    )?;
+    Ok(chain.first)
+}
+
+/// Rebuilds the table's rich-text data list (listType 8): one entry per rich
+/// cell, keyed and pointing at its payload.
+fn build_rich_text_list(tree: &mut Tree, entries: &[(u32, u64)]) -> Result<u32, PackageError> {
+    let data_list = message_ref("TST.TableDataList")?;
+    let entry_ref = message_ref("TST.TableDataList.ListEntry")?;
+    let mut chain = Chain::new();
+    push_field(tree, &mut chain, data_list, "listType", Node::Uint(8))?;
+    push_field(
+        tree,
+        &mut chain,
+        data_list,
+        "nextListID",
+        Node::Uint(entries.len() as u64 + 1),
+    )?;
+    for (key, payload) in entries {
+        let mut entry = Chain::new();
+        push_field(
+            tree,
+            &mut entry,
+            entry_ref,
+            "key",
+            Node::Uint(u64::from(*key)),
+        )?;
+        push_field(tree, &mut entry, entry_ref, "refcount", Node::Uint(1))?;
+        push_field(
+            tree,
+            &mut entry,
+            entry_ref,
+            "rich_text_payload",
+            Node::Reference(*payload),
+        )?;
+        push_field(
+            tree,
+            &mut chain,
+            data_list,
+            "entries",
+            Node::Message(entry.first),
+        )?;
+    }
+    Ok(chain.first)
+}
+
+/// Rebuilds the table's style data list (listType 4): key 1 the paragraph
+/// (text) style every cell uses, key 2 the cell style. These are the keys a
+/// rich cell record names in its `text_style` and `cell_style` fields.
+fn build_style_list(
+    tree: &mut Tree,
+    para_style: u64,
+    cell_style: u64,
+) -> Result<u32, PackageError> {
+    let data_list = message_ref("TST.TableDataList")?;
+    let entry_ref = message_ref("TST.TableDataList.ListEntry")?;
+    let mut chain = Chain::new();
+    push_field(tree, &mut chain, data_list, "listType", Node::Uint(4))?;
+    push_field(tree, &mut chain, data_list, "nextListID", Node::Uint(3))?;
+    for (key, style) in [(TEXT_STYLE_KEY, para_style), (CELL_STYLE_KEY, cell_style)] {
+        let mut entry = Chain::new();
+        push_field(tree, &mut entry, entry_ref, "key", Node::Uint(u64::from(key)))?;
+        push_field(tree, &mut entry, entry_ref, "refcount", Node::Uint(1))?;
+        push_field(
+            tree,
+            &mut entry,
+            entry_ref,
+            "reference",
+            Node::Reference(style),
+        )?;
+        push_field(
+            tree,
+            &mut chain,
+            data_list,
+            "entries",
+            Node::Message(entry.first),
+        )?;
+    }
+    Ok(chain.first)
+}
+
+/// Adds object references to an object's `ArchiveInfo`, wherever it lives.
+fn add_object_refs(package: &mut Package, id: u64, refs: &[u64]) -> Result<(), PackageError> {
+    for entry in &mut package.entries {
+        if let Entry::Stream(stream) = entry
+            && let Some(info) = stream
+                .objects
+                .iter()
+                .find(|object| object.identifier == id)
+                .map(|object| object.info)
+        {
+            return add_object_references(&mut stream.tree, info, refs);
+        }
+    }
+    Ok(())
+}
+
+/// Synthesises a character style in the document stream for each distinct
+/// direct formatting in `needed`, returning the style map (the base map plus
+/// the new styles) and the new style ids (to keep in the scope).
+fn synthesize_char_styles(
+    package: &mut Package,
+    document: &Document,
+    base: &HashMap<Format, u64>,
+    needed: impl Iterator<Item = Format>,
+    parent: u64,
+    stylesheet: u64,
+    next_id: &mut u64,
+) -> Result<(HashMap<Format, u64>, Vec<u64>), PackageError> {
+    let mut all = base.clone();
+    let mut refs: Vec<u64> = Vec::new();
+    let mut objects: Vec<Object> = Vec::new();
+    let stream = document_stream(package)?;
+    for format in needed {
+        if all.contains_key(&format) {
+            continue;
+        }
+        let id = *next_id;
+        *next_id += 1;
+        let (message, info) =
+            build_char_style(&mut stream.tree, id, format, document, parent, stylesheet)?;
+        objects.push(Object {
+            identifier: id,
+            info,
+            messages: vec![ObjectMessage {
+                message_type: CHARACTER_STYLE,
+                first: message,
+            }],
+        });
+        all.insert(format, id);
+        refs.push(id);
+    }
+    stream.objects.extend(objects);
+    Ok((all, refs))
 }
 
 /// A header bucket: one `Header{index, size, numberOfCells}` per column width
@@ -2963,31 +3495,19 @@ fn build_header_bucket(
 
 /// A tile: one `TileRowInfo` per row, each with a packed cell buffer where
 /// every cell is a plain-text record pointing at its stringTable key.
-fn build_tile(tree: &mut Tree, mark: &TableMark) -> Result<u32, PackageError> {
+fn build_tile(
+    tree: &mut Tree,
+    mark: &TableMark,
+    rich: &HashMap<usize, u32>,
+) -> Result<u32, PackageError> {
     let tile = message_ref("TST.Tile")?;
     let row_info = message_ref("TST.TileRowInfo")?;
     let mut chain = Chain::new();
-    push_field(
-        tree,
-        &mut chain,
-        tile,
-        "maxColumn",
-        Node::Uint(mark.columns.saturating_sub(1) as u64),
-    )?;
-    push_field(
-        tree,
-        &mut chain,
-        tile,
-        "maxRow",
-        Node::Uint(mark.rows.saturating_sub(1) as u64),
-    )?;
-    push_field(
-        tree,
-        &mut chain,
-        tile,
-        "numCells",
-        Node::Uint((mark.rows * mark.columns) as u64),
-    )?;
+    // Pages leaves these pre-BNC geometry fields at 0 in a BNC-saved tile; the
+    // real geometry comes from the model dimensions and the row infos below.
+    push_field(tree, &mut chain, tile, "maxColumn", Node::Uint(0))?;
+    push_field(tree, &mut chain, tile, "maxRow", Node::Uint(0))?;
+    push_field(tree, &mut chain, tile, "numCells", Node::Uint(0))?;
     push_field(
         tree,
         &mut chain,
@@ -3004,12 +3524,17 @@ fn build_tile(tree: &mut Tree, mark: &TableMark) -> Result<u32, PackageError> {
         Node::Bool(true),
     )?;
     for row in 0..mark.rows {
-        let mut offsets = Vec::with_capacity(mark.columns * 2);
-        let mut buffer = Vec::with_capacity(mark.columns * 16);
+        // Pages allocates a fixed 255-slot column offset array per row (510
+        // bytes): the byte offset of each present column's record in the
+        // buffer, then 0xFFFF for every empty column.
+        let mut offsets = vec![0xFFu8; TILE_COLUMN_SLOTS * 2];
+        let mut buffer: Vec<u8> = Vec::new();
         for column in 0..mark.columns {
-            let key = (row * mark.columns + column) as u32 + 1;
-            offsets.extend_from_slice(&(buffer.len() as u16).to_le_bytes());
-            buffer.extend_from_slice(&cell_record_bytes(key));
+            let cell = row * mark.columns + column;
+            let key = cell as u32 + 1;
+            let slot = column * 2;
+            offsets[slot..slot + 2].copy_from_slice(&(buffer.len() as u16).to_le_bytes());
+            buffer.extend_from_slice(&cell_record_bytes(key, rich.get(&cell).copied()));
         }
         let mut entry = Chain::new();
         push_field(
@@ -3070,15 +3595,36 @@ fn build_tile(tree: &mut Tree, mark: &TableMark) -> Result<u32, PackageError> {
     Ok(chain.first)
 }
 
-/// A 16-byte storage-version-5 cell record for a plain-text cell whose text
-/// is stringTable key `key`: marker 5, kind 3 (string), flag 0x8, the key.
-fn cell_record_bytes(key: u32) -> [u8; 16] {
-    let mut bytes = [0u8; 16];
-    bytes[0] = 5;
-    bytes[1] = 3;
-    bytes[8] = 0x08;
-    bytes[12..16].copy_from_slice(&key.to_le_bytes());
-    bytes
+/// A storage-version-5 cell record. A rich cell (kind 9) is the 32-byte record
+/// Pages writes: marker 5, kind 9, then the fields named by its flag word — the
+/// rich_text key, the cell-style key, the text-style key, a constant, and the
+/// number-format key. A plain cell (kind 3) is a 16-byte record naming a
+/// stringTable key.
+fn cell_record_bytes(string_key: u32, rich_key: Option<u32>) -> Vec<u8> {
+    match rich_key {
+        Some(rich) => {
+            let mut bytes = vec![0u8; 32];
+            bytes[0] = 5;
+            bytes[1] = 9;
+            // rich_text | cell_style | text_style | 0x1000 | text_format
+            let flags: u32 = 0x10 | 0x20 | 0x40 | 0x1000 | 0x20000;
+            bytes[8..12].copy_from_slice(&flags.to_le_bytes());
+            bytes[12..16].copy_from_slice(&rich.to_le_bytes());
+            bytes[16..20].copy_from_slice(&CELL_STYLE_KEY.to_le_bytes());
+            bytes[20..24].copy_from_slice(&TEXT_STYLE_KEY.to_le_bytes());
+            bytes[24..28].copy_from_slice(&5u32.to_le_bytes());
+            bytes[28..32].copy_from_slice(&FORMAT_KEY.to_le_bytes());
+            bytes
+        }
+        None => {
+            let mut bytes = vec![0u8; 16];
+            bytes[0] = 5;
+            bytes[1] = 3;
+            bytes[8] = 0x08;
+            bytes[12..16].copy_from_slice(&string_key.to_le_bytes());
+            bytes
+        }
+    }
 }
 
 /// Pushes a scalar or reference field by name onto a chain.
@@ -3511,4 +4057,372 @@ mod tests {
         assert_eq!(cell(1, 0), "alpha");
         assert_eq!(cell(2, 1), "2");
     }
+}
+
+// ----- component metadata -----
+
+/// Brings `PackageMetadata`'s per-component bookkeeping in line with the
+/// objects the writer produced. Pages loads each `.iwa` stream as a component
+/// and aborts if an object in it references an object in another component that
+/// the component does not declare in `external_references`, or if a text storage
+/// has no `object_uuid_map_entries` entry. The template's own entries are kept;
+/// only missing ones are added, so an untouched component is left as it was.
+/// Returns how many entries were added.
+fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
+    // Where each object lives, what each stream references, and its storages.
+    let mut owner: HashMap<u64, String> = HashMap::new();
+    let mut references: HashMap<String, Vec<u64>> = HashMap::new();
+    let mut storages: HashMap<String, Vec<u64>> = HashMap::new();
+    for entry in &package.entries {
+        let Entry::Stream(stream) = entry else {
+            continue;
+        };
+        for object in &stream.objects {
+            owner.insert(object.identifier, stream.name.clone());
+            let refs = references.entry(stream.name.clone()).or_default();
+            for id in archive_references(&stream.tree, object.info) {
+                if !refs.contains(&id) {
+                    refs.push(id);
+                }
+            }
+            if first_type(object) == Some(STORAGE_ARCHIVE) {
+                storages
+                    .entry(stream.name.clone())
+                    .or_default()
+                    .push(object.identifier);
+            }
+        }
+    }
+
+    let Some((stream, metadata_first)) = metadata_message(package) else {
+        return Ok(0);
+    };
+    let tree = &mut stream.tree;
+    let metadata = message_ref("TSP.PackageMetadata")?;
+    let component = child_message(metadata, "components")?;
+    let external = child_message(component, "external_references")?;
+    let uuid_entry = child_message(component, "object_uuid_map_entries")?;
+    let uuid = child_message(uuid_entry, "uuid")?;
+
+    // Each component: the metadata entry holding it, its id, and its stream.
+    struct Component {
+        entry: u32,
+        first: u32,
+        identifier: u64,
+        stream: String,
+    }
+    let mut components: Vec<Component> = Vec::new();
+    for (index, field) in tree.chain(metadata_first) {
+        if tree.field(field).map(|f| f.name) != Some("components") {
+            continue;
+        }
+        let Node::Message(first) = field.value else {
+            continue;
+        };
+        let Some(Node::Uint(identifier)) = field_value(tree, first, "identifier") else {
+            continue;
+        };
+        let locator = str_field(tree, first, "locator")
+            .filter(|name| !name.is_empty())
+            .or_else(|| str_field(tree, first, "preferred_locator"));
+        let Some(locator) = locator else {
+            continue;
+        };
+        components.push(Component {
+            entry: index,
+            first,
+            identifier,
+            stream: format!("Index/{locator}.iwa"),
+        });
+    }
+    let component_of: HashMap<&str, u64> = components
+        .iter()
+        .map(|c| (c.stream.as_str(), c.identifier))
+        .collect();
+
+    let mut added = 0;
+    let mut rebuilt: Vec<(u32, u32)> = Vec::new();
+    for component_entry in &components {
+        // What the component already declares.
+        let mut declared: Vec<(u64, Option<u64>)> = Vec::new();
+        let mut mapped: Vec<u64> = Vec::new();
+        for (_, field) in tree.chain(component_entry.first) {
+            let name = tree.field(field).map(|f| f.name);
+            let Node::Message(first) = field.value else {
+                continue;
+            };
+            match name {
+                Some("external_references") => {
+                    let component_id = match field_value(tree, first, "component_identifier") {
+                        Some(Node::Uint(id)) => id,
+                        _ => continue,
+                    };
+                    let object_id = match field_value(tree, first, "object_identifier") {
+                        Some(Node::Uint(id)) => Some(id),
+                        _ => None,
+                    };
+                    declared.push((component_id, object_id));
+                }
+                Some("object_uuid_map_entries") => {
+                    if let Some(Node::Uint(id)) = field_value(tree, first, "identifier") {
+                        mapped.push(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // What it needs: every reference out of its stream, by owning component.
+        let mut missing_refs: Vec<(u64, Option<u64>)> = Vec::new();
+        for id in references.get(&component_entry.stream).into_iter().flatten() {
+            let Some(target_stream) = owner.get(id) else {
+                continue;
+            };
+            if *target_stream == component_entry.stream {
+                continue;
+            }
+            let Some(&target) = component_of.get(target_stream.as_str()) else {
+                continue;
+            };
+            // A reference to another component's root object is recorded as a
+            // weak component reference with no object identifier.
+            let wanted = if *id == target { (target, None) } else { (target, Some(*id)) };
+            let known = declared.iter().any(|(c, o)| {
+                *c == wanted.0 && (*o == wanted.1 || (wanted.1.is_none() && o.is_none()))
+            });
+            if !known && !missing_refs.contains(&wanted) {
+                missing_refs.push(wanted);
+            }
+        }
+        let missing_uuids: Vec<u64> = storages
+            .get(&component_entry.stream)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|id| !mapped.contains(id))
+            .collect();
+        if missing_refs.is_empty() && missing_uuids.is_empty() {
+            continue;
+        }
+        added += missing_refs.len() + missing_uuids.len();
+
+        // Rebuild the component message in field-number order with the new
+        // entries alongside the kept ones.
+        let mut fields: Vec<(u32, Node)> = tree
+            .chain(component_entry.first)
+            .map(|(_, field)| (field.number, field.value))
+            .collect();
+        for (component_id, object_id) in missing_refs {
+            let mut chain = Chain::new();
+            push_field(tree, &mut chain, external, "component_identifier", Node::Uint(component_id))?;
+            match object_id {
+                Some(object_id) => {
+                    push_field(tree, &mut chain, external, "object_identifier", Node::Uint(object_id))?
+                }
+                None => push_field(tree, &mut chain, external, "is_weak", Node::Bool(true))?,
+            }
+            let number = component
+                .slot_named("external_references")
+                .map(|(_, f)| f.number)
+                .ok_or_else(|| malformed("ComponentInfo has no external_references"))?;
+            fields.push((number, Node::Message(chain.first)));
+        }
+        for id in missing_uuids {
+            let mut uuid_chain = Chain::new();
+            let (lower, upper) = object_uuid(id);
+            push_field(tree, &mut uuid_chain, uuid, "lower", Node::Uint(lower))?;
+            push_field(tree, &mut uuid_chain, uuid, "upper", Node::Uint(upper))?;
+            let mut chain = Chain::new();
+            push_field(tree, &mut chain, uuid_entry, "identifier", Node::Uint(id))?;
+            push_field(tree, &mut chain, uuid_entry, "uuid", Node::Message(uuid_chain.first))?;
+            let number = component
+                .slot_named("object_uuid_map_entries")
+                .map(|(_, f)| f.number)
+                .ok_or_else(|| malformed("ComponentInfo has no object_uuid_map_entries"))?;
+            fields.push((number, Node::Message(chain.first)));
+        }
+        fields.sort_by_key(|(number, _)| *number);
+        let mut chain = Chain::new();
+        for (number, value) in fields {
+            let slot = component
+                .slot(number)
+                .ok_or_else(|| malformed("component field without a schema slot"))?;
+            let field = component
+                .field_at(slot)
+                .ok_or_else(|| malformed("component field slot out of range"))?;
+            tree.push_known(&mut chain, component, slot, field, number, value)
+                .map_err(tree_error)?;
+        }
+        rebuilt.push((component_entry.entry, chain.first));
+    }
+    for (entry, first) in rebuilt {
+        tree.entries[entry as usize].value = Node::Message(first);
+    }
+    Ok(added)
+}
+
+/// Every object identifier an object's `ArchiveInfo` lists as referenced.
+fn archive_references(tree: &Tree, info: u32) -> Vec<u64> {
+    let mut out = Vec::new();
+    for (_, field) in tree.chain(info) {
+        if tree.field(field).map(|f| f.name) != Some("message_infos") {
+            continue;
+        }
+        let Node::Message(first) = field.value else {
+            continue;
+        };
+        for (_, inner) in tree.chain(first) {
+            if tree.field(inner).map(|f| f.name) != Some("object_references") {
+                continue;
+            }
+            match inner.value {
+                Node::Uint(id) => out.push(id),
+                Node::Bytes(span) | Node::RawBytes(span) => {
+                    let bytes = tree.bytes(span);
+                    let mut value = 0u64;
+                    let mut shift = 0;
+                    for byte in bytes {
+                        value |= u64::from(byte & 0x7f) << shift;
+                        if byte & 0x80 == 0 {
+                            out.push(value);
+                            value = 0;
+                            shift = 0;
+                        } else {
+                            shift += 7;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// A stable, distinct UUID for a written object, derived from its identifier.
+fn object_uuid(id: u64) -> (u64, u64) {
+    fn mix(mut z: u64) -> u64 {
+        z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    (mix(id), mix(id ^ 0x5355_424C_494D_4521))
+}
+
+
+/// Sets `PackageMetadata.last_object_identifier`, the identifier Pages
+/// allocates new objects above.
+fn set_last_object_identifier(package: &mut Package, identifier: u64) -> Result<(), PackageError> {
+    let (stream, first) =
+        metadata_message(package).ok_or_else(|| malformed("PackageMetadata is missing"))?;
+    for (index, field) in stream.tree.chain(first) {
+        if stream.tree.field(field).map(|f| f.name) == Some("last_object_identifier") {
+            stream.tree.entries[index as usize].value = Node::Uint(identifier);
+            return Ok(());
+        }
+    }
+    Err(malformed("PackageMetadata has no last_object_identifier"))
+}
+
+/// Replaces every UUID in the document's identity files (`DocumentIdentifier`
+/// and the document, version, private, and share UUIDs in `Properties.plist`)
+/// with fresh ones, the same old UUID mapping to the same new one throughout.
+/// UUIDs are fixed-length ASCII, so the binary plist keeps its layout.
+fn renew_document_identity(package: &mut Package) {
+    let mut renamed: Vec<([u8; 36], [u8; 36])> = Vec::new();
+    for entry in &mut package.entries {
+        let Entry::File { name, bytes } = entry else {
+            continue;
+        };
+        if name != "Metadata/DocumentIdentifier" && name != "Metadata/Properties.plist" {
+            continue;
+        }
+        let mut at = 0;
+        while at + 36 <= bytes.len() {
+            let window: [u8; 36] = bytes[at..at + 36].try_into().expect("36 bytes");
+            if !is_uuid(&window) {
+                at += 1;
+                continue;
+            }
+            let fresh = match renamed.iter().find(|(old, _)| *old == window) {
+                Some((_, new)) => *new,
+                None => {
+                    let new = fresh_uuid(renamed.len() as u64);
+                    renamed.push((window, new));
+                    new
+                }
+            };
+            bytes[at..at + 36].copy_from_slice(&fresh);
+            at += 36;
+        }
+    }
+}
+
+fn is_uuid(text: &[u8; 36]) -> bool {
+    text.iter().enumerate().all(|(index, byte)| match index {
+        8 | 13 | 18 | 23 => *byte == b'-',
+        _ => byte.is_ascii_hexdigit(),
+    })
+}
+
+/// A random (version 4) UUID in the uppercase text form Pages writes, drawn
+/// from the clock, the process, and `salt` so each call and run differs.
+fn fresh_uuid(salt: u64) -> [u8; 36] {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos() as u64)
+        .unwrap_or(0);
+    let seed = nanos ^ (u64::from(std::process::id()) << 32) ^ salt.wrapping_mul(0x9E37_79B9);
+    let (high, low) = object_uuid(seed);
+    let mut raw = [0u8; 16];
+    raw[..8].copy_from_slice(&high.to_be_bytes());
+    raw[8..].copy_from_slice(&low.to_be_bytes());
+    raw[6] = (raw[6] & 0x0f) | 0x40;
+    raw[8] = (raw[8] & 0x3f) | 0x80;
+    let hex: String = raw.iter().map(|byte| format!("{byte:02X}")).collect();
+    let text = format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    );
+    text.as_bytes().try_into().expect("36 bytes")
+}
+
+/// Carries the document's page size and margins onto `DocumentArchive`, so a
+/// document laid out for, say, narrow margins keeps its text width and page
+/// breaks instead of inheriting the template's US Letter with one-inch margins.
+fn set_page_setup(
+    package: &mut Package,
+    page: &crate::document::PageSetup,
+) -> Result<(), PackageError> {
+    let stream = document_stream(package)?;
+    let first = stream
+        .objects
+        .iter()
+        .find(|object| first_type(object) == Some(DOCUMENT_ARCHIVE))
+        .and_then(|object| object.messages.first())
+        .map(|message| message.first)
+        .ok_or_else(|| malformed("DocumentArchive is missing"))?;
+    let tree = &mut stream.tree;
+    for (name, value) in [
+        ("page_width", page.width),
+        ("page_height", page.height),
+        ("left_margin", page.margin_left),
+        ("right_margin", page.margin_right),
+        ("top_margin", page.margin_top),
+        ("bottom_margin", page.margin_bottom),
+        ("header_margin", page.header_distance),
+        ("footer_margin", page.footer_distance),
+    ] {
+        if value.is_finite() && value >= 0.0 {
+            set_field_float(tree, first, name, value);
+        }
+    }
+    let landscape = u64::from(page.width > page.height);
+    set_field_uint(tree, first, "orientation", landscape);
+    Ok(())
 }
