@@ -12,6 +12,7 @@ section under a version heading.
 
 ### Added
 
+- TIFF both ways (`src/io/tiff.rs`): the first page read from strips or tiles, chunky or planar, uncompressed, LZW, deflate, or PackBits, with the horizontal predictor, at 1 to 16 bits in gray, palette, RGB, or CMYK with either kind of alpha; written as 8-bit deflate strips with the predictor. Pair `tiff-png` against the image and tiff crates. Map in `DOCS/formats/tiff.md`.
 - ICO both ways and CUR read (`src/io/ico.rs`): the largest, deepest entry read from PNG or BMP entries (AND masks, alpha-less 32-bit entries as Windows reads them); icons written with the standard sizes that fit, the source itself as the largest when it fits in 256, from one streaming downscale. Pair `ico-png` against the image crate. Map in `DOCS/formats/ico.md`.
 - An area-averaging downscale (`src/image/resize.rs`) that streams source rows and weights color by alpha.
 - TGA both ways (`src/io/tga.rs`): every common layout read (color-mapped, truecolor, gray; raw and RLE; 15 to 32 bits; both orientations), top-down RLE written as Pillow writes it; a bottom-up file holds its bytes, not its pixels. Pair `tga-png` against the image and png crates. Map in `DOCS/formats/tga.md`.
