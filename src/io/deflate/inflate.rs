@@ -1197,7 +1197,7 @@ mod tests {
     fn a_large_stream_inflates_into_an_empty_or_a_filled_vector() {
         // Past the slab, so the expected-size path moves its output out
         // (empty vector) or appends it (filled vector).
-        let text: Vec<u8> = (0..3_000_000u32).map(|n| (n % 251 ^ n / 7) as u8).collect();
+        let text: Vec<u8> = (0..3_000_000u32).map(|n| ((n % 251) ^ (n / 7)) as u8).collect();
         let mut compressed = Vec::new();
         super::super::compress::deflate(&text, &mut compressed);
         let mut empty = Vec::new();
