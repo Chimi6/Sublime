@@ -64,19 +64,36 @@ The document category's one-way streets are closed (0.8.0 to 0.10.0) and the dat
 
 ## Tech Debt
 
+### Optimization
+
+Speed and size targets we want to beat or widen, each with its measured
+gap, what was tried, and the levers left. Numbers come from the pair
+documents in `DOCS/benchmarks`; measured-best patterns and failed spikes
+live in `temp/patterns.md`. Size wins over speed where they trade (the
+WebP color cache stays).
+
+- WebP lossless photo encode (`webp-png`): 249 against image-webp's 428 MB/s, by design (the color cache and predictor search make real photos 8 to 37% smaller; image-webp does neither). Tried: byte-wise predictors, recorded first-pass decisions, locals in both passes, four candidates, select in blocks (slower), branchless bit writer (slower). Levers: predictor scoring is 53 ms of the photo's encode, half of it select; score and compute residuals per 16-row band as rows arrive (the image is re-read five times today); threads for scoring and residuals on the command line (not wasm).
+- WebP lossless photo decode (`webp-png`): 2% short of the reference; the PNG write is most of it. Tried: 10-bit primary tables and length-zero single-symbol codes (both slower). Lever: one refill per literal for its four symbols.
+- WebP lossless size against libwebp's default effort (6% smaller than ours, thirty times the time): meta prefix codes per region, the cross-color transform, general LZ77 distances, the entropy predictor choice at the default effort if it gets cheaper.
+- Lossy WebP output is not written; JPEG covers lossy output for now.
+- Deflate (PNG, DOCX, XLSX): the default level now matches or beats zlib 6's ratio at about its speed. libdeflate reaches the same ratio at about twice zlib's speed: its hash-table layout and match finder are the model. Photo-shaped data costs about 11 ns a position in the chain walk (dependent loads). A near-optimal parse would suit a smallest-output level.
+- PNG writer: filters by smallest residual sum; fixed Sub compressed 1.3% smaller on a decoded lossy photo under zlib. A real-photo corpus would settle a Sub bias. The `png -> bmp` photo line's margin is thin in the harness (ours 102 against 109 ms direct).
+- JPEG encoder size: optimized Huffman tables (3 to 5%), trellis quantization (5 to 10% at equal PSNR), and 4:2:0 or 4:4:4 chosen from the chroma planes' edge energy (fixed 4:2:0 costs 24 dB on hard-edged graphics). All but the last hold the coefficients.
+- Markdown dense parse: level with `pulldown-cmark`, not ahead; the arena-shrinking spike under Spikes is the lever.
+- `xlsx -> csv` memory: 928 to 950 MB against the recorded 415 (Blockers); a windowed inflate feeding the XML reader would make it constant either way.
+
 - 2026-09-26: JPEG leftovers:
   - Not read: CMYK and YCCK (Adobe four-component files, common from print workflows), 12-bit samples, arithmetic coding, lossless and hierarchical modes, DNL-supplied heights. CMYK is the one users will hit.
   - The reader takes the file whole (its entropy-coded data is one bit stream); a windowed reader would make input memory constant too. The file is a tenth of the pixels, so this is small.
   - Exif orientation is reported, not applied; the transform belongs to the image path with the other whole-image operations.
-  - The writer has no optimized Huffman tables (a second pass, 3 to 5% smaller), no progressive output, no trellis quantization (mozjpeg's, 5 to 10% smaller at equal PSNR). All three hold the coefficients, so they are image-path features.
+  - The writer has no progressive output (it holds the coefficients, an image-path feature).
+  - Encoder size levers moved to Optimization above.
   - Margins (2026-09-26): the photo encode leads jpeg-encoder by 7 to 9% since chroma is computed from summed RGB. Tried and reverted for the decode: libjpeg's color lookup tables (6% slower) and planar color groups (1 to 3% slower); a constant-chroma upsampling skip helps only specially shaped images and was not written. The flat decode's lead rests on the PNG writer.
-  - Fixed 4:2:0 below quality 90 costs 24 dB of PSNR on flat graphics with hard color edges against 4:4:4 (the `image` crate's 4:2:2 default shows it). Choosing the subsampling from the chroma planes' own edge energy would give photographs 4:2:0 and graphics 4:4:4 without a switch; a unique lever, cheap to measure.
 - 2026-09-26: Image leftovers:
   - The hub is 8-bit: 16-bit PNG samples lose their low byte (reported as a loss). A 16-bit hub is the change if a lossless 16-bit path is ever wanted.
   - No metadata is carried (gamma, ICC, text, physical size); APNG frames are not read; BMP RLE is refused.
   - The PNG writer's filter heuristic (smallest sum of residual magnitudes, the standard) chooses Average on the synthetic photo where fixed Sub compressed 20% smaller under the first generator's mirrored noise; with independent noise both give the same size. An entropy estimate chose the same. A real-photo corpus would settle whether a bias toward Sub is worth it.
-  - Deflate is greedy (no lazy matching): 14.2% against zlib's 13.2% on 8 MiB of words; the PNG encode is level-6 speed with a level-5 class ratio on compressible images.
-  - The matcher's chain budget drops to a twelfth while recent matches average under five bytes; on the noisy photo that is 4% of output size (33.6 against 32.2 MB) for a three-times faster encode. A budget of a sixth gave the crate's size at 1.4 times its time.
+  - Deflate and PNG filter levers moved to Optimization above (lazy matching and priced matches shipped 2026-09-27).
 - 2026-09-25: Excel leftovers:
   - The reader inflates the sheet part whole before parsing (415 MB peak on a 39 MB workbook whose sheet inflates to 326 MB); a windowed inflate feeding the XML reader would make it constant. The writer already streams.
   - One sheet per run; a whole-workbook form (a JSON object of sheets, or one CSV per sheet) is not offered.
@@ -100,7 +117,6 @@ The document category's one-way streets are closed (0.8.0 to 0.10.0) and the dat
   - Header and footer areas (left, center, right) are joined as paragraphs; Word has no three-area header.
   - The release binary grew to 1.36 MB with the document pipeline (budget raised to 1.4 MB); std's backtrace symbolizer (gimli, addr2line, about 100 KB) is the largest non-feature cost and the lever if size matters.
 - 2026-09-23: Pages leftovers from the package reader:
-  - Deflate has no lazy matching; it is 7% larger than zlib level 9 on mixed data and level-6 class overall. Add lazy matching if a writer path needs the last percent.
   - 31 registry types without a schema; they decode raw. Resolve as the document reader needs them.
   - The schema comes from community protos of two vintages; fields Pages 12 added since decode raw. Coverage is measured by the round-trip test, not by name.
   - No peer reference for the Pages pairs: the harness scales fixtures into large documents and measures against the decompression floor and our own package round trip (`DOCS/benchmarks/pages-json.md`).
