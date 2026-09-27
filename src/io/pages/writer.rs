@@ -988,43 +988,40 @@ fn reuse_table(
         // of the body cell style that sets its fill (empty for none, which also
         // switches off the table style's banded rows).
         // Each cell's look: its fill and its vertical alignment.
-        let looks: Vec<CellLook> = mark
-            .backgrounds
-            .iter()
-            .zip(&mark.alignments)
-            .map(|(fill, alignment)| (*fill, *alignment))
+        // Each cell's look: its fill, vertical alignment, and padding (left,
+        // top, right, bottom, as bits).
+        let looks: Vec<CellLook> = (0..mark.backgrounds.len())
+            .map(|index| {
+                (
+                    mark.backgrounds[index],
+                    mark.alignments[index],
+                    mark.paddings[index].map(f32::to_bits),
+                )
+            })
             .collect();
         let mut distinct = looks.clone();
-        distinct.sort_by_key(|(fill, alignment)| {
+        distinct.sort_by_key(|(fill, alignment, padding)| {
             (
                 fill.map(|color| (color.red, color.green, color.blue)),
                 *alignment,
+                *padding,
             )
         });
         distinct.dedup();
-        // The cells' padding (left, top, right, bottom): the source's margins,
-        // else the template's own.
-        let padding = mark
-            .cell_margins
-            .map_or([TEMPLATE_CELL_PADDING; 4], |margins| {
-                [margins.left, margins.top, margins.right, margins.bottom]
-            });
-        let padding_key = padding.map(f32::to_bits);
         // A plain cell with the template's padding keeps the table's own body
         // cell style.
-        if padding == [TEMPLATE_CELL_PADDING; 4] {
-            for alignment in [ALIGN_UNSTATED, 0] {
-                fill_styles.insert(
-                    (table.cell_style_id, (None, alignment), padding_key),
-                    table.cell_style_id,
-                );
-            }
+        let template_padding = [TEMPLATE_CELL_PADDING; 4].map(f32::to_bits);
+        for alignment in [ALIGN_UNSTATED, 0] {
+            fill_styles.insert(
+                (table.cell_style_id, (None, alignment, template_padding)),
+                table.cell_style_id,
+            );
         }
         // Shared across tables: Pages merges identical variations on load, which
         // would leave a second table's copy dangling.
         let missing: Vec<CellLook> = distinct
             .iter()
-            .filter(|look| !fill_styles.contains_key(&(table.cell_style_id, **look, padding_key)))
+            .filter(|look| !fill_styles.contains_key(&(table.cell_style_id, **look)))
             .copied()
             .collect();
         if !missing.is_empty() {
@@ -1032,12 +1029,11 @@ fn reuse_table(
                 package,
                 table.cell_style_id,
                 &missing,
-                padding,
                 styles.stylesheet,
                 next_id,
             )?;
             for (look, id) in created {
-                fill_styles.insert((table.cell_style_id, look, padding_key), id);
+                fill_styles.insert((table.cell_style_id, look), id);
             }
         }
         // Refcounts are the number of cell records naming each key: Pages
@@ -1055,7 +1051,7 @@ fn reuse_table(
                 .enumerate()
                 .filter(|(index, other)| *other == look && !covered.contains(index))
                 .count() as u64;
-            let variation = fill_styles[&(table.cell_style_id, *look, padding_key)];
+            let variation = fill_styles[&(table.cell_style_id, *look)];
             style_entries.push((key, variation, users.max(1)));
             look_keys.insert(*look, key);
         }
@@ -3049,10 +3045,10 @@ struct TableMark {
     backgrounds: Vec<Option<crate::document::Color>>,
     /// Row-major cells' vertical alignment, as Pages codes it.
     alignments: Vec<u64>,
+    /// Row-major cells' padding (left, top, right, bottom).
+    paddings: Vec<[f32; 4]>,
     /// The table's grid lines, when the source states them.
     borders: Option<crate::document::TableBorders>,
-    /// The cells' padding, when the source states it.
-    cell_margins: Option<crate::document::CellMargins>,
     /// Row-major cells' own edges, over the table's lines.
     cell_borders: Vec<crate::document::CellBorders>,
 }
@@ -3244,10 +3240,24 @@ impl Walk {
         let mut backgrounds = vec![None; rows * columns];
         let mut cell_borders = vec![crate::document::CellBorders::default(); rows * columns];
         let mut alignments = vec![ALIGN_UNSTATED; rows * columns];
+        // The table's cell margins, else the template's, under each cell's own.
+        let base = table
+            .cell_margins
+            .map_or([TEMPLATE_CELL_PADDING; 4], |margins| {
+                [margins.left, margins.top, margins.right, margins.bottom]
+            });
+        let mut paddings = vec![base; rows * columns];
         for (r, row) in table.rows.iter().enumerate() {
             for (c, cell) in row.cells.iter().enumerate().take(columns) {
                 backgrounds[r * columns + c] = cell.background;
                 cell_borders[r * columns + c] = cell.borders;
+                let [top, bottom, left, right] = cell.margins;
+                paddings[r * columns + c] = [
+                    left.unwrap_or(base[0]),
+                    top.unwrap_or(base[1]),
+                    right.unwrap_or(base[2]),
+                    bottom.unwrap_or(base[3]),
+                ];
                 alignments[r * columns + c] = match cell.vertical_alignment {
                     Some(crate::document::VerticalAlignment::Top) => 0,
                     Some(crate::document::VerticalAlignment::Center) => 1,
@@ -3270,16 +3280,18 @@ impl Walk {
         }
         // A row Word leaves to its content starts one body line tall (plus the
         // cell margins); Pages grows it to fit taller content, as Word does.
-        let (pad_top, pad_bottom) = table
-            .cell_margins
-            .map_or((TEMPLATE_CELL_PADDING, TEMPLATE_CELL_PADDING), |margins| {
-                (margins.top, margins.bottom)
-            });
-        let line = default_font_size(document) * 1.2 + pad_top + pad_bottom;
+        let body_line = default_font_size(document) * 1.2;
+
         let heights = table
             .rows
             .iter()
-            .map(|row| {
+            .enumerate()
+            .map(|(r, row)| {
+                // The row's tallest cell margins above and below.
+                let margins = (0..columns)
+                    .map(|c| paddings[r * columns + c][1] + paddings[r * columns + c][3])
+                    .fold(0.0f32, f32::max);
+                let line = body_line + margins;
                 // Word counts a cell's space before its first paragraph and
                 // after its last in the row; Pages lays neither out in a cell.
                 let spacing = row
@@ -3321,8 +3333,8 @@ impl Walk {
             merges,
             backgrounds,
             alignments,
+            paddings,
             borders: table.borders,
-            cell_margins: table.cell_margins,
             cell_borders,
         });
         self.mark(Format::default());
@@ -4259,10 +4271,10 @@ fn build_rich_text_list(tree: &mut Tree, entries: &[(u32, u64)]) -> Result<u32, 
 
 /// Cell-style variations by (parent cell style, fill), shared by all tables.
 /// A cell's look in Pages: its fill and its vertical alignment code.
-type CellLook = (Option<crate::document::Color>, u64);
+type CellLook = (Option<crate::document::Color>, u64, [u32; 4]);
 
 /// Cell style variations by (parent, look, padding as bits).
-type CellFillStyles = HashMap<(u64, CellLook, [u32; 4]), u64>;
+type CellFillStyles = HashMap<(u64, CellLook), u64>;
 
 /// Pages' vertical alignment for a cell whose source states none (as Pages
 /// writes a Word cell without one; it lays out at the top).
@@ -4325,7 +4337,6 @@ fn create_cell_styles(
     package: &mut Package,
     parent: u64,
     looks: &[CellLook],
-    padding_sides: [f32; 4],
     stylesheet: u64,
     next_id: &mut u64,
 ) -> Result<HashMap<CellLook, u64>, PackageError> {
@@ -4338,7 +4349,8 @@ fn create_cell_styles(
     // In the stylesheet's own stream, where Pages keeps style variations; one
     // elsewhere is swapped out on load (and a table's cell references with it).
     let stream = stream_containing(package, stylesheet)?;
-    for &(color, alignment) in looks {
+    for &(color, alignment, padding_bits) in looks {
+        let padding_sides = padding_bits.map(f32::from_bits);
         let id = *next_id;
         *next_id += 1;
         let tree = &mut stream.tree;
@@ -4434,7 +4446,7 @@ fn create_cell_styles(
                 first: chain.first,
             }],
         });
-        out.insert((color, alignment), id);
+        out.insert((color, alignment, padding_bits), id);
     }
     let pairs: Vec<(u64, u64)> = out.values().map(|id| (parent, *id)).collect();
     register_in_stylesheet(package, stylesheet, &pairs)?;
