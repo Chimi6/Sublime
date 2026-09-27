@@ -1179,31 +1179,40 @@ impl<'a> WebpRows<'a> {
             return;
         };
         let row_start = self.indices.len();
-        let mut last: Option<(u32, u8)> = None;
-        for pixel in &self.scratch {
-            let index = match last {
-                Some((color, index)) if color == *pixel => index,
-                _ => match palette.index(*pixel) {
-                    Some(index) => {
-                        last = Some((*pixel, index));
-                        index
+        self.indices.resize(row_start + self.width, 0);
+        // The row's indices written into a slice with the last color in
+        // locals: a push per pixel through `self` reloaded the vector's
+        // length every time.
+        let targets = &mut self.indices[row_start..];
+        let mut last_color = self.scratch[0];
+        let mut last_index = palette.index(last_color);
+        let mut overflow = last_index.is_none();
+        if !overflow {
+            for (target, pixel) in targets.iter_mut().zip(&self.scratch) {
+                if *pixel != last_color {
+                    last_color = *pixel;
+                    last_index = palette.index(last_color);
+                    if last_index.is_none() {
+                        overflow = true;
+                        break;
                     }
-                    None => {
-                        self.indices.truncate(row_start);
-                        let colors = &palette.colors;
-                        self.pixels = Vec::with_capacity(self.width * self.height);
-                        self.pixels
-                            .extend(self.indices.iter().map(|index| colors[usize::from(*index)]));
-                        self.pixels.extend_from_slice(&self.scratch);
-                        self.indices = Vec::new();
-                        self.palette = None;
-                        return;
-                    }
-                },
-            };
-            self.indices.push(index);
+                }
+                *target = last_index.unwrap_or(0);
+            }
+        }
+        if overflow {
+            // The 257th color: what is held becomes ARGB words.
+            self.indices.truncate(row_start);
+            let colors = &palette.colors;
+            self.pixels = Vec::with_capacity(self.width * self.height);
+            self.pixels
+                .extend(self.indices.iter().map(|index| colors[usize::from(*index)]));
+            self.pixels.extend_from_slice(&self.scratch);
+            self.indices = Vec::new();
+            self.palette = None;
         }
     }
+
 }
 
 impl RowSink for WebpRows<'_> {
