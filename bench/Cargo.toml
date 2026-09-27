@@ -22,6 +22,7 @@ rust_xlsxwriter = "0.79"
 png = "0.17"
 image = { version = "0.25", default-features = false, features = ["bmp", "jpeg", "webp"] }
 jpeg-encoder = "0.6"
+qoi = "0.4"
 
 [profile.release]
 lto = "fat"

@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-09-27: QOI both ways (`src/io/qoi.rs`): decoded to Pillow's pixels and written as Pillow's bytes on 60 fixtures, streaming a row at a time both ways; every `qoi-png` line passes at 4 to 5 MB against the crates' 52 to 524. Image pairs are now generated from one codec table (`src/converters/image.rs`), so every raster format reaches every other.
 - 2026-09-26: WebP both ways (`src/io/webp`): lossless and lossy decode bit-exact with libwebp on 224 fixtures, lossy streaming by macroblock row at 4 MB, and a lossless encoder whose files are 4 to 9% smaller than image-webp's and faster to write than libwebp's fastest setting. Pair `webp-png`: memory passes everywhere, five speed lines fail (Blockers).
 - 2026-09-26: JPEG both ways (`src/io/jpeg`): a reader for baseline and progressive files bit-exact with libjpeg-turbo on 140 Pillow-written fixtures, streaming MCU rows into the PNG and BMP writers; a JFIF baseline writer at `--quality` (85 by default, 4:2:0 below 90) streaming sixteen rows at a time; every path holds 5 to 6 MB on a 46 MB image. Map in `DOCS/formats/jpeg.md`, oracles in `tests/jpeg_suite.rs`, pair `jpeg-png` against the `image` (zune-jpeg) and `jpeg-encoder` crates with a PSNR row. Encode is at parity with the mozjpeg port on speed, smaller at higher PSNR; decode alone is at parity with zune-jpeg.
 - 2026-09-26: `bmp -> png` streams as well (`read_bmp_rows` into `PngRows`): a top-down BMP is never held (4 MB peak on a 418 MB image), a bottom-up one is held once as file bytes (66 MB on a 61 MB image, was 125).
@@ -77,6 +78,7 @@ WebP color cache stays).
 - PNG writer: filters by smallest residual sum; fixed Sub compressed 1.3% smaller on a decoded lossy photo under zlib. A real-photo corpus would settle a Sub bias. The `png -> bmp` photo line's margin is thin in the harness (ours 102 against 109 ms direct).
 - JPEG encoder size: optimized Huffman tables (3 to 5%), trellis quantization (5 to 10% at equal PSNR), and 4:2:0 or 4:4:4 chosen from the chroma planes' edge energy (fixed 4:2:0 costs 24 dB on hard-edged graphics). All but the last hold the coefficients.
 - Markdown dense parse: level with `pulldown-cmark`, not ahead; the arena-shrinking spike under Spikes is the lever.
+- `qoi-png` thin margins: the photo decode (65.3 against 64.7 MB/s, the PNG write of a noise photo is most of it) and the stock encode (583.8 against 582.0, a tie). Levers: the deflate noise path (shared with the WebP lossless decode line), and the PNG reader's unfilter on large RGBA images.
 - `xlsx -> csv` memory: 425 MB against calamine's 593 (the sheet part is inflated whole); a windowed inflate feeding the XML reader would make it constant.
 
 - 2026-09-26: JPEG leftovers:
