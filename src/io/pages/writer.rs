@@ -1009,10 +1009,12 @@ fn reuse_table(
         // A plain cell with the template's padding keeps the table's own body
         // cell style.
         if padding == [TEMPLATE_CELL_PADDING; 4] {
-            fill_styles.insert(
-                (table.cell_style_id, (None, ALIGN_UNSTATED), padding_key),
-                table.cell_style_id,
-            );
+            for alignment in [ALIGN_UNSTATED, 0] {
+                fill_styles.insert(
+                    (table.cell_style_id, (None, alignment), padding_key),
+                    table.cell_style_id,
+                );
+            }
         }
         // Shared across tables: Pages merges identical variations on load, which
         // would leave a second table's copy dangling.
@@ -4369,13 +4371,18 @@ fn create_cell_styles(
                 Node::Message(fill_chain.first),
             )?;
         }
-        push_field(
-            tree,
-            &mut props,
-            properties,
-            "vertical_alignment",
-            Node::Uint(alignment),
-        )?;
+        // Top is the body cell style's own alignment: stating it again is a
+        // redundant override, which Pages cleans up on load (as it does an
+        // empty fill), so it is left out, as Pages writes a top-aligned cell.
+        if alignment != 0 {
+            push_field(
+                tree,
+                &mut props,
+                properties,
+                "vertical_alignment",
+                Node::Uint(alignment),
+            )?;
+        }
         push_field(
             tree,
             &mut props,
@@ -4391,7 +4398,7 @@ fn create_cell_styles(
             "super",
             Node::Message(style.first),
         )?;
-        let overrides = if color.is_some() { 3 } else { 2 };
+        let overrides = 1 + u64::from(color.is_some()) + u64::from(alignment != 0);
         push_field(
             tree,
             &mut chain,
@@ -7663,6 +7670,9 @@ const DRAWABLES_ZORDER: u32 = 10015;
 /// A Word text box to write as a Pages shape floating on its page.
 struct TextBox {
     fill: Option<crate::document::Color>,
+    line: Option<crate::document::Border>,
+    geometry: crate::document::ShapeGeometry,
+    flip: (bool, bool),
     page: u32,
     x: f32,
     y: f32,
@@ -7677,16 +7687,37 @@ fn text_boxes(document: &Document) -> Vec<TextBox> {
         .floating
         .iter()
         .filter_map(|floating| match &floating.content {
-            crate::document::FloatingContent::TextBox { blocks, fill } => {
-                let content =
+            crate::document::FloatingContent::TextBox {
+                blocks,
+                fill,
+                line,
+                geometry,
+                flip,
+            } => {
+                let mut content =
                     flatten_lines(document, &block_lines(blocks), &mut ListCounters::default());
-                (!content.text.trim().is_empty() || !content.fields.is_empty()).then(|| TextBox {
+                let has_text = !content.text.trim().is_empty() || !content.fields.is_empty();
+                // A line keeps its thin extent; a box needs room for its text.
+                let least = if *geometry == crate::document::ShapeGeometry::Line {
+                    1.0
+                } else {
+                    12.0
+                };
+                // Pages judges a shape's empty text storage invalid and
+                // repairs it on load; a lone space keeps it well formed.
+                if content.text.is_empty() {
+                    content.text.push(' ');
+                }
+                (has_text || fill.is_some() || line.is_some()).then(|| TextBox {
                     fill: *fill,
+                    line: *line,
+                    geometry: *geometry,
+                    flip: *flip,
                     page: floating.page,
                     x: floating.x,
                     y: floating.y,
-                    width: floating.width.max(12.0),
-                    height: floating.height.max(12.0),
+                    width: floating.width.max(least),
+                    height: floating.height.max(least),
                     content,
                 })
             }
@@ -7711,15 +7742,27 @@ fn write_text_boxes(
     }
     let shape_style = shape_style_identified(package, "textbox-0-shapestyle")
         .ok_or_else(|| malformed("template has no text box shape style"))?;
-    // A filled box gets a variation of the text-box style with that fill: text
-    // set in white on a coloured shape would otherwise vanish.
-    let mut fills: Vec<crate::document::Color> =
-        boxes.iter().filter_map(|text_box| text_box.fill).collect();
-    fills.sort_by_key(|color| (color.red, color.green, color.blue));
-    fills.dedup();
+    // A filled or outlined shape gets a variation of the text-box style with
+    // that fill and stroke: text set in white on a coloured shape would
+    // otherwise vanish, and a shape without text would not show at all.
+    let mut looks: Vec<ShapeLook> = boxes
+        .iter()
+        .map(|text_box| shape_look(text_box.fill, text_box.line))
+        .filter(|look| look.0.is_some() || look.1.is_some())
+        .collect();
+    looks.sort_by_key(|(fill, line)| {
+        let color = |color: Option<crate::document::Color>| {
+            color.map(|color| (color.red, color.green, color.blue))
+        };
+        (
+            color(*fill),
+            line.map(|(width, stroke)| (width, color(stroke))),
+        )
+    });
+    looks.dedup();
     let fill_styles = match stylesheet_identifier(package) {
-        Some(sheet) if !fills.is_empty() => {
-            create_fill_styles(package, shape_style, &fills, sheet, next_id)?
+        Some(sheet) if !looks.is_empty() => {
+            create_fill_styles(package, shape_style, &looks, sheet, next_id)?
         }
         _ => HashMap::new(),
     };
@@ -7889,7 +7932,7 @@ fn write_text_boxes(
             "height",
             Node::Float(text_box.height),
         )?;
-        let path = build_traced_path(tree, text_box.width, text_box.height)?;
+        let path = build_shape_path(tree, text_box.geometry, text_box.width, text_box.height)?;
         let mut bezier_chain = Chain::new();
         push_field(
             tree,
@@ -7905,14 +7948,14 @@ fn write_text_boxes(
             &mut source,
             path_source,
             "horizontalFlip",
-            Node::Bool(false),
+            Node::Bool(text_box.flip.0),
         )?;
         push_field(
             tree,
             &mut source,
             path_source,
             "verticalFlip",
-            Node::Bool(false),
+            Node::Bool(text_box.flip.1),
         )?;
         push_field(
             tree,
@@ -7929,9 +7972,9 @@ fn write_text_boxes(
             "super",
             Node::Message(draw.first),
         )?;
-        let style = text_box
-            .fill
-            .and_then(|color| fill_styles.get(&color).copied())
+        let style = fill_styles
+            .get(&shape_look(text_box.fill, text_box.line))
+            .copied()
             .unwrap_or(shape_style);
         push_field(
             tree,
@@ -8117,18 +8160,20 @@ fn shape_style_identified(package: &Package, identifier: &str) -> Option<u64> {
 fn create_fill_styles(
     package: &mut Package,
     parent: u64,
-    colors: &[crate::document::Color],
+    looks: &[ShapeLook],
     stylesheet: u64,
     next_id: &mut u64,
-) -> Result<HashMap<crate::document::Color, u64>, PackageError> {
+) -> Result<HashMap<ShapeLook, u64>, PackageError> {
     let archive = message_ref("TSWP.ShapeStyleArchive")?;
     let drawing = child_message(archive, "super")?;
     let base = child_message(drawing, "super")?;
     let properties = child_message(drawing, "shape_properties")?;
     let fill = child_message(properties, "fill")?;
+    let stroke = child_message(properties, "stroke")?;
     let mut out = HashMap::new();
     let stream = document_stream(package)?;
-    for color in colors {
+    for look in looks {
+        let (color, line) = *look;
         let id = *next_id;
         *next_id += 1;
         let tree = &mut stream.tree;
@@ -8142,23 +8187,42 @@ fn create_fill_styles(
             "stylesheet",
             Node::Reference(stylesheet),
         )?;
-        let color_first = build_color(tree, *color)?;
-        let mut fill_chain = Chain::new();
-        push_field(
-            tree,
-            &mut fill_chain,
-            fill,
-            "color",
-            Node::Message(color_first),
-        )?;
         let mut props = Chain::new();
-        push_field(
-            tree,
-            &mut props,
-            properties,
-            "fill",
-            Node::Message(fill_chain.first),
-        )?;
+        let mut overrides = 0;
+        if let Some(color) = color {
+            let color_first = build_color(tree, color)?;
+            let mut fill_chain = Chain::new();
+            push_field(
+                tree,
+                &mut fill_chain,
+                fill,
+                "color",
+                Node::Message(color_first),
+            )?;
+            push_field(
+                tree,
+                &mut props,
+                properties,
+                "fill",
+                Node::Message(fill_chain.first),
+            )?;
+            overrides += 1;
+        }
+        if let Some((width, stroke_color)) = line {
+            let black = crate::document::Color {
+                red: 0,
+                green: 0,
+                blue: 0,
+            };
+            let first = build_solid_stroke(
+                tree,
+                stroke,
+                f32::from_bits(width),
+                stroke_color.unwrap_or(black),
+            )?;
+            push_field(tree, &mut props, properties, "stroke", Node::Message(first))?;
+            overrides += 1;
+        }
         let mut drawing_chain = Chain::new();
         push_field(
             tree,
@@ -8172,7 +8236,7 @@ fn create_fill_styles(
             &mut drawing_chain,
             drawing,
             "override_count",
-            Node::Uint(1),
+            Node::Uint(overrides),
         )?;
         push_field(
             tree,
@@ -8200,7 +8264,7 @@ fn create_fill_styles(
                 first: chain.first,
             }],
         });
-        out.insert(*color, id);
+        out.insert(*look, id);
     }
     let pairs: Vec<(u64, u64)> = out.values().map(|id| (parent, *id)).collect();
     register_in_stylesheet(package, stylesheet, &pairs)?;
@@ -8808,4 +8872,254 @@ fn default_font_size(document: &Document) -> f32 {
         next = style.parent;
     }
     12.0
+}
+
+// ----- shapes -----
+
+/// A shape's look in Pages: its fill, and its outline (width as bits, colour).
+type ShapeLook = (
+    Option<crate::document::Color>,
+    Option<(u32, Option<crate::document::Color>)>,
+);
+
+fn shape_look(
+    fill: Option<crate::document::Color>,
+    line: Option<crate::document::Border>,
+) -> ShapeLook {
+    (fill, line.map(|line| (line.width.to_bits(), line.color)))
+}
+
+/// A solid `TSD.StrokeArchive` of `width` points in `color`.
+fn build_solid_stroke(
+    tree: &mut Tree,
+    stroke: MessageRef,
+    width: f32,
+    color: crate::document::Color,
+) -> Result<u32, PackageError> {
+    let pattern = child_message(stroke, "pattern")?;
+    let color_first = build_color(tree, color)?;
+    let mut pattern_chain = Chain::new();
+    push_field(tree, &mut pattern_chain, pattern, "type", Node::Uint(1))?;
+    push_field(tree, &mut pattern_chain, pattern, "phase", Node::Float(0.0))?;
+    push_field(tree, &mut pattern_chain, pattern, "count", Node::Uint(0))?;
+    for _ in 0..6 {
+        push_field(
+            tree,
+            &mut pattern_chain,
+            pattern,
+            "pattern",
+            Node::Float(0.0),
+        )?;
+    }
+    let mut chain = Chain::new();
+    push_field(
+        tree,
+        &mut chain,
+        stroke,
+        "color",
+        Node::Message(color_first),
+    )?;
+    push_field(tree, &mut chain, stroke, "width", Node::Float(width))?;
+    push_field(tree, &mut chain, stroke, "cap", Node::Uint(0))?;
+    push_field(tree, &mut chain, stroke, "join", Node::Uint(0))?;
+    push_field(tree, &mut chain, stroke, "miter_limit", Node::Float(4.0))?;
+    push_field(
+        tree,
+        &mut chain,
+        stroke,
+        "pattern",
+        Node::Message(pattern_chain.first),
+    )?;
+    Ok(chain.first)
+}
+
+/// A path element: move to (1), line to (2), curve to (4, two control
+/// points then the end), or close (5).
+enum PathStep {
+    Move(f32, f32),
+    Line(f32, f32),
+    Curve([(f32, f32); 3]),
+    Close,
+}
+
+/// The outline of a preset shape in a `width` x `height` box, as a `TSP.Path`.
+fn build_shape_path(
+    tree: &mut Tree,
+    geometry: crate::document::ShapeGeometry,
+    width: f32,
+    height: f32,
+) -> Result<u32, PackageError> {
+    use crate::document::ShapeGeometry as G;
+    let (w, h) = (width, height);
+    let polygon = |points: &[(f32, f32)]| {
+        let mut steps: Vec<PathStep> = points
+            .iter()
+            .enumerate()
+            .map(|(index, (x, y))| {
+                if index == 0 {
+                    PathStep::Move(*x, *y)
+                } else {
+                    PathStep::Line(*x, *y)
+                }
+            })
+            .collect();
+        steps.push(PathStep::Close);
+        steps
+    };
+    // A regular polygon or star inscribed in the box, from the top.
+    let around = |count: usize, inner: Option<f32>| {
+        let total = if inner.is_some() { count * 2 } else { count };
+        (0..total)
+            .map(|index| {
+                let angle = -std::f32::consts::FRAC_PI_2
+                    + index as f32 * std::f32::consts::TAU / total as f32;
+                let radius = match inner {
+                    Some(ratio) if index % 2 == 1 => ratio,
+                    _ => 1.0,
+                };
+                (
+                    w / 2.0 + angle.cos() * radius * w / 2.0,
+                    h / 2.0 + angle.sin() * radius * h / 2.0,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    // The cubic control distance that draws a quarter ellipse.
+    const K: f32 = 0.552_284_8;
+    let steps = match geometry {
+        G::Rectangle => polygon(&[(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)]),
+        G::Ellipse => {
+            let (rx, ry, cx, cy) = (w / 2.0, h / 2.0, w / 2.0, h / 2.0);
+            vec![
+                PathStep::Move(cx, 0.0),
+                PathStep::Curve([(cx + K * rx, 0.0), (w, cy - K * ry), (w, cy)]),
+                PathStep::Curve([(w, cy + K * ry), (cx + K * rx, h), (cx, h)]),
+                PathStep::Curve([(cx - K * rx, h), (0.0, cy + K * ry), (0.0, cy)]),
+                PathStep::Curve([(0.0, cy - K * ry), (cx - K * rx, 0.0), (cx, 0.0)]),
+                PathStep::Close,
+            ]
+        }
+        G::RoundedRectangle => {
+            let r = w.min(h) / 6.0;
+            let k = K * r;
+            vec![
+                PathStep::Move(r, 0.0),
+                PathStep::Line(w - r, 0.0),
+                PathStep::Curve([(w - r + k, 0.0), (w, r - k), (w, r)]),
+                PathStep::Line(w, h - r),
+                PathStep::Curve([(w, h - r + k), (w - r + k, h), (w - r, h)]),
+                PathStep::Line(r, h),
+                PathStep::Curve([(r - k, h), (0.0, h - r + k), (0.0, h - r)]),
+                PathStep::Line(0.0, r),
+                PathStep::Curve([(0.0, r - k), (r - k, 0.0), (r, 0.0)]),
+                PathStep::Close,
+            ]
+        }
+        G::Triangle => polygon(&[(w / 2.0, 0.0), (w, h), (0.0, h)]),
+        G::RightTriangle => polygon(&[(0.0, 0.0), (w, h), (0.0, h)]),
+        G::Diamond => polygon(&[(w / 2.0, 0.0), (w, h / 2.0), (w / 2.0, h), (0.0, h / 2.0)]),
+        G::Pentagon => polygon(&around(5, None)),
+        G::Hexagon => polygon(&[
+            (w * 0.25, 0.0),
+            (w * 0.75, 0.0),
+            (w, h / 2.0),
+            (w * 0.75, h),
+            (w * 0.25, h),
+            (0.0, h / 2.0),
+        ]),
+        G::Octagon => {
+            let (a, b) = (w * 0.29, h * 0.29);
+            polygon(&[
+                (a, 0.0),
+                (w - a, 0.0),
+                (w, b),
+                (w, h - b),
+                (w - a, h),
+                (a, h),
+                (0.0, h - b),
+                (0.0, b),
+            ])
+        }
+        G::Star => polygon(&around(5, Some(0.382))),
+        G::RightArrow | G::LeftArrow => {
+            let head = (h * 0.5).min(w);
+            let points = [
+                (0.0, h * 0.25),
+                (w - head, h * 0.25),
+                (w - head, 0.0),
+                (w, h / 2.0),
+                (w - head, h),
+                (w - head, h * 0.75),
+                (0.0, h * 0.75),
+            ];
+            if geometry == G::LeftArrow {
+                polygon(&points.map(|(x, y)| (w - x, y)))
+            } else {
+                polygon(&points)
+            }
+        }
+        G::UpArrow | G::DownArrow => {
+            let head = (w * 0.5).min(h);
+            let points = [
+                (w * 0.25, h),
+                (w * 0.25, head),
+                (0.0, head),
+                (w / 2.0, 0.0),
+                (w, head),
+                (w * 0.75, head),
+                (w * 0.75, h),
+            ];
+            if geometry == G::DownArrow {
+                polygon(&points.map(|(x, y)| (x, h - y)))
+            } else {
+                polygon(&points)
+            }
+        }
+        G::Line => {
+            // A line Word draws flat (or upright) keeps to the middle of its
+            // thin box; otherwise it runs corner to corner.
+            let (from, to) = if h <= 2.0 {
+                ((0.0, h / 2.0), (w, h / 2.0))
+            } else if w <= 2.0 {
+                ((w / 2.0, 0.0), (w / 2.0, h))
+            } else {
+                ((0.0, 0.0), (w, h))
+            };
+            vec![PathStep::Move(from.0, from.1), PathStep::Line(to.0, to.1)]
+        }
+    };
+    let path = message_ref("TSP.Path")?;
+    let element = message_ref("TSP.Path.Element")?;
+    let point = message_ref("TSP.Point")?;
+    let mut chain = Chain::new();
+    for step in steps {
+        let (kind, points): (u64, Vec<(f32, f32)>) = match step {
+            PathStep::Move(x, y) => (1, vec![(x, y)]),
+            PathStep::Line(x, y) => (2, vec![(x, y)]),
+            PathStep::Curve(points) => (4, points.to_vec()),
+            PathStep::Close => (5, Vec::new()),
+        };
+        let mut element_chain = Chain::new();
+        push_field(tree, &mut element_chain, element, "type", Node::Uint(kind))?;
+        for (x, y) in points {
+            let mut point_chain = Chain::new();
+            push_field(tree, &mut point_chain, point, "x", Node::Float(x))?;
+            push_field(tree, &mut point_chain, point, "y", Node::Float(y))?;
+            push_field(
+                tree,
+                &mut element_chain,
+                element,
+                "points",
+                Node::Message(point_chain.first),
+            )?;
+        }
+        push_field(
+            tree,
+            &mut chain,
+            path,
+            "elements",
+            Node::Message(element_chain.first),
+        )?;
+    }
+    Ok(chain.first)
 }

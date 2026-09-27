@@ -697,7 +697,7 @@ impl DocxWriter {
                 self.render_image(document, &image, out);
                 out.push_str("</w:r>");
             }
-            FloatingContent::TextBox { blocks, fill } => {
+            FloatingContent::TextBox { blocks, fill, .. } => {
                 let mut content = String::new();
                 self.render_blocks(document, blocks, &mut content);
                 if content.is_empty() {

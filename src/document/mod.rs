@@ -74,10 +74,38 @@ pub struct FloatingObject {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FloatingContent {
     Image(MediaId),
+    /// A drawn shape, with or without text (a text box is a rectangle).
     TextBox {
         blocks: Vec<Block>,
         fill: Option<Color>,
+        /// Its outline, when drawn.
+        line: Option<Border>,
+        geometry: ShapeGeometry,
+        /// Mirrored left-right, top-bottom.
+        flip: (bool, bool),
     },
+}
+
+/// A shape's outline, from Word's preset shapes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ShapeGeometry {
+    #[default]
+    Rectangle,
+    RoundedRectangle,
+    Ellipse,
+    Triangle,
+    RightTriangle,
+    Diamond,
+    Pentagon,
+    Hexagon,
+    Octagon,
+    Star,
+    RightArrow,
+    LeftArrow,
+    UpArrow,
+    DownArrow,
+    /// An open line from the top-left corner to the bottom-right.
+    Line,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
