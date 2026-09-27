@@ -7,12 +7,12 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read};
 
 use crate::common::run_ours;
-use sublime::converters::image::{PNG_TO_WEBP, WEBP_TO_PNG};
+use sublime::converters::image as image_pairs;
 
 pub fn run(mode: &str, args: &[String]) -> Result<(), String> {
     match (mode, args) {
-        ("ours-webp-png", [input, output]) => run_ours(&WEBP_TO_PNG, input, output),
-        ("ours-png-webp", [input, output]) => run_ours(&PNG_TO_WEBP, input, output),
+        ("ours-webp-png", [input, output]) => run_ours(image_pairs::pair("webp", "png"), input, output),
+        ("ours-png-webp", [input, output]) => run_ours(image_pairs::pair("png", "webp"), input, output),
         ("crates-webp-png", [input, output]) => crates_webp_to_png(input, output),
         ("crates-png-webp", [input, output]) => crates_png_to_webp(input, output),
         ("pixels", [input]) => pixels(input),

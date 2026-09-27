@@ -4,7 +4,9 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use std::sync::OnceLock;
+
+use crate::converter::{ConvertError, Converter, Fidelity, FidelityKind, Input, Location, Tier};
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
@@ -195,122 +197,104 @@ impl From<BmpError> for ConvertError {
     }
 }
 
-pub static PNG_TO_BMP: ImagePair = ImagePair {
-    name: "png-to-bmp",
-    from: &formats::PNG,
-    to: &formats::BMP,
-    read: ImageFormat::Png,
-    write: ImageFormat::Bmp,
-    fidelity: Fidelity::Conditional(
-        "16-bit samples become 8-bit, gray becomes RGB, and metadata (gamma, color profile, text) is dropped",
-    ),
-};
+/// One raster format: what its reader and its writer lose. Every pair
+/// between two codecs is generated from this table, its fidelity the
+/// worse of the reader's and the writer's with both texts.
+struct Codec {
+    format: &'static Format,
+    kind: ImageFormat,
+    read: Fidelity,
+    write: Fidelity,
+}
 
-pub static BMP_TO_PNG: ImagePair = ImagePair {
-    name: "bmp-to-png",
-    from: &formats::BMP,
-    to: &formats::PNG,
-    read: ImageFormat::Bmp,
-    write: ImageFormat::Png,
-    fidelity: Fidelity::Lossless,
-};
+const JPEG_LOSS: &str = "JPEG is lossy: the image is re-encoded at the quality given (85 by default, 4:2:0 chroma below 90) and alpha is flattened onto white";
 
-const JPEG_LOSS: &str = "JPEG is lossy: the image is re-encoded at the quality given (85 by default, 4:2:0 chroma below 90), alpha is flattened onto white, and metadata is dropped";
-const JPEG_DECODE_NOTE: &str = "pixels as decoded (Exif orientation is reported, not applied); metadata (Exif, ICC, comments) is dropped";
+static CODECS: [Codec; 4] = [
+    Codec {
+        format: &formats::PNG,
+        kind: ImageFormat::Png,
+        read: Fidelity::Conditional(
+            "16-bit samples become 8-bit, and metadata (gamma, color profile, text) is dropped",
+        ),
+        write: Fidelity::Lossless,
+    },
+    Codec {
+        format: &formats::BMP,
+        kind: ImageFormat::Bmp,
+        read: Fidelity::Lossless,
+        write: Fidelity::Lossless,
+    },
+    Codec {
+        format: &formats::JPEG,
+        kind: ImageFormat::Jpeg,
+        read: Fidelity::Conditional(
+            "pixels as decoded (Exif orientation is reported, not applied); metadata (Exif, ICC, comments) is dropped",
+        ),
+        write: Fidelity::Lossy(JPEG_LOSS),
+    },
+    Codec {
+        format: &formats::WEBP,
+        kind: ImageFormat::Webp,
+        read: Fidelity::Conditional(
+            "pixels as decoded (a lossy WebP decodes exactly as libwebp does); an animation keeps its first frame; metadata (ICC, Exif, XMP) is dropped",
+        ),
+        write: Fidelity::Lossless,
+    },
+];
 
-pub static JPEG_TO_PNG: ImagePair = ImagePair {
-    name: "jpeg-to-png",
-    from: &formats::JPEG,
-    to: &formats::PNG,
-    read: ImageFormat::Jpeg,
-    write: ImageFormat::Png,
-    fidelity: Fidelity::Conditional(JPEG_DECODE_NOTE),
-};
+/// The worse of two fidelities, carrying both texts when both lose.
+fn combine(read: &Fidelity, write: &Fidelity) -> Fidelity {
+    let text = |fidelity: &Fidelity| match fidelity {
+        Fidelity::Lossless => None,
+        Fidelity::Conditional(text) | Fidelity::Lossy(text) => Some(*text),
+    };
+    let joined: &'static str = match (text(read), text(write)) {
+        (None, None) => return Fidelity::Lossless,
+        (Some(one), None) | (None, Some(one)) => one,
+        (Some(first), Some(second)) => {
+            // Built once per pair when the table is first read.
+            Box::leak(format!("{first}; {second}").into_boxed_str())
+        }
+    };
+    if read.kind() == FidelityKind::Lossy || write.kind() == FidelityKind::Lossy {
+        Fidelity::Lossy(joined)
+    } else {
+        Fidelity::Conditional(joined)
+    }
+}
 
-pub static JPEG_TO_BMP: ImagePair = ImagePair {
-    name: "jpeg-to-bmp",
-    from: &formats::JPEG,
-    to: &formats::BMP,
-    read: ImageFormat::Jpeg,
-    write: ImageFormat::Bmp,
-    fidelity: Fidelity::Conditional(JPEG_DECODE_NOTE),
-};
+/// Every pair between two codecs, built once.
+pub fn pairs() -> &'static [ImagePair] {
+    static PAIRS: OnceLock<Vec<ImagePair>> = OnceLock::new();
+    PAIRS.get_or_init(|| {
+        let mut pairs = Vec::new();
+        for from in &CODECS {
+            for to in &CODECS {
+                if from.format.id == to.format.id {
+                    continue;
+                }
+                let name = format!("{}-to-{}", from.format.id, to.format.id);
+                pairs.push(ImagePair {
+                    name: Box::leak(name.into_boxed_str()),
+                    from: from.format,
+                    to: to.format,
+                    read: from.kind,
+                    write: to.kind,
+                    fidelity: combine(&from.read, &to.write),
+                });
+            }
+        }
+        pairs
+    })
+}
 
-pub static PNG_TO_JPEG: ImagePair = ImagePair {
-    name: "png-to-jpeg",
-    from: &formats::PNG,
-    to: &formats::JPEG,
-    read: ImageFormat::Png,
-    write: ImageFormat::Jpeg,
-    fidelity: Fidelity::Lossy(JPEG_LOSS),
-};
-
-pub static BMP_TO_JPEG: ImagePair = ImagePair {
-    name: "bmp-to-jpeg",
-    from: &formats::BMP,
-    to: &formats::JPEG,
-    read: ImageFormat::Bmp,
-    write: ImageFormat::Jpeg,
-    fidelity: Fidelity::Lossy(JPEG_LOSS),
-};
-
-const WEBP_DECODE_NOTE: &str = "pixels as decoded (a lossy WebP decodes exactly as libwebp does); an animation keeps its first frame; metadata (ICC, Exif, XMP) is dropped";
-const TO_WEBP_NOTE: &str =
-    "lossless WebP of the 8-bit pixels: 16-bit samples become 8-bit and metadata is dropped";
-
-pub static WEBP_TO_PNG: ImagePair = ImagePair {
-    name: "webp-to-png",
-    from: &formats::WEBP,
-    to: &formats::PNG,
-    read: ImageFormat::Webp,
-    write: ImageFormat::Png,
-    fidelity: Fidelity::Conditional(WEBP_DECODE_NOTE),
-};
-
-pub static WEBP_TO_BMP: ImagePair = ImagePair {
-    name: "webp-to-bmp",
-    from: &formats::WEBP,
-    to: &formats::BMP,
-    read: ImageFormat::Webp,
-    write: ImageFormat::Bmp,
-    fidelity: Fidelity::Conditional(WEBP_DECODE_NOTE),
-};
-
-pub static WEBP_TO_JPEG: ImagePair = ImagePair {
-    name: "webp-to-jpeg",
-    from: &formats::WEBP,
-    to: &formats::JPEG,
-    read: ImageFormat::Webp,
-    write: ImageFormat::Jpeg,
-    fidelity: Fidelity::Lossy(JPEG_LOSS),
-};
-
-pub static PNG_TO_WEBP: ImagePair = ImagePair {
-    name: "png-to-webp",
-    from: &formats::PNG,
-    to: &formats::WEBP,
-    read: ImageFormat::Png,
-    write: ImageFormat::Webp,
-    fidelity: Fidelity::Conditional(TO_WEBP_NOTE),
-};
-
-pub static BMP_TO_WEBP: ImagePair = ImagePair {
-    name: "bmp-to-webp",
-    from: &formats::BMP,
-    to: &formats::WEBP,
-    read: ImageFormat::Bmp,
-    write: ImageFormat::Webp,
-    fidelity: Fidelity::Lossless,
-};
-
-pub static JPEG_TO_WEBP: ImagePair = ImagePair {
-    name: "jpeg-to-webp",
-    from: &formats::JPEG,
-    to: &formats::WEBP,
-    read: ImageFormat::Jpeg,
-    write: ImageFormat::Webp,
-    fidelity: Fidelity::Conditional(JPEG_DECODE_NOTE),
-};
+/// The pair from one format id to another (`pair("png", "bmp")`).
+pub fn pair(from: &str, to: &str) -> &'static ImagePair {
+    pairs()
+        .iter()
+        .find(|pair| pair.from.id == from && pair.to.id == to)
+        .unwrap_or_else(|| panic!("no image pair {from} -> {to}"))
+}
 
 #[cfg(test)]
 mod tests {
@@ -318,9 +302,17 @@ mod tests {
 
     #[test]
     fn pairs_declare_their_contracts() {
-        assert_eq!(PNG_TO_BMP.name(), "png-to-bmp");
-        assert_eq!(PNG_TO_BMP.from().id, "png");
-        assert_eq!(BMP_TO_PNG.to().id, "png");
-        assert_eq!(BMP_TO_PNG.fidelity(), Fidelity::Lossless);
+        assert_eq!(pair("png", "bmp").name(), "png-to-bmp");
+        assert_eq!(pair("png", "bmp").from().id, "png");
+        assert_eq!(pair("bmp", "png").to().id, "png");
+        assert_eq!(pair("bmp", "png").fidelity(), Fidelity::Lossless);
+        assert_eq!(pair("bmp", "jpeg").fidelity(), Fidelity::Lossy(JPEG_LOSS));
+        assert_eq!(pair("webp", "jpeg").fidelity().kind(), FidelityKind::Lossy);
+    }
+
+    #[test]
+    fn every_codec_reaches_every_other() {
+        let count = CODECS.len();
+        assert_eq!(pairs().len(), count * (count - 1));
     }
 }
