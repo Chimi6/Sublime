@@ -184,6 +184,7 @@ mod tests {
                 "pages",
                 "pages-json",
                 "png",
+                "qoi",
                 "text",
                 "toml",
                 "tsv",
