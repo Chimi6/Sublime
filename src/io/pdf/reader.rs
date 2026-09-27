@@ -3,15 +3,16 @@
 //! image inline in its content), decoded into the image hub. Vector
 //! pages are not rendered.
 
+use std::borrow::Cow;
 use std::io::Read;
 
 use crate::image::{ColorType, Image};
 use crate::io::jpeg::read_jpeg;
 use crate::io::pdf::PdfError;
 use crate::io::pdf::document::{Document, find};
-use crate::io::pdf::filter;
+use crate::io::pdf::filter::{self, Samples};
 use crate::io::pdf::object::{Dictionary, Object, Parser};
-use crate::io::png::{PngError, RowSink, RowsError};
+use crate::io::png::{Collect, PngError, RowSink, RowsError};
 
 fn fail(message: impl Into<String>) -> PdfError {
     PdfError(message.into())
@@ -29,14 +30,14 @@ pub struct PdfNotes {
 }
 
 /// An image found on a page: its dictionary and its raw data.
-struct Found {
+struct Found<'a> {
     dictionary: Dictionary,
-    raw: Vec<u8>,
+    raw: Cow<'a, [u8]>,
     area: u64,
 }
 
-impl Found {
-    fn new(dictionary: Dictionary, raw: Vec<u8>) -> Found {
+impl<'a> Found<'a> {
+    fn new(dictionary: Dictionary, raw: Cow<'a, [u8]>) -> Found<'a> {
         let side = |key: &[u8]| {
             dictionary
                 .get(key)
@@ -54,12 +55,12 @@ impl Found {
 }
 
 /// Every image the page's resources and content hold.
-fn images(
-    document: &Document<'_>,
+fn images<'a>(
+    document: &Document<'a>,
     resources: Option<&Dictionary>,
     content: &[u8],
     depth: usize,
-    out: &mut Vec<Found>,
+    out: &mut Vec<Found<'a>>,
 ) -> Result<(), PdfError> {
     if depth > 8 {
         return Ok(());
@@ -72,7 +73,7 @@ fn images(
                 };
                 match dictionary.get(b"Subtype").and_then(Object::as_name) {
                     Some(b"Image") => {
-                        let raw = document.bytes()[range].to_vec();
+                        let raw = Cow::Borrowed(&document.bytes()[range]);
                         out.push(Found::new(dictionary, raw));
                     }
                     Some(b"Form") => {
@@ -94,7 +95,7 @@ fn images(
 }
 
 /// Images inline in a content stream: `BI` keys and values `ID` data `EI`.
-fn inline_images(content: &[u8], out: &mut Vec<Found>) {
+fn inline_images(content: &[u8], out: &mut Vec<Found<'_>>) {
     let mut at = 0;
     while let Some(found) = find(content, b"BI", at) {
         at = found + 2;
@@ -153,7 +154,7 @@ fn inline_images(content: &[u8], out: &mut Vec<Found>) {
         at = end + 2;
         out.push(Found::new(
             Dictionary(entries),
-            content[start..end].to_vec(),
+            Cow::Owned(content[start..end].to_vec()),
         ));
     }
 }
@@ -283,106 +284,138 @@ fn space(document: &Document<'_>, object: &Object) -> Result<Space, PdfError> {
     }
 }
 
-/// Decodes one found image into the hub.
-fn decode(document: &Document<'_>, found: &Found, notes: &mut PdfNotes) -> Result<Image, PdfError> {
-    let dictionary = &found.dictionary;
-    let number = |key: &[u8]| dictionary.get(key).and_then(Object::as_integer);
-    let width = number(b"Width").unwrap_or(0).max(0) as usize;
-    let height = number(b"Height").unwrap_or(0).max(0) as usize;
-    if width == 0 || height == 0 {
-        return Err(fail("PDF image has no size"));
-    }
-    if filter::ends_in_dct(dictionary) {
-        let jpeg = filter::decode(dictionary, &found.raw)?;
-        let (image, _) =
-            read_jpeg(&jpeg).map_err(|failure| fail(format!("PDF JPEG image: {}", failure.0)))?;
-        return with_mask(document, dictionary, image);
-    }
-    let data = filter::decode(dictionary, &found.raw)?;
-    let mask = matches!(dictionary.get(b"ImageMask"), Some(Object::Bool(true)));
-    let bits = if mask {
-        1
-    } else {
-        number(b"BitsPerComponent").unwrap_or(8) as usize
-    };
-    if !matches!(bits, 1 | 2 | 4 | 8 | 16) {
-        return Err(fail(format!("PDF images of {bits} bits are not supported")));
-    }
-    notes.sixteen_bit |= bits == 16;
-    let space = if mask {
-        Space::Gray
-    } else {
-        space(
-            document,
+/// How one image's sample rows become the hub's pixels.
+struct Converter {
+    space: Space,
+    bits: usize,
+    components: usize,
+    levels: u32,
+    decode: Vec<f64>,
+    width: usize,
+    color: ColorType,
+    /// Bytes per row of samples.
+    stride: usize,
+}
+
+impl Converter {
+    fn new(
+        document: &Document<'_>,
+        dictionary: &Dictionary,
+        width: usize,
+        notes: &mut PdfNotes,
+    ) -> Result<Converter, PdfError> {
+        let mask = matches!(dictionary.get(b"ImageMask"), Some(Object::Bool(true)));
+        let bits = if mask {
+            1
+        } else {
             dictionary
-                .get(b"ColorSpace")
-                .ok_or_else(|| fail("PDF image has no color space"))?,
-        )?
-    };
-    notes.cmyk |= matches!(space, Space::Cmyk)
-        || matches!(&space, Space::Indexed { base, .. } if matches!(**base, Space::Cmyk));
-    let components = space.components();
-    let stride = (width * components * bits).div_ceil(8);
-    if data.len() < stride * height {
-        return Err(fail("PDF image data cut short"));
+                .get(b"BitsPerComponent")
+                .and_then(Object::as_integer)
+                .unwrap_or(8) as usize
+        };
+        if !matches!(bits, 1 | 2 | 4 | 8 | 16) {
+            return Err(fail(format!("PDF images of {bits} bits are not supported")));
+        }
+        notes.sixteen_bit |= bits == 16;
+        let space = if mask {
+            Space::Gray
+        } else {
+            space(
+                document,
+                dictionary
+                    .get(b"ColorSpace")
+                    .ok_or_else(|| fail("PDF image has no color space"))?,
+            )?
+        };
+        notes.cmyk |= matches!(space, Space::Cmyk)
+            || matches!(&space, Space::Indexed { base, .. } if matches!(**base, Space::Cmyk));
+        let components = space.components();
+        let decode: Vec<f64> = dictionary
+            .get(b"Decode")
+            .and_then(Object::as_array)
+            .map(|items| items.iter().filter_map(Object::as_number).collect())
+            .unwrap_or_default();
+        let color = match &space {
+            Space::Gray => ColorType::Gray,
+            _ => ColorType::Rgb,
+        };
+        Ok(Converter {
+            stride: (width * components * bits).div_ceil(8),
+            levels: (1u32 << bits.min(16)) - 1,
+            space,
+            bits,
+            components,
+            decode,
+            width,
+            color,
+        })
     }
-    let levels = (1u32 << bits.min(16)) - 1;
-    let decode: Vec<f64> = dictionary
-        .get(b"Decode")
-        .and_then(Object::as_array)
-        .map(|items| items.iter().filter_map(Object::as_number).collect())
-        .unwrap_or_default();
-    let sample = |row: &[u8], index: usize| -> u32 {
-        match bits {
+
+    fn sample(&self, row: &[u8], index: usize) -> u32 {
+        match self.bits {
             16 => u32::from(u16::from_be_bytes([row[index * 2], row[index * 2 + 1]])),
             8 => u32::from(row[index]),
-            _ => {
+            bits => {
                 let bit = index * bits;
-                u32::from(row[bit / 8] >> (8 - bits - bit % 8)) & levels
+                u32::from(row[bit / 8] >> (8 - bits - bit % 8)) & self.levels
             }
         }
-    };
-    let color = match &space {
-        Space::Gray => ColorType::Gray,
-        _ => ColorType::Rgb,
-    };
-    let channels = color.channels();
-    let mut pixels = vec![0u8; width * height * channels];
-    for y in 0..height {
-        let row = &data[y * stride..(y + 1) * stride];
-        for x in 0..width {
-            let target = &mut pixels[(y * width + x) * channels..(y * width + x + 1) * channels];
-            // A component as 0..255, through the Decode array.
-            let unit = |component: usize| -> u8 {
-                let raw = sample(row, x * components + component);
-                // Without a Decode range, 8 bits as is and 16 by the high
-                // byte, as the PNG and TIFF readers scale.
-                if decode.len() < (component + 1) * 2 {
-                    match bits {
-                        8 => return raw as u8,
-                        16 => return (raw >> 8) as u8,
-                        _ => {}
-                    }
-                }
-                let value = f64::from(raw) / f64::from(levels);
-                let (low, high) = match decode.get(component * 2..component * 2 + 2) {
-                    Some(pair) => (pair[0], pair[1]),
-                    None => (0.0, 1.0),
-                };
-                ((low + value * (high - low)).clamp(0.0, 1.0) * 255.0).round() as u8
-            };
-            match &space {
+    }
+
+    /// A component as 0..255, through the Decode array.
+    fn unit(&self, row: &[u8], x: usize, component: usize) -> u8 {
+        let raw = self.sample(row, x * self.components + component);
+        // Without a Decode range, 8 bits as is and 16 by the high byte,
+        // as the PNG and TIFF readers scale.
+        if self.decode.len() < (component + 1) * 2 {
+            match self.bits {
+                8 => return raw as u8,
+                16 => return (raw >> 8) as u8,
+                _ => {}
+            }
+        }
+        let value = f64::from(raw) / f64::from(self.levels);
+        let (low, high) = match self.decode.get(component * 2..component * 2 + 2) {
+            Some(pair) => (pair[0], pair[1]),
+            None => (0.0, 1.0),
+        };
+        ((low + value * (high - low)).clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+
+    /// One row of samples into one row of pixels.
+    fn convert(&self, row: &[u8], pixels: &mut [u8]) {
+        // Eight-bit gray and RGB with no Decode array are the pixels.
+        let plain = self.bits == 8 && self.decode.is_empty();
+        if plain && matches!(self.space, Space::Gray | Space::Rgb) {
+            pixels.copy_from_slice(&row[..pixels.len()]);
+            return;
+        }
+        let channels = self.color.channels();
+        for (x, target) in pixels
+            .chunks_exact_mut(channels)
+            .enumerate()
+            .take(self.width)
+        {
+            match &self.space {
                 // A stencil mask paints (black) where its sample decodes
                 // to 0, as gray does.
-                Space::Gray => target[0] = unit(0),
+                Space::Gray => target[0] = self.unit(row, x, 0),
                 Space::Rgb => {
                     for (channel, value) in target.iter_mut().enumerate() {
-                        *value = unit(channel);
+                        *value = self.unit(row, x, channel);
                     }
                 }
-                Space::Cmyk => cmyk(&[unit(0), unit(1), unit(2), unit(3)], target),
+                Space::Cmyk => {
+                    let inks = [
+                        self.unit(row, x, 0),
+                        self.unit(row, x, 1),
+                        self.unit(row, x, 2),
+                        self.unit(row, x, 3),
+                    ];
+                    cmyk(&inks, target);
+                }
                 Space::Indexed { base, palette } => {
-                    let index = sample(row, x) as usize;
+                    let index = self.sample(row, x) as usize;
                     let size = base.components();
                     let entry = palette.get(index * size..(index + 1) * size);
                     match (entry, base.as_ref()) {
@@ -395,16 +428,89 @@ fn decode(document: &Document<'_>, found: &Found, notes: &mut PdfNotes) -> Resul
             }
         }
     }
-    with_mask(
-        document,
-        dictionary,
-        Image {
-            width: width as u32,
-            height: height as u32,
-            color,
-            pixels,
+}
+
+/// Where an image's pixel rows come from: a JPEG decoded whole, or
+/// sample rows converted one at a time.
+enum Source<'a> {
+    Decoded {
+        image: Image,
+        y: u32,
+    },
+    Streamed {
+        samples: Samples<'a>,
+        converter: Converter,
+        pixels: Vec<u8>,
+    },
+}
+
+/// An image opened for reading its rows.
+struct Opened<'a> {
+    width: u32,
+    height: u32,
+    color: ColorType,
+    source: Source<'a>,
+}
+
+impl Opened<'_> {
+    fn next_row(&mut self) -> Result<&[u8], PdfError> {
+        match &mut self.source {
+            Source::Decoded { image, y } => {
+                *y += 1;
+                Ok(image.row(*y - 1))
+            }
+            Source::Streamed {
+                samples,
+                converter,
+                pixels,
+            } => {
+                let row = samples
+                    .next_row(converter.stride)?
+                    .ok_or_else(|| fail("PDF image data cut short"))?;
+                converter.convert(row, pixels);
+                Ok(pixels)
+            }
+        }
+    }
+}
+
+/// Opens one found image. JPEG data decodes whole; the rest streams.
+fn open<'a>(
+    document: &Document<'a>,
+    found: Found<'a>,
+    notes: &mut PdfNotes,
+) -> Result<Opened<'a>, PdfError> {
+    let dictionary = &found.dictionary;
+    let number = |key: &[u8]| dictionary.get(key).and_then(Object::as_integer);
+    let width = number(b"Width").unwrap_or(0).max(0) as usize;
+    let height = number(b"Height").unwrap_or(0).max(0) as usize;
+    if width == 0 || height == 0 {
+        return Err(fail("PDF image has no size"));
+    }
+    if filter::ends_in_dct(dictionary) {
+        let jpeg = filter::decode(dictionary, &found.raw)?;
+        let (image, _) =
+            read_jpeg(&jpeg).map_err(|failure| fail(format!("PDF JPEG image: {}", failure.0)))?;
+        return Ok(Opened {
+            width: image.width,
+            height: image.height,
+            color: image.color,
+            source: Source::Decoded { image, y: 0 },
+        });
+    }
+    let converter = Converter::new(document, dictionary, width, notes)?;
+    let samples = Samples::new(dictionary, found.raw, converter.stride)?;
+    let color = converter.color;
+    Ok(Opened {
+        width: width as u32,
+        height: height as u32,
+        color,
+        source: Source::Streamed {
+            samples,
+            pixels: vec![0; width * color.channels()],
+            converter,
         },
-    )
+    })
 }
 
 /// CMYK to RGB as Pillow converts it: round((255 - c) * (255 - k) / 255).
@@ -415,45 +521,32 @@ fn cmyk(inks: &[u8], target: &mut [u8]) {
     }
 }
 
-/// Adds a soft mask as alpha when the image has one of its own size.
-fn with_mask(
-    document: &Document<'_>,
+/// The image's soft mask, opened, when it is a gray image of its size.
+fn open_mask<'a>(
+    document: &Document<'a>,
     dictionary: &Dictionary,
-    image: Image,
-) -> Result<Image, PdfError> {
+    image: &Opened<'_>,
+) -> Result<Option<Opened<'a>>, PdfError> {
     let Some(reference) = dictionary.get(b"SMask") else {
-        return Ok(image);
+        return Ok(None);
     };
     let Object::Stream(mask_dictionary, range) = document.resolve(reference)? else {
-        return Ok(image);
+        return Ok(None);
     };
-    let mut notes = PdfNotes::default();
-    let found = Found::new(mask_dictionary, document.bytes()[range].to_vec());
-    let mask = decode(document, &found, &mut notes)?;
-    if (mask.width, mask.height) != (image.width, image.height) || mask.color != ColorType::Gray {
-        return Ok(image);
+    let found = Found::new(mask_dictionary, Cow::Borrowed(&document.bytes()[range]));
+    let mask = open(document, found, &mut PdfNotes::default())?;
+    let fits = (mask.width, mask.height) == (image.width, image.height);
+    if !fits || mask.color != ColorType::Gray {
+        return Ok(None);
     }
-    let channels = image.color.channels();
-    let color = match image.color {
-        ColorType::Gray | ColorType::GrayAlpha => ColorType::GrayAlpha,
-        _ => ColorType::Rgba,
-    };
-    let colors = channels.min(color.channels() - 1);
-    let mut pixels = Vec::with_capacity(image.pixels.len() / channels * color.channels());
-    for (cell, alpha) in image.pixels.chunks_exact(channels).zip(&mask.pixels) {
-        pixels.extend_from_slice(&cell[..colors]);
-        pixels.push(*alpha);
-    }
-    Ok(Image {
-        width: image.width,
-        height: image.height,
-        color,
-        pixels,
-    })
+    Ok(Some(mask))
 }
 
 /// The chosen page's largest image, as found (not yet decoded).
-fn choose(document: &Document<'_>, page: Option<u32>) -> Result<(Found, PdfNotes), PdfError> {
+fn choose<'a>(
+    document: &Document<'a>,
+    page: Option<u32>,
+) -> Result<(Found<'a>, PdfNotes), PdfError> {
     let pages = document.pages()?;
     if pages.is_empty() {
         return Err(fail("the PDF has no pages"));
@@ -499,14 +592,39 @@ pub fn read_pdf_rows(
 ) -> Result<PdfNotes, RowsError> {
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes).map_err(RowsError::Io)?;
+    rows(&bytes, sink, page)
+}
+
+/// The chosen page's image, a row at a time, with its soft mask as alpha.
+fn rows(bytes: &[u8], sink: &mut dyn RowSink, page: Option<u32>) -> Result<PdfNotes, RowsError> {
     let to_rows = |failure: PdfError| RowsError::Png(PngError(failure.0));
-    let document = Document::open(&bytes).map_err(to_rows)?;
+    let document = Document::open(bytes).map_err(to_rows)?;
     let (found, mut notes) = choose(&document, page).map_err(to_rows)?;
-    let image = decode(&document, &found, &mut notes).map_err(to_rows)?;
-    sink.start(image.width, image.height, image.color)
+    let dictionary = found.dictionary.clone();
+    let mut image = open(&document, found, &mut notes).map_err(to_rows)?;
+    let mut mask = open_mask(&document, &dictionary, &image).map_err(to_rows)?;
+    let color = match (&mask, image.color) {
+        (None, color) => color,
+        (Some(_), ColorType::Gray) => ColorType::GrayAlpha,
+        (Some(_), _) => ColorType::Rgba,
+    };
+    sink.start(image.width, image.height, color)
         .map_err(RowsError::Io)?;
-    for y in 0..image.height {
-        sink.row(image.row(y)).map_err(RowsError::Io)?;
+    let channels = image.color.channels();
+    let mut joined = Vec::with_capacity(image.width as usize * color.channels());
+    for _ in 0..image.height {
+        let row = image.next_row().map_err(to_rows)?;
+        let Some(mask) = mask.as_mut() else {
+            sink.row(row).map_err(RowsError::Io)?;
+            continue;
+        };
+        let alpha = mask.next_row().map_err(to_rows)?;
+        joined.clear();
+        for (cell, opacity) in row.chunks_exact(channels).zip(alpha) {
+            joined.extend_from_slice(cell);
+            joined.push(*opacity);
+        }
+        sink.row(&joined).map_err(RowsError::Io)?;
     }
     Ok(notes)
 }
@@ -524,13 +642,17 @@ pub fn page_jpeg(bytes: &[u8], page: Option<u32>) -> Result<Option<Vec<u8>>, Pdf
     if !plain {
         return Ok(None);
     }
-    Ok(Some(found.raw))
+    Ok(Some(found.raw.into_owned()))
 }
 
 /// A page's image as a whole image.
 pub fn read_pdf(bytes: &[u8], page: Option<u32>) -> Result<(Image, PdfNotes), PdfError> {
-    let document = Document::open(bytes)?;
-    let (found, mut notes) = choose(&document, page)?;
-    let image = decode(&document, &found, &mut notes)?;
-    Ok((image, notes))
+    let mut collect = Collect {
+        image: Image::new(0, 0, ColorType::Gray),
+    };
+    let notes = rows(bytes, &mut collect, page).map_err(|failure| match failure {
+        RowsError::Png(failure) => fail(failure.0),
+        RowsError::Io(failure) => fail(failure.to_string()),
+    })?;
+    Ok((collect.image, notes))
 }

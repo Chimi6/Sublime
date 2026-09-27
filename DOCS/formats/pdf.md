@@ -54,8 +54,12 @@ pixels from our PDFs, and `pdfinfo` reads their pages.
 | Images | the page's image XObjects, those inside forms it uses, and inline images (`BI` ... `ID` ... `EI`); the largest is read |
 | Color | DeviceGray, DeviceRGB, DeviceCMYK (converted as Pillow converts), CalGray, CalRGB, ICCBased (by its component count), Indexed over any of them (palette string or stream); 1, 2, 4, 8, and 16 bits (16 by the high byte); `/Decode` arrays; stencil masks (`/ImageMask`); `/SMask` as alpha |
 
-The file is held, and the chosen image decoded whole before its rows go
-out (its data is one compressed stream).
+The file is held (its cross references are at the end). An image under
+a lone Flate filter, or none, streams: rows are inflated, their
+predictor undone, and their samples turned into pixels one row at a
+time, the soft mask alongside, so a page reads in about the file's size
+plus a few rows. JPEG images and other filter chains decode whole
+first.
 
 ## Known deviations
 
