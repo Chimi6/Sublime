@@ -1,6 +1,6 @@
 # JPEG <-> PNG
 
-**Latest** (2026-09-26, first release of JPEG: jpeg -> png 87.2 MB/s of decoded pixels on the photo at 5.6 MB peak against the image crate's 41.5 at 70.4, 670.9 against 652.7 on the flat image; png -> jpeg 440.4 MB/s of input plus pixels against jpeg-encoder's 444.5 on the photo (a 1% miss, a tie on direct timing: 163 against 164 ms), 537.4 against 472.3 on the flat image; every memory line passes at a tenth of the crates'; at quality 85 our photo is 1.5 MB at 36.19 dB against jpeg-encoder's 1.6 MB at 35.90)
+**Latest** (2026-09-26, chroma from summed RGB: every line PASSES; photo encode 490.7 against jpeg-encoder's 445.7 MB/s (151 against 163 ms direct), photo decode 87.4 against 41.2, flat decode 705.3 against 640.4, flat encode 565.3 against 451.3; memory a tenth of the crates' everywhere)
 
 ## Purpose
 
@@ -79,6 +79,26 @@ median wall clock of the whole process, peak resident memory from GNU
 
 ## Results
 
+### 2026-09-26, chroma from summed RGB
+
+commit: 8c81b1e (on the `jpeg-margins` branch, before its merge; a browser and a game took about half a core during the run)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| jpeg -> png, photo (45.8 MB of pixels, 1.6 MB on disk): throughput (MB/s of decoded pixels) | 87.4 | 41.2 (image + png) | PASS |
+| jpeg -> png, photo: peak memory (MB) | 5.8 | 69.8 (image + png) | PASS |
+| png -> jpeg, photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 490.7 | 445.7 (png + jpeg-encoder); 261.8 (png + image) | PASS |
+| png -> jpeg, photo: peak memory (MB) | 4.9 | 51.0 (png + jpeg-encoder); 51.4 (png + image) | PASS |
+| png -> jpeg, photo: output size (MB) at quality 85 [extra] | 1.5 | 1.6 (jpeg-encoder); 2.0 (image) | n/a |
+| png -> jpeg, photo: PSNR against the source (dB) at quality 85 [extra] | 36.19 | 35.90 (jpeg-encoder); 36.47 (image) | n/a |
+| jpeg -> png, flat (45.8 MB of pixels, 0.3 MB on disk): throughput (MB/s of decoded pixels) | 705.3 | 640.4 (image + png) | PASS |
+| jpeg -> png, flat: peak memory (MB) | 4.3 | 51.8 (image + png) | PASS |
+| png -> jpeg, flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 565.3 | 451.3 (png + jpeg-encoder); 224.6 (png + image) | PASS |
+| png -> jpeg, flat: peak memory (MB) | 4.8 | 51.4 (png + jpeg-encoder); 50.8 (png + image) | PASS |
+| png -> jpeg, flat: output size (MB) at quality 85 [extra] | 0.3 | 0.3 (jpeg-encoder); 0.5 (image) | n/a |
+| png -> jpeg, flat: PSNR against the source (dB) at quality 85 [extra] | 32.39 | 32.39 (jpeg-encoder); 56.88 (image) | n/a |
+
 ### 2026-09-26, first release of JPEG
 
 commit: c9683c4 (on the `jpeg` branch, before its merge)
@@ -100,6 +120,16 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(
 | png -> jpeg, flat: PSNR against the source (dB) at quality 85 [extra] | 32.39 | 32.39 (jpeg-encoder); 56.88 (image) | n/a |
 
 ## Conclusions
+
+**2026-09-26, margins.** The photo encode moved from a tie to a lead
+when the 4:2:0 encoder started computing each chroma sample once from
+a 2x2 block's summed RGB instead of converting every pixel and
+averaging: a quarter of the chroma arithmetic, no downsampling pass,
+and one rounding instead of two, so PSNR holds (36.19 dB) or rises.
+Walking nonzero coefficients by bitmask gave another 1%. Two decode
+spikes on color conversion (libjpeg's lookup tables, planar groups)
+measured slower and were reverted; the flat decode's margin rests on
+the PNG writer behind it. Earlier notes follow.
 
 Seven of eight pass lines pass, and the eighth is a tie the harness
 scores as a 1% miss: the photo encode at 440 against 445 MB/s in the
