@@ -43,6 +43,8 @@ pub struct Document {
     /// Reviewers' comments, each on the text between its
     /// `Inline::CommentStart` and `Inline::CommentEnd` runs.
     pub comments: Vec<Comment>,
+    /// The colour the pages are filled with, when not white.
+    pub page_color: Option<Color>,
     pub media: Vec<Media>,
     /// Objects placed on pages rather than in the text flow.
     pub floating: Vec<FloatingObject>,
@@ -101,6 +103,25 @@ pub struct FloatingObject {
     pub follows_text: bool,
     /// How the text flows around it.
     pub wrap: TextWrap,
+    /// Drawn on every page a header or footer is on, from that header or
+    /// footer (its position then on each such page); `None` on one page.
+    pub repeats: Option<PagePart>,
+}
+
+/// A header or footer: which, and on which pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PagePart {
+    pub footer: bool,
+    pub pages: PageKind,
+}
+
+/// The pages a header or footer variant is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageKind {
+    /// Every page but those with a variant of their own.
+    Default,
+    First,
+    Even,
 }
 
 /// How text flows around a floating object.

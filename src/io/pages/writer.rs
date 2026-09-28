@@ -61,6 +61,9 @@ pub fn write(document: &Document) -> Result<Vec<u8>, PackageError> {
     if let Some(section) = document.sections.first() {
         set_page_setup(&mut package, &section.page)?;
     }
+    if let Some(color) = document.page_color {
+        set_page_color(&mut package, color)?;
+    }
     // A document without headers (or footers) turns them off, as Pages
     // imports one, so its body can start at the page's edge.
     set_header_footer_visibility(
@@ -421,6 +424,19 @@ fn rebuild_body(
         )?;
         placed = written.on_pages;
         in_text = written.anchored;
+        for pages in [
+            crate::document::PageKind::Default,
+            crate::document::PageKind::First,
+            crate::document::PageKind::Even,
+        ] {
+            let ids: Vec<u64> = written
+                .repeating
+                .iter()
+                .filter(|(kind, _)| *kind == pages)
+                .map(|(_, id)| *id)
+                .collect();
+            add_template_drawables(package, pages, &ids)?;
+        }
     }
 
     // The template carries one table: a document with more gets a clone of
@@ -6213,6 +6229,56 @@ fn set_page_setup(
     Ok(())
 }
 
+/// Fills every section's pages with a background colour.
+fn set_page_color(package: &mut Package, color: Color) -> Result<(), PackageError> {
+    let section_ref = message_ref("TP.SectionArchive")?;
+    let fill_ref = child_message(section_ref, "background_fill")?;
+    for entry in &mut package.entries {
+        let Entry::Stream(stream) = entry else {
+            continue;
+        };
+        let sections: Vec<u32> = stream
+            .objects
+            .iter()
+            .filter(|object| first_type(object) == Some(SECTION_ARCHIVE))
+            .map(|object| object.messages[0].first)
+            .collect();
+        for first in sections {
+            let color_first = build_color(&mut stream.tree, color)?;
+            let mut fill = Chain::new();
+            push_field(
+                &mut stream.tree,
+                &mut fill,
+                fill_ref,
+                "color",
+                Node::Message(color_first),
+            )?;
+            let (slot, field) = section_ref
+                .slot_named("background_fill")
+                .ok_or_else(|| malformed("section has no background fill"))?;
+            let mut last = first;
+            for (index, _) in stream.tree.chain(first) {
+                last = index;
+            }
+            let mut chain = Chain { first, last };
+            stream
+                .tree
+                .push_known(
+                    &mut chain,
+                    section_ref,
+                    slot,
+                    field,
+                    field.number,
+                    Node::Message(fill.first),
+                )
+                .map_err(tree_error)?;
+        }
+    }
+    Ok(())
+}
+
+const SECTION_ARCHIVE: u32 = 10011;
+
 /// Turns the document's headers and footers on or off.
 fn set_header_footer_visibility(package: &mut Package, headers: bool, footers: bool) {
     for entry in &mut package.entries {
@@ -8490,6 +8556,8 @@ struct TextBox {
     /// Anchored in the body text rather than placed on its page.
     anchored: bool,
     wrap: crate::document::TextWrap,
+    /// On every page of a header or footer variant.
+    repeats: Option<crate::document::PagePart>,
 }
 
 /// The document's text boxes, their text flattened like a cell's.
@@ -8564,6 +8632,7 @@ fn text_box(document: &Document, floating: &crate::document::FloatingObject) -> 
                 index: 0,
                 anchored: false,
                 wrap: floating.wrap,
+                repeats: floating.repeats,
             })
         }
         // A chart Pages cannot draw from here keeps its data: a box of
@@ -8619,6 +8688,7 @@ fn text_box(document: &Document, floating: &crate::document::FloatingObject) -> 
                 index: 0,
                 anchored: false,
                 wrap: floating.wrap,
+                repeats: floating.repeats,
             })
         }
         _ => None,
@@ -8966,6 +9036,8 @@ fn write_text_boxes(
         }
         if text_box.anchored {
             placed.anchored.push((text_box.index, shape_id));
+        } else if let Some(part) = text_box.repeats {
+            placed.repeating.push((part.pages, shape_id));
         } else {
             placed.on_pages.push((text_box.page, shape_id));
         }
@@ -8980,6 +9052,8 @@ fn write_text_boxes(
 struct PlacedBoxes {
     on_pages: Vec<(u32, u64)>,
     anchored: Vec<(usize, u64)>,
+    /// Those drawn on every page of a header or footer variant.
+    repeating: Vec<(crate::document::PageKind, u64)>,
 }
 
 /// The template's shape style with style identifier `identifier` (at
@@ -10432,20 +10506,32 @@ fn header_images(document: &Document) -> Vec<(&crate::document::InlineImage, f32
 /// Adds drawables to the section's page template, where Pages keeps the
 /// objects it draws on every page of the section.
 fn add_section_drawables(package: &mut Package, drawables: &[u64]) -> Result<(), PackageError> {
+    add_template_drawables(package, crate::document::PageKind::Default, drawables)
+}
+
+/// Adds drawables to the section template of the pages a header or footer
+/// variant is on: the odd-page template for the default, or the first- or
+/// even-page one.
+fn add_template_drawables(
+    package: &mut Package,
+    pages: crate::document::PageKind,
+    drawables: &[u64],
+) -> Result<(), PackageError> {
     if drawables.is_empty() {
         return Ok(());
     }
+    let field = match pages {
+        crate::document::PageKind::Default => "odd_section_template_page",
+        crate::document::PageKind::First => "first_section_template_page",
+        crate::document::PageKind::Even => "even_section_template_page",
+    };
     let template = message_ref("TP.SectionTemplateArchive")?;
     let template_id = package.entries.iter().find_map(|entry| {
         let Entry::Stream(stream) = entry else {
             return None;
         };
         stream.objects.iter().find_map(|object| {
-            match field_value(
-                &stream.tree,
-                object.messages.first()?.first,
-                "odd_section_template_page",
-            ) {
+            match field_value(&stream.tree, object.messages.first()?.first, field) {
                 Some(Node::Reference(id)) => Some(id),
                 _ => None,
             }
