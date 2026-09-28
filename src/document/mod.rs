@@ -40,6 +40,9 @@ pub struct Document {
     pub styles: StyleTable,
     pub sections: Vec<Section>,
     pub footnotes: Vec<Note>,
+    /// Reviewers' comments, each on the text between its
+    /// `Inline::CommentStart` and `Inline::CommentEnd` runs.
+    pub comments: Vec<Comment>,
     pub media: Vec<Media>,
     /// Objects placed on pages rather than in the text flow.
     pub floating: Vec<FloatingObject>,
@@ -652,6 +655,10 @@ pub enum Inline {
     /// Where a floating object (`Document::floating`) that moves with the
     /// text is anchored.
     Anchor(Id),
+    /// Where the text a comment (`Document::comments`) is on begins.
+    CommentStart(Id),
+    /// Where it ends.
+    CommentEnd(Id),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -691,6 +698,17 @@ pub enum AnchorBase {
     Margin,
     /// The line the image is anchored in (vertical only).
     Line,
+}
+
+/// A reviewer's comment.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Comment {
+    pub author: String,
+    pub initials: Option<String>,
+    /// When it was made, as ISO 8601 (`2026-09-23T12:00:00Z`).
+    pub date: Option<String>,
+    /// Its text, paragraphs separated by newlines.
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1037,7 +1055,9 @@ impl Document {
                 | Inline::Image(_)
                 | Inline::PageNumber
                 | Inline::PageCount
-                | Inline::Anchor(_) => {}
+                | Inline::Anchor(_)
+                | Inline::CommentStart(_)
+                | Inline::CommentEnd(_) => {}
             }
         }
         text

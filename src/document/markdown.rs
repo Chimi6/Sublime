@@ -573,7 +573,9 @@ impl<'a> Emitter<'a, '_> {
             | Inline::ColumnBreak
             | Inline::PageNumber
             | Inline::PageCount
-            | Inline::Anchor(_) => {}
+            | Inline::Anchor(_)
+            | Inline::CommentStart(_)
+            | Inline::CommentEnd(_) => {}
         }
     }
 

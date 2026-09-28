@@ -483,6 +483,12 @@ pub struct Reader<'p> {
     boundary_scratch: Vec<usize>,
     /// Where the storage being read sits in the text arena.
     storage_base: u32,
+    /// The storage's comment edges, by UTF-16 offset, in order.
+    comment_marks: Vec<(usize, Inline)>,
+    /// How many of them are already placed.
+    comment_marks_done: usize,
+    /// Highlight objects -> the model's comments.
+    comment_ids: HashMap<u64, Id>,
     /// Positions into the storage's tables, advanced as the text is
     /// walked, so each lookup is a step rather than a search.
     cursors: Cursors,
@@ -530,6 +536,9 @@ pub fn read_document(package: &Package) -> Document {
         revision_ids: HashMap::new(),
         boundary_scratch: Vec::new(),
         storage_base: 0,
+        comment_marks: Vec::new(),
+        comment_marks_done: 0,
+        comment_ids: HashMap::new(),
         cursors: Cursors::default(),
         pending_blocks: Vec::new(),
         following_blocks: Vec::new(),
@@ -1205,7 +1214,11 @@ impl Reader<'_> {
         let outer_following = std::mem::take(&mut self.following_blocks);
         let outer_cursors = self.cursors;
         let outer_base = self.storage_base;
+        let outer_marks = std::mem::take(&mut self.comment_marks);
+        let outer_done = self.comment_marks_done;
         let blocks = self.storage_blocks(storage);
+        self.comment_marks = outer_marks;
+        self.comment_marks_done = outer_done;
         self.last_paragraph_style = outer_style;
         self.pending_blocks = outer_pending;
         self.following_blocks = outer_following;
@@ -1248,6 +1261,11 @@ impl Reader<'_> {
         let footnotes = attribute_table(&storage, "table_footnote");
         let insertions = attribute_table(&storage, "table_insertion");
         let deletions = attribute_table(&storage, "table_deletion");
+        self.comment_marks = self.comment_marks_of(
+            &attribute_table(&storage, "table_highlight"),
+            text.encode_utf16().count(),
+        );
+        self.comment_marks_done = 0;
         let data = paragraph_data(&storage);
         let starts = paragraph_starts(&storage);
         let mut blocks = Vec::new();
@@ -1474,9 +1492,16 @@ impl Reader<'_> {
                 probe += 1;
             }
         }
+        boundaries.extend(
+            self.comment_marks
+                .iter()
+                .map(|(unit, _)| *unit)
+                .filter(|unit| *unit > unit_start && *unit < paragraph_unit_end),
+        );
         boundaries.sort_unstable();
         boundaries.dedup();
         paragraph.runs.reserve(boundaries.len() + 1);
+        self.place_comment_marks(&mut paragraph, unit_start);
         let tracked = !insertions.is_empty() || !deletions.is_empty();
         let bytes = text.as_bytes();
         if ascii {
@@ -1515,6 +1540,7 @@ impl Reader<'_> {
                 }
                 if next == next_special {
                     let ch = char::from(bytes[next]);
+                    self.place_comment_marks(&mut paragraph, unit_start + next);
                     let run = self.special_run(
                         ch,
                         unit_start + next,
@@ -1562,6 +1588,7 @@ impl Reader<'_> {
                     );
                 }
             }
+            self.place_comment_marks(&mut paragraph, paragraph_unit_end);
             self.boundary_scratch = boundaries;
             return paragraph;
         }
@@ -1592,6 +1619,7 @@ impl Reader<'_> {
                 boundary_index += 1;
             }
             if special {
+                self.place_comment_marks(&mut paragraph, unit);
                 let run = self.special_run(
                     ch,
                     unit,
@@ -1623,6 +1651,7 @@ impl Reader<'_> {
                 self.mark_revision(&mut paragraph, piece_start_units, insertions, deletions);
             }
         }
+        self.place_comment_marks(&mut paragraph, paragraph_unit_end);
         self.boundary_scratch = boundaries;
         paragraph
     }
@@ -1681,6 +1710,72 @@ impl Reader<'_> {
 
     /// A text run for `bytes` (a byte range of the storage text), whose
     /// text is already in the arena at `storage_base`.
+    /// The comment edges of a storage's highlight table: a start where a
+    /// highlight begins, an end where the next entry begins (or the text
+    /// ends); ends first at a shared offset.
+    fn comment_marks_of(&mut self, highlights: &[Span], length: usize) -> Vec<(usize, Inline)> {
+        let mut marks = Vec::new();
+        for (index, span) in highlights.iter().enumerate() {
+            let Some(object) = span.object() else {
+                continue;
+            };
+            let Some(comment) = self.comment_for(object) else {
+                continue;
+            };
+            let end = highlights
+                .get(index + 1)
+                .map_or(length, |next| next.start as usize);
+            marks.push((span.start as usize, Inline::CommentStart(comment)));
+            marks.push((end, Inline::CommentEnd(comment)));
+        }
+        marks.sort_by_key(|(unit, mark)| (*unit, matches!(mark, Inline::CommentStart(_))));
+        marks
+    }
+
+    /// The model comment a highlight's comment storage holds.
+    fn comment_for(&mut self, highlight: u64) -> Option<Id> {
+        if let Some(id) = self.comment_ids.get(&highlight) {
+            return Some(*id);
+        }
+        let view = View::of(self.graph.object(highlight)?);
+        let storage = View::of(self.graph.object(view.reference("commentStorage")?)?);
+        let author = storage
+            .reference("author")
+            .and_then(|author| self.graph.object(author))
+            .and_then(|author| View::of(author).string("name").map(str::to_string))
+            .unwrap_or_default();
+        let date = storage
+            .message("creation_date")
+            .and_then(|date| date.double("seconds"))
+            .map(iso_from_2001);
+        let comment = crate::document::Comment {
+            author,
+            initials: None,
+            date,
+            text: storage.string("text").unwrap_or_default().to_string(),
+        };
+        let id = self.document.comments.len() as Id;
+        self.document.comments.push(comment);
+        self.comment_ids.insert(highlight, id);
+        Some(id)
+    }
+
+    /// Places the comment edges at or before `unit` that are not yet placed.
+    fn place_comment_marks(&mut self, paragraph: &mut Paragraph, unit: usize) {
+        while let Some((at, mark)) = self.comment_marks.get(self.comment_marks_done).copied()
+            && at <= unit
+        {
+            paragraph.runs.push(Run {
+                style: None,
+                properties: None,
+                link: None,
+                revision: None,
+                content: mark,
+            });
+            self.comment_marks_done += 1;
+        }
+    }
+
     fn push_text_run(
         &mut self,
         paragraph: &mut Paragraph,
@@ -1689,6 +1784,7 @@ impl Reader<'_> {
         character_styles: &[Span],
         smart_fields: &[Span],
     ) {
+        self.place_comment_marks(paragraph, unit);
         let (style, properties) = self.run_formatting(unit, character_styles);
         let link = self.link_id(unit, smart_fields);
         let span = crate::document::Span {
@@ -2996,6 +3092,34 @@ fn chart_from_grid(unity: View<'_>, grid: View<'_>) -> crate::document::Chart {
         categories,
         series,
     }
+}
+
+/// Seconds since 2001-01-01 UTC (Pages' epoch) as ISO 8601.
+fn iso_from_2001(seconds: f64) -> String {
+    let total = seconds.round() as i64 + 11_323 * 86_400;
+    let days = total.div_euclid(86_400);
+    let rest = total.rem_euclid(86_400);
+    // The civil date from days since 1970 (Howard Hinnant's algorithm).
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3_600,
+        rest % 3_600 / 60,
+        rest % 60
+    )
 }
 
 #[cfg(test)]
