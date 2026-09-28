@@ -50,6 +50,12 @@ const ATTACHMENT: char = '\u{FFFC}';
 
 /// Renders the document model to a `.pages` package.
 pub fn write(document: &Document) -> Result<Vec<u8>, PackageError> {
+    // Identities drawn for this output vary with its text, which is all a
+    // WebAssembly build has to vary them with.
+    let digest = document.text.bytes().fold(0xCBF2_9CE4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01B3)
+    });
+    OUTPUT_SALT.store(digest, std::sync::atomic::Ordering::Relaxed);
     let mut package = Package::read(TEMPLATE)?;
     let styles = collect_style_names(&package);
     let formats = collect_char_formats(&package);
@@ -6268,14 +6274,32 @@ fn is_uuid(text: &[u8; 36]) -> bool {
     })
 }
 
+/// A hash of the output being written, mixed into every identity it gets.
+static OUTPUT_SALT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// What varies between calls and runs: a count of calls and the output's
+/// salt everywhere, and the clock and the process where there are such
+/// things (a WebAssembly module has neither, and asking panics).
+fn entropy() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    let calls = CALLS.fetch_add(1, Ordering::Relaxed).wrapping_mul(0xD1B5_4A32_D192_ED03);
+    let mixed = calls ^ OUTPUT_SALT.load(Ordering::Relaxed);
+    #[cfg(not(target_family = "wasm"))]
+    let mixed = {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos() as u64)
+            .unwrap_or(0);
+        mixed ^ nanos ^ (u64::from(std::process::id()) << 32)
+    };
+    mixed
+}
+
 /// A random (version 4) UUID in the uppercase text form Pages writes, drawn
-/// from the clock, the process, and `salt` so each call and run differs.
+/// from `entropy` and `salt` so each call and run differs.
 fn fresh_uuid(salt: u64) -> [u8; 36] {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos() as u64)
-        .unwrap_or(0);
-    let seed = nanos ^ (u64::from(std::process::id()) << 32) ^ salt.wrapping_mul(0x9E37_79B9);
+    let seed = entropy() ^ salt.wrapping_mul(0x9E37_79B9);
     let (high, low) = object_uuid(seed);
     let mut raw = [0u8; 16];
     raw[..8].copy_from_slice(&high.to_be_bytes());
