@@ -6,7 +6,7 @@ use std::io::Write;
 use crate::cli::args::LogFormat;
 use crate::cli::render::json_lines::write_hop;
 use crate::cli::{CliError, ExitCode};
-use crate::converter::{Converter, FidelityKind};
+use crate::converter::FidelityKind;
 use crate::format::{Category, Format};
 use crate::io::json::JsonWriter;
 use crate::planner::{self, Plan, PlanOptions};
@@ -181,13 +181,11 @@ pub fn render_markdown() -> String {
     text
 }
 
-/// The map at the bottom of DOCS/FORMATS.md: one Mermaid graph per
+/// The map that opens DOCS/FORMATS.md: one Mermaid graph per
 /// category and a last graph of the converters that cross categories.
 /// A graph shows only which formats convert directly: one plain line
-/// per pair with a converter either way. The image category, whose
-/// pairs are all generated through its pixel hub, draws the hub with a
-/// line to each format instead of every pair. What a conversion loses
-/// and how many hops it takes are in the grid under each graph.
+/// per pair with a converter either way. What a conversion loses and
+/// how many hops it takes are in the grid under each graph.
 #[inline(never)]
 fn render_mermaid() -> String {
     let mut formats = registry::all_formats();
@@ -201,11 +199,6 @@ fn render_mermaid() -> String {
         text.push_str("### ");
         text.push_str(category.label());
         text.push_str("\n\n");
-        let members: Vec<&str> = formats
-            .iter()
-            .filter(|format| format.category == *category)
-            .map(|format| format.id)
-            .collect();
         let mut lines: Vec<(String, String)> = Vec::new();
         for converter in converters {
             let inside =
@@ -214,17 +207,9 @@ fn render_mermaid() -> String {
                 add_line(&mut lines, converter.from().id, converter.to().id);
             }
         }
-        // Every format joined to every other (images, all generated
-        // through one hub) is drawn as one box of formats; lines would be
-        // one per pair and say nothing more.
-        let pairs = members.len() * (members.len() - 1) / 2;
-        if members.len() > 2 && lines.len() == pairs {
-            push_all_to_all(&mut text, category.label(), &members, converters);
-        } else {
-            text.push_str("```mermaid\ngraph LR\n");
-            push_lines(&mut text, &lines);
-            text.push_str("```\n\n");
-        }
+        text.push_str("```mermaid\ngraph LR\n");
+        push_lines(&mut text, &lines);
+        text.push_str("```\n\n");
         push_matrix(&mut text, &formats, *category, &plans);
     }
     // Across categories: the other side drawn as its category.
@@ -250,49 +235,6 @@ fn render_mermaid() -> String {
         text.push_str("```\n");
     }
     text
-}
-
-/// The graph of a category whose formats all convert directly to each
-/// other: the formats in one box, marking any only read or only written.
-fn push_all_to_all(
-    text: &mut String,
-    label: &str,
-    members: &[&str],
-    converters: &[&dyn Converter],
-) {
-    let only = |wanted: &dyn Fn(&dyn Converter, &str) -> bool| -> Vec<&str> {
-        members
-            .iter()
-            .copied()
-            .filter(|id| !converters.iter().any(|converter| wanted(*converter, id)))
-            .collect()
-    };
-    let read_only = only(&|converter, id| converter.to().id == id && converter.from().id != id);
-    let write_only = only(&|converter, id| converter.from().id == id && converter.to().id != id);
-    // One box of formats, no lines: in rows of five, chained by
-    // invisible links so the box stays compact.
-    text.push_str(&format!(
-        "```mermaid\ngraph TB\n  subgraph {label}[\"every {label} format converts to every other in one step\"]\n    direction TB\n"
-    ));
-    for row in members.chunks(5) {
-        text.push_str("    ");
-        for (index, id) in row.iter().enumerate() {
-            if index > 0 {
-                text.push_str(" ~~~ ");
-            }
-            let note = if read_only.contains(id) {
-                " (read only)"
-            } else if write_only.contains(id) {
-                " (written only)"
-            } else {
-                ""
-            };
-            push_mermaid_id(text, id);
-            text.push_str(&format!("[\"{id}{note}\"]"));
-        }
-        text.push('\n');
-    }
-    text.push_str("  end\n```\n\n");
 }
 
 /// Adds a line between two nodes unless one is there either way.

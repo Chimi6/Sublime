@@ -71,13 +71,85 @@ graph LR
 ### image
 
 ```mermaid
-graph TB
-  subgraph image["every image format converts to every other in one step"]
-    direction TB
-    bmp["bmp"] ~~~ cur["cur (read only)"] ~~~ ico["ico"] ~~~ jpeg["jpeg"] ~~~ pam["pam"]
-    pbm["pbm"] ~~~ pgm["pgm"] ~~~ png["png"] ~~~ ppm["ppm"] ~~~ qoi["qoi"]
-    tga["tga"] ~~~ tiff["tiff"] ~~~ webp["webp"]
-  end
+graph LR
+  png --- bmp
+  png --- jpeg
+  png --- webp
+  png --- qoi
+  png --- pbm
+  png --- pgm
+  png --- ppm
+  png --- pam
+  png --- tga
+  png --- tiff
+  png --- ico
+  bmp --- jpeg
+  bmp --- webp
+  bmp --- qoi
+  bmp --- pbm
+  bmp --- pgm
+  bmp --- ppm
+  bmp --- pam
+  bmp --- tga
+  bmp --- tiff
+  bmp --- ico
+  jpeg --- webp
+  jpeg --- qoi
+  jpeg --- pbm
+  jpeg --- pgm
+  jpeg --- ppm
+  jpeg --- pam
+  jpeg --- tga
+  jpeg --- tiff
+  jpeg --- ico
+  webp --- qoi
+  webp --- pbm
+  webp --- pgm
+  webp --- ppm
+  webp --- pam
+  webp --- tga
+  webp --- tiff
+  webp --- ico
+  qoi --- pbm
+  qoi --- pgm
+  qoi --- ppm
+  qoi --- pam
+  qoi --- tga
+  qoi --- tiff
+  qoi --- ico
+  pbm --- pgm
+  pbm --- ppm
+  pbm --- pam
+  pbm --- tga
+  pbm --- tiff
+  pbm --- ico
+  pgm --- ppm
+  pgm --- pam
+  pgm --- tga
+  pgm --- tiff
+  pgm --- ico
+  ppm --- pam
+  ppm --- tga
+  ppm --- tiff
+  ppm --- ico
+  pam --- tga
+  pam --- tiff
+  pam --- ico
+  tga --- tiff
+  tga --- ico
+  tiff --- ico
+  cur --- png
+  cur --- bmp
+  cur --- jpeg
+  cur --- webp
+  cur --- qoi
+  cur --- pbm
+  cur --- pgm
+  cur --- ppm
+  cur --- pam
+  cur --- tga
+  cur --- tiff
+  cur --- ico
 ```
 
 | from \ to | bmp | cur | ico | jpeg | pam | pbm | pgm | png | ppm | qoi | tga | tiff | webp |
