@@ -11,6 +11,10 @@ section under a version heading.
 - PDF to text (`src/io/pdf/content.rs`, `font.rs`, `text.rs`): every page, or `--page N`, laid out as pdftotext lays it out; ToUnicode, the standard encodings with `/Differences`, Type0 Identity fonts, Type3, and the Core 14 widths (`scripts/gen-pdf-tables.py`). Matches pdftotext line for line on 14 fixtures, dehyphenation included.
 - PDF to Markdown, HTML, and Word (`src/io/pdf/markdown.rs`): headings from type size and weight (three levels by size and bold lines below them), bullet and numbered lists, paragraphs with hyphenated words joined, and page numbers dropped.
 
+### Performance
+
+- Small one-shot inflates (a PDF page's content streams, small ZIP parts) start from a slab a few times their size instead of a megabyte, build the packed literal table only for inputs of 4 KB and up, and no longer build packed copies of the distance and code-length tables, which nothing reads: a 300-page PDF of 14,400 small streams reads its text in 0.13 s instead of 0.61.
+
 ## [0.23.1] - 2026-09-27
 
 ### Performance
