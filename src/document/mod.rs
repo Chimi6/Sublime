@@ -106,6 +106,8 @@ pub struct FloatingObject {
     /// Drawn on every page a header or footer is on, from that header or
     /// footer (its position then on each such page); `None` on one page.
     pub repeats: Option<PagePart>,
+    /// Drawn behind the text rather than over it.
+    pub behind: bool,
 }
 
 /// A header or footer: which, and on which pages.
@@ -730,6 +732,9 @@ pub struct Comment {
     pub date: Option<String>,
     /// Its text, paragraphs separated by newlines.
     pub text: String,
+    /// The comment this one replies to, in a thread; a reply shares its
+    /// parent's text range and has no markers of its own.
+    pub reply_to: Option<Id>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

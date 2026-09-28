@@ -489,6 +489,8 @@ pub struct Reader<'p> {
     comment_marks_done: usize,
     /// Highlight objects -> the model's comments.
     comment_ids: HashMap<u64, Id>,
+    /// Which drawable each run of floating objects came from.
+    floating_sources: Vec<(u64, std::ops::Range<usize>)>,
     /// Positions into the storage's tables, advanced as the text is
     /// walked, so each lookup is a step rather than a search.
     cursors: Cursors,
@@ -539,6 +541,7 @@ pub fn read_document(package: &Package) -> Document {
         comment_marks: Vec::new(),
         comment_marks_done: 0,
         comment_ids: HashMap::new(),
+        floating_sources: Vec::new(),
         cursors: Cursors::default(),
         pending_blocks: Vec::new(),
         following_blocks: Vec::new(),
@@ -791,6 +794,29 @@ impl Reader<'_> {
         {
             self.floating_drawables(floating);
         }
+        // Drawables the z-order lists before the body text are behind it.
+        if let Some(root) = root {
+            let root = View::of(root);
+            let body = root.reference("body_storage");
+            let order = root
+                .reference("drawables_zorder")
+                .and_then(|zorder| self.graph.object(zorder))
+                .map(|zorder| View::of(zorder).references("drawables"))
+                .unwrap_or_default();
+            if let Some(body_at) = body.and_then(|body| order.iter().position(|id| *id == body)) {
+                for (drawable, range) in std::mem::take(&mut self.floating_sources) {
+                    if order
+                        .iter()
+                        .position(|id| *id == drawable)
+                        .is_some_and(|at| at < body_at)
+                    {
+                        for object in &mut self.document.floating[range] {
+                            object.behind = true;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// `TP.FloatingDrawablesArchive`: the objects placed on pages.
@@ -803,7 +829,10 @@ impl Reader<'_> {
             let page = group.integer("page_index").unwrap_or(0).max(0) as u32;
             for entry in group.messages("drawables") {
                 if let Some(drawable) = entry.reference("drawable") {
+                    let before = self.document.floating.len();
                     self.floating_object(drawable, page, 0.0, 0.0);
+                    self.floating_sources
+                        .push((drawable, before..self.document.floating.len()));
                 }
             }
         }
@@ -866,6 +895,7 @@ impl Reader<'_> {
                         follows_text: false,
                         wrap,
                         repeats: None,
+                        behind: false,
                     });
                 }
             }
@@ -894,6 +924,7 @@ impl Reader<'_> {
                     follows_text: false,
                     wrap,
                     repeats: None,
+                    behind: false,
                 });
             }
             return;
@@ -940,7 +971,7 @@ impl Reader<'_> {
                 line,
                 geometry,
                 flip,
-                ends: (None, None),
+                ends: style.map_or((None, None), |style| self.shape_ends(style)),
             }
         } else {
             return;
@@ -967,6 +998,7 @@ impl Reader<'_> {
             follows_text: false,
             wrap,
             repeats: None,
+            behind: false,
         });
     }
 
@@ -995,6 +1027,52 @@ impl Reader<'_> {
             current = base.message("super").and_then(|s| s.reference("parent"));
         }
         None
+    }
+
+    /// A shape style's line marks through its parents: (start, end), Pages'
+    /// tail and head.
+    fn shape_ends(
+        &self,
+        style: u64,
+    ) -> (
+        Option<crate::document::LineEnd>,
+        Option<crate::document::LineEnd>,
+    ) {
+        let kind = |end: View<'_>| {
+            let name = end.string("identifier").unwrap_or("").to_ascii_lowercase();
+            if end.message("path").is_none() && name.is_empty() {
+                return None;
+            }
+            Some(if name.contains("circle") {
+                crate::document::LineEnd::Circle
+            } else if name.contains("diamond") || name.contains("square") {
+                crate::document::LineEnd::Diamond
+            } else if name.contains("open") || name.contains("line") {
+                crate::document::LineEnd::OpenArrow
+            } else {
+                crate::document::LineEnd::Arrow
+            })
+        };
+        let (mut start, mut end) = (None, None);
+        let mut current = Some(style);
+        for _ in 0..64 {
+            let Some(message) = current.and_then(|id| self.graph.object(id)) else {
+                break;
+            };
+            let Some(base) = View::of(message).message("super") else {
+                break;
+            };
+            if let Some(properties) = base.message("shape_properties") {
+                if end.is_none() {
+                    end = properties.message("head_line_end").and_then(kind);
+                }
+                if start.is_none() {
+                    start = properties.message("tail_line_end").and_then(kind);
+                }
+            }
+            current = base.message("super").and_then(|s| s.reference("parent"));
+        }
+        (start, end)
     }
 
     /// A shape's Bézier outline as model geometry: a plain rectangle or a
@@ -1312,6 +1390,28 @@ impl Reader<'_> {
             &attribute_table(&storage, "table_highlight"),
             text.encode_utf16().count(),
         );
+        // Comments kept as overlapping ranges, as current Pages writes them.
+        let overlapping: Vec<(usize, usize, u64)> = storage
+            .message("table_overlapping_highlight")
+            .map(|table| table.messages("entries"))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|entry| {
+                let range = entry.message("range")?;
+                let start = range.integer("location")?.max(0) as usize;
+                let length = range.integer("length").unwrap_or(0).max(0) as usize;
+                Some((start, start + length, entry.reference("field")?))
+            })
+            .collect();
+        for (start, end, highlight) in overlapping {
+            if let Some(comment) = self.comment_for(highlight) {
+                self.comment_marks
+                    .push((start, Inline::CommentStart(comment)));
+                self.comment_marks.push((end, Inline::CommentEnd(comment)));
+            }
+        }
+        self.comment_marks
+            .sort_by_key(|(unit, mark)| (*unit, matches!(mark, Inline::CommentStart(_))));
         self.comment_marks_done = 0;
         let data = paragraph_data(&storage);
         let starts = paragraph_starts(&storage);
@@ -1800,10 +1900,41 @@ impl Reader<'_> {
             initials: None,
             date,
             text: storage.string("text").unwrap_or_default().to_string(),
+            reply_to: None,
         };
         let id = self.document.comments.len() as Id;
         self.document.comments.push(comment);
         self.comment_ids.insert(highlight, id);
+        // Its replies, in their thread.
+        let mut replies = storage.references("replies");
+        let mut seen = 0;
+        while let Some(reply) = replies.first().copied() {
+            replies.remove(0);
+            seen += 1;
+            if seen > 256 {
+                break;
+            }
+            let Some(message) = self.graph.object(reply) else {
+                continue;
+            };
+            let view = View::of(message);
+            let author = view
+                .reference("author")
+                .and_then(|author| self.graph.object(author))
+                .and_then(|author| View::of(author).string("name").map(str::to_string))
+                .unwrap_or_default();
+            self.document.comments.push(crate::document::Comment {
+                author,
+                initials: None,
+                date: view
+                    .message("creation_date")
+                    .and_then(|date| date.double("seconds"))
+                    .map(iso_from_2001),
+                text: view.string("text").unwrap_or_default().to_string(),
+                reply_to: Some(id),
+            });
+            replies.extend(view.references("replies"));
+        }
         Some(id)
     }
 
@@ -1968,6 +2099,8 @@ impl Reader<'_> {
         {
             let index = self.document.floating.len();
             self.floating_object(drawable, 0, 0.0, 0.0);
+            self.floating_sources
+                .push((drawable, index..self.document.floating.len()));
             if self.document.floating.len() != index + 1 {
                 self.document.floating.truncate(index);
                 return None;

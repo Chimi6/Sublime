@@ -74,6 +74,37 @@ pub fn emit_events<'a>(document: &'a Document, sink: &mut dyn EventSink<'a>) {
         emitter.close_quotes(0);
         emitter.sink.event(Event::End(TagEnd::FootnoteDefinition));
     }
+    // Each comment's note: its author, then its text, then its thread's
+    // replies after it.
+    for (index, comment) in document.comments.iter().enumerate() {
+        if comment.reply_to.is_some() {
+            continue;
+        }
+        let sink = &mut emitter.sink;
+        sink.event(Event::Start(Tag::FootnoteDefinition(Cow::Owned(format!(
+            "c{}",
+            index + 1
+        )))));
+        sink.event(Event::Start(Tag::Paragraph));
+        let replies = document
+            .comments
+            .iter()
+            .filter(|reply| reply.reply_to == Some(index as crate::document::Id));
+        for (position, entry) in std::iter::once(comment).chain(replies).enumerate() {
+            if position > 0 {
+                sink.event(Event::Text(Cow::Borrowed(" — ")));
+            }
+            if !entry.author.is_empty() {
+                sink.event(Event::Start(Tag::Strong));
+                sink.event(Event::Text(Cow::Borrowed(entry.author.as_str())));
+                sink.event(Event::End(TagEnd::Strong));
+                sink.event(Event::Text(Cow::Borrowed(": ")));
+            }
+            sink.event(Event::Text(Cow::Owned(entry.text.replace('\n', " "))));
+        }
+        sink.event(Event::End(TagEnd::Paragraph));
+        sink.event(Event::End(TagEnd::FootnoteDefinition));
+    }
 }
 
 struct Emitter<'a, 's> {
@@ -568,14 +599,19 @@ impl<'a> Emitter<'a, '_> {
             Inline::Math(span) => self.sink.event(Event::Code(Cow::Owned(mathml_text(
                 self.document.text(span),
             )))),
+            // A comment is a note of its own, referred to where its text
+            // ends (Markdown has no comments).
+            Inline::CommentEnd(id) => {
+                self.sink
+                    .event(Event::FootnoteReference(Cow::Owned(format!("c{}", id + 1))));
+            }
             // Floating objects are written after the body.
             Inline::PageBreak
             | Inline::ColumnBreak
             | Inline::PageNumber
             | Inline::PageCount
             | Inline::Anchor(_)
-            | Inline::CommentStart(_)
-            | Inline::CommentEnd(_) => {}
+            | Inline::CommentStart(_) => {}
         }
     }
 
