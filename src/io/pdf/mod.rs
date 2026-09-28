@@ -7,6 +7,7 @@ pub mod document;
 pub mod filter;
 pub mod font;
 pub mod lexer;
+pub mod markdown;
 pub mod object;
 pub mod reader;
 pub mod tables;

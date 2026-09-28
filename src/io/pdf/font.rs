@@ -27,6 +27,9 @@ pub struct Font {
     widths: FontWidths,
     /// The glyph space to text space scale: 1/1000 except Type3 fonts.
     scale: f64,
+    /// How much larger the glyphs are drawn than the font size says: 1
+    /// except for a Type3 font whose matrix is not the usual 1/1000 em.
+    pub size_factor: f64,
     pub bold: bool,
     pub italic: bool,
     pub name: String,
@@ -103,23 +106,33 @@ impl Font {
             .and_then(|object| document.stream_data(object).ok())
             .map(|(_, data)| ToUnicode::parse(&data));
         let composite = subtype == "Type0";
+        // A Type3 font's matrix maps its glyph space to text space: its
+        // first entry scales the widths, its fourth the glyphs' height.
+        let matrix: Vec<f64> = if subtype == "Type3" {
+            dictionary
+                .get(b"FontMatrix")
+                .and_then(|object| document.resolve(object).ok())
+                .and_then(|object| {
+                    object
+                        .as_array()
+                        .map(|items| items.iter().filter_map(Object::as_number).collect())
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let size_factor = match matrix.get(3) {
+            Some(height) if *height != 0.0 => (height / 0.001).abs(),
+            _ => 1.0,
+        };
         let (widths, scale) = if composite {
             (cid_widths(document, dictionary), 0.001)
         } else {
-            let scale = if subtype == "Type3" {
-                dictionary
-                    .get(b"FontMatrix")
-                    .and_then(|object| document.resolve(object).ok())
-                    .and_then(|object| {
-                        object
-                            .as_array()
-                            .and_then(|items| items.first())
-                            .and_then(Object::as_number)
-                    })
-                    .unwrap_or(0.001)
-            } else {
-                0.001
-            };
+            let scale = matrix
+                .first()
+                .copied()
+                .filter(|value| *value != 0.0)
+                .unwrap_or(0.001);
             (
                 simple_widths(document, dictionary, descriptor.as_ref(), &lower, scale),
                 scale,
@@ -137,6 +150,7 @@ impl Font {
             spelled,
             widths,
             scale,
+            size_factor,
             bold,
             italic,
             name: family,

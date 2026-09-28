@@ -85,8 +85,7 @@ pub fn blocks(page: &PageText) -> Vec<Block> {
         }
         last = Some(glyph);
     }
-    let mut blocks: Vec<Block> = Vec::new();
-    let mut previous: Option<Line> = None;
+    let mut kept: Vec<Line> = Vec::with_capacity(lines.len());
     for (mut line, all_bold) in lines {
         line.bold = all_bold;
         // A space glyph beside a gap wide enough to be one would read
@@ -99,15 +98,25 @@ pub fn blocks(page: &PageText) -> Vec<Block> {
             collapsed.push_str(word);
         }
         line.text = collapsed;
-        if line.text.trim().is_empty() {
-            continue;
+        if !line.text.is_empty() {
+            kept.push(line);
         }
-        let joins = previous.as_ref().is_some_and(|above| {
+    }
+    let spacing = common_spacing(&kept);
+    let mut blocks: Vec<Block> = Vec::new();
+    for (index, line) in kept.iter().enumerate() {
+        let joins = index > 0 && {
+            let above = &kept[index - 1];
             let drop = above.y - line.y;
             let size = above.size.max(line.size);
-            let similar = (above.size - line.size).abs() <= 0.15 * size;
-            drop > 0.0 && drop < BLOCK_GAP * size && similar && above.bold == line.bold
-        });
+            let similar = (above.size - line.size).abs() <= 0.15 * size && above.bold == line.bold;
+            // Close by the size, or at the page's usual line spacing: a
+            // font whose glyph units are not the usual em (some rewritten
+            // CID fonts) states a size that is not the size drawn.
+            let close =
+                drop < BLOCK_GAP * size || spacing.is_some_and(|usual| drop <= usual * 1.15);
+            similar && drop > 0.0 && close
+        };
         if joins {
             blocks
                 .last_mut()
@@ -119,9 +128,33 @@ pub fn blocks(page: &PageText) -> Vec<Block> {
                 lines: vec![line.clone()],
             });
         }
-        previous = Some(line);
     }
     blocks
+}
+
+/// The most common drop from one line to the next among lines of one
+/// size (to half a point), the smaller on a tie; `None` when no two lines
+/// follow each other down the page.
+fn common_spacing(lines: &[Line]) -> Option<f64> {
+    let mut counts: Vec<(i64, usize)> = Vec::new();
+    for pair in lines.windows(2) {
+        let (above, line) = (&pair[0], &pair[1]);
+        let drop = above.y - line.y;
+        let size = above.size.max(line.size);
+        if drop <= 0.0 || (above.size - line.size).abs() > 0.15 * size || drop > 4.0 * size {
+            continue;
+        }
+        let key = (drop * 2.0).round() as i64;
+        match counts.iter_mut().find(|entry| entry.0 == key) {
+            Some(entry) => entry.1 += 1,
+            None => counts.push((key, 1)),
+        }
+    }
+    counts
+        .iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+        .filter(|entry| entry.1 >= 2)
+        .map(|entry| entry.0 as f64 / 2.0)
 }
 
 /// What receives each page: its index and its blocks.
@@ -167,6 +200,16 @@ pub fn for_each_page(
     Ok(notes)
 }
 
+/// Whether `line` continues a word `before` broke with a hyphen: a
+/// letter, then `-` at the end, and a lowercase letter to start `line`.
+pub fn hyphen_break(before: &str, line: &str) -> bool {
+    let Some(stem) = before.strip_suffix('-') else {
+        return false;
+    };
+    stem.chars().last().is_some_and(char::is_alphabetic)
+        && line.chars().next().is_some_and(char::is_lowercase)
+}
+
 /// Writes the text as pdftotext lays it out without `-layout`: a line
 /// per line, a blank line after each block, a form feed after each page.
 pub fn write_pdf_text(
@@ -177,11 +220,23 @@ pub fn write_pdf_text(
     let io = |error: std::io::Error| PdfError(format!("writing the text: {error}"));
     for_each_page(bytes, page, &mut |_, blocks| {
         for block in blocks {
+            let mut pending = String::new();
             for line in &block.lines {
-                out.write_all(line.text.as_bytes()).map_err(io)?;
-                out.write_all(b"\n").map_err(io)?;
+                // A word hyphenated across a line end joins the next line,
+                // as pdftotext joins it.
+                if hyphen_break(&pending, &line.text) {
+                    pending.pop();
+                    pending.push_str(&line.text);
+                    continue;
+                }
+                if !pending.is_empty() {
+                    out.write_all(pending.as_bytes()).map_err(io)?;
+                    out.write_all(b"\n").map_err(io)?;
+                }
+                pending.clone_from(&line.text);
             }
-            out.write_all(b"\n").map_err(io)?;
+            out.write_all(pending.as_bytes()).map_err(io)?;
+            out.write_all(b"\n\n").map_err(io)?;
         }
         out.write_all(b"\x0c").map_err(io)
     })

@@ -29,6 +29,7 @@ use crate::converters::pages_to_html::PagesToHtml;
 use crate::converters::pages_to_json::PagesToJson;
 use crate::converters::pages_to_markdown::PagesToMarkdown;
 use crate::converters::pages_to_text::PagesToText;
+use crate::converters::pdf_to_document;
 use crate::converters::pdf_to_text::PdfToText;
 use crate::converters::rows;
 use crate::converters::rows_document;
@@ -41,7 +42,7 @@ use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 53] = [
+static CONVERTERS: [&dyn Converter; 56] = [
     &csv_to_json::CSV_TO_JSON,
     &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
@@ -65,6 +66,9 @@ static CONVERTERS: [&dyn Converter; 53] = [
     &TextToHtml,
     &TextToDocx,
     &PdfToText,
+    &pdf_to_document::PDF_TO_MARKDOWN,
+    &pdf_to_document::PDF_TO_HTML,
+    &pdf_to_document::PDF_TO_DOCX,
     &TomlToJson,
     &JsonToToml,
     &YamlToJson,

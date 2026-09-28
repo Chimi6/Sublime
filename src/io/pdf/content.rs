@@ -320,7 +320,7 @@ impl<'d, 'a> Interpreter<'d, 'a> {
             if self.out.text.len() == start {
                 continue;
             }
-            let size = render[2].hypot(render[3]);
+            let size = render[2].hypot(render[3]) * font.size_factor;
             self.out.glyphs.push(Glyph {
                 x: render[4],
                 end: after[4],
