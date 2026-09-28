@@ -1,6 +1,6 @@
 # XLSX <-> CSV
 
-**Latest** (2026-09-27, the inflate memory fix: every line PASSES; xlsx -> csv 170.2 against 116.5 MB/s at 415 MB against 592; csv -> xlsx 647.1 against 99.8 MB/s at 4.3 MB against 1302)
+**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
 
 ## Purpose
 
@@ -64,6 +64,19 @@ median wall clock of the whole process, peak resident memory from GNU
   scales with the sheet; that is the row to watch.
 
 ## Results
+
+### 2026-09-27, 0.24.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| xlsx -> csv, 1000000 rows (326.4 MB uncompressed): throughput (MB/s of uncompressed input) | 176.0 | 118.8 (calamine + csv) | PASS |
+| xlsx -> csv, 1000000 rows (39.5 MB on disk): throughput (MB/s of file bytes) [extra] | 21.3 | 14.4 (calamine + csv) | n/a |
+| xlsx -> csv, 1000000 rows: peak memory (MB) | 415.9 | 593.9 (calamine + csv) | PASS |
+| csv -> xlsx, 1000000 rows (56.8 MB in + 387.7 MB out): throughput (MB/s of input plus uncompressed output) | 641.0 | 100.6 (csv + rust_xlsxwriter) | PASS |
+| csv -> xlsx, 1000000 rows: peak memory (MB) | 4.6 | 1302.7 (csv + rust_xlsxwriter) | PASS |
+
+commit: e8088c4 (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
 
 ### 2026-09-27, the inflate memory fix
 

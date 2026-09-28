@@ -1,6 +1,6 @@
 # Netpbm <-> PNG
 
-**Latest** (2026-09-27, 0.23.1 release: 3 lines FAIL: the photo encode and stock PAM encode are ties (0.23.1 decision), the flat encode is ahead when timed alternately (STATE Decisions))
+**Latest** (2026-09-27, 0.24.0 release: 1 line FAILS, the photo encode tie (0.23.1 decision))
 
 ## Purpose
 
@@ -43,6 +43,29 @@ repeated runs 10 to 20% behind on 48 MB outputs.
   The photo encode line is within noise either way.
 
 ## Results
+
+### 2026-09-27, 0.24.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| ppm -> png, photo (45.8 MB in): throughput (MB/s of input) | 189.7 | 73.3 (image + png) | PASS |
+| ppm -> png, photo: peak memory (MB) | 5.0 | 124.5 (image + png) | PASS |
+| ppm -> png, photo: output size (MB) [extra] | 25.0 | 27.1 (png) | n/a |
+| png -> ppm, photo (29.0 MB in + 45.8 MB out): throughput (MB/s of input plus output) | 853.3 | 860.7 (png + image) | FAIL |
+| png -> ppm, photo: peak memory (MB) | 4.9 | 51.4 (png + image) | PASS |
+| ppm -> png, flat (45.8 MB in): throughput (MB/s of input) | 1260.3 | 546.7 (image + png) | PASS |
+| ppm -> png, flat: peak memory (MB) | 4.3 | 98.2 (image + png) | PASS |
+| ppm -> png, flat: output size (MB) [extra] | 0.1 | 0.3 (png) | n/a |
+| png -> ppm, flat (1.6 MB in + 45.8 MB out): throughput (MB/s of input plus output) | 1321.1 | 1143.5 (png + image) | PASS |
+| png -> ppm, flat: peak memory (MB) | 4.5 | 52.0 (png + image) | PASS |
+| pam -> png, stock (418.4 MB in): throughput (MB/s of input) [stock] | 171.1 | 104.1 (image + png) | PASS |
+| pam -> png, stock: peak memory (MB) [stock] | 4.7 | 886.8 (image + png) | PASS |
+| pam -> png, stock: output size (MB) [extra] | 28.9 | 44.2 (png) | n/a |
+| png -> pam, stock (24.2 MB in + 418.4 MB out): throughput (MB/s of input plus output) [stock] | 683.0 | 559.1 (png + image) | PASS |
+| png -> pam, stock: peak memory (MB) [stock] | 5.0 | 424.1 (png + image) | PASS |
+
+commit: e8088c4 (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
 
 ### 2026-09-27, 0.23.1 release
 

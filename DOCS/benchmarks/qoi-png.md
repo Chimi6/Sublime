@@ -1,6 +1,6 @@
 # QOI <-> PNG
 
-**Latest** (2026-09-27, 0.23.1 release: 1 line FAILS, the stock encode tie (0.22.0 decision))
+**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
 
 ## Purpose
 
@@ -47,6 +47,29 @@ wall clock of the whole process, peak resident memory from GNU `time`.
   1%) and can flip with machine load.
 
 ## Results
+
+### 2026-09-27, 0.24.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| qoi -> png, photo (45.8 MB of pixels, 45.1 MB on disk): throughput (MB/s of decoded pixels) | 146.3 | 66.7 (qoi + png) | PASS |
+| qoi -> png, photo: peak memory (MB) | 5.4 | 123.8 (qoi + png) | PASS |
+| qoi -> png, photo: output size (MB) [extra] | 25.0 | 27.1 (png) | n/a |
+| png -> qoi, photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 439.6 | 411.4 (png + qoi) | PASS |
+| png -> qoi, photo: peak memory (MB) | 4.7 | 96.2 (png + qoi) | PASS |
+| qoi -> png, flat (45.8 MB of pixels, 0.7 MB on disk): throughput (MB/s of decoded pixels) | 1286.0 | 727.2 (qoi + png) | PASS |
+| qoi -> png, flat: peak memory (MB) | 4.3 | 52.3 (qoi + png) | PASS |
+| qoi -> png, flat: output size (MB) [extra] | 0.1 | 0.3 (png) | n/a |
+| png -> qoi, flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 1138.4 | 1070.9 (png + qoi) | PASS |
+| png -> qoi, flat: peak memory (MB) | 4.5 | 51.8 (png + qoi) | PASS |
+| qoi -> png, stock (418.4 MB of pixels, 55.8 MB on disk): throughput (MB/s of decoded pixels) [stock] | 157.0 | 103.0 (qoi + png) | PASS |
+| qoi -> png, stock: peak memory (MB) [stock] | 4.9 | 524.1 (qoi + png) | PASS |
+| qoi -> png, stock: output size (MB) [extra] | 28.9 | 44.2 (png) | n/a |
+| png -> qoi, stock (24.2 MB in + 418.4 MB of pixels): throughput (MB/s of input plus pixels) [stock] | 580.5 | 577.8 (png + qoi) | PASS |
+| png -> qoi, stock: peak memory (MB) [stock] | 4.7 | 479.8 (png + qoi) | PASS |
+
+commit: e8088c4 (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
 
 ### 2026-09-27, 0.23.1 release
 

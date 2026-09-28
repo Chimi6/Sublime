@@ -1,6 +1,6 @@
 # Word -> Markdown
 
-**Latest** (2026-09-24, pandoc reference wired on an Apple M1 Max: docx -> markdown 99.7 MB/s of uncompressed input on the styled shape and 98.0 on prose, at 21.2 and 31.9 MB peak, far faster and leaner than pandoc; every line PASSES)
+**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
 
 ## Purpose
 
@@ -51,6 +51,20 @@ Word files with larger style sheets and more properties per run will
 read somewhat slower; repeated text makes the per-file-byte row read low.
 
 ## Results
+
+### 2026-09-27, 0.24.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| docx -> markdown, styled (14.9 MB uncompressed): throughput (MB/s of uncompressed input) | 187.6 | 1.0 (pandoc) | PASS |
+| docx -> markdown, styled (0.5 MB file): throughput (MB/s of file bytes) [extra] | 6.3 | recorded | n/a |
+| docx -> markdown, styled: peak memory (MB) | 48.6 | 2242.8 (pandoc) | PASS |
+| docx -> markdown, prose (7.5 MB uncompressed): throughput (MB/s of uncompressed input) | 184.2 | 1.8 (pandoc) | PASS |
+| docx -> markdown, prose (0.2 MB file): throughput (MB/s of file bytes) [extra] | 5.4 | recorded | n/a |
+| docx -> markdown, prose: peak memory (MB) | 29.3 | 1351.5 (pandoc) | PASS |
+
+commit: e8088c4 (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
 
 ### 2026-09-24, pandoc reference wired
 
