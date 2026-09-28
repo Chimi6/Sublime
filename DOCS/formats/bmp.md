@@ -9,10 +9,12 @@ since 0.19.0. See `png.md` for the hub and the pairs.
 
 - `bmp -> png`: shipped, lossless. Streams: rows go to the PNG writer
   as they are decoded. A top-down file (ours, and any with a negative
-  height) is never held (4 MB peak on a 418 MB image); a bottom-up
-  file stores its last row first, so its pixel data is read once and
-  handed over from the end (66 MB peak on a 61 MB image, where an
-  image copy made it 125).
+  height) is never held (4 MB peak on a 418 MB image). A bottom-up
+  file stores its last row first: from a file it is read from its end
+  a megabyte of rows at a time, each block handed over last row first,
+  so it is never held either (5.6 MB peak on a 61 MB image, was 66,
+  and 2.6% faster than reading it whole); from a stream (stdin, a
+  pipe) its pixel data is read once and handed over from the end.
 - `png -> bmp`: shipped, conditional (gray becomes RGB, 16-bit becomes
   8-bit, metadata dropped).
 
