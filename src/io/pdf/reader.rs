@@ -180,7 +180,7 @@ fn find_inline_end(content: &[u8], from: usize) -> Option<usize> {
 }
 
 /// A page's content streams, decoded and joined.
-fn page_content(document: &Document<'_>, page: &Dictionary) -> Vec<u8> {
+pub(crate) fn page_content(document: &Document<'_>, page: &Dictionary) -> Vec<u8> {
     let Some(contents) = page.get(b"Contents") else {
         return Vec::new();
     };

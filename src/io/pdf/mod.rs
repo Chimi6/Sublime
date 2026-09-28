@@ -2,10 +2,15 @@
 //! with PNG predictors, or a JPEG embedded unchanged), streaming; and a
 //! reader of a page's image through the object model in `document`.
 
+pub mod content;
 pub mod document;
 pub mod filter;
+pub mod font;
+pub mod lexer;
 pub mod object;
 pub mod reader;
+pub mod tables;
+pub mod text;
 pub mod writer;
 
 pub use reader::{PdfNotes, page_jpeg, read_pdf, read_pdf_rows};
