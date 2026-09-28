@@ -1,0 +1,5 @@
+Embedded TrueType through Identity-H.
+Ελληνικά and кириллица in one font.
+Ligature-free text: office, flow, affine.
+
+
