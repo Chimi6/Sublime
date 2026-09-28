@@ -8,7 +8,7 @@ section under a version heading.
 
 ### Changed
 
-- The format map in `DOCS/FORMATS.md` (`sublime paths --markdown`) is readable at size: a graph shows only which formats convert directly, one plain line per pair; a category whose formats all convert to each other in one step (image) is drawn as one box of its formats instead of a line per pair. Under each graph a from-by-to grid gives every pair's fidelity as a shape (a filled circle lossless, a square half filled on the diagonal conditional, a hollow triangle lossy; `DOCS/map/`) and its number of steps.
+- The format map in `DOCS/FORMATS.md` (`sublime paths --markdown`) is readable at size: a graph shows only which formats convert directly, one plain line per pair. Under each graph a from-by-to grid gives every pair's fidelity as a shape (a filled circle lossless, a square half filled on the diagonal conditional, a hollow triangle lossy; `DOCS/map/`) and its number of steps.
 - `DOCS/FORMATS.md` opens with the map, lists formats in a table per category, and escapes angle brackets in notes (a note's `<root>` no longer disappears on GitHub).
 
 ## [0.23.0] - 2026-09-27
