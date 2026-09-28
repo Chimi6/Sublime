@@ -10,7 +10,7 @@ use crate::converter::{ConvertError, Converter, Fidelity, FidelityKind, Input, L
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
-use crate::io::bmp::{BmpError, BmpRows, BmpRowsError, read_bmp_rows};
+use crate::io::bmp::{BmpError, BmpRows, BmpRowsError, read_bmp_rows, read_bmp_rows_seekable};
 use crate::io::ico::{IcoNotes, IcoRows, read_ico_rows};
 use crate::io::jpeg::{DEFAULT_QUALITY, JpegError, JpegNotes, JpegRows, read_jpeg_rows};
 use crate::io::netpbm::{Kind, NetpbmNotes, NetpbmRows, read_netpbm_rows};
@@ -195,7 +195,10 @@ fn read_rows(
             let notes = read_png_rows(input, sink).map_err(rows_error)?;
             report_png_notes(notes, name, context);
         }
-        ImageFormat::Bmp => match read_bmp_rows(input, sink) {
+        ImageFormat::Bmp => match match input {
+            Input::Rewindable(file) => read_bmp_rows_seekable(*file, sink),
+            Input::Stream(stream) => read_bmp_rows(*stream, sink),
+        } {
             Ok(()) => {}
             Err(BmpRowsError::Bmp(error)) => return Err(error.into()),
             Err(BmpRowsError::Io(error)) => return Err(error.into()),
