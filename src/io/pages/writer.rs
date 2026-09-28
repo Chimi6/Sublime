@@ -558,7 +558,21 @@ fn rebuild_body(
     // Attachments anchor by ascending character offset in one table.
     anchors.sort_by_key(|(offset, _)| *offset);
 
-    let comment_authors = write_comment_authors(package, document, &mut next_id)?;
+    // Comment and change authors, one annotation author per name.
+    let author_names: Vec<&str> = document
+        .comments
+        .iter()
+        .map(|comment| comment.author.as_str())
+        .chain(
+            document
+                .revisions
+                .iter()
+                .map(|revision| revision.author.as_deref().unwrap_or(UNKNOWN_AUTHOR)),
+        )
+        .collect();
+    let mut author_ids = write_annotation_authors(package, &author_names, &mut next_id)?;
+    let revision_authors = author_ids.split_off(document.comments.len().min(author_ids.len()));
+    let comment_authors = author_ids;
 
     let layout_entries = match stylesheet_id {
         Some(sheet) if !body.layouts.is_empty() => {
@@ -600,6 +614,13 @@ fn rebuild_body(
         )?,
         None => Vec::new(),
     };
+    let changes = build_change_objects(
+        stream,
+        document,
+        &body.revisions,
+        &revision_authors,
+        &mut next_id,
+    )?;
     let (comment_objects, highlight_entries) = build_comment_objects(
         &mut stream.tree,
         document,
@@ -624,12 +645,20 @@ fn rebuild_body(
         &layout_entries,
         &highlight_entries,
         &footnote_entries,
+        &changes,
     )?;
     stream.objects[index].messages[0].first = new_first;
     let info = stream.objects[index].info;
     let mut references: Vec<u64> = list_refs;
     references.extend(layout_entries.iter().map(|(_, id)| *id));
     references.extend(footnote_entries.iter().map(|(_, id)| *id));
+    references.extend(
+        changes
+            .insertions
+            .iter()
+            .chain(&changes.deletions)
+            .filter_map(|(_, object)| *object),
+    );
     references.extend(anchors.iter().map(|(_, id)| *id));
     references.extend(link_objects.iter().map(|object| object.identifier));
     references.extend(highlight_entries.iter().filter_map(|(_, object)| *object));
@@ -2941,6 +2970,7 @@ fn build_storage(
     layouts: &[(u32, u64)],
     highlights: &[(u32, Option<u64>)],
     footnotes: &[(u32, u64)],
+    changes: &Changes,
 ) -> Result<(u32, Vec<u64>), PackageError> {
     let storage = message_ref("TSWP.StorageArchive")?;
     let has_tables = !anchors.is_empty();
@@ -2976,6 +3006,12 @@ fn build_storage(
     }
     if !footnotes.is_empty() {
         owned.push("table_footnote");
+    }
+    if !changes.insertions.is_empty() {
+        owned.push("table_insertion");
+    }
+    if !changes.deletions.is_empty() {
+        owned.push("table_deletion");
     }
     // Collect the kept fields before touching the tree (an immutable borrow).
     let mut kept: Vec<(u32, Node)> = Vec::new();
@@ -3126,6 +3162,26 @@ fn build_storage(
             .map(|(offset, id)| (*offset, Some(*id)))
             .collect();
         emit_reference_table(tree, &mut chain, storage, "table_footnote", &entries)?;
+    }
+
+    // Tracked insertions and deletions over their text, gaps between.
+    if !changes.insertions.is_empty() {
+        emit_reference_table(
+            tree,
+            &mut chain,
+            storage,
+            "table_insertion",
+            &changes.insertions,
+        )?;
+    }
+    if !changes.deletions.is_empty() {
+        emit_reference_table(
+            tree,
+            &mut chain,
+            storage,
+            "table_deletion",
+            &changes.deletions,
+        )?;
     }
 
     // Comment highlights over their ranges, gaps between, from offset 0.
@@ -3419,6 +3475,7 @@ struct Body {
     anchored: Vec<(u32, usize)>,
     comments: Vec<(u32, u32, Id)>,
     footnotes: Vec<(u32, usize)>,
+    revisions: Vec<(u32, u32, Id)>,
 }
 
 /// Flattens the document into one text string (paragraphs joined by `\n`)
@@ -3444,6 +3501,7 @@ fn flatten(document: &Document) -> Body {
         comments: Vec::new(),
         open_comments: Vec::new(),
         footnotes: Vec::new(),
+        revisions: Vec::new(),
     };
     let mut previous: Option<ColumnLayout> = None;
     for (index, section) in document.sections.iter().enumerate() {
@@ -3466,6 +3524,7 @@ fn flatten(document: &Document) -> Body {
         anchored: walk.anchored,
         comments: walk.comments,
         footnotes: walk.footnotes,
+        revisions: walk.revisions,
         text: walk.text,
         paragraphs: walk.paragraphs,
         char_marks: walk.char_marks,
@@ -3522,6 +3581,8 @@ struct Walk {
     open_comments: Vec<(Id, u32)>,
     /// Note references: (offset of the mark, note).
     footnotes: Vec<(u32, usize)>,
+    /// Tracked changes: (start, end, revision).
+    revisions: Vec<(u32, u32, Id)>,
 }
 
 /// Pages' column-break character (as Pages imports a Word column break).
@@ -3768,9 +3829,10 @@ impl Walk {
         self.take_layout();
         self.take_break();
         for run in &paragraph.runs {
-            // Deleted text, and text the source hides (Pages has no hidden
-            // text), are not shown.
-            if document.is_deleted(run)
+            // Deleted text stays, marked as a tracked deletion; anything else
+            // deleted, and text the source hides (Pages has no hidden text),
+            // is not shown.
+            if (document.is_deleted(run) && !matches!(run.content, Inline::Text(_)))
                 || document.effective_run(paragraph, run).hidden == Some(true)
             {
                 continue;
@@ -3843,8 +3905,18 @@ impl Walk {
             }
             self.mark(run_format(document, paragraph, run));
             self.link_mark(run.link);
+            let start = self.offset;
             self.text.push_str(&piece);
             self.offset += utf16_len(&piece);
+            // A tracked change covers its runs, one range while they run on.
+            if let Some(revision) = run.revision {
+                match self.revisions.last_mut() {
+                    Some((_, end, last)) if *last == revision && *end == start => {
+                        *end = self.offset;
+                    }
+                    _ => self.revisions.push((start, self.offset, revision)),
+                }
+            }
         }
     }
 
@@ -10662,14 +10734,14 @@ const AUTHOR_COLORS: [(f32, f32, f32); 4] = [
     (0.992, 0.925, 0.753),
 ];
 
-/// An annotation author per distinct comment author, in the template's
-/// author storage; returns each comment's author object.
-fn write_comment_authors(
+/// An annotation author per distinct name, in the template's author
+/// storage; returns each name's author object.
+fn write_annotation_authors(
     package: &mut Package,
-    document: &Document,
+    authors: &[&str],
     next_id: &mut u64,
 ) -> Result<Vec<u64>, PackageError> {
-    if document.comments.is_empty() {
+    if authors.is_empty() {
         return Ok(Vec::new());
     }
     let storage_ref = message_ref("TSK.AnnotationAuthorStorageArchive")?;
@@ -10698,8 +10770,7 @@ fn write_comment_authors(
     let mut names: Vec<&str> = Vec::new();
     let mut ids: Vec<u64> = Vec::new();
     let mut out = Vec::new();
-    for comment in &document.comments {
-        let name = comment.author.as_str();
+    for name in authors.iter().copied() {
         if let Some(at) = names.iter().position(|known| *known == name) {
             out.push(ids[at]);
             continue;
@@ -11041,4 +11112,218 @@ fn write_footnotes(
         entries.push((*offset, reference_id));
     }
     Ok(entries)
+}
+
+// ----- tracked changes -----
+
+const CHANGE: u32 = 2060;
+const CHANGE_SESSION: u32 = 2062;
+/// The author of a change that names none.
+const UNKNOWN_AUTHOR: &str = "Unknown";
+
+/// The body's tracked-change tables: each change's object over its text,
+/// gaps between, from offset 0.
+#[derive(Default)]
+struct Changes {
+    insertions: AttributeEntries,
+    deletions: AttributeEntries,
+}
+
+/// A change per tracked insertion or deletion in the body, in a change
+/// session per author, with the document's sessions listed and change
+/// tracking on, as Pages imports a Word document with tracked changes.
+fn build_change_objects(
+    stream: &mut Stream,
+    document: &Document,
+    ranges: &[(u32, u32, Id)],
+    authors: &[u64],
+    next_id: &mut u64,
+) -> Result<Changes, PackageError> {
+    if ranges.is_empty() {
+        return Ok(Changes::default());
+    }
+    let change_ref = message_ref("TSWP.ChangeArchive")?;
+    let change_date = child_message(change_ref, "date")?;
+    let session_ref = message_ref("TSWP.ChangeSessionArchive")?;
+    let session_date = child_message(session_ref, "date")?;
+    let document_ref = message_ref("TP.DocumentArchive")?;
+    let seconds_of = |revision: &crate::document::Revision| {
+        revision.date.as_deref().and_then(seconds_since_2001)
+    };
+    // A session per author: (author, session), dated by its first change.
+    let mut sessions: Vec<(u64, u64)> = Vec::new();
+    let mut objects: Vec<Object> = Vec::new();
+    for (_, _, id) in ranges {
+        let Some(author) = authors.get(*id as usize).copied() else {
+            continue;
+        };
+        if sessions.iter().any(|(known, _)| *known == author) {
+            continue;
+        }
+        let tree = &mut stream.tree;
+        let session_id = *next_id;
+        *next_id += 1;
+        let first_date = ranges
+            .iter()
+            .filter(|(_, _, other)| authors.get(*other as usize) == Some(&author))
+            .filter_map(|(_, _, other)| {
+                document.revisions.get(*other as usize).and_then(seconds_of)
+            })
+            .fold(None, |least: Option<f64>, seconds| {
+                Some(least.map_or(seconds, |least| least.min(seconds)))
+            });
+        let mut chain = Chain::new();
+        push_field(
+            tree,
+            &mut chain,
+            session_ref,
+            "session_uid",
+            Node::Uint(sessions.len() as u64 + 1),
+        )?;
+        push_field(
+            tree,
+            &mut chain,
+            session_ref,
+            "author",
+            Node::Reference(author),
+        )?;
+        if let Some(seconds) = first_date {
+            let mut date = Chain::new();
+            push_field(
+                tree,
+                &mut date,
+                session_date,
+                "seconds",
+                Node::Double(seconds),
+            )?;
+            push_field(
+                tree,
+                &mut chain,
+                session_ref,
+                "date",
+                Node::Message(date.first),
+            )?;
+        }
+        let info = build_archive_info(tree, session_id, CHANGE_SESSION)?;
+        add_object_references(tree, info, &[author])?;
+        objects.push(Object {
+            identifier: session_id,
+            info,
+            messages: vec![ObjectMessage {
+                message_type: CHANGE_SESSION,
+                first: chain.first,
+            }],
+        });
+        sessions.push((author, session_id));
+    }
+    let mut changes = Changes::default();
+    for (start, end, id) in ranges {
+        let (Some(revision), Some(author)) = (
+            document.revisions.get(*id as usize),
+            authors.get(*id as usize),
+        ) else {
+            continue;
+        };
+        let Some((_, session)) = sessions.iter().find(|(known, _)| known == author).copied() else {
+            continue;
+        };
+        let tree = &mut stream.tree;
+        let change_id = *next_id;
+        *next_id += 1;
+        let kind = match revision.kind {
+            crate::document::RevisionKind::Insertion => 1,
+            crate::document::RevisionKind::Deletion => 2,
+        };
+        let mut chain = Chain::new();
+        push_field(tree, &mut chain, change_ref, "kind", Node::Uint(kind))?;
+        push_field(
+            tree,
+            &mut chain,
+            change_ref,
+            "session",
+            Node::Reference(session),
+        )?;
+        if let Some(seconds) = seconds_of(revision) {
+            let mut date = Chain::new();
+            push_field(
+                tree,
+                &mut date,
+                change_date,
+                "seconds",
+                Node::Double(seconds),
+            )?;
+            push_field(
+                tree,
+                &mut chain,
+                change_ref,
+                "date",
+                Node::Message(date.first),
+            )?;
+        }
+        let uuid = fresh_uuid(change_id);
+        let span = tree.push_bytes(&uuid).map_err(tree_error)?;
+        push_field(
+            tree,
+            &mut chain,
+            change_ref,
+            "text_attribute_uuid_string",
+            Node::Str(span),
+        )?;
+        let info = build_archive_info(tree, change_id, CHANGE)?;
+        add_object_references(tree, info, &[session])?;
+        objects.push(Object {
+            identifier: change_id,
+            info,
+            messages: vec![ObjectMessage {
+                message_type: CHANGE,
+                first: chain.first,
+            }],
+        });
+        let table = if kind == 1 {
+            &mut changes.insertions
+        } else {
+            &mut changes.deletions
+        };
+        if table.last().is_some_and(|(at, _)| *at == *start) {
+            table.pop();
+        }
+        if table.is_empty() && *start > 0 {
+            table.push((0, None));
+        }
+        table.push((*start, Some(change_id)));
+        table.push((*end, None));
+    }
+    stream.objects.extend(objects);
+    // The document lists its sessions, the last most recent, and tracks
+    // changes from here on.
+    let (document_first, document_info) = stream
+        .objects
+        .iter()
+        .find(|object| first_type(object) == Some(DOCUMENT_ARCHIVE))
+        .map(|object| (object.messages[0].first, object.info))
+        .ok_or_else(|| malformed("DocumentArchive is missing"))?;
+    let session_ids: Vec<u64> = sessions.iter().map(|(_, session)| *session).collect();
+    for session in &session_ids {
+        append_message_reference(
+            &mut stream.tree,
+            document_ref,
+            document_first,
+            "change_sessions",
+            *session,
+        )?;
+    }
+    if let Some(last) = session_ids.last() {
+        append_message_reference(
+            &mut stream.tree,
+            document_ref,
+            document_first,
+            "most_recent_change_session",
+            *last,
+        )?;
+    }
+    if let Some(index) = field_entry(&stream.tree, document_first, "change_tracking_enabled") {
+        stream.tree.entries[index as usize].value = Node::Bool(true);
+    }
+    add_object_references(&mut stream.tree, document_info, &session_ids)?;
+    Ok(changes)
 }

@@ -475,3 +475,46 @@ fn comments_reach_pages() {
     }
     assert_eq!(commented_text(&round), commented_text(&document));
 }
+
+/// Tracked insertions and deletions: (kind, author, text), in order.
+fn tracked(document: &Document) -> Vec<(RevisionKind, Option<String>, String)> {
+    let mut out: Vec<(RevisionKind, Option<String>, String)> = Vec::new();
+    for paragraph in document
+        .sections
+        .iter()
+        .flat_map(|section| section.blocks.iter())
+        .filter_map(|block| match block {
+            Block::Paragraph(paragraph) => Some(paragraph),
+            Block::Table(_) => None,
+        })
+    {
+        for run in &paragraph.runs {
+            let (Some(revision), Inline::Text(span)) = (document.revision(run), run.content) else {
+                continue;
+            };
+            let text = document.text(span);
+            match out.last_mut() {
+                Some((kind, author, words))
+                    if *kind == revision.kind && *author == revision.author =>
+                {
+                    words.push_str(text)
+                }
+                _ => out.push((revision.kind, revision.author.clone(), text.to_string())),
+            }
+        }
+    }
+    out
+}
+
+/// Word's tracked changes reach Pages as tracked changes, deleted text kept.
+#[test]
+fn tracked_changes_reach_pages() {
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let document = read_docx(&bytes).expect("Word package reads");
+    let changes = tracked(&document);
+    assert_eq!(changes.len(), 2, "{changes:?}");
+    let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
+    let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
+    let round = read_document(&package);
+    assert_eq!(tracked(&round), changes);
+}
