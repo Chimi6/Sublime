@@ -70,7 +70,15 @@ graph LR
 
 ### image
 
-Every image format converts directly to every other, in one step (cur is read only), so the grid is the map.
+```mermaid
+graph TB
+  subgraph image["every image format converts to every other in one step"]
+    direction TB
+    bmp["bmp"] ~~~ cur["cur (read only)"] ~~~ ico["ico"] ~~~ jpeg["jpeg"] ~~~ pam["pam"]
+    pbm["pbm"] ~~~ pgm["pgm"] ~~~ png["png"] ~~~ ppm["ppm"] ~~~ qoi["qoi"]
+    tga["tga"] ~~~ tiff["tiff"] ~~~ webp["webp"]
+  end
+```
 
 | from \ to | bmp | cur | ico | jpeg | pam | pbm | pgm | png | ppm | qoi | tga | tiff | webp |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
