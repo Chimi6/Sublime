@@ -138,6 +138,9 @@ const MAX_SYMBOL_BITS: u32 = 48;
 const MAX_MATCH: usize = 258;
 /// The fast loop sizes its output this much at a time.
 const SLAB: usize = 1 << 20;
+/// A one-shot input shorter than this decodes without the packed literal
+/// table: building it costs more than it saves on so few symbols.
+const PACK_FROM: usize = 4096;
 
 /// Entry layout of the full table. Bits 0 to 3: the code length. Bits
 /// 4 to 7: the same (kept so the packed layout can tell entries apart).
@@ -196,7 +199,14 @@ impl Huffman {
         }
     }
 
-    fn build(lengths: &[u8], offset: usize, alphabet: Alphabet) -> Result<Huffman, InflateError> {
+    /// `pack` asks for the literal table's packed copy, which only the
+    /// fast loop reads; other alphabets never need one.
+    fn build(
+        lengths: &[u8],
+        offset: usize,
+        alphabet: Alphabet,
+        pack: bool,
+    ) -> Result<Huffman, InflateError> {
         let max_length = u32::from(lengths.iter().copied().max().unwrap_or(0));
         if max_length == 0 {
             return Ok(Huffman::empty());
@@ -235,20 +245,23 @@ impl Huffman {
         }
         let mut table = vec![0u32; PRIMARY_SIZE];
         // Long codes: each primary prefix gets a second-level table wide
-        // enough for the longest code behind it.
-        let mut sub_bits = vec![0u32; PRIMARY_SIZE];
-        for (symbol, length) in lengths.iter().enumerate() {
-            let length = u32::from(*length);
-            if length > PRIMARY_BITS {
-                let prefix = (reversed_codes[symbol] as usize) & (PRIMARY_SIZE - 1);
-                sub_bits[prefix] = sub_bits[prefix].max(length - PRIMARY_BITS);
+        // enough for the longest code behind it. Most codes fit the
+        // primary bits, and then there is nothing to lay out.
+        if max_length > PRIMARY_BITS {
+            let mut sub_bits = vec![0u32; PRIMARY_SIZE];
+            for (symbol, length) in lengths.iter().enumerate() {
+                let length = u32::from(*length);
+                if length > PRIMARY_BITS {
+                    let prefix = (reversed_codes[symbol] as usize) & (PRIMARY_SIZE - 1);
+                    sub_bits[prefix] = sub_bits[prefix].max(length - PRIMARY_BITS);
+                }
             }
-        }
-        for prefix in 0..PRIMARY_SIZE {
-            if sub_bits[prefix] > 0 {
-                let start = table.len() as u32;
-                table.resize(table.len() + (1usize << sub_bits[prefix]), 0);
-                table[prefix] = POINTER | (start << 8) | sub_bits[prefix];
+            for prefix in 0..PRIMARY_SIZE {
+                if sub_bits[prefix] > 0 {
+                    let start = table.len() as u32;
+                    table.resize(table.len() + (1usize << sub_bits[prefix]), 0);
+                    table[prefix] = POINTER | (start << 8) | sub_bits[prefix];
+                }
             }
         }
         for (symbol, length) in lengths.iter().enumerate() {
@@ -278,6 +291,12 @@ impl Huffman {
                     index += step;
                 }
             }
+        }
+        if alphabet != Alphabet::Literals || !pack {
+            return Ok(Huffman {
+                table,
+                packed: Vec::new(),
+            });
         }
         // Fold literals: where a literal's code leaves room in the
         // primary bits for whole further literal codes, the packed entry
@@ -461,6 +480,9 @@ pub struct Inflater {
     /// Input a block header straddled: kept here and read before the
     /// next piece, so a caller never re-sends bytes.
     pending: Vec<u8>,
+    /// Build the literal table's packed copy for the fast loop: worth it
+    /// on long streams, not on a few hundred bytes.
+    packs: bool,
 }
 
 impl Default for Inflater {
@@ -484,6 +506,7 @@ impl Inflater {
             compacted: 0,
             total_in: 0,
             pending: Vec::new(),
+            packs: true,
         }
     }
 
@@ -685,13 +708,13 @@ impl Inflater {
                 self.state = State::Stored(length);
             }
             1 => {
-                let (literals, distances) = fixed_tables()?;
+                let (literals, distances) = fixed_tables(self.packs)?;
                 self.literals = literals;
                 self.distances = distances;
                 self.state = State::Huffman;
             }
             2 => {
-                let (literals, distances) = dynamic_tables(reader, offset)?;
+                let (literals, distances) = dynamic_tables(reader, offset, self.packs)?;
                 self.literals = literals;
                 self.distances = distances;
                 self.state = State::Huffman;
@@ -1037,12 +1060,21 @@ pub fn inflate(input: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<usize, I
     // and a match, so it never doubles (a doubling held the old slab and
     // a new one twice its size at once) and is moved out, not copied.
     let expected = limit.min(input.len().saturating_mul(1032));
+    // A small input starts from a slab a few times its size and asks for
+    // output that much at a time, doubling: the fast loop's megabyte per
+    // call cost a fresh map, its faults, and an unmap for every small
+    // stream (a PDF page's content streams, small ZIP entries).
+    let mut want = usize::MAX;
+    inflater.packs = input.len() >= PACK_FROM;
     if expected > SLAB {
         inflater.out = vec![0u8; expected + SLAB + MAX_MATCH + 16];
+    } else {
+        want = input.len().saturating_mul(4).clamp(4096, SLAB);
+        inflater.out = vec![0u8; want + MAX_MATCH + 16];
     }
     let mut at = 0usize;
     loop {
-        let (consumed, progress) = inflater.push(&input[at..], usize::MAX)?;
+        let (consumed, progress) = inflater.push(&input[at..], want)?;
         at += consumed;
         if inflater.output().len() > limit {
             return Err(InflateError::TooLarge);
@@ -1054,7 +1086,7 @@ pub fn inflate(input: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<usize, I
                     return Err(InflateError::Truncated);
                 }
             }
-            Progress::OutputFull => {}
+            Progress::OutputFull => want = want.saturating_mul(2),
         }
     }
     let consumed = inflater.total_in() - inflater.leftover().len();
@@ -1066,7 +1098,7 @@ pub fn inflate(input: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<usize, I
     Ok(consumed)
 }
 
-fn fixed_tables() -> Result<(Huffman, Huffman), InflateError> {
+fn fixed_tables(pack: bool) -> Result<(Huffman, Huffman), InflateError> {
     let mut lengths = [0u8; 288];
     for (symbol, length) in lengths.iter_mut().enumerate() {
         *length = match symbol {
@@ -1076,14 +1108,15 @@ fn fixed_tables() -> Result<(Huffman, Huffman), InflateError> {
             _ => 8,
         };
     }
-    let literals = Huffman::build(&lengths, 0, Alphabet::Literals)?;
-    let distances = Huffman::build(&[5u8; 30], 0, Alphabet::Other)?;
+    let literals = Huffman::build(&lengths, 0, Alphabet::Literals, pack)?;
+    let distances = Huffman::build(&[5u8; 30], 0, Alphabet::Other, false)?;
     Ok((literals, distances))
 }
 
 fn dynamic_tables(
     reader: &mut BitReader<'_>,
     offset: usize,
+    pack: bool,
 ) -> Result<(Huffman, Huffman), InflateError> {
     let literal_count = reader.bits(5)? as usize + 257;
     let distance_count = reader.bits(5)? as usize + 1;
@@ -1098,7 +1131,7 @@ fn dynamic_tables(
     for index in CODE_LENGTH_ORDER.iter().take(code_length_count) {
         code_lengths[*index] = reader.bits(3)? as u8;
     }
-    let code_length_code = Huffman::build(&code_lengths, offset, Alphabet::Other)?;
+    let code_length_code = Huffman::build(&code_lengths, offset, Alphabet::Other, false)?;
     let total = literal_count + distance_count;
     let mut lengths = vec![0u8; total];
     let mut index = 0usize;
@@ -1136,8 +1169,8 @@ fn dynamic_tables(
             what: "no end-of-block code",
         });
     }
-    let literals = Huffman::build(&lengths[..literal_count], offset, Alphabet::Literals)?;
-    let distances = Huffman::build(&lengths[literal_count..], offset, Alphabet::Other)?;
+    let literals = Huffman::build(&lengths[..literal_count], offset, Alphabet::Literals, pack)?;
+    let distances = Huffman::build(&lengths[literal_count..], offset, Alphabet::Other, false)?;
     Ok((literals, distances))
 }
 
@@ -1175,6 +1208,37 @@ mod tests {
     fn stored_block_round_trips() {
         let input = [0x01, 0x05, 0x00, 0xFA, 0xFF, b'h', b'e', b'l', b'l', b'o'];
         assert_eq!(run(&input).unwrap(), b"hello");
+    }
+
+    /// A small input that inflates far past its first slab (4x the input,
+    /// at least 4 KB) grows by doubling, and a small dynamic-block input
+    /// decodes without the packed literal table.
+    #[test]
+    fn small_inputs_grow_and_decode_unpacked() {
+        let mut expanded = Vec::new();
+        for index in 0..300_000u32 {
+            expanded.push(if index % 1000 < 900 {
+                b'a'
+            } else {
+                (index % 251) as u8
+            });
+        }
+        let mut compressed = Vec::new();
+        crate::io::deflate::deflate(&expanded, &mut compressed);
+        assert!(
+            compressed.len() < PACK_FROM,
+            "the input is small: {}",
+            compressed.len()
+        );
+        let mut out = Vec::new();
+        inflate(&compressed, &mut out, usize::MAX).expect("inflates");
+        assert!(out == expanded);
+        let text = b"The quick brown fox jumps over the lazy dog, twice: the quick brown fox.";
+        let mut compressed = Vec::new();
+        crate::io::deflate::deflate(text, &mut compressed);
+        let mut out = Vec::new();
+        inflate(&compressed, &mut out, usize::MAX).expect("inflates");
+        assert_eq!(out, text);
     }
 
     #[test]
