@@ -1,6 +1,6 @@
 # JPEG <-> PNG
 
-**Latest** (2026-09-27, 0.22.0 release: every line PASSES)
+**Latest** (2026-09-27, 0.23.1 release: every line PASSES)
 
 ## Purpose
 
@@ -78,6 +78,26 @@ median wall clock of the whole process, peak resident memory from GNU
   session; a line near parity is a coin toss between runs.
 
 ## Results
+
+### 2026-09-27, 0.23.1 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| jpeg -> png, photo (45.8 MB of pixels, 1.6 MB on disk): throughput (MB/s of decoded pixels) | 103.6 | 41.5 (image + png) | PASS |
+| jpeg -> png, photo: peak memory (MB) | 6.8 | 70.1 (image + png) | PASS |
+| png -> jpeg, photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 503.2 | 431.9 (png + jpeg-encoder); 261.4 (png + image) | PASS |
+| png -> jpeg, photo: peak memory (MB) | 4.9 | 51.2 (png + jpeg-encoder); 51.6 (png + image) | PASS |
+| png -> jpeg, photo: output size (MB) at quality 85 [extra] | 1.5 | 1.6 (jpeg-encoder); 2.0 (image) | n/a |
+| png -> jpeg, photo: PSNR against the source (dB) at quality 85 [extra] | 36.19 | 35.90 (jpeg-encoder); 36.47 (image) | n/a |
+| jpeg -> png, flat (45.8 MB of pixels, 0.3 MB on disk): throughput (MB/s of decoded pixels) | 759.7 | 668.9 (image + png) | PASS |
+| jpeg -> png, flat: peak memory (MB) | 4.9 | 52.6 (image + png) | PASS |
+| png -> jpeg, flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 615.0 | 470.8 (png + jpeg-encoder); 222.6 (png + image) | PASS |
+| png -> jpeg, flat: peak memory (MB) | 4.6 | 51.1 (png + jpeg-encoder); 51.1 (png + image) | PASS |
+| png -> jpeg, flat: output size (MB) at quality 85 [extra] | 0.3 | 0.3 (jpeg-encoder); 0.5 (image) | n/a |
+| png -> jpeg, flat: PSNR against the source (dB) at quality 85 [extra] | 32.39 | 32.39 (jpeg-encoder); 56.88 (image) | n/a |
+
+commit: 121f26b (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
 
 ### 2026-09-27, 0.22.0 release
 

@@ -1,6 +1,6 @@
 # WebP <-> PNG
 
-**Latest** (2026-09-27, 0.22.0 release: every line PASSES but the lossless photo encode (the owner's trade for 8 to 37% smaller real photos, `STATE.md` Decisions))
+**Latest** (2026-09-27, 0.23.1 release: 2 lines FAIL, the lossless photo encode (0.21.0 decision) and the lossless flat decode (ahead when timed alternately; STATE Decisions))
 
 ## Purpose
 
@@ -58,6 +58,28 @@ median wall clock of the whole process, peak resident memory from GNU
   between runs.
 
 ## Results
+
+### 2026-09-27, 0.23.1 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| webp (lossless) -> png, photo (45.8 MB of pixels, 25.8 MB on disk): throughput (MB/s of decoded pixels) | 93.4 | 54.6 (image + png) | PASS |
+| webp (lossless) -> png, photo: peak memory (MB) | 101.7 | 174.0 (image + png) | PASS |
+| webp (lossy) -> png, photo (45.8 MB of pixels, 0.3 MB on disk): throughput (MB/s of decoded pixels) | 79.7 | 66.6 (image + png) | PASS |
+| webp (lossy) -> png, photo: peak memory (MB) | 5.2 | 75.1 (image + png) | PASS |
+| png -> webp (lossless), photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 249.6 | 446.4 (png + image) | FAIL |
+| png -> webp (lossless), photo: peak memory (MB) | 95.3 | 141.0 (png + image) | PASS |
+| png -> webp (lossless), photo: output size (MB) [extra] | 27.4 | 28.5 (image); 25.8 (libwebp, default effort) | n/a |
+| webp (lossless) -> png, flat (45.8 MB of pixels, 0.0 MB on disk): throughput (MB/s of decoded pixels) | 539.5 | 541.7 (image + png) | FAIL |
+| webp (lossless) -> png, flat: peak memory (MB) | 95.3 | 112.2 (image + png) | PASS |
+| webp (lossy) -> png, flat (45.8 MB of pixels, 0.1 MB on disk): throughput (MB/s of decoded pixels) | 278.1 | 264.8 (image + png) | PASS |
+| webp (lossy) -> png, flat: peak memory (MB) | 4.8 | 74.9 (image + png) | PASS |
+| png -> webp (lossless), flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 744.7 | 626.4 (png + image) | PASS |
+| png -> webp (lossless), flat: peak memory (MB) | 51.8 | 112.8 (png + image) | PASS |
+| png -> webp (lossless), flat: output size (MB) [extra] | 0.0 | 0.0 (image); 0.0 (libwebp, default effort) | n/a |
+
+commit: 121f26b (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
 
 ### 2026-09-27, 0.22.0 release
 

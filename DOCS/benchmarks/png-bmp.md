@@ -1,6 +1,6 @@
 # PNG <-> BMP
 
-**Latest** (2026-09-27, 0.22.0 release: every line PASSES, the stock rows included)
+**Latest** (2026-09-27, 0.23.1 release: every line PASSES)
 
 ## Purpose
 
@@ -85,6 +85,33 @@ median wall clock of the whole process, peak resident memory from GNU
   is one run of three-run medians.
 
 ## Results
+
+### 2026-09-27, 0.23.1 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| png -> bmp, photo (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 622.9 | 473.9 (png + image) | PASS |
+| png -> bmp, photo (32.8 MB on disk): throughput (MB/s of file bytes) [extra] | 334.7 | 254.7 (png + image) | n/a |
+| png -> bmp, photo: peak memory (MB) | 5.7 | 66.2 (png + image) | PASS |
+| bmp -> png, photo (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 148.8 | 144.9 (image + png) | PASS |
+| bmp -> png, photo: peak memory (MB) | 5.8 | 159.8 (image + png) | PASS |
+| bmp -> png, photo: output size (MB) [extra] | 31.6 | 32.2 (png) | n/a |
+| bmp -> png, photo: the png crate's fast level, throughput and size [extra] | - | 526.0 MB/s, 32.8 MB (png fast) | n/a |
+| png -> bmp, flat (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 1588.9 | 847.2 (png + image) | PASS |
+| png -> bmp, flat (1.7 MB on disk): throughput (MB/s of file bytes) [extra] | 44.1 | 23.5 (png + image) | n/a |
+| png -> bmp, flat: peak memory (MB) | 5.7 | 66.8 (png + image) | PASS |
+| bmp -> png, flat (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 2090.6 | 612.1 (image + png) | PASS |
+| bmp -> png, flat: peak memory (MB) | 5.4 | 128.6 (image + png) | PASS |
+| bmp -> png, flat: output size (MB) [extra] | 0.1 | 0.4 (png) | n/a |
+| bmp -> png, flat: the png crate's fast level, throughput and size [extra] | - | 784.2 MB/s, 1.7 MB (png fast) | n/a |
+| png -> bmp, stock (418.4 MB of pixels, 24.2 MB on disk): throughput (MB/s of decoded pixels) [stock] | 604.3 | 522.0 (png + image) | PASS |
+| png -> bmp, stock: peak memory (MB) [stock] | 5.7 | 423.8 (png + image) | PASS |
+| bmp -> png, stock (418.4 MB in + 418.4 MB of pixels): throughput (MB/s of input plus pixels) [stock] | 341.8 | 177.1 (image + png) | PASS |
+| bmp -> png, stock: peak memory (MB) [stock] | 4.9 | 886.8 (image + png) | PASS |
+| bmp -> png, stock: output size (MB) [stock] | 28.9 | 44.2 (png) | n/a |
+
+commit: 121f26b (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
 
 ### 2026-09-27, 0.22.0 release
 

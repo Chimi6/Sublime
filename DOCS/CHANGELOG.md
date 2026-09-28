@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-09-27
+
 ### Performance
 
 - A bottom-up BMP (the common kind) read from a file is read from its end a block of rows at a time instead of whole: `bmp -> png` on a 61 MB photo holds 5.6 MB instead of 66 and runs 2.6% ahead of the crates (it had slipped 1.4% behind in 0.23.0). Converter inputs that are files can now seek (`RewindableRead::seek_to`).
