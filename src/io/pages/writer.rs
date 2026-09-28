@@ -59,7 +59,17 @@ pub fn write(document: &Document) -> Result<Vec<u8>, PackageError> {
     clear_template_rules(&mut package);
     rebuild_body(&mut package, document, &styles, &formats, &lists)?;
     if let Some(section) = document.sections.first() {
-        set_page_setup(&mut package, &section.page)?;
+        // A picture in the header (or footer) makes it as tall as the
+        // picture, as in Word, so the body starts (and ends) clear of it.
+        let mut page = section.page.clone();
+        for (image, _, y) in header_images(document) {
+            if y < page.height / 2.0 {
+                page.margin_top = page.margin_top.max(y + image.height + HEADER_GAP);
+            } else {
+                page.margin_bottom = page.margin_bottom.max(page.height - y + HEADER_GAP);
+            }
+        }
+        set_page_setup(&mut package, &page)?;
     }
     if let Some(color) = document.page_color {
         set_page_color(&mut package, color)?;
@@ -3534,6 +3544,10 @@ fn flatten(document: &Document) -> Body {
         previous = layout;
         walk.blocks(document, &section.blocks);
     }
+    // A break ending the document still opens its (empty) page.
+    if walk.pending_break {
+        walk.paragraph(document, &Paragraph::default());
+    }
     apply_contextual_spacing(&mut walk.paragraphs);
     Body {
         layouts: walk.layouts,
@@ -3815,6 +3829,14 @@ impl Walk {
                 .iter()
                 .all(|run| matches!(run.content, Inline::PageBreak))
         {
+            // A break already waiting opens an empty page of its own.
+            if self.pending_break {
+                let empty = Paragraph {
+                    runs: Vec::new(),
+                    ..paragraph.clone()
+                };
+                self.paragraph(document, &empty);
+            }
             self.pending_break = true;
             return;
         }
@@ -6278,6 +6300,9 @@ fn set_page_color(package: &mut Package, color: Color) -> Result<(), PackageErro
 }
 
 const SECTION_ARCHIVE: u32 = 10011;
+
+/// The space between a header's picture and the body below it.
+const HEADER_GAP: f32 = 6.0;
 
 /// Turns the document's headers and footers on or off.
 fn set_header_footer_visibility(package: &mut Package, headers: bool, footers: bool) {
