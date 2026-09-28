@@ -93,6 +93,42 @@ impl<W: Write> Sink for HumanRenderer<W> {
                     self.line(YELLOW, "warning:", message);
                 }
             }
+            Event::FileStarted { input, output } => {
+                if self.at_least(Verbosity::Normal) {
+                    let body = format!("{input} -> {output}");
+                    self.line(CYAN, "file:", &body);
+                }
+            }
+            Event::FileFailed { input, message } => {
+                let body = format!("{input}: {message}");
+                self.line(RED, "failed:", &body);
+            }
+            Event::BatchFinished {
+                converted,
+                lossy,
+                failed,
+                skipped,
+                dry_run,
+            } => {
+                if self.at_least(Verbosity::Normal) {
+                    let mut body = if *dry_run {
+                        format!("{converted} would be written (dry run)")
+                    } else {
+                        format!("{converted} converted")
+                    };
+                    if *lossy > 0 {
+                        body.push_str(&format!(", {lossy} with loss"));
+                    }
+                    if *failed > 0 {
+                        body.push_str(&format!(", {failed} failed"));
+                    }
+                    if *skipped > 0 {
+                        body.push_str(&format!(", {skipped} skipped (no known format)"));
+                    }
+                    let color = if *failed > 0 { RED } else { GREEN };
+                    self.line(color, "done:", &body);
+                }
+            }
             Event::LossDetected {
                 converter,
                 location,

@@ -9,6 +9,200 @@ section under a version heading.
 ### Added
 
 - Apple Pages output: `src/io/pages/writer.rs` writes a `.pages` package by rewriting a template's body storage (a real document is the scaffolding, not a graph generated from nothing; see `DOCS/formats/pages.md`), setting the body text and one paragraph-style run per paragraph mapped to Pages' own named styles (Title, Heading, Body). Bold and italic runs point at the template's own character styles, since the bold/italic toggle alone does not render in Pages (its styles carry the weighted font) and the character-style table must start at offset 0 with the template's declared base style or Pages drops it whole. Bulleted and numbered lists reuse the template's live list styles (the theme's "Bullets"/"Numbered" instances, not the preset definitions, which do not render), with the nesting level and list-start number written to the paragraph-data tables and the referenced styles added to the storage's object references so the document scope keeps them. Tables reuse the template's own tables: Pages requires every table registered in the document's calculation engine (which cannot be synthesized), so the writer rewrites a template table's tile, string table, header buckets, and column/row UID map with the model table's cells and grid, and anchors it inline with a `U+FFFC` and a `table_attachment` entry; a document with more tables than the template carries flattens the extras. Links become clickable hyperlinks: the writer builds a `TSWP.HyperlinkFieldArchive` object per link range (added to `Index/Document.iwa`, which tolerates new objects unlike the stylesheet) carrying the target URL, and a `table_smartfield` attribute table (offset 0, gaps between links) anchors each one over its run, with the objects added to the storage's references so the document scope keeps them. Inline images reuse the template's own image the way tables reuse its table: the writer swaps the model image's bytes into the template's data files, rewrites the image's frame, original, and natural sizes (reading the picture's own pixel dimensions from its PNG or JPEG header when the source gave no size), recomputes the SHA-1 digest in the package metadata (Pages keys its asset cache by it, so a stale digest renders the template's original picture), and makes the drawable attachment inline so it anchors at a `U+FFFC`; a document with more images than the template carries flattens the extras. The character styles are now taken from the ones the template's own body uses (its live emphasis variations), not the stylesheet's like-named definitions, which open but do not render. Paths `markdown -> pages`, `text -> pages`, `html -> pages`, `docx -> pages`. Oracles in `src/io/pages/writer.rs` (a written document reads back through the document reader, bold, italic, lists, tables, links, and an image included); output opens in Pages 12, an exported PDF carries every link's URI action, and the image renders inline. The template (`style_template.pages`) is a Pages 12 document carrying the theme's named paragraph, character, and list styles, a reference table, and a reference image, with its picture bytes and preview thumbnails stripped, compiled in.
+- Word <-> Apple Pages, mapped both ways and checked in Pages itself (no load-time repairs on the 64-document Word corpus; Pages -> Word against Apple's own Word export on 93 files): any number of tables with merges, per-edge borders, cell margins, vertical alignment, placement, and native lists in cells; paragraph borders, tabs, contextual spacing, page breaks before, paragraph-mark sizes; hidden, raised, struck, capitalised, and highlighted text; section columns (equal or unequal) and column breaks; inline, paragraph-anchored, page-anchored, header- and footer-repeated, and behind-text drawings with their wrap, preset or custom geometry, fills (see-through ones blended), outlines, and arrowheads; charts as native Word charts; images with their crops and PDF/metafile fallbacks; comments and their reply threads (overlapping ranges, as current Pages keeps them), footnotes and endnotes, tracked insertions and deletions with authors and dates; headers and footers with page-number frames, page numbering restarts, the page colour. Oracles in `tests/docx_document.rs` and the readers' and writers' unit tests.
+- PDF from Markdown, HTML, text, Word, and Pages (`src/io/pdf/compose.rs`): every reader's event stream set on Letter pages with one-inch margins in the base-14 Helvetica and Courier families (nothing embedded). Headings at three sizes, paragraphs broken first fit on the fonts' real widths, bullet and numbered lists with nesting, block quotes with a bar, code blocks on a gray band, tables with widths from their content, wrapped cells, alignment, and a grid, rules, links as URI annotations, footnotes, and the first heading as the title. A page is written as soon as it is full. Characters outside WinAnsi are set as `?` and reported; images show their alt text.
+
+### Changed
+
+- The binary size budget is raised 2.70 -> 3.60 MB and the WebAssembly budget 1.40 -> 1.85 MB for Word <-> Apple Pages (the Pages writer, about 300 KB of code on its own, its 83 KB template, and the Word and Pages readers' new mappings); set from the macOS build's growth with headroom, to be tightened to the Linux figures CI reports.
+- The binary size budget is raised 2.55 -> 2.70 MB and the WebAssembly budget 1.30 -> 1.40 MB for documents to PDF (the composer and five converters, about 62 KB) and the font reader that follows.
+
+## [0.24.0] - 2026-09-27
+
+### Added
+
+- PDF to text (`src/io/pdf/content.rs`, `font.rs`, `text.rs`): every page, or `--page N`, laid out as pdftotext lays it out; ToUnicode, the standard encodings with `/Differences`, Type0 Identity fonts, Type3, and the Core 14 widths (`scripts/gen-pdf-tables.py`). Matches pdftotext line for line on 14 fixtures, dehyphenation included.
+- Benchmark pair `pdf-text` against pdftotext and the pdf-extract crate: every line passes (2.8x pdftotext on a 300-page report, 1.7x on 300 pages of base-14 text, under half its memory).
+- PDF to Markdown, HTML, and Word (`src/io/pdf/markdown.rs`): headings from type size and weight (three levels by size and bold lines below them), bullet and numbered lists, paragraphs with hyphenated words joined, and page numbers dropped.
+
+### Performance
+
+- Small one-shot inflates (a PDF page's content streams, small ZIP parts) start from a slab a few times their size instead of a megabyte, build the packed literal table only for inputs of 4 KB and up, and no longer build packed copies of the distance and code-length tables, which nothing reads: a 300-page PDF of 14,400 small streams reads its text in 0.13 s instead of 0.61.
+
+## [0.23.1] - 2026-09-27
+
+### Performance
+
+- A bottom-up BMP (the common kind) read from a file is read from its end a block of rows at a time instead of whole: `bmp -> png` on a 61 MB photo holds 5.6 MB instead of 66 and runs 2.6% ahead of the crates (it had slipped 1.4% behind in 0.23.0). Converter inputs that are files can now seek (`RewindableRead::seek_to`).
+- The PNG writer's per-row calls are inlined again (0.23.0's shared `FilteredZlib` had lost it).
+
+### Fixed
+
+- Images to PDF: a page takes the image's physical size from the resolution it records (PNG, JPEG, TIFF, BMP), so a 300-dpi scan becomes a letter-sized page rather than one a point per pixel; images without one stay a point per pixel. Readers report resolution through `RowSink::density`.
+
+### Changed
+
+- The format map in `DOCS/FORMATS.md` (`sublime paths --markdown`) is readable at size: a graph shows only which formats convert directly, one plain line per pair. Under each graph a from-by-to grid gives every pair's fidelity as a shape (a filled circle lossless, a square half filled on the diagonal conditional, a hollow triangle lossy; `DOCS/map/`) and its number of steps.
+- `DOCS/FORMATS.md` opens with the map, lists formats in a table per category, and escapes angle brackets in notes (a note's `<root>` no longer disappears on GitHub).
+
+## [0.23.0] - 2026-09-27
+
+### Added
+
+- PDF output from images (`src/io/pdf`): a page of each image at its own size; JPEGs embedded unchanged, every other image deflated with PNG predictors and its alpha as a soft mask, streaming. `sublime convert a.png b.jpg c.tif scan.pdf` merges images into one PDF, a page each. Map in `DOCS/formats/pdf.md`.
+- PDF to images: a PDF object model (cross-reference tables and streams, object streams, repair of broken cross references) and a page's largest image read to any image format, `--page N` to choose the page; PDF to JPEG copies an embedded JPEG unchanged.
+- LZW decoding is shared between TIFF and PDF (`src/io/lzw.rs`).
+- Benchmark pairs `png-pdf` (against printpdf and lopdf with the png crate) and `jpeg-pdf` (against lopdf): every line passes.
+
+### Changed
+
+- The binary size budget is raised 2.40 -> 2.55 MB and the WebAssembly budget 1.20 -> 1.30 MB for PDF (the object model, filters, and image reader: about 80 KB).
+- The PNG writer's filtered, deflated row stream is shared (`FilteredZlib`), so a PDF image stream is the same bytes a PNG's IDAT chunks hold; PNG output is unchanged byte for byte.
+- The PDF reader streams an image under a lone Flate filter a row at a time (inflate, predictor, color, soft mask) instead of holding the stream, its samples, and its pixels: 46 MB against 177 on a 41 MB file, flat pages twice as fast.
+- PDF to JPEG writes the embedded JPEG from the file's bytes without copying it first.
+
+## [0.22.0] - 2026-09-27
+
+The image set: QOI, Netpbm, TGA, ICO and CUR, and TIFF, each reaching
+every other image format, with an area-averaging downscale for icons;
+a faster PNG reader that also reads the highly compressed chunks it
+refused since 0.19.0; and deflate that stops searching on noise.
+
+### Fixed
+
+- A PNG whose small image data inflates far past the reader's step (a 1.2 KB chunk holding a 256 KB image, as Pillow writes flat icons) is read whole; the reader stopped when the chunk's bytes were used up, with output still inside the inflater, and called it cut short. In every release since 0.19.0.
+
+### Added
+
+- TIFF both ways (`src/io/tiff.rs`): the first page read from strips or tiles, chunky or planar, uncompressed, LZW, deflate, or PackBits, with the horizontal predictor, at 1 to 16 bits in gray, palette, RGB, or CMYK with either kind of alpha; written as 8-bit deflate strips with the predictor. Pair `tiff-png` against the image and tiff crates. Map in `DOCS/formats/tiff.md`.
+- ICO both ways and CUR read (`src/io/ico.rs`): the largest, deepest entry read from PNG or BMP entries (AND masks, alpha-less 32-bit entries as Windows reads them); icons written with the standard sizes that fit, the source itself as the largest when it fits in 256, from one streaming downscale. Pair `ico-png` against the image crate. Map in `DOCS/formats/ico.md`.
+- An area-averaging downscale (`src/image/resize.rs`) that streams source rows and weights color by alpha.
+- TGA both ways (`src/io/tga.rs`): every common layout read (color-mapped, truecolor, gray; raw and RLE; 15 to 32 bits; both orientations), top-down RLE written as Pillow writes it; a bottom-up file holds its bytes, not its pixels. Pair `tga-png` against the image and png crates. Map in `DOCS/formats/tga.md`.
+- Netpbm (`src/io/netpbm.rs`): PBM, PGM, PPM in plain and raw forms and PAM, one streaming reader for every form and a writer for each kind, to and from every image format. Pair `ppm-png` against the image and png crates. Map in `DOCS/formats/netpbm.md`.
+- QOI both ways (`src/io/qoi.rs`): a streaming reader and a writer that produces `qoi.h`'s bytes, to and from every image format. Pair `qoi-png` against the qoi and png crates. Map in `DOCS/formats/qoi.md`.
+
+### Changed
+
+- The binary size budget is raised 2.25 -> 2.40 MB and the WebAssembly budget 1.10 -> 1.20 MB for the 0.22 image formats (QOI, Netpbm, TGA, ICO, the downscale, and TIFF to come).
+- Deflate on noise searches one position in eight and writes the rest as literals (literals are what pays there): a noisy photograph's PNG writes in 40% of the time and a little smaller; the lossless WebP photo decode goes from 53 to 93 MB/s.
+- The benchmark harness removes an `out-*` output before each timed run, so both sides write a fresh file (a rename over an existing file costs a writeback on btrfs and ext4 that a truncate does not).
+- The PNG reader relies on each chunk's CRC-32 and no longer sums Adler-32 over the decoded data (the png crate skips it by default too): 7% faster on a large photo, 20% on flat images.
+- Image pairs are generated from one table of codecs, each saying what its reader and its writer lose: every reader reaches every writer, and each pair's fidelity carries both texts (a new raster format is one table row).
+
+## [0.21.0] - 2026-09-27
+
+WebP, both ways: the lossless and lossy decoders bit-exact with
+libwebp, and a lossless encoder with `--quality` as its effort; a
+deflate at zlib level 6's ratio or better, so every PNG, DOCX, and
+XLSX written is smaller and faster; the `xlsx -> csv` memory
+regression of 0.19.0 fixed.
+
+### Added
+
+- WebP (`src/io/webp`): the RIFF container in its simple and extended forms (alpha, metadata chunks reported, an animation's first frame placed on its canvas); the lossless bitstream (VP8L: prefix codes, meta codes, the color cache, LZ77, and the predictor, cross-color, subtract-green, and color-indexing transforms); lossy key frames (VP8: segmentation, both loop filters, every intra mode, with libwebp's fancy upsampling and color conversion), streaming by macroblock row. All 224 Pillow-written fixtures decode bit for bit to libwebp's pixels (`tests/webp_suite.rs`). Map in `DOCS/formats/webp.md`.
+- `--quality` sets lossless WebP effort, as cwebp reads it: 50 and under writes one predictor without a search, 90 and up chooses predictors by an entropy estimate on every row (1 to 1.5% smaller), anything else is the default.
+- A lossless WebP writer: a palette with packed indices for images of up to 256 colors; otherwise subtract-green and a predictor chosen per 16x16 tile, runs, a color cache, and one set of prefix codes, in two passes that hold no symbol stream. Pillow reads its files to the same pixels.
+- `webp -> png`, `webp -> bmp`, `webp -> jpeg`, `png -> webp`, `bmp -> webp`, `jpeg -> webp`. Every image pair now streams through one path: the reader hands rows to whichever writer.
+- Magic bytes may hold a wildcard byte, so a RIFF form (`RIFF????WEBP`) is told apart from other RIFF files.
+- Benchmark pair `webp-png` against the `image` crate (image-webp) with libwebp's size as context.
+- The binary size budget is raised 2.1 -> 2.25 MB and the WebAssembly budget 1.05 -> 1.1 MB for WebP (two decoders, an encoder, and the VP8 tables: 125 KB).
+
+### Changed
+
+- Deflate's default level (PNG, and the parts of DOCX and XLSX that use it) is zlib's lazy evaluation with chains hashed on four bytes and a price check on short matches, priced by the last block's codes: zlib level 6's ratio or better at about its speed. PNGs are 1 to 13% smaller on photographs, three times smaller on flat images, and prose deflates 20% smaller, and faster to write on every recorded pair (jpeg -> png photo 87 -> 100 MB/s, bmp -> png 31.5 MB against the png crate's 32.2). The bit writer emits 32-bit words (DOCX writes about 50% faster, csv -> xlsx twice as fast).
+- The lossless WebP encoder is faster, with the same output byte for byte except where noted: predictors computed as byte loops over whole rows, the first pass's choices (cache hits, copies) recorded in two bits per pixel so the writing pass replays them, each literal written in one call, and the palette built as rows arrive, a byte per pixel, so an image of up to 256 colors never holds ARGB words (flat encode 428 -> 659 MB/s at 52 MB where it held 96). Predictor tiles are scored on every other row with four candidates (top, average, select, gradient), within 0.3% of the six-candidate output. Photo encode 183 -> 248 MB/s.
+- The VP8 loop filter works on an eight-sample window, loaded whole across a vertical edge (about 3% of a lossy decode).
+- The Huffman code builder behind deflate (and now WebP) sorts once and merges from two queues, O(n log n) where it re-sorted per merge; large alphabets build in microseconds.
+
+### Fixed
+
+- `xlsx -> csv` holds 425 MB on the benchmark workbook again, where 0.19.0 raised it to 950: the whole-part inflate sizes its buffer from the entry's size and hands it over instead of copying, and a growing inflate buffer no longer zero-writes its unused half (a 326 MB sheet held a 512 MB buffer and a copy of it).
+- `sublime convert in.png - --to webp` writes to stdout: `-` as the output means stdout, as it means stdin as the input (it wrote a file named `-`).
+
+## [0.20.1] - 2026-09-26
+
+JPEG encode margins: chroma from summed RGB.
+
+### Changed
+
+- The JPEG encoder computes 4:2:0 chroma once per 2x2 block from the block's summed RGB (the conversion is linear, so this is the average of the four pixels' chroma, rounded once instead of twice): a quarter of the chroma arithmetic and no downsampling pass. The photo encode runs 151 ms against jpeg-encoder's 163 where it was level, at the same or higher PSNR. The Huffman coder walks nonzero AC coefficients by a 64-bit mask, as libjpeg-turbo does.
+
+## [0.20.0] - 2026-09-26
+
+JPEG, both ways, streaming: a decoder bit-exact with libjpeg-turbo
+and an encoder with `--quality`; with it, a faster deflate on
+photographic data and a leaner PNG filter selection.
+
+### Added
+
+- JPEG (`src/io/jpeg`): a reader for baseline, extended sequential, and progressive files of one or three components (every subsampling, restart intervals, optimized tables, the Adobe transform flag), matching libjpeg-turbo's pixels bit for bit (the accurate integer IDCT, fancy upsampling, fixed-point color); an interleaved baseline scan streams one MCU row at a time into a `RowSink`, progressive and per-component scans collect coefficients first. A writer of JFIF baseline at a quality (the IJG table scaling, 4:2:0 below 90 and 4:4:4 from 90, standard Huffman tables so it streams sixteen rows at a time, alpha flattened onto white). Map in `DOCS/formats/jpeg.md`; oracles in `tests/jpeg_suite.rs` (140 Pillow-written fixtures decoded bit-exact, 6 corrupt files refused, round trips through our writer).
+- `jpeg -> png` and `jpeg -> bmp` (conditional: Exif orientation reported and not applied, metadata dropped), `png -> jpeg` and `bmp -> jpeg` (lossy), all streaming: 5 to 6 MB peak on a 46 MB image where the crates hold 51 to 70.
+- `--quality <1-100>` on `convert` (and batches): the quality a lossy image writer encodes at, 85 when absent.
+- The binary size budget is raised 2.0 -> 2.1 MB and the WebAssembly budget 1.0 -> 1.05 MB for JPEG (the decoder with its progressive path, the encoder, and their tables: 100 KB).
+- Benchmark pair `jpeg-png` against the `image` crate (zune-jpeg) and the `jpeg-encoder` crate, with output size and PSNR against the source pixels at quality 85 as extra rows, and `[stock]` rows for a photograph at `bench/data/stock.jpg`.
+
+### Changed
+
+- Deflate's chain budget shrinks while recent matches average under eight bytes (was five): the words benchmark keeps its 14.2% ratio and decoded photographs, whose matches run five to seven bytes everywhere, encode to PNG twice as fast at the reference's own size (a decoded 46 MB photo: 1.14 -> 0.50 s).
+- The PNG writer's filter selection runs its trial on every fourth row and keeps the winner for the rows between (sizes moved by at most 1.4% on the benchmark inputs, a flat image writes 25% faster), tries Sub first and None last, stops a trial as soon as its running sum passes the best (libpng's rule), and stops trying once a filter's residuals average under a sixteenth; both Paeth predictors use stb_image's formulation, which compiles branch-free (a Paeth-heavy 418 MB photograph decodes 8% faster).
+- The JPEG encoder quantizes by a vectorized reciprocal multiply instead of a division per coefficient, and writes bits four bytes at a time when none is 0xFF; the decoder short-cuts flat blocks.
+
+## [0.19.0] - 2026-09-26
+
+The image category opens: an 8-bit pixel hub, PNG in and out, BMP in
+and out, both directions streaming rows so no image is held, on a
+resumable inflater and a faster CRC-32 and deflate. Every line of the
+`png-bmp` pair passes against the `png` and `image` crates, on the
+generated shapes and on a stock photograph.
+
+### Added
+
+- The image hub (`src/image`): an 8-bit pixel buffer in gray, gray+alpha, RGB, or RGBA that every raster format reads into and writes from, and `RowSink`, the row-at-a-time contract a reader hands rows to and a writer takes them from.
+- PNG (`src/io/png`): a reader for every bit depth, color type, palette, transparency key, and interlace the specification allows, fed in pieces as the file arrives; a writer of 8-bit images with per-row adaptive filters and deflated IDAT chunks; `read_png_rows` and `PngRows` as the streaming forms of both. Map in `DOCS/formats/png.md`; oracles in `tests/png_suite.rs` (116 PngSuite images against Pillow's pixels, 14 corrupt images refused) and `tests/png_bmp.rs`.
+- BMP (`src/io/bmp`): a reader for 1-, 4-, 8-, 16-, 24-, and 32-bit files with palettes, channel masks, top-down rows, and V4 and V5 headers (RLE is refused), a writer of 24-bit BGR or 32-bit BGRA with an alpha mask, and `read_bmp_rows` and `BmpRows` as their streaming forms. Map in `DOCS/formats/bmp.md`.
+- `png -> bmp` (conditional: 16-bit samples become 8-bit, gray becomes RGB, metadata dropped) streams rows from the unfilter into a top-down BMP (a negative height, which every common reader takes), holding no image: 5 MB peak on a 61 MB image, 438 MB/s of decoded pixels against the crates' 412 on the photo shape and 1011 against 714 on the flat one. An interlaced PNG is decoded whole first and handed over row by row.
+- `bmp -> png` (lossless) streams rows from the BMP reader into the PNG writer, which needs only the row above. A top-down BMP is never held (4 MB peak on a 418 MB image, where the crates hold 887); a bottom-up one, stored last row first, is held once as file bytes and handed over from the end (65 MB on a 61 MB image against the crates' 160). 150 MB/s of input plus pixels against 145 on the photo, 996 against 619 on the flat image, writing a smaller file than the crates on the flat image and a 4% larger one on the incompressible photo.
+- Benchmark pair `png-bmp` against the `png` and `image` crates on 4000 by 4000 RGBA images in two shapes (a gradient with independent per-channel noise, and flat blocks), the png crate's fast level as context, and `[stock]` rows on a photograph placed at `bench/data/stock.png` (never committed): on an 11220 by 9775 RGBA photo, decode 458 against 413 MB/s at 5.5 MB against 424, encode 233 against 176 MB/s writing 29 MB against 44. The benchmark standard's README defines the `[stock]` marker.
+- The binary size budget is raised 1.9 -> 2.0 MB and the WebAssembly budget 0.9 -> 1.0 MB for the image category (the PNG and BMP codecs, the streaming inflater, and the sixteen CRC tables).
+
+### Changed
+
+- The inflater (`src/io/deflate/inflate.rs`) is resumable: it takes input in pieces of any size, hands output back in slabs, and keeps a 32 KiB window, so the PNG reader (and later the ZIP readers) never hold a compressed stream whole. Its literal path reads a 12-bit table that packs up to three short literal codes per entry and decodes up to three entries, nine literals, from one refill, the second and third lookups taking their bits from the unchanged buffer (fdeflate's loop shape, in safe code like theirs); output goes through an index into a reused slab. The one-shot `inflate` is the same code and decodes the benchmark's 61 MB of pixels in 49 ms where it took 310.
+- CRC-32 (`src/io/zip/crc32.rs`) folds sixteen bytes per step over sixteen tables as four interleaved streams joined by one zero-carry operator built per call (zlib's combine), about six times faster than the byte loop; every ZIP-based reader and writer gets it. The tables are statics, since a runtime index on a `const` copies it onto the stack in unoptimized builds and overflowed the Windows main thread.
+- Deflate (`src/io/deflate/compress.rs`): the hash chain is a ring of 16-bit back-distances (in cache where the old position array was not), length and distance codes come from tables instead of a scan, the interior of a maximal match is not re-indexed, and the chain budget drops to a twelfth while recent matches have been short (noise, where a long walk finds nothing) and comes back as they lengthen. The 8 MiB words benchmark keeps its 14.2% ratio and runs 116 -> 93 ms; a noisy 61 MB image encodes in 0.73 s where it took 2.35.
+- Adler-32 sums even and odd byte lanes over 64-byte blocks and weights them with two 64-bit multiplies per block; the Sub unfilter runs two pixels per word.
+
+## [0.18.0] - 2026-09-26
+
+Batch conversion: directories, globs, parallel workers, atomic writes,
+and dry runs on the command line; the formats map as one graph per
+category.
+
+### Added
+
+- Batch conversion: `sublime convert` takes several inputs, directories (`-r` to descend), and glob patterns (`*`, `?`, `**`, expanded by the tool where the shell does not), and writes each output named after its input with the target's extension, into `--out-dir` (or a trailing `dir/`) mirroring the input's structure, or beside the input. Files convert in parallel (`--jobs`, one per CPU by default); one file's failure does not stop the rest; files under a directory whose format is unknown are skipped and counted; `--dry-run` lists the plan without writing. Every output, batch or single, is written to a `.part` file and renamed into place, so a failed conversion leaves nothing behind and never disturbs an existing output. New events `file_started`, `file_failed`, and `batch_finished` in both log formats. Exit code is the worst outcome across the batch.
+- `sublime convert a.csv b.csv --to tsv` is refused with a pointer to `--out-dir`: the old reading, "write a.csv's TSV over b.csv", would have destroyed an input.
+- The binary size budget is raised 1.85 -> 1.9 MB for batch conversion (17 KB: threads, the directory walk, the glob matcher, and the part-file writer; a first draft on `std::sync::mpsc` cost 10 KB more and was replaced by a mutex and a condition variable).
+
+### Changed
+
+- The formats map is one Mermaid graph per category plus one for the crossings between categories, instead of a single graph of everything: a format with a converter into another category is a stadium in its own graph, and the other category is a hexagon in the crossing graph. The binary size budget is raised 1.8 -> 1.85 MB: the binary had 3 KB of headroom after 0.17.0 and this rendering takes 4 KB.
+
+## [0.17.0] - 2026-09-25
+
+The bridge between rows and documents: spreadsheets reach every
+document format as tables, and document tables come out as rows; the
+paths list doubles.
+
+### Added
+
+- The bridge between rows and documents (`src/io/csv/table.rs`, `src/converters/rows_document.rs`): `csv -> markdown` and `tsv -> markdown` turn rows into a Markdown table (first row the header, rows padded or cut to its width, line breaks in cells folded to spaces, everything GFM would misread escaped), so a spreadsheet reaches HTML, Word, text, Markdown JSON, and every document path through the planner; `markdown -> csv` and `markdown -> tsv` take a document's first table out as rows, so Word, Pages, and HTML tables reach every row and hub format. The paths list doubled (88 -> 184). Oracles in `tests/rows_document.rs`.
+- Benchmark pair `csv-markdown` against Miller (`mlr --icsv --omd`, a real tool) with the csv crate and a bespoke table printer as context, and pulldown-cmark with the csv crate for the reverse, every line passing.
+
+### Changed
+
+- The formats map's Mermaid diagram draws an edge between categories to the other category's box (`csv -- conditional --> document`), since the hub behind the box carries it on to every format there; edges inside a category are unchanged.
+- Markdown, for every path through it: the writer copies plain text in runs and scans for list-opening digits only where they can matter; the block parser keeps a table's cells in one vector with row ends instead of one vector per row (markdown -> csv on a million-row table 295 -> 215 MB); inline rendering hands plain text (no inline syntax, no autolink start) through as one event without the node machinery (markdown -> csv 108 -> 121 MB/s).
 
 ## [0.16.0] - 2026-09-25
 

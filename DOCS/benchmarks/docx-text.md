@@ -1,6 +1,6 @@
 # Word -> text
 
-**Latest** (2026-09-24, first release of the Word reader: docx -> text 150.5 MB/s of uncompressed input on the dense shape and 163.6 on prose, at 47.1 and 25.9 MB peak; every line PASSES, three times the docx-rs reference at a seventh of its memory)
+**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
 
 ## Purpose
 
@@ -66,6 +66,24 @@ the per-file-byte rate as an extra row. Rows and units follow
   goes; it is a reference for a reader in Rust, not for a text extractor.
 
 ## Results
+
+### 2026-09-27, 0.24.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| docx -> text, styled (14.9 MB uncompressed): throughput (MB/s of uncompressed input) | 188.2 | goal: 50 | PASS |
+| docx -> text, styled (0.5 MB file): throughput (MB/s of file bytes) [extra] | 6.3 | recorded | n/a |
+| docx -> text, styled: peak memory (MB) | 48.6 | goal: <= 64.0 | PASS |
+| docx -> text, styled: throughput (MB/s of uncompressed input) [extra] | 188.2 | 51.5 (docx-rs, paragraph text only) | PASS |
+| docx -> text, styled: peak memory (MB) [extra] | 48.6 | 356.1 (docx-rs) | PASS |
+| docx -> text, prose (7.5 MB uncompressed): throughput (MB/s of uncompressed input) | 215.2 | goal: 50 | PASS |
+| docx -> text, prose (0.2 MB file): throughput (MB/s of file bytes) [extra] | 6.3 | recorded | n/a |
+| docx -> text, prose: peak memory (MB) | 29.1 | goal: <= 64.0 | PASS |
+| docx -> text, prose: throughput (MB/s of uncompressed input) [extra] | 215.2 | 80.3 (docx-rs, paragraph text only) | PASS |
+| docx -> text, prose: peak memory (MB) [extra] | 29.1 | 134.7 (docx-rs) | PASS |
+
+commit: e8088c4 (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
 
 ### 2026-09-24, first release of the Word reader
 

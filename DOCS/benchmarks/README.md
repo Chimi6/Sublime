@@ -64,6 +64,11 @@ against each other: `csv -> json` at 333 MB/s and `pages -> docx` at
   `binary.md`, never in a pair document, where they would go stale with
   the next change.
 
+An owner-supplied input that is not committed (a real photograph, a
+real document) may carry rows marked `[stock]`, run only when the file
+is present; the pair document says which file and why. They are not
+pass lines for anyone else.
+
 ## Template
 
 Every pair document has these sections, in this order.

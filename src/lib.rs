@@ -9,6 +9,7 @@ pub mod converters;
 pub mod document;
 pub mod event;
 pub mod format;
+pub mod image;
 #[cfg(feature = "dev-tools")]
 pub mod inspect;
 pub mod io;

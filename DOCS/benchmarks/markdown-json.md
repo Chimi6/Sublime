@@ -1,6 +1,6 @@
 # Markdown <-> events as JSON
 
-**Latest** (2026-09-23, 0.3.0: markdown -> markdown-json 98 MB/s of input on the markup-dense shape and 273 MB/s on prose, 303 MB peak; markdown-json -> markdown 326 MB/s, 2.4 MB peak; all lines PASS against pulldown-cmark with serde)
+**Latest** (2026-09-25, 0.17.0 Markdown speedups: markdown -> markdown-json 100.3 MB/s on markup-dense and 225.1 on prose at 305 MB peak; markdown-json -> markdown 310.5 MB/s at 2.8 MB peak; all lines PASS against pulldown-cmark with serde)
 
 ## Purpose
 
@@ -63,6 +63,26 @@ JSON reader-writer pair has its own round-trip test.
   input.
 
 ## Results
+
+### 2026-09-25, 0.17.0 Markdown speedups
+
+commit: 0b33385 (the merge of the rows-to-document bridge, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| markdown -> markdown-json, markup-dense (73.8 MB): throughput (MB/s of input) | 100.3 | 4.0 | PASS |
+| markdown -> markdown-json, prose (4.7 MB): throughput (MB/s of input) | 225.1 | 161.6 | PASS |
+| markdown -> markdown-json, markup-dense: peak memory (MB) | 305.2 | 565.2 (reference) | PASS |
+| markdown-json -> markdown, markup-dense (317.2 MB): throughput (MB/s of input, each side's own JSON) | 310.5 | 239.4 | PASS |
+| markdown-json -> markdown, markup-dense: peak memory (MB) | 2.8 | 1226.6 (reference) | PASS |
+
+Recorded at the 0.17.0 release because the Markdown writer (text
+copied in runs, digits scanned only where a list could open), the block
+parser (one cell vector per table), and inline rendering (a plain-text
+fast path) changed for the rows-to-document bridge. The 4.7 MB prose
+inputs run in about fifteen milliseconds, so their throughput medians
+swing between runs; the dense rows are the stable ones.
 
 2026-09-23, 0.3.0. Medians of three:
 

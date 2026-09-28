@@ -110,7 +110,7 @@ formats.
 | Word legacy | doc | [ ] | C | L | Word 97 binary over OLE2; text and basic formatting extraction only. |
 | Rich Text Format | rtf | [ ] | A | M | Text format with a documented grammar; RTF <-> Markdown/HTML/DOCX. Still emitted by many systems. |
 | OpenDocument text | odt | [ ] | A | M | ZIP plus XML; close to DOCX in shape. |
-| PDF | pdf | [ ] | S | XL | Two different jobs. Writing PDF from Markdown/HTML/DOCX (layout engine, fonts, images) is the most requested output of any converter. Reading PDF for text extraction is moderate; full PDF -> DOCX is a research project and stays lossy. |
+| PDF | pdf | [~] | S | XL | Images to PDF and a page's image back, merged, shipped 0.23.0; text out as plain text, Markdown, HTML, and Word shipped 0.24.0 (`DOCS/formats/pdf.md`). A flagship: documents in (PDF from Markdown, HTML, and Word) is the last part required for 1.0. Two different jobs. Writing PDF from Markdown/HTML/DOCX (layout engine, fonts, images) is the most requested output of any converter. Reading PDF for text extraction is moderate; full PDF -> DOCX is a research project and stays lossy. |
 | EPUB | epub | [ ] | A | M | ZIP of XHTML plus manifest. Markdown/HTML/DOCX -> EPUB is a favorite of writers; EPUB -> Markdown. |
 | Kindle MOBI, AZW3 | mobi, azw3 | [ ] | B | M | PalmDOC and HUFF/CDIC compression, documented by the community; read to HTML/EPUB. Writing MOBI is dead technology; AZW3 (KF8) write is possible. |
 | FictionBook | fb2 | [ ] | B | S | XML; popular in Eastern Europe. |
@@ -138,18 +138,20 @@ lossless and universal.
 
 | Format | Extensions | Status | Tier | Effort | Directions and notes |
 |---|---|---|---|---|---|
-| PNG | png | [ ] | S | M | Keystone. Inflate, filters, palettes, 16-bit, APNG frames. |
-| JPEG | jpg, jpeg | [ ] | S | L | Baseline and progressive decode; baseline encode with quality. Exif passthrough. |
+| PNG | png | [x] | S | M | Keystone. Shipped 0.19.0 (`DOCS/formats/png.md`): every depth, color type, palette, transparency, and interlace read; 8-bit written. APNG frames are not read. |
+| JPEG | jpg, jpeg | [x] | S | L | Shipped 0.20.0 (`DOCS/formats/jpeg.md`): baseline and progressive decode bit-exact with libjpeg-turbo, baseline encode with `--quality`. Exif is reported, not carried. CMYK, 12-bit, arithmetic, and lossless are not read. |
 | GIF | gif | [ ] | A | S | LZW both ways; animation frames. |
-| BMP | bmp | [ ] | A | S | Trivial; still asked for. |
-| TIFF | tif, tiff | [ ] | A | M | Strips and tiles, common compressions (none, PackBits, LZW, deflate). Also the base of DNG and GeoTIFF. |
-| WebP | webp | [ ] | B | L | VP8 lossy decode is a real codec; lossless WebP is its own codec. Encode is XL. Consider External. |
+| BMP | bmp | [x] | A | S | Shipped 0.19.0 (`DOCS/formats/bmp.md`): 1 to 32 bits with masks read; 24-bit and 32-bit with alpha written. RLE is refused. |
+| TIFF | tif, tiff | [x] | A | M | Shipped 0.22.0 (`DOCS/formats/tiff.md`): the first page read in the common layouts, deflate strips written. Also the base of DNG and GeoTIFF. |
+| WebP | webp | [x] | S | L | Shipped 0.21.0 (`DOCS/formats/webp.md`): lossless and lossy decode bit-exact with libwebp, lossless encode. Lossy encode and animation are not written. |
 | AVIF, HEIC, JPEG XL | avif, heic, jxl | [ ] | D | XL | AV1, HEVC, and JXL codecs: External tier. |
-| Netpbm | ppm, pgm, pbm, pam | [ ] | A | S | Trivial and beloved by tooling. |
-| farbfeld, QOI | ff, qoi | [ ] | B | S | Tiny formats; QOI is a day's work and a crowd-pleaser. |
-| TGA | tga | [ ] | B | S | Games and textures; RLE. |
+| Netpbm | ppm, pgm, pbm, pam | [x] | A | S | Shipped 0.22.0 (`DOCS/formats/netpbm.md`): every form read, each kind written. |
+| QOI | qoi | [x] | B | S | Shipped 0.22.0 (`DOCS/formats/qoi.md`): both ways, streaming, `qoi.h`'s bytes. |
+| farbfeld | ff | [ ] | B | S | Tiny format. |
+| TGA | tga | [x] | B | S | Shipped 0.22.0 (`DOCS/formats/tga.md`): every common layout read, RLE written. |
 | PCX | pcx | [ ] | C | S | DOS-era; RLE. |
-| ICO, CUR, ICNS | ico, cur, icns | [ ] | A | S | Icon containers (PNG and BMP inside); PNG <-> ICO is a constant developer need. |
+| ICO, CUR | ico, cur | [x] | A | S | Shipped 0.22.0 (`DOCS/formats/ico.md`): the largest entry read, icons written with the standard sizes. |
+| ICNS | icns | [ ] | A | S | Apple's icon container (PNG and JPEG 2000 inside). |
 | SVG | svg | [ ] | B | XL | Rasterizing SVG is a renderer (paths, strokes, text, filters). A subset rasterizer (paths, basic shapes, fills, strokes) is L and covers most icons. SVG -> PNG only. |
 | PSD | psd | [ ] | B | M | Composite image extraction is straightforward; layers to PNGs is a step more. |
 | GIMP XCF | xcf | [ ] | C | M | Layers and tiles; composite export. |

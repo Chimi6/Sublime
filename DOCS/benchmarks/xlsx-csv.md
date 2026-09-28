@@ -1,6 +1,6 @@
 # XLSX <-> CSV
 
-**Latest** (2026-09-25, first release of Excel workbooks: xlsx -> csv 133.6 MB/s of uncompressed input (16.2 of file bytes) at 415 MB peak; csv -> xlsx 284.3 MB/s of input plus uncompressed output at 4.7 MB peak; every line PASSES against calamine and rust_xlsxwriter with the csv crate)
+**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
 
 ## Purpose
 
@@ -64,6 +64,49 @@ median wall clock of the whole process, peak resident memory from GNU
   scales with the sheet; that is the row to watch.
 
 ## Results
+
+### 2026-09-27, 0.24.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| xlsx -> csv, 1000000 rows (326.4 MB uncompressed): throughput (MB/s of uncompressed input) | 176.0 | 118.8 (calamine + csv) | PASS |
+| xlsx -> csv, 1000000 rows (39.5 MB on disk): throughput (MB/s of file bytes) [extra] | 21.3 | 14.4 (calamine + csv) | n/a |
+| xlsx -> csv, 1000000 rows: peak memory (MB) | 415.9 | 593.9 (calamine + csv) | PASS |
+| csv -> xlsx, 1000000 rows (56.8 MB in + 387.7 MB out): throughput (MB/s of input plus uncompressed output) | 641.0 | 100.6 (csv + rust_xlsxwriter) | PASS |
+| csv -> xlsx, 1000000 rows: peak memory (MB) | 4.6 | 1302.7 (csv + rust_xlsxwriter) | PASS |
+
+commit: e8088c4 (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+### 2026-09-27, the inflate memory fix
+
+commit: 90df146 (on the `fix-xlsx-memory` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| xlsx -> csv, 1000000 rows (326.4 MB uncompressed): throughput (MB/s of uncompressed input) | 170.2 | 116.5 (calamine + csv) | PASS |
+| xlsx -> csv, 1000000 rows (39.5 MB on disk): throughput (MB/s of file bytes) [extra] | 20.6 | 14.1 (calamine + csv) | n/a |
+| xlsx -> csv, 1000000 rows: peak memory (MB) | 415.4 | 592.3 (calamine + csv) | PASS |
+| csv -> xlsx, 1000000 rows (56.8 MB in + 387.7 MB out): throughput (MB/s of input plus uncompressed output) | 647.1 | 99.8 (csv + rust_xlsxwriter) | PASS |
+| csv -> xlsx, 1000000 rows: peak memory (MB) | 4.3 | 1301.5 (csv + rust_xlsxwriter) | PASS |
+
+The 0.19.0 inflater grew its buffer by zero-writing a doubled slab and copied the result out: 950 MB on this workbook. Sized from the entry and moved out, it holds 415 MB again and reads 10% faster.
+
+### 2026-09-27, the lazy deflate and the faster bit writer
+
+commit: a5c702a (on the `webp-spikes` branch, before its merge)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| xlsx -> csv, 1000000 rows (326.4 MB uncompressed): throughput (MB/s of uncompressed input) | 152.5 | 114.2 (calamine + csv) | PASS |
+| xlsx -> csv, 1000000 rows (39.5 MB on disk): throughput (MB/s of file bytes) [extra] | 18.5 | 13.8 (calamine + csv) | n/a |
+| xlsx -> csv, 1000000 rows: peak memory (MB) | 928.1 | 592.6 (calamine + csv) | FAIL |
+| csv -> xlsx, 1000000 rows (56.8 MB in + 387.7 MB out): throughput (MB/s of input plus uncompressed output) | 632.6 | 101.6 (csv + rust_xlsxwriter) | PASS |
+| csv -> xlsx, 1000000 rows: peak memory (MB) | 4.2 | 1301.2 (csv + rust_xlsxwriter) | PASS |
+
+The `xlsx -> csv` memory regression is not this change: `main` at 20a1985 holds 950 MB on the same file. It is recorded in `STATE.md` to be found.
 
 ### 2026-09-25, first release of Excel workbooks
 

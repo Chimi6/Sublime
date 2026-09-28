@@ -24,9 +24,15 @@ fn generate_lines(units: &str, path: &str) -> Result<(), String> {
     let file = File::create(path).map_err(|error| error.to_string())?;
     let mut writer = BufWriter::new(file);
     for index in 0..count {
-        writeln!(writer, "* item {index} with _underscores_ and #hashes").map_err(|error| error.to_string())?;
-        writeln!(writer, "1. not a list [nor a link](x) <nor a tag> `nor code`").map_err(|error| error.to_string())?;
-        writeln!(writer, "  indented line with a | pipe and a \\ backslash").map_err(|error| error.to_string())?;
+        writeln!(writer, "* item {index} with _underscores_ and #hashes")
+            .map_err(|error| error.to_string())?;
+        writeln!(
+            writer,
+            "1. not a list [nor a link](x) <nor a tag> `nor code`"
+        )
+        .map_err(|error| error.to_string())?;
+        writeln!(writer, "  indented line with a | pipe and a \\ backslash")
+            .map_err(|error| error.to_string())?;
         if index % 4 == 3 {
             writeln!(writer).map_err(|error| error.to_string())?;
         }
