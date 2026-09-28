@@ -119,9 +119,12 @@ impl fmt::Display for Location {
     }
 }
 
-/// A readable source that can restart from the beginning.
+/// A readable source that can restart from the beginning, or read from
+/// any offset (a bottom-up BMP reads its rows from the end).
 pub trait RewindableRead: Read + Send {
     fn rewind(&mut self) -> io::Result<()>;
+    /// Moves to `position` bytes from the start.
+    fn seek_to(&mut self, position: u64) -> io::Result<()>;
 }
 
 impl RewindableRead for File {
@@ -129,11 +132,21 @@ impl RewindableRead for File {
         self.seek(SeekFrom::Start(0))?;
         Ok(())
     }
+
+    fn seek_to(&mut self, position: u64) -> io::Result<()> {
+        self.seek(SeekFrom::Start(position))?;
+        Ok(())
+    }
 }
 
 impl<T: AsRef<[u8]> + Send> RewindableRead for Cursor<T> {
     fn rewind(&mut self) -> io::Result<()> {
         self.set_position(0);
+        Ok(())
+    }
+
+    fn seek_to(&mut self, position: u64) -> io::Result<()> {
+        self.set_position(position);
         Ok(())
     }
 }
@@ -190,6 +203,13 @@ impl RewindableRead for Rewound<'_> {
         match self {
             Rewound::Borrowed(reader) => reader.rewind(),
             Rewound::Buffered(cursor) => RewindableRead::rewind(cursor),
+        }
+    }
+
+    fn seek_to(&mut self, position: u64) -> io::Result<()> {
+        match self {
+            Rewound::Borrowed(reader) => reader.seek_to(position),
+            Rewound::Buffered(cursor) => cursor.seek_to(position),
         }
     }
 }

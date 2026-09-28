@@ -288,13 +288,71 @@ impl From<io::Error> for BmpRowsError {
 
 /// Reads a BMP from a stream into a row sink, top to bottom. A top-down
 /// file streams a row at a time and nothing is held; a bottom-up file
-/// (the common kind) stores its last row first, so its pixel data is
-/// read once into memory and handed over from the end, one copy where
-/// an image would be a second.
+/// (the common kind) stores its last row first, so from a stream its
+/// pixel data is read once into memory and handed over from the end.
+/// `read_bmp_rows_seekable` reads a bottom-up file from the end instead.
 pub fn read_bmp_rows(
     reader: &mut dyn std::io::Read,
     sink: &mut dyn crate::io::png::RowSink,
 ) -> Result<(), BmpRowsError> {
+    let (layout, _) = begin(reader, sink)?;
+    let mut pixels = vec![0u8; layout.width as usize * layout.color.channels()];
+    if layout.top_down {
+        return top_down(reader, &layout, &mut pixels, sink);
+    }
+    let total = layout.row_bytes * layout.height as usize;
+    let mut data = vec![0u8; total];
+    reader.read_exact(&mut data)?;
+    for file_row in (0..layout.height as usize).rev() {
+        let start = file_row * layout.row_bytes;
+        decode_row(&layout, &data[start..start + layout.row_bytes], &mut pixels);
+        sink.row(&pixels)?;
+    }
+    Ok(())
+}
+
+/// Bytes of a bottom-up file read at a time, from the end.
+const BACKWARD_BLOCK: usize = 1 << 20;
+
+/// Reads a BMP from a file (or anything that seeks) into a row sink, top
+/// to bottom, never holding the image: a bottom-up file is read from its
+/// end a block of rows at a time and each block handed over last row
+/// first. Reading the whole pixel data first cost a copy of it and a
+/// page fault per 4 KB of it (21 ms of 837 on a 61 MB photo).
+pub fn read_bmp_rows_seekable(
+    reader: &mut dyn crate::converter::RewindableRead,
+    sink: &mut dyn crate::io::png::RowSink,
+) -> Result<(), BmpRowsError> {
+    let (layout, pixel_offset) = begin(reader, sink)?;
+    let mut pixels = vec![0u8; layout.width as usize * layout.color.channels()];
+    if layout.top_down {
+        return top_down(reader, &layout, &mut pixels, sink);
+    }
+    let row_bytes = layout.row_bytes;
+    let rows_per_block = (BACKWARD_BLOCK / row_bytes.max(1)).max(1);
+    let mut block = vec![0u8; rows_per_block * row_bytes];
+    let mut end = layout.height as usize;
+    while end > 0 {
+        let start = end.saturating_sub(rows_per_block);
+        let bytes = (end - start) * row_bytes;
+        reader.seek_to((pixel_offset + start * row_bytes) as u64)?;
+        reader.read_exact(&mut block[..bytes])?;
+        for row in (0..end - start).rev() {
+            let at = row * row_bytes;
+            decode_row(&layout, &block[at..at + row_bytes], &mut pixels);
+            sink.row(&pixels)?;
+        }
+        end = start;
+    }
+    Ok(())
+}
+
+/// Reads the headers and palette, reports the resolution, and starts the
+/// sink; returns the layout and where the pixel data begins.
+fn begin(
+    reader: &mut dyn std::io::Read,
+    sink: &mut dyn crate::io::png::RowSink,
+) -> Result<(Layout, usize), BmpRowsError> {
     let mut preamble = vec![0u8; 54];
     reader.read_exact(&mut preamble)?;
     let pixel_offset = u32_at(&preamble, 10) as usize;
@@ -304,7 +362,6 @@ pub fn read_bmp_rows(
     preamble.resize(pixel_offset, 0);
     reader.read_exact(&mut preamble[54..])?;
     let layout = layout(&preamble)?;
-    let stride = layout.width as usize * layout.color.channels();
     // The info header's pixels per metre across and down; zero when the
     // writer left them out.
     let across = u32_at(&preamble, 38);
@@ -313,23 +370,21 @@ pub fn read_bmp_rows(
         sink.density(f64::from(across) * 0.0254, f64::from(down) * 0.0254);
     }
     sink.start(layout.width, layout.height, layout.color)?;
-    let mut pixels = vec![0u8; stride];
-    if layout.top_down {
-        let mut file_row = vec![0u8; layout.row_bytes];
-        for _ in 0..layout.height {
-            reader.read_exact(&mut file_row)?;
-            decode_row(&layout, &file_row, &mut pixels);
-            sink.row(&pixels)?;
-        }
-        return Ok(());
-    }
-    let total = layout.row_bytes * layout.height as usize;
-    let mut data = vec![0u8; total];
-    reader.read_exact(&mut data)?;
-    for file_row in (0..layout.height as usize).rev() {
-        let start = file_row * layout.row_bytes;
-        decode_row(&layout, &data[start..start + layout.row_bytes], &mut pixels);
-        sink.row(&pixels)?;
+    Ok((layout, pixel_offset))
+}
+
+/// A top-down file's rows, as they come.
+fn top_down(
+    reader: &mut dyn std::io::Read,
+    layout: &Layout,
+    pixels: &mut [u8],
+    sink: &mut dyn crate::io::png::RowSink,
+) -> Result<(), BmpRowsError> {
+    let mut file_row = vec![0u8; layout.row_bytes];
+    for _ in 0..layout.height {
+        reader.read_exact(&mut file_row)?;
+        decode_row(layout, &file_row, pixels);
+        sink.row(pixels)?;
     }
     Ok(())
 }
