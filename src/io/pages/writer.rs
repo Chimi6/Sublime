@@ -206,6 +206,28 @@ fn rebuild_body(
         .map(|section| page_areas(document, section))
         .unwrap_or_default();
     let mut boxes = text_boxes(document, &body.anchored);
+    // Each note the body refers to, flattened like a cell and led by its
+    // mark (an attachment) and a space, as Pages writes a footnote.
+    let mut notes: Vec<(usize, CellContent)> = Vec::new();
+    for (_, note) in &body.footnotes {
+        if notes.iter().any(|(known, _)| known == note) {
+            continue;
+        }
+        let Some(source) = document.footnotes.get(*note) else {
+            continue;
+        };
+        let content = flatten_lines(
+            document,
+            &block_lines(&source.blocks),
+            &mut ListCounters::default(),
+        );
+        notes.push((*note, note_content(content)));
+    }
+    let footnote_style = styles
+        .get("Footnote")
+        .or_else(|| styles.get("Body"))
+        .copied()
+        .unwrap_or(0);
     let mut next_id = max_identifier(package) + 1;
     let mut next_data_id = max_data_id(package) + 1;
 
@@ -237,6 +259,13 @@ fn rebuild_body(
                 .chain(boxes.iter().flat_map(|text_box| {
                     text_box
                         .content
+                        .marks
+                        .iter()
+                        .map(|(_, format)| *format)
+                        .collect::<Vec<_>>()
+                }))
+                .chain(notes.iter().flat_map(|(_, content)| {
+                    content
                         .marks
                         .iter()
                         .map(|(_, format)| *format)
@@ -306,6 +335,14 @@ fn rebuild_body(
                         .map(|(_, format)| (cell.paragraph, *format)),
                 );
             }
+            for (_, content) in &notes {
+                needed.extend(
+                    content
+                        .paragraphs
+                        .iter()
+                        .map(|(_, format)| (footnote_style, *format)),
+                );
+            }
             synthesize_para_styles(package, needed, sheet, &document.tab_sets, &mut next_id)?
         }
         _ => (HashMap::new(), Vec::new()),
@@ -322,6 +359,7 @@ fn rebuild_body(
                 .flat_map(|table| table.cells.iter())
                 .chain(areas.iter().map(|area| &area.content))
                 .chain(boxes.iter().map(|text_box| &text_box.content))
+                .chain(notes.iter().map(|(_, content)| content))
                 .flat_map(|content| content.lists.iter())
                 .map(|(_, item, indents)| (*item, *indents))
                 .collect();
@@ -344,6 +382,7 @@ fn rebuild_body(
         .flat_map(|table| table.cells.iter_mut())
         .chain(areas.iter_mut().map(|area| &mut area.content))
         .chain(boxes.iter_mut().map(|text_box| &mut text_box.content))
+        .chain(notes.iter_mut().map(|(_, content)| content))
     {
         content.list_styles = content
             .lists
@@ -519,6 +558,8 @@ fn rebuild_body(
     // Attachments anchor by ascending character offset in one table.
     anchors.sort_by_key(|(offset, _)| *offset);
 
+    let comment_authors = write_comment_authors(package, document, &mut next_id)?;
+
     let layout_entries = match stylesheet_id {
         Some(sheet) if !body.layouts.is_empty() => {
             column_entries(package, &body.layouts, sheet, &mut next_id)?
@@ -544,6 +585,29 @@ fn rebuild_body(
     // smart-field attribute table (like the character styles, offset-keyed).
     let (link_objects, smart_entries) =
         build_link_objects(&mut stream.tree, document, &body.link_marks, &mut next_id)?;
+    let footnote_entries = match cell_styles {
+        Some(cell) => write_footnotes(
+            stream,
+            &body.footnotes,
+            &notes,
+            &all_formats,
+            CellStyles {
+                paragraph: footnote_style,
+                ..cell
+            },
+            &para_styles,
+            &mut next_id,
+        )?,
+        None => Vec::new(),
+    };
+    let (comment_objects, highlight_entries) = build_comment_objects(
+        &mut stream.tree,
+        document,
+        &body.comments,
+        &comment_authors,
+        body.text.encode_utf16().count() as u32,
+        &mut next_id,
+    )?;
 
     let (new_first, list_refs) = build_storage(
         &mut stream.tree,
@@ -558,13 +622,18 @@ fn rebuild_body(
         &smart_entries,
         &para_styles,
         &layout_entries,
+        &highlight_entries,
+        &footnote_entries,
     )?;
     stream.objects[index].messages[0].first = new_first;
     let info = stream.objects[index].info;
     let mut references: Vec<u64> = list_refs;
     references.extend(layout_entries.iter().map(|(_, id)| *id));
+    references.extend(footnote_entries.iter().map(|(_, id)| *id));
     references.extend(anchors.iter().map(|(_, id)| *id));
     references.extend(link_objects.iter().map(|object| object.identifier));
+    references.extend(highlight_entries.iter().filter_map(|(_, object)| *object));
+    stream.objects.extend(comment_objects);
     references.extend(style_refs);
     references.extend(para_refs);
     stream.objects.extend(link_objects);
@@ -2870,6 +2939,8 @@ fn build_storage(
     smart_entries: &[(u32, Option<u64>)],
     paras: &ParaStyles,
     layouts: &[(u32, u64)],
+    highlights: &[(u32, Option<u64>)],
+    footnotes: &[(u32, u64)],
 ) -> Result<(u32, Vec<u64>), PackageError> {
     let storage = message_ref("TSWP.StorageArchive")?;
     let has_tables = !anchors.is_empty();
@@ -2899,6 +2970,12 @@ fn build_storage(
     }
     if !layouts.is_empty() {
         owned.push("table_layout_style");
+    }
+    if !highlights.is_empty() {
+        owned.push("table_highlight");
+    }
+    if !footnotes.is_empty() {
+        owned.push("table_footnote");
     }
     // Collect the kept fields before touching the tree (an immutable borrow).
     let mut kept: Vec<(u32, Node)> = Vec::new();
@@ -3042,6 +3119,20 @@ fn build_storage(
         )?;
     }
 
+    // Each footnote reference's attachment, at its mark.
+    if !footnotes.is_empty() {
+        let entries: Vec<(u32, Option<u64>)> = footnotes
+            .iter()
+            .map(|(offset, id)| (*offset, Some(*id)))
+            .collect();
+        emit_reference_table(tree, &mut chain, storage, "table_footnote", &entries)?;
+    }
+
+    // Comment highlights over their ranges, gaps between, from offset 0.
+    if !highlights.is_empty() {
+        emit_reference_table(tree, &mut chain, storage, "table_highlight", highlights)?;
+    }
+
     // Column layouts, from offset 0 like the other tables.
     if !layouts.is_empty() {
         let entries: Vec<(u32, Option<u64>)> = layouts
@@ -3174,6 +3265,21 @@ struct Format {
 }
 
 impl Format {
+    /// No formatting (`Default`, usable in constants).
+    const DEFAULT: Format = Format {
+        bold: false,
+        italic: false,
+        underline: false,
+        size: None,
+        font: None,
+        color: None,
+        strike: false,
+        baseline: 0,
+        caps: 0,
+        highlight: None,
+        shift: None,
+    };
+
     fn is_plain(&self) -> bool {
         *self == Format::default()
     }
@@ -3311,6 +3417,8 @@ struct Body {
     images: Vec<ImageMark>,
     layouts: Vec<(u32, Option<ColumnLayout>)>,
     anchored: Vec<(u32, usize)>,
+    comments: Vec<(u32, u32, Id)>,
+    footnotes: Vec<(u32, usize)>,
 }
 
 /// Flattens the document into one text string (paragraphs joined by `\n`)
@@ -3333,6 +3441,9 @@ fn flatten(document: &Document) -> Body {
         pending_layout: None,
         anchored: Vec::new(),
         terminator: Format::default(),
+        comments: Vec::new(),
+        open_comments: Vec::new(),
+        footnotes: Vec::new(),
     };
     let mut previous: Option<ColumnLayout> = None;
     for (index, section) in document.sections.iter().enumerate() {
@@ -3353,6 +3464,8 @@ fn flatten(document: &Document) -> Body {
     Body {
         layouts: walk.layouts,
         anchored: walk.anchored,
+        comments: walk.comments,
+        footnotes: walk.footnotes,
         text: walk.text,
         paragraphs: walk.paragraphs,
         char_marks: walk.char_marks,
@@ -3403,6 +3516,12 @@ struct Walk {
     anchored: Vec<(u32, usize)>,
     /// The current paragraph's mark formatting, for the newline ending it.
     terminator: Format,
+    /// Comments on the body text: (start, end, comment).
+    comments: Vec<(u32, u32, Id)>,
+    /// Comments whose range has begun: (comment, start).
+    open_comments: Vec<(Id, u32)>,
+    /// Note references: (offset of the mark, note).
+    footnotes: Vec<(u32, usize)>,
 }
 
 /// Pages' column-break character (as Pages imports a Word column break).
@@ -3458,14 +3577,17 @@ impl Walk {
             return;
         }
         if !self.paragraphs.is_empty() {
-            self.mark(Format::default());
+            self.mark(self.terminator);
             self.link_mark(None);
             self.text.push('\n');
             self.offset += 1;
         }
         // The paragraph holding the table places it: aligned across the
-        // column, or indented from the margin, as Pages keeps a Word table's.
-        let indent = table.indent.map(|points| (points * 100.0).round() as i32);
+        // column, or indented from the margin, as Pages keeps a Word table's
+        // (a table pulled into the margin stops at it).
+        let indent = table
+            .indent
+            .map(|points| ((points * 100.0).round() as i32).max(0));
         let anchor = ParaFormat {
             alignment: table.alignment.map(|alignment| match alignment {
                 crate::document::Alignment::Right => 1,
@@ -3658,6 +3780,30 @@ impl Walk {
                     self.image(image);
                 }
                 continue;
+            }
+            // A note's reference: Pages' footnote mark character, raised.
+            if let Inline::Footnote(note) = run.content {
+                self.mark(FOOTNOTE_REFERENCE);
+                self.link_mark(None);
+                self.footnotes.push((self.offset, note));
+                self.text.push(FOOTNOTE_MARK);
+                self.offset += 1;
+                continue;
+            }
+            // A comment covers the text between its markers.
+            match run.content {
+                Inline::CommentStart(id) => {
+                    self.open_comments.push((id, self.offset));
+                    continue;
+                }
+                Inline::CommentEnd(id) => {
+                    if let Some(at) = self.open_comments.iter().position(|(open, _)| *open == id) {
+                        let (_, start) = self.open_comments.remove(at);
+                        self.comments.push((start, self.offset, id));
+                    }
+                    continue;
+                }
+                _ => {}
             }
             // A drawable moving with the text sits at its object character.
             if let Inline::Anchor(index) = run.content {
@@ -5121,6 +5267,12 @@ fn push_field(
             crate::io::protobuf::schema::Kind::Int | crate::io::protobuf::schema::Kind::Sint,
             Node::Uint(unsigned),
         ) => Node::Int(unsigned as i64),
+        (crate::io::protobuf::schema::Kind::Double, Node::Float(value)) => {
+            Node::Double(f64::from(value))
+        }
+        (crate::io::protobuf::schema::Kind::Float, Node::Double(value)) => {
+            Node::Float(value as f32)
+        }
         (_, value) => value,
     };
     tree.push_known(chain, message, slot, field, field.number, value)
@@ -5205,6 +5357,20 @@ fn malformed(what: &'static str) -> PackageError {
 mod tests {
     use super::*;
     use crate::io::pages::{Package, Scope, read_document};
+
+    /// Comment dates reach Pages' 2001 epoch in UTC.
+    #[test]
+    fn converts_comment_dates_to_the_pages_epoch() {
+        assert_eq!(seconds_since_2001("2001-01-01T00:00:00Z"), Some(0.0));
+        assert_eq!(
+            seconds_since_2001("2026-09-23T12:00:00Z"),
+            Some(811_857_600.0)
+        );
+        assert_eq!(
+            seconds_since_2001("2000-02-29T00:00:00Z"),
+            Some(-26_524_800.0)
+        );
+    }
 
     /// A document written to a package reads back with its paragraphs and
     /// their text intact, through the document reader the same way Pages
@@ -7808,11 +7974,14 @@ fn para_format(document: &Document, paragraph: &Paragraph) -> ParaFormat {
             Some(0)
         } else {
             hundredths(properties.first_line_indent.or(properties.left_indent))
+                .map(|indent| indent.max(0))
         },
+        // Pages lays no line out past the margin (it asserts on one); a
+        // negative indent stops at the margin.
         left_indent: if paragraph.list.is_some() {
             Some(0)
         } else {
-            hundredths(properties.left_indent)
+            hundredths(properties.left_indent).map(|indent| indent.max(0))
         },
         right_indent: hundredths(properties.right_indent),
         space_before: hundredths(properties.space_before),
@@ -10471,6 +10640,405 @@ fn column_entries(
             .and_then(|layout| styles.get(layout))
             .copied();
         entries.push((*offset, id.unwrap_or(base)));
+    }
+    Ok(entries)
+}
+
+// ----- comments -----
+
+/// A character-indexed attribute table: (offset, object or a gap).
+type AttributeEntries = Vec<(u32, Option<u64>)>;
+
+const ANNOTATION_AUTHOR: u32 = 212;
+const ANNOTATION_AUTHOR_STORAGE: u32 = 213;
+const COMMENT_STORAGE: u32 = 3056;
+const HIGHLIGHT: u32 = 2013;
+
+/// The colours Pages gives comment authors, in turn.
+const AUTHOR_COLORS: [(f32, f32, f32); 4] = [
+    (0.996, 0.835, 0.835),
+    (0.804, 0.906, 0.992),
+    (0.843, 0.961, 0.808),
+    (0.992, 0.925, 0.753),
+];
+
+/// An annotation author per distinct comment author, in the template's
+/// author storage; returns each comment's author object.
+fn write_comment_authors(
+    package: &mut Package,
+    document: &Document,
+    next_id: &mut u64,
+) -> Result<Vec<u64>, PackageError> {
+    if document.comments.is_empty() {
+        return Ok(Vec::new());
+    }
+    let storage_ref = message_ref("TSK.AnnotationAuthorStorageArchive")?;
+    let author_ref = message_ref("TSK.AnnotationAuthorArchive")?;
+    let color_ref = child_message(author_ref, "color")?;
+    let stream = package
+        .entries
+        .iter_mut()
+        .filter_map(|entry| match entry {
+            Entry::Stream(stream) => Some(stream),
+            _ => None,
+        })
+        .find(|stream| {
+            stream
+                .objects
+                .iter()
+                .any(|object| first_type(object) == Some(ANNOTATION_AUTHOR_STORAGE))
+        })
+        .ok_or_else(|| malformed("template has no annotation author storage"))?;
+    let (storage_first, storage_info) = stream
+        .objects
+        .iter()
+        .find(|object| first_type(object) == Some(ANNOTATION_AUTHOR_STORAGE))
+        .map(|object| (object.messages[0].first, object.info))
+        .ok_or_else(|| malformed("annotation author storage is missing"))?;
+    let mut names: Vec<&str> = Vec::new();
+    let mut ids: Vec<u64> = Vec::new();
+    let mut out = Vec::new();
+    for comment in &document.comments {
+        let name = comment.author.as_str();
+        if let Some(at) = names.iter().position(|known| *known == name) {
+            out.push(ids[at]);
+            continue;
+        }
+        let tree = &mut stream.tree;
+        let id = *next_id;
+        *next_id += 1;
+        let (r, g, b) = AUTHOR_COLORS[names.len() % AUTHOR_COLORS.len()];
+        let mut color = Chain::new();
+        push_field(tree, &mut color, color_ref, "model", Node::Uint(1))?;
+        push_field(tree, &mut color, color_ref, "r", Node::Float(r))?;
+        push_field(tree, &mut color, color_ref, "g", Node::Float(g))?;
+        push_field(tree, &mut color, color_ref, "b", Node::Float(b))?;
+        push_field(tree, &mut color, color_ref, "a", Node::Float(1.0))?;
+        push_field(tree, &mut color, color_ref, "rgbspace", Node::Uint(1))?;
+        let span = tree.push_bytes(name.as_bytes()).map_err(tree_error)?;
+        let mut chain = Chain::new();
+        push_field(tree, &mut chain, author_ref, "name", Node::Str(span))?;
+        push_field(
+            tree,
+            &mut chain,
+            author_ref,
+            "color",
+            Node::Message(color.first),
+        )?;
+        push_field(
+            tree,
+            &mut chain,
+            author_ref,
+            "is_public_author",
+            Node::Bool(false),
+        )?;
+        let info = build_archive_info(tree, id, ANNOTATION_AUTHOR)?;
+        stream.objects.push(Object {
+            identifier: id,
+            info,
+            messages: vec![ObjectMessage {
+                message_type: ANNOTATION_AUTHOR,
+                first: chain.first,
+            }],
+        });
+        append_message_reference(
+            &mut stream.tree,
+            storage_ref,
+            storage_first,
+            "annotation_author",
+            id,
+        )?;
+        add_object_references(&mut stream.tree, storage_info, &[id])?;
+        names.push(name);
+        ids.push(id);
+        out.push(id);
+    }
+    Ok(out)
+}
+
+/// A comment storage and a highlight for each comment on the body text, and
+/// the body's highlight table: each range's highlight, gaps between, from 0.
+fn build_comment_objects(
+    tree: &mut Tree,
+    document: &Document,
+    ranges: &[(u32, u32, Id)],
+    authors: &[u64],
+    text_length: u32,
+    next_id: &mut u64,
+) -> Result<(Vec<Object>, AttributeEntries), PackageError> {
+    if ranges.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let storage_ref = message_ref("TSD.CommentStorageArchive")?;
+    let date_ref = child_message(storage_ref, "creation_date")?;
+    let highlight_ref = message_ref("TSWP.HighlightArchive")?;
+    // Ranges in order, without overlaps (a later one cuts an earlier one
+    // short), each at least one character long.
+    let mut ordered: Vec<(u32, u32, Id)> = ranges
+        .iter()
+        .map(|(start, end, id)| {
+            let (start, end) = if end > start {
+                (*start, *end)
+            } else if *start < text_length {
+                (*start, start + 1)
+            } else {
+                (start.saturating_sub(1), *start)
+            };
+            (start, end, *id)
+        })
+        .collect();
+    ordered.sort_by_key(|(start, _, _)| *start);
+    for index in 1..ordered.len() {
+        let next_start = ordered[index].0;
+        if ordered[index - 1].1 > next_start {
+            ordered[index - 1].1 = next_start;
+        }
+    }
+    let mut objects = Vec::new();
+    let mut entries: Vec<(u32, Option<u64>)> = Vec::new();
+    for (start, end, id) in ordered {
+        let (Some(comment), Some(author)) =
+            (document.comments.get(id as usize), authors.get(id as usize))
+        else {
+            continue;
+        };
+        if end <= start {
+            continue;
+        }
+        let storage_id = *next_id;
+        let highlight_id = *next_id + 1;
+        *next_id += 2;
+        let span = tree
+            .push_bytes(comment.text.as_bytes())
+            .map_err(tree_error)?;
+        let mut chain = Chain::new();
+        push_field(tree, &mut chain, storage_ref, "text", Node::Str(span))?;
+        if let Some(seconds) = comment.date.as_deref().and_then(seconds_since_2001) {
+            let mut date = Chain::new();
+            push_field(tree, &mut date, date_ref, "seconds", Node::Double(seconds))?;
+            push_field(
+                tree,
+                &mut chain,
+                storage_ref,
+                "creation_date",
+                Node::Message(date.first),
+            )?;
+        }
+        push_field(
+            tree,
+            &mut chain,
+            storage_ref,
+            "author",
+            Node::Reference(*author),
+        )?;
+        let info = build_archive_info(tree, storage_id, COMMENT_STORAGE)?;
+        add_object_references(tree, info, &[*author])?;
+        objects.push(Object {
+            identifier: storage_id,
+            info,
+            messages: vec![ObjectMessage {
+                message_type: COMMENT_STORAGE,
+                first: chain.first,
+            }],
+        });
+        // A random (version 4) UUID, as Pages gives each highlight.
+        let uuid = fresh_uuid(highlight_id);
+        let span = tree.push_bytes(&uuid).map_err(tree_error)?;
+        let mut chain = Chain::new();
+        push_field(
+            tree,
+            &mut chain,
+            highlight_ref,
+            "commentStorage",
+            Node::Reference(storage_id),
+        )?;
+        push_field(
+            tree,
+            &mut chain,
+            highlight_ref,
+            "text_attribute_uuid_string",
+            Node::Str(span),
+        )?;
+        let info = build_archive_info(tree, highlight_id, HIGHLIGHT)?;
+        add_object_references(tree, info, &[storage_id])?;
+        objects.push(Object {
+            identifier: highlight_id,
+            info,
+            messages: vec![ObjectMessage {
+                message_type: HIGHLIGHT,
+                first: chain.first,
+            }],
+        });
+        if entries.last().is_some_and(|(at, _)| *at == start) {
+            entries.pop();
+        }
+        if entries.is_empty() && start > 0 {
+            entries.push((0, None));
+        }
+        entries.push((start, Some(highlight_id)));
+        entries.push((end, None));
+    }
+    Ok((objects, entries))
+}
+
+/// An ISO 8601 time (`2026-09-23T12:00:00Z`) as seconds since 2001-01-01 UTC,
+/// the epoch Pages keeps dates in.
+fn seconds_since_2001(iso: &str) -> Option<f64> {
+    let number = |range: std::ops::Range<usize>| iso.get(range)?.parse::<i64>().ok();
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (
+        number(11..13).unwrap_or(0),
+        number(14..16).unwrap_or(0),
+        number(17..19).unwrap_or(0),
+    );
+    // Days from the civil date (Howard Hinnant's algorithm).
+    let shifted = if month <= 2 { year - 1 } else { year };
+    let era = shifted.div_euclid(400);
+    let year_of_era = shifted - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    // 2001-01-01 is 11 323 days after 1970-01-01.
+    let seconds = (days - 11_323) * 86_400 + hour * 3_600 + minute * 60 + second;
+    Some(seconds as f64)
+}
+
+// ----- footnotes -----
+
+/// Pages' footnote mark character, in the body where a note is referred to.
+const FOOTNOTE_MARK: char = '\u{E}';
+const TEXTUAL_ATTACHMENT: u32 = 2004;
+const FOOTNOTE_REFERENCE_ATTACHMENT: u32 = 2008;
+/// A footnote storage's kind.
+const FOOTNOTE_STORAGE: u64 = 2;
+
+/// The formatting of a note's mark: raised.
+const FOOTNOTE_REFERENCE: Format = Format {
+    baseline: 1,
+    ..Format::DEFAULT
+};
+
+/// A note's text led by its mark (an attachment, raised) and a space.
+fn note_content(content: CellContent) -> CellContent {
+    let shift = |offset: u32| offset + 2;
+    let mut marks = vec![(0, FOOTNOTE_REFERENCE), (1, Format::default())];
+    marks.extend(
+        content
+            .marks
+            .iter()
+            .map(|(offset, format)| (shift(*offset), *format)),
+    );
+    let mut paragraphs: Vec<(u32, ParaFormat)> = content
+        .paragraphs
+        .iter()
+        .map(|(offset, format)| (if *offset == 0 { 0 } else { shift(*offset) }, *format))
+        .collect();
+    if paragraphs.is_empty() {
+        paragraphs.push((0, ParaFormat::default()));
+    }
+    CellContent {
+        text: format!("{ATTACHMENT} {}", content.text),
+        marks,
+        fields: content
+            .fields
+            .iter()
+            .map(|(offset, kind)| (shift(*offset), *kind))
+            .collect(),
+        paragraphs,
+        lists: content
+            .lists
+            .iter()
+            .map(|(offset, item, indents)| {
+                (
+                    if *offset == 0 { 0 } else { shift(*offset) },
+                    *item,
+                    *indents,
+                )
+            })
+            .collect(),
+        list_styles: Vec::new(),
+    }
+}
+
+/// Writes each note the body refers to as a footnote storage (kind 2) with
+/// its mark attachment, and a reference attachment per note; returns the
+/// body's footnote table: each reference's attachment at its mark.
+#[allow(clippy::too_many_arguments)]
+fn write_footnotes(
+    stream: &mut Stream,
+    references: &[(u32, usize)],
+    notes: &[(usize, CellContent)],
+    formats: &HashMap<Format, u64>,
+    styles: CellStyles,
+    paras: &ParaStyles,
+    next_id: &mut u64,
+) -> Result<Vec<(u32, u64)>, PackageError> {
+    if references.is_empty() {
+        return Ok(Vec::new());
+    }
+    let textual = message_ref("TSWP.TextualAttachmentArchive")?;
+    let reference = message_ref("TSWP.FootnoteReferenceAttachmentArchive")?;
+    let mut entries = Vec::new();
+    for (offset, note) in references {
+        let Some((_, content)) = notes.iter().find(|(known, _)| known == note) else {
+            continue;
+        };
+        let tree = &mut stream.tree;
+        let mark_id = *next_id;
+        let storage_id = *next_id + 1;
+        let reference_id = *next_id + 2;
+        *next_id += 3;
+        // The mark inside the note: a textual attachment of the footnote kind.
+        let empty = tree.push_bytes(b"").map_err(tree_error)?;
+        let mut mark = Chain::new();
+        push_field(
+            tree,
+            &mut mark,
+            textual,
+            "string_equivalent",
+            Node::Str(empty),
+        )?;
+        push_field(tree, &mut mark, textual, "kind", Node::Uint(2))?;
+        let (storage_first, storage_refs) = build_text_storage(
+            tree,
+            content,
+            formats,
+            styles,
+            Some(FOOTNOTE_STORAGE),
+            &[(0, mark_id)],
+            paras,
+        )?;
+        let mut chain = Chain::new();
+        push_field(tree, &mut chain, reference, "super", Node::Message(NONE))?;
+        push_field(
+            tree,
+            &mut chain,
+            reference,
+            "contained_storage",
+            Node::Reference(storage_id),
+        )?;
+        for (id, kind, first, refs) in [
+            (mark_id, TEXTUAL_ATTACHMENT, mark.first, Vec::new()),
+            (storage_id, STORAGE_ARCHIVE, storage_first, storage_refs),
+            (
+                reference_id,
+                FOOTNOTE_REFERENCE_ATTACHMENT,
+                chain.first,
+                vec![storage_id],
+            ),
+        ] {
+            let info = build_archive_info(tree, id, kind)?;
+            add_object_references(tree, info, &refs)?;
+            stream.objects.push(Object {
+                identifier: id,
+                info,
+                messages: vec![ObjectMessage {
+                    message_type: kind,
+                    first,
+                }],
+            });
+        }
+        entries.push((*offset, reference_id));
     }
     Ok(entries)
 }

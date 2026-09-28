@@ -307,3 +307,171 @@ fn headings_come_from_outline_levels() {
     let markdown = markdown(&document);
     assert!(markdown.starts_with("# "), "{markdown}");
 }
+
+/// The comment range markers in a document's body, in order.
+fn comment_markers(document: &Document) -> Vec<(bool, u32)> {
+    document
+        .sections
+        .iter()
+        .flat_map(|section| section.blocks.iter())
+        .filter_map(|block| match block {
+            Block::Paragraph(paragraph) => Some(paragraph),
+            Block::Table(_) => None,
+        })
+        .flat_map(|paragraph| paragraph.runs.iter())
+        .filter_map(|run| match run.content {
+            Inline::CommentStart(id) => Some((true, id)),
+            Inline::CommentEnd(id) => Some((false, id)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Word comments keep their author, date, text, and range through our Word
+/// output.
+#[test]
+fn comments_round_trip_through_word() {
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let document = read_docx(&bytes).expect("Word package reads");
+    assert_eq!(document.comments.len(), 2);
+    assert_eq!(document.comments[0].author, "Reviewer");
+    assert_eq!(
+        document.comments[0].text,
+        "This is a comment on the word 'commented'."
+    );
+    assert_eq!(
+        document.comments[0].date.as_deref(),
+        Some("2026-09-23T12:00:00Z")
+    );
+    let markers = comment_markers(&document);
+    assert_eq!(markers, [(true, 0), (false, 0), (true, 1), (false, 1)]);
+
+    let written = write_docx(&document, Vec::new()).expect("writes");
+    let round = read_docx(&written).expect("our Word output reads");
+    assert_eq!(round.comments, document.comments);
+    assert_eq!(comment_markers(&round), markers);
+}
+
+/// The text each comment covers, in the order the comments start.
+fn commented_text(document: &Document) -> Vec<(u32, String)> {
+    let mut open: Vec<(u32, String)> = Vec::new();
+    let mut done = Vec::new();
+    for paragraph in document
+        .sections
+        .iter()
+        .flat_map(|section| section.blocks.iter())
+        .filter_map(|block| match block {
+            Block::Paragraph(paragraph) => Some(paragraph),
+            Block::Table(_) => None,
+        })
+    {
+        for run in &paragraph.runs {
+            match run.content {
+                Inline::CommentStart(id) => open.push((id, String::new())),
+                Inline::CommentEnd(id) => {
+                    if let Some(at) = open.iter().position(|(open, _)| *open == id) {
+                        done.push(open.remove(at));
+                    }
+                }
+                Inline::Text(span) => {
+                    for (_, text) in &mut open {
+                        text.push_str(document.text(span));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    done
+}
+
+/// Apple's Pages comments read back with their author, text, and range, and
+/// reach Word.
+#[test]
+fn pages_comments_read_with_their_ranges() {
+    let document = pages_document("notes");
+    assert_eq!(document.comments.len(), 2);
+    assert_eq!(document.comments[0].author, "Reviewer");
+    assert_eq!(
+        document.comments[1].text,
+        "A second comment on a whole sentence."
+    );
+    assert!(document.comments[0].date.is_some());
+    let covered = commented_text(&document);
+    assert_eq!(covered[0].1, "commented");
+    assert_eq!(covered[1].1, "This whole sentence carries a comment.");
+
+    let written = write_docx(&document, Vec::new()).expect("writes");
+    let round = read_docx(&written).expect("our Word output reads");
+    assert_eq!(round.comments.len(), 2);
+    assert_eq!(commented_text(&round), covered);
+}
+
+/// The text of each note in the order the body refers to them.
+fn referenced_notes(document: &Document) -> Vec<String> {
+    document
+        .sections
+        .iter()
+        .flat_map(|section| section.blocks.iter())
+        .filter_map(|block| match block {
+            Block::Paragraph(paragraph) => Some(paragraph),
+            Block::Table(_) => None,
+        })
+        .flat_map(|paragraph| paragraph.runs.iter())
+        .filter_map(|run| match run.content {
+            Inline::Footnote(note) => document.footnotes.get(note),
+            _ => None,
+        })
+        .map(|note| {
+            note.blocks
+                .iter()
+                .filter_map(|block| match block {
+                    Block::Paragraph(paragraph) => Some(document.paragraph_text(paragraph)),
+                    Block::Table(_) => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string()
+        })
+        .collect()
+}
+
+/// Footnotes and endnotes number apart in Word, so an endnote's reference
+/// finds the endnote, and all of them reach Pages as footnotes.
+#[test]
+fn notes_resolve_and_reach_pages() {
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let document = read_docx(&bytes).expect("Word package reads");
+    let notes = referenced_notes(&document);
+    assert_eq!(
+        notes,
+        [
+            "The first footnote.",
+            "The second footnote, with a link-free sentence.",
+            "The only endnote."
+        ]
+    );
+    let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
+    let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
+    let round = read_document(&package);
+    assert_eq!(referenced_notes(&round), notes);
+}
+
+/// Word comments reach Pages as highlights with their comment storage, and
+/// read back with the same text, author, and range.
+#[test]
+fn comments_reach_pages() {
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let document = read_docx(&bytes).expect("Word package reads");
+    let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
+    let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
+    let round = read_document(&package);
+    assert_eq!(round.comments.len(), 2);
+    for (ours, source) in round.comments.iter().zip(&document.comments) {
+        assert_eq!(ours.author, source.author);
+        assert_eq!(ours.text, source.text);
+        assert_eq!(ours.date, source.date);
+    }
+    assert_eq!(commented_text(&round), commented_text(&document));
+}

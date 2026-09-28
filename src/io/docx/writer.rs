@@ -102,6 +102,37 @@ impl<W: io::Write> DocxStream<W> {
     }
 }
 
+/// The comments part: each comment's author, date, and paragraphs.
+fn comments_xml(document: &Document) -> String {
+    let mut xml = String::new();
+    xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
+    let _ = write!(xml, "<w:comments {W}>");
+    for (id, comment) in document.comments.iter().enumerate() {
+        let _ = write!(xml, "<w:comment w:id=\"{id}\" w:author=\"");
+        escape_attribute(&mut xml, &comment.author);
+        xml.push('"');
+        if let Some(date) = &comment.date {
+            xml.push_str(" w:date=\"");
+            escape_attribute(&mut xml, date);
+            xml.push('"');
+        }
+        if let Some(initials) = &comment.initials {
+            xml.push_str(" w:initials=\"");
+            escape_attribute(&mut xml, initials);
+            xml.push('"');
+        }
+        xml.push('>');
+        for line in comment.text.split('\n') {
+            xml.push_str("<w:p><w:r><w:t xml:space=\"preserve\">");
+            escape_text(&mut xml, line);
+            xml.push_str("</w:t></w:r></w:p>");
+        }
+        xml.push_str("</w:comment>");
+    }
+    xml.push_str("</w:comments>");
+    xml
+}
+
 /// Every part but the body, from the writer's bookkeeping and the
 /// document's tables.
 fn write_parts<W: io::Write>(
@@ -142,6 +173,9 @@ fn write_parts<W: io::Write>(
     }
     if writer.even_pages {
         zip.add_deflated("word/settings.xml", settings_xml().as_bytes())?;
+    }
+    if !document.comments.is_empty() {
+        zip.add_deflated("word/comments.xml", comments_xml(document).as_bytes())?;
     }
     for part in &writer.page_parts {
         zip.add_deflated(&format!("word/{}", part.name), part.xml.as_bytes())?;
@@ -648,6 +682,22 @@ impl DocxWriter {
             );
             return;
         }
+        // A comment's range is marked between runs; its end carries the
+        // reference Word shows the comment at.
+        match run.content {
+            Inline::CommentStart(id) => {
+                let _ = write!(out, "<w:commentRangeStart w:id=\"{id}\"/>");
+                return;
+            }
+            Inline::CommentEnd(id) => {
+                let _ = write!(
+                    out,
+                    "<w:commentRangeEnd w:id=\"{id}\"/><w:r><w:commentReference w:id=\"{id}\"/></w:r>"
+                );
+                return;
+            }
+            _ => {}
+        }
         // An object moving with the text is drawn at its anchor.
         if let Inline::Anchor(index) = run.content {
             if document
@@ -695,7 +745,11 @@ impl DocxWriter {
                     self.render_image(document, image, out);
                 }
             }
-            Inline::PageNumber | Inline::PageCount | Inline::Anchor(_) => {}
+            Inline::PageNumber
+            | Inline::PageCount
+            | Inline::Anchor(_)
+            | Inline::CommentStart(_)
+            | Inline::CommentEnd(_) => {}
         }
         out.push_str("</w:r>");
     }
@@ -1132,6 +1186,12 @@ impl DocxWriter {
                     "<Relationship Id=\"rId4\" Type=\"{REL}/settings\" Target=\"settings.xml\"/>"
                 );
             }
+            if !document.comments.is_empty() {
+                let _ = write!(
+                    xml,
+                    "<Relationship Id=\"rId5\" Type=\"{REL}/comments\" Target=\"comments.xml\"/>"
+                );
+            }
         }
         for (index, relationship) in relationships.iter().enumerate() {
             let kind = match relationship.kind {
@@ -1185,6 +1245,9 @@ impl DocxWriter {
         }
         if self.even_pages {
             xml.push_str("<Override PartName=\"/word/settings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml\"/>");
+        }
+        if !document.comments.is_empty() {
+            xml.push_str("<Override PartName=\"/word/comments.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml\"/>");
         }
         for index in 0..self.charts.len() {
             let _ = write!(

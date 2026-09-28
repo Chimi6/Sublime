@@ -17,9 +17,9 @@ use std::fmt;
 
 use crate::document::{
     Alignment, Anchor, AnchorBase, Baseline, Block, Border, Caps, Cell, CellBorders, CellMargins,
-    CharacterStyle, Chart, Color, Document, FloatingContent, FloatingObject, Inline, InlineImage,
-    LineSpacing, ListItem, ListLabel, ListLevel, ListStyle, Media, MediaId, Merge, NoteId,
-    NumberFormat, NumberKind, PageSetup, PageVariants, Paragraph, ParagraphProperties,
+    CharacterStyle, Chart, Color, Document, FloatingContent, FloatingObject, Id, Inline,
+    InlineImage, LineSpacing, ListItem, ListLabel, ListLevel, ListStyle, Media, MediaId, Merge,
+    NoteId, NumberFormat, NumberKind, PageSetup, PageVariants, Paragraph, ParagraphProperties,
     ParagraphStyle, Placement, Revision, RevisionKind, Row, Run, RunProperties, Section,
     SectionStart, ShapeGeometry, Span, StyleId, Table, TableBorders, VerticalAlignment,
 };
@@ -81,6 +81,8 @@ pub fn read_docx(bytes: &[u8]) -> Result<Document, DocxError> {
         even_headers: false,
         pending_floating: Vec::new(),
         anchoring: true,
+        comments: Vec::new(),
+        ranged_comments: Vec::new(),
         pending_blocks: Vec::new(),
         theme_colors: HashMap::new(),
         theme_fonts: [None, None],
@@ -95,6 +97,7 @@ pub fn read_docx(bytes: &[u8]) -> Result<Document, DocxError> {
     reader.read_settings();
     reader.read_notes("footnotes.xml", "w:footnote");
     reader.read_notes("endnotes.xml", "w:endnote");
+    reader.read_comments();
     let body = reader
         .part_text(&document_part)
         .ok_or(DocxError::Part("document part"))?;
@@ -218,7 +221,7 @@ struct Reader<'a> {
     nums: Vec<(i64, StyleId, Option<u32>)>,
     seen_nums: Vec<i64>,
     /// Note ids (`w:id`) to the model's note ids, footnotes then endnotes.
-    footnotes: Vec<(i64, NoteId)>,
+    footnotes: Vec<(bool, i64, NoteId)>,
     /// Media parts already loaded, by package path.
     media: Vec<(String, MediaId)>,
     /// The relationships of the part being read.
@@ -231,6 +234,10 @@ struct Reader<'a> {
     pending_floating: Vec<(usize, AnchorBase, AnchorBase)>,
     /// Blocks a paragraph's drawings leave to follow the paragraph.
     pending_blocks: Vec<Block>,
+    /// Comment ids (`w:id`) to the model's comments.
+    comments: Vec<(i64, Id)>,
+    /// Comments whose range has begun (their reference adds no markers).
+    ranged_comments: Vec<Id>,
     /// Reading the body's own text, where a drawing placed from its
     /// paragraph is anchored in the text (not in headers, notes, or boxes).
     anchoring: bool,
@@ -666,9 +673,65 @@ impl Reader<'_> {
             self.document
                 .footnotes
                 .push(crate::document::Note { blocks });
-            self.footnotes.push((id, note));
+            self.footnotes.push((element == "w:endnote", id, note));
         }
         self.rels = saved_rels;
+    }
+
+    // ----- comments -----
+
+    /// The comments part: each comment's author, date, and text.
+    fn read_comments(&mut self) {
+        let part = format!("{}comments.xml", self.base);
+        let Some(text) = self.part_text(&part) else {
+            return;
+        };
+        let mut reader = XmlReader::new(&text);
+        while let Some(event) = reader.next() {
+            let XmlEvent::Start {
+                name: "w:comment",
+                attributes,
+                self_closing: false,
+            } = event
+            else {
+                continue;
+            };
+            let id: i64 = attribute(&attributes, "w:id")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(-1);
+            let comment = crate::document::Comment {
+                author: attribute(&attributes, "w:author")
+                    .unwrap_or_default()
+                    .to_string(),
+                initials: attribute(&attributes, "w:initials").map(str::to_string),
+                date: attribute(&attributes, "w:date").map(str::to_string),
+                text: String::new(),
+            };
+            let anchoring = std::mem::replace(&mut self.anchoring, false);
+            let blocks = self.read_blocks(&mut reader, "w:comment");
+            self.anchoring = anchoring;
+            let text = blocks
+                .iter()
+                .filter_map(|block| match block {
+                    Block::Paragraph(paragraph) => Some(self.document.paragraph_text(paragraph)),
+                    Block::Table(_) => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.comments.push((id, self.document.comments.len() as Id));
+            self.document
+                .comments
+                .push(crate::document::Comment { text, ..comment });
+        }
+    }
+
+    /// The model comment a `w:id` attribute names.
+    fn comment_for(&self, attributes: &[(&str, Cow<'_, str>)]) -> Option<Id> {
+        let id: i64 = attribute(attributes, "w:id")?.parse().ok()?;
+        self.comments
+            .iter()
+            .find(|(word, _)| *word == id)
+            .map(|(_, comment)| *comment)
     }
 
     // ----- the body -----
@@ -893,6 +956,25 @@ impl Reader<'_> {
                                     .map(|anchor| format!("#{anchor}"))
                             });
                         link = target.map(|target| self.document.intern_link(&target));
+                    }
+                    "w:commentRangeStart" | "w:commentRangeEnd" => {
+                        if let Some(comment) = self.comment_for(&attributes) {
+                            let start = name == "w:commentRangeStart";
+                            if start {
+                                self.ranged_comments.push(comment);
+                            }
+                            paragraph.runs.push(Run {
+                                style: None,
+                                properties: None,
+                                link: None,
+                                revision: None,
+                                content: if start {
+                                    Inline::CommentStart(comment)
+                                } else {
+                                    Inline::CommentEnd(comment)
+                                },
+                            });
+                        }
                     }
                     "w:ins" if !self_closing => {
                         revision = Some(self.push_revision(RevisionKind::Insertion, &attributes));
@@ -1120,12 +1202,33 @@ impl Reader<'_> {
                             });
                         }
                     }
+                    // A comment without a range is on the point it is made at.
+                    "w:commentReference" => {
+                        if let Some(comment) = self.comment_for(&attributes)
+                            && !self.ranged_comments.contains(&comment)
+                        {
+                            for content in
+                                [Inline::CommentStart(comment), Inline::CommentEnd(comment)]
+                            {
+                                paragraph.runs.push(Run {
+                                    style: None,
+                                    properties: None,
+                                    link: None,
+                                    revision: None,
+                                    content,
+                                });
+                            }
+                        }
+                    }
                     "w:footnoteReference" | "w:endnoteReference" if !hidden => {
                         let id: i64 = attribute(&attributes, "w:id")
                             .and_then(|value| value.parse().ok())
                             .unwrap_or(-1);
-                        if let Some((_, note)) =
-                            self.footnotes.iter().find(|(note_id, _)| *note_id == id)
+                        if let Some((_, _, note)) =
+                            self.footnotes.iter().find(|(endnote, note_id, _)| {
+                                // Footnotes and endnotes number apart.
+                                *endnote == (name == "w:endnoteReference") && *note_id == id
+                            })
                         {
                             paragraph.runs.push(Run {
                                 style,
