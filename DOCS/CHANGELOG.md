@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-09-27
+
 ### Added
 
 - PDF to text (`src/io/pdf/content.rs`, `font.rs`, `text.rs`): every page, or `--page N`, laid out as pdftotext lays it out; ToUnicode, the standard encodings with `/Differences`, Type0 Identity fonts, Type3, and the Core 14 widths (`scripts/gen-pdf-tables.py`). Matches pdftotext line for line on 14 fixtures, dehyphenation included.
