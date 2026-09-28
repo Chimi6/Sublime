@@ -8,6 +8,7 @@ section under a version heading.
 
 ### Added
 
+- Fonts (`src/io/font`): a TrueType/OpenType reader (cmap 4 and 12, metrics, names) and a glyph subsetter for TrueType outlines, and discovery of the fonts installed on this machine (`src/io/font/system.rs`). PDFs written from documents set characters the standard fonts lack in an installed font that has them, subset and embedded with a ToUnicode map; `--font file.ttf` sets the body text in a given font. Nothing is bundled in the binary.
 - PDF from Markdown, HTML, text, Word, and Pages (`src/io/pdf/compose.rs`): every reader's event stream set on Letter pages with one-inch margins in the base-14 Helvetica and Courier families (nothing embedded). Headings at three sizes, paragraphs broken first fit on the fonts' real widths, bullet and numbered lists with nesting, block quotes with a bar, code blocks on a gray band, tables with widths from their content, wrapped cells, alignment, and a grid, rules, links as URI annotations, footnotes, and the first heading as the title. A page is written as soon as it is full. Characters outside WinAnsi are set as `?` and reported; images show their alt text.
 
 ### Changed
