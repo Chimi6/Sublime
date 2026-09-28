@@ -8,7 +8,7 @@ section under a version heading.
 
 ### Changed
 
-- The format map in `DOCS/FORMATS.md` (`sublime paths --markdown`) is readable at size: a graph shows only which formats convert directly, one plain line per pair, and the image category joins each format to its pixel hub (13 lines where every pair took 120 arrows). Under each graph a from-by-to grid gives every pair's fidelity as a shape (● lossless, ■ conditional, ▲ lossy) and its number of hops.
+- The format map in `DOCS/FORMATS.md` (`sublime paths --markdown`) is readable at size: a graph shows only which formats convert directly, one plain line per pair; a category whose formats all convert to each other in one step (image) says so in a sentence instead of drawing every pair. Under each graph a from-by-to grid gives every pair's fidelity as a hollow shape (circle lossless, square conditional, triangle lossy; `DOCS/map/`) and its number of steps.
 
 ## [0.23.0] - 2026-09-27
 
