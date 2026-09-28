@@ -26,6 +26,7 @@ qoi = "0.4"
 tiff = "0.11"
 lopdf = "0.34"
 printpdf = { version = "0.8", default-features = false }
+pdf-extract = "0.9"
 
 [profile.release]
 lto = "fat"
