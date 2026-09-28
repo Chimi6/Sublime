@@ -1,6 +1,6 @@
 # ICO <-> PNG
 
-**Latest** (2026-09-27, 0.22.0 release: every line PASSES but the icon from a 256 source, milliseconds slower than the image crate's for an icon 44% smaller (its PNGs at its fast level), recorded as a decision)
+**Latest** (2026-09-27, 0.23.1 release: 1 line FAILS, the 256-pixel icon (0.22.0 decision))
 
 ## Purpose
 
@@ -43,6 +43,25 @@ wall clock of the whole process, peak resident memory from GNU `time`.
   deflate against its fast level), so the icons differ in bytes.
 
 ## Results
+
+### 2026-09-27, 0.23.1 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| ico -> png, 256 icon (0.1 MB): wall time (ms) | 10.6 | 19.9 (image + png) | PASS |
+| ico -> png, 256 icon: peak memory (MB) | 4.7 | 6.6 (image + png) | PASS |
+| png -> ico, icon256 (0.0 MB in): wall time (ms) | 12.1 | 6.2 (png + image) | FAIL |
+| png -> ico, icon256: peak memory (MB) | 4.9 | 6.4 (png + image) | PASS |
+| png -> ico, icon256: output size (KB) [extra] | 56.8 | 101.3 (image) | n/a |
+| png -> ico, jphoto (29.0 MB in): wall time (ms) | 95.4 | 135.8 (png + image) | PASS |
+| png -> ico, jphoto: peak memory (MB) | 5.8 | 51.7 (png + image) | PASS |
+| png -> ico, jphoto: output size (KB) [extra] | 56.4 | 103.0 (image) | n/a |
+| png -> ico, jflat (1.6 MB in): wall time (ms) | 41.1 | 101.0 (png + image) | PASS |
+| png -> ico, jflat: peak memory (MB) | 5.9 | 52.2 (png + image) | PASS |
+| png -> ico, jflat: output size (KB) [extra] | 108.0 | 153.3 (image) | n/a |
+
+commit: 121f26b (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
 
 ### 2026-09-27, 0.22.0 release
 

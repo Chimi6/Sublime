@@ -1,6 +1,6 @@
 # TGA <-> PNG
 
-**Latest** (2026-09-27, 0.22.0 release: every line PASSES)
+**Latest** (2026-09-27, 0.23.1 release: every line PASSES)
 
 ## Purpose
 
@@ -39,6 +39,29 @@ outputs are removed before each run.
 - The flat decode line is within 1% and can flip with load.
 
 ## Results
+
+### 2026-09-27, 0.23.1 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| tga -> png, photo (45.8 MB of pixels, 45.9 MB on disk): throughput (MB/s of decoded pixels) | 142.7 | 73.3 (image + png) | PASS |
+| tga -> png, photo: peak memory (MB) | 51.0 | 95.9 (image + png) | PASS |
+| tga -> png, photo: output size (MB) [extra] | 25.0 | 27.1 (png) | n/a |
+| png -> tga, photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 495.6 | 428.0 (png + image) | PASS |
+| png -> tga, photo: peak memory (MB) | 4.8 | 97.0 (png + image) | PASS |
+| tga -> png, flat (45.8 MB of pixels, 1.0 MB on disk): throughput (MB/s of decoded pixels) | 457.2 | 450.8 (image + png) | PASS |
+| tga -> png, flat: peak memory (MB) | 5.2 | 51.7 (image + png) | PASS |
+| tga -> png, flat: output size (MB) [extra] | 0.1 | 0.3 (png) | n/a |
+| png -> tga, flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 638.2 | 439.5 (png + image) | PASS |
+| png -> tga, flat: peak memory (MB) | 4.7 | 97.2 (png + image) | PASS |
+| tga -> png, stock (418.4 MB of pixels, 151.1 MB on disk): throughput (MB/s of decoded pixels) [stock] | 158.5 | 99.0 (image + png) | PASS |
+| tga -> png, stock: peak memory (MB) [stock] | 155.9 | 573.7 (image + png) | PASS |
+| tga -> png, stock: output size (MB) [extra] | 28.9 | 44.2 (png) | n/a |
+| png -> tga, stock (24.2 MB in + 418.4 MB of pixels): throughput (MB/s of input plus pixels) [stock] | 402.5 | 327.4 (png + image) | PASS |
+| png -> tga, stock: peak memory (MB) [stock] | 4.7 | 842.5 (png + image) | PASS |
+
+commit: 121f26b (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
 
 ### 2026-09-27, 0.22.0 release
 

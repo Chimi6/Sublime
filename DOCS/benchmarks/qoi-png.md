@@ -1,6 +1,6 @@
 # QOI <-> PNG
 
-**Latest** (2026-09-27, 0.22.0 release: every line PASSES but the stock encode, a tie by direct timing (754 against 750 to 753 ms), recorded as a decision)
+**Latest** (2026-09-27, 0.23.1 release: 1 line FAILS, the stock encode tie (0.22.0 decision))
 
 ## Purpose
 
@@ -47,6 +47,29 @@ wall clock of the whole process, peak resident memory from GNU `time`.
   1%) and can flip with machine load.
 
 ## Results
+
+### 2026-09-27, 0.23.1 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| qoi -> png, photo (45.8 MB of pixels, 45.1 MB on disk): throughput (MB/s of decoded pixels) | 143.4 | 67.4 (qoi + png) | PASS |
+| qoi -> png, photo: peak memory (MB) | 5.0 | 123.3 (qoi + png) | PASS |
+| qoi -> png, photo: output size (MB) [extra] | 25.0 | 27.1 (png) | n/a |
+| png -> qoi, photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 437.3 | 420.8 (png + qoi) | PASS |
+| png -> qoi, photo: peak memory (MB) | 4.7 | 96.3 (png + qoi) | PASS |
+| qoi -> png, flat (45.8 MB of pixels, 0.7 MB on disk): throughput (MB/s of decoded pixels) | 1058.3 | 708.3 (qoi + png) | PASS |
+| qoi -> png, flat: peak memory (MB) | 4.5 | 52.3 (qoi + png) | PASS |
+| qoi -> png, flat: output size (MB) [extra] | 0.1 | 0.3 (png) | n/a |
+| png -> qoi, flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 1325.8 | 1190.5 (png + qoi) | PASS |
+| png -> qoi, flat: peak memory (MB) | 4.8 | 52.0 (png + qoi) | PASS |
+| qoi -> png, stock (418.4 MB of pixels, 55.8 MB on disk): throughput (MB/s of decoded pixels) [stock] | 157.7 | 103.3 (qoi + png) | PASS |
+| qoi -> png, stock: peak memory (MB) [stock] | 4.8 | 524.0 (qoi + png) | PASS |
+| qoi -> png, stock: output size (MB) [extra] | 28.9 | 44.2 (png) | n/a |
+| png -> qoi, stock (24.2 MB in + 418.4 MB of pixels): throughput (MB/s of input plus pixels) [stock] | 589.1 | 591.1 (png + qoi) | FAIL |
+| png -> qoi, stock: peak memory (MB) [stock] | 5.1 | 478.9 (png + qoi) | PASS |
+
+commit: 121f26b (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
 
 ### 2026-09-27, 0.22.0 release
 
