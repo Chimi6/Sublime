@@ -8,9 +8,10 @@
 use std::io::{self, Write};
 
 use crate::image::ColorType;
+use crate::io::deflate::deflate;
 use crate::io::pdf::PdfError;
-use crate::io::png::RowSink;
 use crate::io::png::writer::FilteredZlib;
+use crate::io::png::{RowSink, adler32};
 
 /// The catalog and the page tree have fixed numbers; the page tree is
 /// written last, when its pages are known.
@@ -24,6 +25,57 @@ pub struct PdfDocument<'a> {
     /// The byte offset of each object, by number (index 0 unused).
     offsets: Vec<u64>,
     pages: Vec<u32>,
+    /// The standard fonts text pages have used, by their object number.
+    fonts: Vec<(StandardFont, u32)>,
+    /// The document's title, for its information dictionary.
+    title: Option<String>,
+}
+
+/// A base-14 font: every viewer has it, so nothing is embedded. Text in
+/// it is WinAnsi bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StandardFont {
+    Helvetica,
+    HelveticaBold,
+    HelveticaOblique,
+    HelveticaBoldOblique,
+    Courier,
+    CourierBold,
+}
+
+impl StandardFont {
+    pub fn base_name(self) -> &'static str {
+        match self {
+            StandardFont::Helvetica => "Helvetica",
+            StandardFont::HelveticaBold => "Helvetica-Bold",
+            StandardFont::HelveticaOblique => "Helvetica-Oblique",
+            StandardFont::HelveticaBoldOblique => "Helvetica-BoldOblique",
+            StandardFont::Courier => "Courier",
+            StandardFont::CourierBold => "Courier-Bold",
+        }
+    }
+
+    /// The resource name a page's content uses for it.
+    pub fn resource(self) -> &'static str {
+        match self {
+            StandardFont::Helvetica => "F1",
+            StandardFont::HelveticaBold => "F2",
+            StandardFont::HelveticaOblique => "F3",
+            StandardFont::HelveticaBoldOblique => "F4",
+            StandardFont::Courier => "F5",
+            StandardFont::CourierBold => "F6",
+        }
+    }
+}
+
+/// A page of text: its size in points, its content stream, the fonts
+/// the content names, and its links as rectangles with their targets.
+pub struct TextPage<'c> {
+    pub width: f64,
+    pub height: f64,
+    pub content: &'c [u8],
+    pub fonts: &'c [StandardFont],
+    pub links: &'c [([f64; 4], String)],
 }
 
 impl<'a> PdfDocument<'a> {
@@ -34,6 +86,8 @@ impl<'a> PdfDocument<'a> {
             written: 0,
             offsets: vec![0, 0, 0],
             pages: Vec::new(),
+            fonts: Vec::new(),
+            title: None,
         };
         document.put(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")?;
         Ok(document)
@@ -160,6 +214,18 @@ impl<'a> PdfDocument<'a> {
             &format!("<< /Type /Catalog /Pages {PAGES} 0 R >>"),
             None,
         )?;
+        let info = match self.title.take() {
+            Some(title) => {
+                let number = self.allocate();
+                self.object(
+                    number,
+                    &format!("<< /Title {} /Producer (Sublime) >>", text_string(&title)),
+                    None,
+                )?;
+                format!(" /Info {number} 0 R")
+            }
+            None => String::new(),
+        };
         let table_at = self.written;
         let count = self.offsets.len();
         let mut table = format!("xref\n0 {count}\n0000000000 65535 f \n");
@@ -167,10 +233,82 @@ impl<'a> PdfDocument<'a> {
             table.push_str(&format!("{offset:010} 00000 n \n"));
         }
         table.push_str(&format!(
-            "trailer\n<< /Size {count} /Root {CATALOG} 0 R >>\nstartxref\n{table_at}\n%%EOF\n"
+            "trailer\n<< /Size {count} /Root {CATALOG} 0 R{info} >>\nstartxref\n{table_at}\n%%EOF\n"
         ));
         self.put(table.as_bytes())?;
         self.sink.flush()
+    }
+
+    /// Sets the title the document's information dictionary carries.
+    pub fn set_title(&mut self, title: &str) {
+        self.title = Some(title.to_string());
+    }
+
+    /// A page of text, its content deflated.
+    pub fn text_page(&mut self, page: &TextPage<'_>) -> io::Result<()> {
+        let mut resources = String::new();
+        for font in page.fonts {
+            let number = match self.fonts.iter().find(|(known, _)| known == font) {
+                Some((_, number)) => *number,
+                None => {
+                    let number = self.allocate();
+                    self.object(
+                        number,
+                        &format!(
+                            "<< /Type /Font /Subtype /Type1 /BaseFont /{} /Encoding /WinAnsiEncoding >>",
+                            font.base_name()
+                        ),
+                        None,
+                    )?;
+                    self.fonts.push((*font, number));
+                    number
+                }
+            };
+            resources.push_str(&format!("/{} {number} 0 R ", font.resource()));
+        }
+        let mut compressed = vec![0x78, 0x9c];
+        deflate(page.content, &mut compressed);
+        compressed.extend_from_slice(&adler32(page.content).to_be_bytes());
+        let content = self.allocate();
+        self.object(
+            content,
+            &format!("<< /Length {} /Filter /FlateDecode >>", compressed.len()),
+            Some(&compressed),
+        )?;
+        let mut annotations = Vec::new();
+        for (rect, target) in page.links {
+            let number = self.allocate();
+            self.object(
+                number,
+                &format!(
+                    "<< /Type /Annot /Subtype /Link /Rect [{} {} {} {}] /Border [0 0 0] /A << /S /URI /URI {} >> >>",
+                    number_text(rect[0]),
+                    number_text(rect[1]),
+                    number_text(rect[2]),
+                    number_text(rect[3]),
+                    literal(target.as_bytes())
+                ),
+                None,
+            )?;
+            annotations.push(format!("{number} 0 R"));
+        }
+        let annots = if annotations.is_empty() {
+            String::new()
+        } else {
+            format!(" /Annots [{}]", annotations.join(" "))
+        };
+        let page_number = self.allocate();
+        self.object(
+            page_number,
+            &format!(
+                "<< /Type /Page /Parent {PAGES} 0 R /MediaBox [0 0 {} {}] /Resources << /Font << {resources}>> >> /Contents {content} 0 R{annots} >>",
+                number_text(page.width),
+                number_text(page.height)
+            ),
+            None,
+        )?;
+        self.pages.push(page_number);
+        Ok(())
     }
 
     /// The number of pages written so far.
@@ -345,6 +483,42 @@ pub struct JpegInfo {
     pub adobe: bool,
     /// Pixels per inch from the JFIF header, when it gives them.
     pub density: Option<(f64, f64)>,
+}
+
+/// A number for a PDF dictionary: to a hundredth, without trailing zeros.
+pub fn number_text(value: f64) -> String {
+    points(value)
+}
+
+/// A literal string with its delimiters escaped and bytes outside
+/// printable ASCII as octal.
+pub fn literal(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() + 2);
+    out.push('(');
+    for &byte in bytes {
+        match byte {
+            b'(' | b')' | b'\\' => {
+                out.push('\\');
+                out.push(byte as char);
+            }
+            0x20..=0x7e => out.push(byte as char),
+            _ => out.push_str(&format!("\\{byte:03o}")),
+        }
+    }
+    out.push(')');
+    out
+}
+
+/// A text string: PDFDocEncoding when ASCII, else UTF-16BE with its mark.
+fn text_string(text: &str) -> String {
+    if text.is_ascii() {
+        return literal(text.as_bytes());
+    }
+    let mut bytes = vec![0xfe, 0xff];
+    for unit in text.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_be_bytes());
+    }
+    literal(&bytes)
 }
 
 /// A page dimension in points, to a hundredth, without trailing zeros.
