@@ -30,6 +30,8 @@ const R: &str = r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/200
 const DRAWING: &str = r#"xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape""#;
 const SHAPE: &str = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape";
 const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const W14: &str = "http://schemas.microsoft.com/office/word/2010/wordml";
+const W15: &str = "http://schemas.microsoft.com/office/word/2012/wordml";
 const PACKAGE_REL: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 const PICTURE: &str = "http://schemas.openxmlformats.org/drawingml/2006/picture";
 
@@ -106,7 +108,7 @@ impl<W: io::Write> DocxStream<W> {
 fn comments_xml(document: &Document) -> String {
     let mut xml = String::new();
     xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
-    let _ = write!(xml, "<w:comments {W}>");
+    let _ = write!(xml, "<w:comments {W} xmlns:w14=\"{W14}\">");
     for (id, comment) in document.comments.iter().enumerate() {
         let _ = write!(xml, "<w:comment w:id=\"{id}\" w:author=\"");
         escape_attribute(&mut xml, &comment.author);
@@ -122,14 +124,51 @@ fn comments_xml(document: &Document) -> String {
             xml.push('"');
         }
         xml.push('>');
-        for line in comment.text.split('\n') {
-            xml.push_str("<w:p><w:r><w:t xml:space=\"preserve\">");
+        let lines: Vec<&str> = comment.text.split('\n').collect();
+        for (index, line) in lines.iter().enumerate() {
+            // The last paragraph is the comment's id in its thread.
+            if index + 1 == lines.len() {
+                let _ = write!(xml, "<w:p w14:paraId=\"{}\">", comment_paragraph(id));
+            } else {
+                xml.push_str("<w:p>");
+            }
+            xml.push_str("<w:r><w:t xml:space=\"preserve\">");
             escape_text(&mut xml, line);
             xml.push_str("</w:t></w:r></w:p>");
         }
         xml.push_str("</w:comment>");
     }
     xml.push_str("</w:comments>");
+    xml
+}
+
+/// The paragraph id a comment is known by in its thread.
+fn comment_paragraph(id: usize) -> String {
+    format!("{:08X}", 0x0C00_0000 + id)
+}
+
+/// Word's comment threads: each comment's paragraph id, a reply's with its
+/// parent's.
+fn comments_extended_xml(document: &Document) -> String {
+    let mut xml = String::new();
+    xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
+    let _ = write!(xml, "<w15:commentsEx xmlns:w15=\"{W15}\">");
+    for (id, comment) in document.comments.iter().enumerate() {
+        let _ = write!(
+            xml,
+            "<w15:commentEx w15:paraId=\"{}\"",
+            comment_paragraph(id)
+        );
+        if let Some(parent) = comment.reply_to {
+            let _ = write!(
+                xml,
+                " w15:paraIdParent=\"{}\"",
+                comment_paragraph(parent as usize)
+            );
+        }
+        xml.push_str(" w15:done=\"0\"/>");
+    }
+    xml.push_str("</w15:commentsEx>");
     xml
 }
 
@@ -179,6 +218,10 @@ fn write_parts<W: io::Write>(
     }
     if !document.comments.is_empty() {
         zip.add_deflated("word/comments.xml", comments_xml(document).as_bytes())?;
+        zip.add_deflated(
+            "word/commentsExtended.xml",
+            comments_extended_xml(document).as_bytes(),
+        )?;
     }
     for part in &writer.page_parts {
         zip.add_deflated(&format!("word/{}", part.name), part.xml.as_bytes())?;
@@ -692,16 +735,31 @@ impl DocxWriter {
         }
         // A comment's range is marked between runs; its end carries the
         // reference Word shows the comment at.
+        // A thread's replies share its range.
+        let thread = |id: u32| {
+            std::iter::once(id).chain(
+                document
+                    .comments
+                    .iter()
+                    .enumerate()
+                    .filter(move |(_, comment)| comment.reply_to == Some(id))
+                    .map(|(reply, _)| reply as u32),
+            )
+        };
         match run.content {
             Inline::CommentStart(id) => {
-                let _ = write!(out, "<w:commentRangeStart w:id=\"{id}\"/>");
+                for id in thread(id) {
+                    let _ = write!(out, "<w:commentRangeStart w:id=\"{id}\"/>");
+                }
                 return;
             }
             Inline::CommentEnd(id) => {
-                let _ = write!(
-                    out,
-                    "<w:commentRangeEnd w:id=\"{id}\"/><w:r><w:commentReference w:id=\"{id}\"/></w:r>"
-                );
+                for id in thread(id) {
+                    let _ = write!(
+                        out,
+                        "<w:commentRangeEnd w:id=\"{id}\"/><w:r><w:commentReference w:id=\"{id}\"/></w:r>"
+                    );
+                }
                 return;
             }
             _ => {}
@@ -876,6 +934,7 @@ impl DocxWriter {
             // Only a shape is written in the line itself (below).
             TextWrap::Inline => "<wp:wrapTopAndBottom/>",
         };
+        let behind = u8::from(object.behind);
         // Word measures an anchored object from its paragraph.
         let from_v = if object.follows_text {
             "paragraph"
@@ -907,7 +966,7 @@ impl DocxWriter {
                 let number = self.drawings;
                 let _ = write!(
                     out,
-                    "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"{from_v}\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{}\" cy=\"{}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>{wrap_xml}<wp:docPr id=\"{number}\" name=\"Chart {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{CHART}\"><c:chart xmlns:c=\"{CHART}\" r:id=\"rId{}\"/></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
+                    "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"{behind}\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"{from_v}\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{}\" cy=\"{}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>{wrap_xml}<wp:docPr id=\"{number}\" name=\"Chart {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{CHART}\"><c:chart xmlns:c=\"{CHART}\" r:id=\"rId{}\"/></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
                     251_658_240 + number,
                     emu(object.x),
                     emu(object.y),
@@ -922,7 +981,7 @@ impl DocxWriter {
                 line,
                 geometry,
                 flip,
-                ..
+                ends,
             } => {
                 let has_text = !blocks.is_empty();
                 let mut content = String::new();
@@ -941,12 +1000,26 @@ impl DocxWriter {
                     ),
                     None => "<a:noFill/>".to_string(),
                 };
+                // Arrowheads: Word's head is the line's start, its tail the end.
+                let mark = |element: &str, end: Option<crate::document::LineEnd>| {
+                    end.map_or_else(String::new, |end| {
+                        let kind = match end {
+                            crate::document::LineEnd::Arrow => "triangle",
+                            crate::document::LineEnd::OpenArrow => "arrow",
+                            crate::document::LineEnd::Diamond => "diamond",
+                            crate::document::LineEnd::Circle => "oval",
+                        };
+                        format!("<a:{element} type=\"{kind}\"/>")
+                    })
+                };
                 let line_xml = match line {
                     Some(line) => format!(
-                        "<a:ln w=\"{}\"><a:solidFill><a:srgbClr val=\"{}\"/></a:solidFill></a:ln>",
+                        "<a:ln w=\"{}\"><a:solidFill><a:srgbClr val=\"{}\"/></a:solidFill>{}{}</a:ln>",
                         emu(line.width),
                         line.color
-                            .map_or_else(|| "000000".to_string(), |color| color.hex())
+                            .map_or_else(|| "000000".to_string(), |color| color.hex()),
+                        mark("headEnd", ends.0),
+                        mark("tailEnd", ends.1)
                     ),
                     None => "<a:ln><a:noFill/></a:ln>".to_string(),
                 };
@@ -977,7 +1050,7 @@ impl DocxWriter {
                 } else {
                     (
                         format!(
-                            "<wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"{from_v}\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>{wrap_xml}",
+                            "<wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"{behind}\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"{from_v}\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>{wrap_xml}",
                             251_658_240 + number,
                             emu(object.x),
                             emu(object.y),
@@ -1222,7 +1295,7 @@ impl DocxWriter {
             if !document.comments.is_empty() {
                 let _ = write!(
                     xml,
-                    "<Relationship Id=\"rId5\" Type=\"{REL}/comments\" Target=\"comments.xml\"/>"
+                    "<Relationship Id=\"rId5\" Type=\"{REL}/comments\" Target=\"comments.xml\"/><Relationship Id=\"rId6\" Type=\"http://schemas.microsoft.com/office/2011/relationships/commentsExtended\" Target=\"commentsExtended.xml\"/>"
                 );
             }
         }
@@ -1281,6 +1354,7 @@ impl DocxWriter {
         }
         if !document.comments.is_empty() {
             xml.push_str("<Override PartName=\"/word/comments.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml\"/>");
+            xml.push_str("<Override PartName=\"/word/commentsExtended.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml\"/>");
         }
         for index in 0..self.charts.len() {
             let _ = write!(

@@ -573,6 +573,7 @@ fn header_drawings_stay_in_their_header() {
         follows_text: false,
         wrap: TextWrap::None,
         repeats: Some(part),
+        behind: false,
     });
     let written = write_docx(&document, Vec::new()).expect("writes");
     let round = read_docx(&written).expect("reads");
@@ -583,4 +584,117 @@ fn header_drawings_stay_in_their_header() {
         .collect();
     assert_eq!(repeated.len(), 1);
     assert!((repeated[0].x - 36.0).abs() < 0.5 && (repeated[0].y - 20.0).abs() < 0.5);
+}
+
+/// A comment on text Pages keeps no comments in (a header here) is kept,
+/// on the body's first character, rather than lost.
+#[test]
+fn comments_outside_the_body_are_kept() {
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let mut document = read_docx(&bytes).expect("Word package reads");
+    // Move the paragraph holding the first comment into a header.
+    let blocks = &mut document.sections[0].blocks;
+    let at = blocks
+        .iter()
+        .position(|block| match block {
+            Block::Paragraph(paragraph) => paragraph
+                .runs
+                .iter()
+                .any(|run| run.content == Inline::CommentStart(0)),
+            Block::Table(_) => false,
+        })
+        .expect("a commented paragraph");
+    let moved = blocks.remove(at);
+    document.sections[0].headers.default = Some(vec![moved]);
+    let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
+    let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
+    let round = read_document(&package);
+    assert_eq!(round.comments.len(), 2);
+    assert!(
+        round
+            .comments
+            .iter()
+            .any(|comment| comment.text == document.comments[0].text)
+    );
+}
+
+/// A drawing behind the text stays behind it through Pages and Word.
+#[test]
+fn behind_text_drawings_stay_behind() {
+    use sublime::document::{FloatingContent, FloatingObject, TextWrap};
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let mut document = read_docx(&bytes).expect("Word package reads");
+    for behind in [true, false] {
+        document.floating.push(FloatingObject {
+            page: 0,
+            x: 72.0 + if behind { 0.0 } else { 200.0 },
+            y: 72.0,
+            width: 150.0,
+            height: 60.0,
+            content: FloatingContent::TextBox {
+                blocks: Vec::new(),
+                fill: Some(sublime::document::Color {
+                    red: 230,
+                    green: 230,
+                    blue: 250,
+                }),
+                line: None,
+                geometry: Default::default(),
+                flip: (false, false),
+                ends: (None, None),
+            },
+            follows_text: false,
+            wrap: TextWrap::None,
+            repeats: None,
+            behind,
+        });
+    }
+    let flags = |document: &Document| {
+        let mut flags: Vec<bool> = document
+            .floating
+            .iter()
+            .map(|object| object.behind)
+            .collect();
+        flags.sort();
+        flags
+    };
+    let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
+    let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
+    assert_eq!(flags(&read_document(&package)), [false, true]);
+    let word = write_docx(&document, Vec::new()).expect("writes Word");
+    assert_eq!(flags(&read_docx(&word).expect("reads")), [false, true]);
+}
+
+/// A Word comment thread (a reply to a comment) reaches Pages as the
+/// comment's replies, and comes back to Word as the same thread.
+#[test]
+fn comment_threads_survive_both_ways() {
+    let bytes = std::fs::read(fixture("sources/revisions.docx")).expect("source readable");
+    let document = read_docx(&bytes).expect("Word package reads");
+    let thread = |document: &Document| {
+        document
+            .comments
+            .iter()
+            .map(|comment| {
+                (
+                    comment.author.clone(),
+                    comment.text.clone(),
+                    comment.reply_to,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        thread(&document)
+            .iter()
+            .map(|(_, _, parent)| *parent)
+            .collect::<Vec<_>>(),
+        [None, Some(0)]
+    );
+    let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
+    let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
+    let round = read_document(&package);
+    assert_eq!(thread(&round), thread(&document));
+    let word = write_docx(&round, Vec::new()).expect("writes Word");
+    assert_eq!(thread(&read_docx(&word).expect("reads")), thread(&document));
 }

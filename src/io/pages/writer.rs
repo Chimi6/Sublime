@@ -405,7 +405,12 @@ fn rebuild_body(
                     .get(&(item.style, *indents))
                     .copied()
                     .or_else(|| list_style_for(document, lists, Some(item)))?;
-                Some((*offset, style, item.level))
+                Some((
+                    *offset,
+                    style,
+                    item.level,
+                    item.starts_list.then_some(item.start),
+                ))
             })
             .collect();
     }
@@ -414,6 +419,8 @@ fn rebuild_body(
     let mut placed: Vec<(u32, u64)> = Vec::new();
     // Drawables anchored in the body text: (index in the floating list, shape).
     let mut in_text: Vec<(usize, u64)> = Vec::new();
+    // Drawables behind the text.
+    let mut behind: Vec<u64> = Vec::new();
     if let Some(styles) = cell_styles {
         write_page_areas(
             package,
@@ -434,6 +441,7 @@ fn rebuild_body(
         )?;
         placed = written.on_pages;
         in_text = written.anchored;
+        behind = written.behind;
         for pages in [
             crate::document::PageKind::Default,
             crate::document::PageKind::First,
@@ -581,6 +589,7 @@ fn rebuild_body(
         anchored_shapes.push(*shape);
     }
     append_to_zorder(package, &anchored_shapes)?;
+    move_behind_text(package, &behind)?;
     // Attachments anchor by ascending character offset in one table.
     anchors.sort_by_key(|(offset, _)| *offset);
 
@@ -687,7 +696,7 @@ fn rebuild_body(
     );
     references.extend(anchors.iter().map(|(_, id)| *id));
     references.extend(link_objects.iter().map(|object| object.identifier));
-    references.extend(highlight_entries.iter().filter_map(|(_, object)| *object));
+    references.extend(highlight_entries.iter().map(|(_, _, object)| *object));
     stream.objects.extend(comment_objects);
     references.extend(style_refs);
     references.extend(para_refs);
@@ -2994,7 +3003,7 @@ fn build_storage(
     smart_entries: &[(u32, Option<u64>)],
     paras: &ParaStyles,
     layouts: &[(u32, u64)],
-    highlights: &[(u32, Option<u64>)],
+    highlights: &[(u32, u32, u64)],
     footnotes: &[(u32, u64)],
     changes: &Changes,
 ) -> Result<(u32, Vec<u64>), PackageError> {
@@ -3028,7 +3037,7 @@ fn build_storage(
         owned.push("table_layout_style");
     }
     if !highlights.is_empty() {
-        owned.push("table_highlight");
+        owned.push("table_overlapping_highlight");
     }
     if !footnotes.is_empty() {
         owned.push("table_footnote");
@@ -3210,9 +3219,59 @@ fn build_storage(
         )?;
     }
 
-    // Comment highlights over their ranges, gaps between, from offset 0.
+    // Comments over their ranges, which may overlap, as current Pages keeps
+    // them: each entry a range and its highlight.
     if !highlights.is_empty() {
-        emit_reference_table(tree, &mut chain, storage, "table_highlight", highlights)?;
+        let table = child_message(storage, "table_overlapping_highlight")?;
+        let entry = child_message(table, "entries")?;
+        let range = child_message(entry, "range")?;
+        let mut table_chain = Chain::new();
+        for (start, length, highlight) in highlights {
+            let mut range_chain = Chain::new();
+            push_field(
+                tree,
+                &mut range_chain,
+                range,
+                "location",
+                Node::Uint(u64::from(*start)),
+            )?;
+            push_field(
+                tree,
+                &mut range_chain,
+                range,
+                "length",
+                Node::Uint(u64::from(*length)),
+            )?;
+            let mut entry_chain = Chain::new();
+            push_field(
+                tree,
+                &mut entry_chain,
+                entry,
+                "range",
+                Node::Message(range_chain.first),
+            )?;
+            push_field(
+                tree,
+                &mut entry_chain,
+                entry,
+                "field",
+                Node::Reference(*highlight),
+            )?;
+            push_field(
+                tree,
+                &mut table_chain,
+                table,
+                "entries",
+                Node::Message(entry_chain.first),
+            )?;
+        }
+        push_field(
+            tree,
+            &mut chain,
+            storage,
+            "table_overlapping_highlight",
+            Node::Message(table_chain.first),
+        )?;
     }
 
     // Column layouts, from offset 0 like the other tables.
@@ -3423,8 +3482,9 @@ struct CellContent {
     /// Bulleted paragraphs kept as Pages list items: where each starts, its
     /// item, and its own indents.
     lists: Vec<(u32, ListItem, Option<ListIndents>)>,
-    /// Those items' list styles once synthesised: (offset, style, level).
-    list_styles: Vec<(u32, u64, u8)>,
+    /// Those items' list styles once synthesised: (offset, style, level,
+    /// the number a numbered one starts at).
+    list_styles: Vec<(u32, u64, u8, Option<u32>)>,
 }
 
 impl CellContent {
@@ -3547,6 +3607,14 @@ fn flatten(document: &Document) -> Body {
     // A break ending the document still opens its (empty) page.
     if walk.pending_break {
         walk.paragraph(document, &Paragraph::default());
+    }
+    // Comments the body text does not hold (in a header, a footer, or a
+    // text box) are kept on its first character rather than lost.
+    for (id, comment) in document.comments.iter().enumerate() {
+        let id = id as Id;
+        if comment.reply_to.is_none() && !walk.comments.iter().any(|(_, _, known)| *known == id) {
+            walk.comments.push((0, 1, id));
+        }
     }
     apply_contextual_spacing(&mut walk.paragraphs);
     Body {
@@ -3811,6 +3879,14 @@ impl Walk {
         });
         self.mark(Format::default());
         self.link_mark(None);
+        // Comments inside the table are on the table itself: its character.
+        let mut inside = Vec::new();
+        comments_in(&table_blocks(table), &mut inside);
+        for id in inside {
+            if !self.comments.iter().any(|(_, _, known)| *known == id) {
+                self.comments.push((self.offset, self.offset + 1, id));
+            }
+        }
         self.text.push(ATTACHMENT);
         self.offset += 1;
         self.terminator = Format::default();
@@ -4106,6 +4182,8 @@ fn collect_paragraphs<'a>(blocks: &'a [Block], out: &mut Vec<&'a Paragraph>) {
 #[derive(Default)]
 struct ListCounters {
     counts: HashMap<(usize, u8), u32>,
+    /// The number the last labelled item got.
+    last: u32,
 }
 
 impl ListCounters {
@@ -4133,6 +4211,7 @@ impl ListCounters {
             .levels
             .get(item.level as usize)?;
         let count = *count;
+        self.last = count;
         match &level.label {
             crate::document::ListLabel::None => None,
             crate::document::ListLabel::Text(text) => Some(text.clone()),
@@ -4212,23 +4291,27 @@ fn flatten_lines(
         if matches!(lead, None | Some('\n')) {
             starts.push((offset, para_format(document, paragraph)));
         }
-        // A bulleted item that starts a Pages paragraph is a list item of its
-        // own, as Pages imports one; a numbered one keeps its label as text,
-        // so its count runs on across cells.
-        let bulleted = paragraph.list.filter(|item| {
-            matches!(
-                document
-                    .styles
-                    .list
-                    .get(item.style)
-                    .and_then(|style| style.levels.get(usize::from(item.level)))
-                    .map(|level| &level.label),
-                Some(crate::document::ListLabel::Text(_))
-            )
+        // A list item that starts a Pages paragraph is a list item of its
+        // own, as Pages imports one; a numbered one starts at its running
+        // number, so the count runs on across cells.
+        let label_kind = paragraph.list.and_then(|item| {
+            document
+                .styles
+                .list
+                .get(item.style)
+                .and_then(|style| style.levels.get(usize::from(item.level)))
+                .map(|level| &level.label)
         });
-        if let Some(item) = bulleted
-            && matches!(lead, None | Some('\n'))
-        {
+        let native = matches!(
+            label_kind,
+            Some(crate::document::ListLabel::Text(_) | crate::document::ListLabel::Number(_))
+        ) && matches!(lead, None | Some('\n'));
+        if let (true, Some(mut item)) = (native, paragraph.list) {
+            if matches!(label_kind, Some(crate::document::ListLabel::Number(_))) {
+                counters.label(document, &item);
+                item.starts_list = true;
+                item.start = counters.last;
+            }
             lists.push((offset, item, list_indents(document, paragraph)));
         } else if let Some(label) = paragraph
             .list
@@ -4726,9 +4809,24 @@ fn build_text_storage(
     let list_at = |start: u32| {
         cell.list_styles
             .iter()
-            .find(|(offset, _, _)| *offset == start)
-            .map(|(_, style, level)| (*style, *level))
+            .find(|(offset, _, _, _)| *offset == start)
+            .map(|(_, style, level, _)| (*style, *level))
     };
+    // A numbered item's number, where it starts.
+    let start_entries: Vec<(u32, u64, u64)> = dedup_data(
+        paragraph_entries
+            .iter()
+            .map(|(start, _)| {
+                let number = cell
+                    .list_styles
+                    .iter()
+                    .find(|(offset, _, _, _)| offset == start)
+                    .and_then(|(_, _, _, number)| *number)
+                    .unwrap_or(0);
+                (*start, u64::from(number), 0)
+            })
+            .collect(),
+    );
     let list_entries: Vec<(u32, Option<u64>)> = dedup(
         paragraph_entries
             .iter()
@@ -4798,7 +4896,13 @@ fn build_text_storage(
     }
     // The per-paragraph tables Pages expects on a cell storage.
     emit_data_table(tree, &mut chain, storage, "table_para_data", &level_entries)?;
-    emit_data_table(tree, &mut chain, storage, "table_para_starts", &[(0, 0, 0)])?;
+    emit_data_table(
+        tree,
+        &mut chain,
+        storage,
+        "table_para_starts",
+        &start_entries,
+    )?;
     emit_data_table(tree, &mut chain, storage, "table_para_bidi", &[(0, 0, 0)])?;
     // A shape's text takes drop caps: Pages expects its (empty) drop-cap table
     // and adds one on load, as a modification, when it is missing.
@@ -8583,6 +8687,10 @@ struct TextBox {
     wrap: crate::document::TextWrap,
     /// On every page of a header or footer variant.
     repeats: Option<crate::document::PagePart>,
+    /// Behind the text.
+    behind: bool,
+    /// Its line's marks at the start and end.
+    ends: LineEnds,
 }
 
 /// The document's text boxes, their text flattened like a cell's.
@@ -8626,8 +8734,9 @@ fn text_box(document: &Document, floating: &crate::document::FloatingObject) -> 
             line,
             geometry,
             flip,
-            ..
+            ends,
         } => {
+            let line_ends = *ends;
             let mut content =
                 flatten_lines(document, &block_lines(blocks), &mut ListCounters::default());
             let has_text = !content.text.trim().is_empty() || !content.fields.is_empty();
@@ -8658,11 +8767,14 @@ fn text_box(document: &Document, floating: &crate::document::FloatingObject) -> 
                 anchored: false,
                 wrap: floating.wrap,
                 repeats: floating.repeats,
+                behind: floating.behind,
+                ends: line_ends,
             })
         }
         // A chart Pages cannot draw from here keeps its data: a box of
         // tab-separated lines, a series per column.
         crate::document::FloatingContent::Chart(chart) => {
+            let line_ends = (None, None);
             let mut lines = vec![
                 std::iter::once(String::new())
                     .chain(chart.series.iter().map(|series| series.name.clone()))
@@ -8714,6 +8826,8 @@ fn text_box(document: &Document, floating: &crate::document::FloatingObject) -> 
                 anchored: false,
                 wrap: floating.wrap,
                 repeats: floating.repeats,
+                behind: floating.behind,
+                ends: line_ends,
             })
         }
         _ => None,
@@ -8743,16 +8857,17 @@ fn write_text_boxes(
     // otherwise vanish, and a shape without text would not show at all.
     let mut looks: Vec<ShapeLook> = boxes
         .iter()
-        .map(|text_box| shape_look(text_box.fill, text_box.line))
+        .map(|text_box| shape_look(text_box.fill, text_box.line, text_box.ends))
         .filter(|look| look.0.is_some() || look.1.is_some())
         .collect();
-    looks.sort_by_key(|(fill, line)| {
+    looks.sort_by_key(|(fill, line, ends)| {
         let color = |color: Option<crate::document::Color>| {
             color.map(|color| (color.red, color.green, color.blue))
         };
         (
             color(*fill),
             line.map(|(width, stroke)| (width, color(stroke))),
+            (ends.0.is_some(), ends.1.is_some()),
         )
     });
     looks.dedup();
@@ -8986,7 +9101,7 @@ fn write_text_boxes(
             Node::Message(draw.first),
         )?;
         let style = fill_styles
-            .get(&shape_look(text_box.fill, text_box.line))
+            .get(&shape_look(text_box.fill, text_box.line, text_box.ends))
             .copied()
             .unwrap_or(shape_style);
         push_field(
@@ -9003,8 +9118,6 @@ fn write_text_boxes(
             "pathsource",
             Node::Message(source.first),
         )?;
-        // Line ends (arrowheads) are not written: Pages needs each one's
-        // path and end point, not only its name, or it fails to open the file.
         push_field(
             tree,
             &mut shape_chain,
@@ -9059,6 +9172,11 @@ fn write_text_boxes(
                 }],
             });
         }
+        // Behind the text by the z-order, which header templates' own
+        // drawings are not in.
+        if text_box.behind && text_box.repeats.is_none() {
+            placed.behind.push(shape_id);
+        }
         if text_box.anchored {
             placed.anchored.push((text_box.index, shape_id));
         } else if let Some(part) = text_box.repeats {
@@ -9079,6 +9197,8 @@ struct PlacedBoxes {
     anchored: Vec<(usize, u64)>,
     /// Those drawn on every page of a header or footer variant.
     repeating: Vec<(crate::document::PageKind, u64)>,
+    /// Those behind the text.
+    behind: Vec<u64>,
 }
 
 /// The template's shape style with style identifier `identifier` (at
@@ -9119,10 +9239,11 @@ fn create_fill_styles(
     let properties = child_message(drawing, "shape_properties")?;
     let fill = child_message(properties, "fill")?;
     let stroke = child_message(properties, "stroke")?;
+    let line_end_ref = child_message(properties, "head_line_end")?;
     let mut out = HashMap::new();
     let stream = document_stream(package)?;
     for look in looks {
-        let (color, line) = *look;
+        let (color, line, ends) = *look;
         let id = *next_id;
         *next_id += 1;
         let tree = &mut stream.tree;
@@ -9171,6 +9292,17 @@ fn create_fill_styles(
             )?;
             push_field(tree, &mut props, properties, "stroke", Node::Message(first))?;
             overrides += 1;
+        }
+        // Arrowheads, only on a drawn line: Word's end mark is Pages' head,
+        // its start mark Pages' tail (as Pages imports them).
+        if line.is_some() {
+            for (mark, field) in [(ends.1, "head_line_end"), (ends.0, "tail_line_end")] {
+                if mark.is_some() {
+                    let first = build_line_end(tree, line_end_ref)?;
+                    push_field(tree, &mut props, properties, field, Node::Message(first))?;
+                    overrides += 1;
+                }
+            }
         }
         let mut drawing_chain = Chain::new();
         push_field(
@@ -9847,13 +9979,94 @@ fn default_font_size(document: &Document) -> f32 {
 type ShapeLook = (
     Option<crate::document::Color>,
     Option<(u32, Option<crate::document::Color>)>,
+    LineEnds,
+);
+
+/// A line's marks at its start and its end.
+type LineEnds = (
+    Option<crate::document::LineEnd>,
+    Option<crate::document::LineEnd>,
 );
 
 fn shape_look(
     fill: Option<crate::document::Color>,
     line: Option<crate::document::Border>,
+    ends: LineEnds,
 ) -> ShapeLook {
-    (fill, line.map(|line| (line.width.to_bits(), line.color)))
+    (
+        fill,
+        line.map(|line| (line.width.to_bits(), line.color)),
+        ends,
+    )
+}
+
+/// A `TSD.LineEndArchive`: Pages' filled "simple arrow", the mark it draws
+/// for every Word arrowhead kind (as it imports them).
+fn build_line_end(tree: &mut Tree, archive: MessageRef) -> Result<u32, PackageError> {
+    let path = child_message(archive, "path")?;
+    let element = child_message(path, "elements")?;
+    let point_ref = child_message(element, "points")?;
+    let end_point = child_message(archive, "end_point")?;
+    let mut path_chain = Chain::new();
+    // Move, line, line, close, move: a triangle pointing along the line.
+    for (kind, point) in [
+        (1, Some((2.15, 0.0))),
+        (2, Some((0.0, 4.3))),
+        (2, Some((-2.15, 0.0))),
+        (5, None),
+        (1, Some((2.15, 0.0))),
+    ] {
+        let mut element_chain = Chain::new();
+        push_field(tree, &mut element_chain, element, "type", Node::Uint(kind))?;
+        if let Some((x, y)) = point {
+            let mut point_chain = Chain::new();
+            push_field(tree, &mut point_chain, point_ref, "x", Node::Float(x))?;
+            push_field(tree, &mut point_chain, point_ref, "y", Node::Float(y))?;
+            push_field(
+                tree,
+                &mut element_chain,
+                element,
+                "points",
+                Node::Message(point_chain.first),
+            )?;
+        }
+        push_field(
+            tree,
+            &mut path_chain,
+            path,
+            "elements",
+            Node::Message(element_chain.first),
+        )?;
+    }
+    let mut end = Chain::new();
+    push_field(tree, &mut end, end_point, "x", Node::Float(0.0))?;
+    push_field(tree, &mut end, end_point, "y", Node::Float(-0.833_333_3))?;
+    let identifier = tree.push_bytes(b"simple arrow").map_err(tree_error)?;
+    let mut chain = Chain::new();
+    push_field(
+        tree,
+        &mut chain,
+        archive,
+        "path",
+        Node::Message(path_chain.first),
+    )?;
+    push_field(tree, &mut chain, archive, "line_join", Node::Uint(0))?;
+    push_field(
+        tree,
+        &mut chain,
+        archive,
+        "end_point",
+        Node::Message(end.first),
+    )?;
+    push_field(tree, &mut chain, archive, "is_filled", Node::Bool(true))?;
+    push_field(
+        tree,
+        &mut chain,
+        archive,
+        "identifier",
+        Node::Str(identifier),
+    )?;
+    Ok(chain.first)
 }
 
 /// A solid `TSD.StrokeArchive` of `width` points in `color`.
@@ -10307,6 +10520,64 @@ fn place_floating(package: &mut Package, placed: &[(u32, u64)]) -> Result<(), Pa
         object.messages[0].first = chain.first;
     }
     append_to_zorder(package, &shape_ids)
+}
+
+/// Moves drawables to the back of the document's z-order, before the body
+/// text, which draws them behind it (as Pages imports Word's behind-text
+/// drawings).
+fn move_behind_text(package: &mut Package, ids: &[u64]) -> Result<(), PackageError> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let stream = document_stream(package)?;
+    let zorder = message_ref("TP.DrawablesZOrderArchive")?;
+    let Some(object) = stream
+        .objects
+        .iter()
+        .position(|object| first_type(object) == Some(DRAWABLES_ZORDER))
+    else {
+        return Ok(());
+    };
+    let first = stream.objects[object].messages[0].first;
+    let entries: Vec<(u32, Node)> = stream
+        .tree
+        .chain(first)
+        .map(|(_, entry)| (entry.number, entry.value))
+        .collect();
+    let (slot, field) = zorder
+        .slot_named("drawables")
+        .ok_or_else(|| malformed("z-order has no drawables"))?;
+    let mut chain = Chain::new();
+    for id in ids {
+        stream
+            .tree
+            .push_known(
+                &mut chain,
+                zorder,
+                slot,
+                field,
+                field.number,
+                Node::Reference(*id),
+            )
+            .map_err(tree_error)?;
+    }
+    for (number, value) in entries {
+        if number == field.number && matches!(value, Node::Reference(id) if ids.contains(&id)) {
+            continue;
+        }
+        let slot = zorder
+            .slot(number)
+            .ok_or_else(|| malformed("z-order field without slot"))?;
+        let known = zorder
+            .field_at(slot)
+            .ok_or_else(|| malformed("z-order slot out of range"))?;
+        stream
+            .tree
+            .push_known(&mut chain, zorder, slot, known, number, value)
+            .map_err(tree_error)?;
+    }
+    stream.objects[object].messages[0].first = chain.first;
+    Ok(())
 }
 
 /// Lists drawables on top in the document's z-order.
@@ -10829,6 +11100,9 @@ fn column_entries(
 
 // ----- comments -----
 
+/// A comment's place in the body: (start, length, highlight).
+type CommentRange = (u32, u32, u64);
+
 /// A character-indexed attribute table: (offset, object or a gap).
 type AttributeEntries = Vec<(u32, Option<u64>)>;
 
@@ -10938,8 +11212,9 @@ fn write_annotation_authors(
     Ok(out)
 }
 
-/// A comment storage and a highlight for each comment on the body text, and
-/// the body's highlight table: each range's highlight, gaps between, from 0.
+/// A comment storage and a highlight for each comment on the body text
+/// (its replies chained from its storage), and the body's overlapping
+/// highlight table: each comment's (start, length, highlight).
 fn build_comment_objects(
     tree: &mut Tree,
     document: &Document,
@@ -10947,49 +11222,29 @@ fn build_comment_objects(
     authors: &[u64],
     text_length: u32,
     next_id: &mut u64,
-) -> Result<(Vec<Object>, AttributeEntries), PackageError> {
+) -> Result<(Vec<Object>, Vec<CommentRange>), PackageError> {
     if ranges.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
     let storage_ref = message_ref("TSD.CommentStorageArchive")?;
     let date_ref = child_message(storage_ref, "creation_date")?;
     let highlight_ref = message_ref("TSWP.HighlightArchive")?;
-    // Ranges in order, without overlaps (a later one cuts an earlier one
-    // short), each at least one character long.
-    let mut ordered: Vec<(u32, u32, Id)> = ranges
-        .iter()
-        .map(|(start, end, id)| {
-            let (start, end) = if end > start {
-                (*start, *end)
-            } else if *start < text_length {
-                (*start, start + 1)
-            } else {
-                (start.saturating_sub(1), *start)
-            };
-            (start, end, *id)
-        })
-        .collect();
-    ordered.sort_by_key(|(start, _, _)| *start);
-    for index in 1..ordered.len() {
-        let next_start = ordered[index].0;
-        if ordered[index - 1].1 > next_start {
-            ordered[index - 1].1 = next_start;
-        }
-    }
     let mut objects = Vec::new();
-    let mut entries: Vec<(u32, Option<u64>)> = Vec::new();
-    for (start, end, id) in ordered {
+    let mut entries = Vec::new();
+    // A comment storage, its replies' storages chained from it first.
+    let storage_for = |tree: &mut Tree,
+                       objects: &mut Vec<Object>,
+                       id: Id,
+                       replies: Option<u64>,
+                       next_id: &mut u64|
+     -> Result<Option<u64>, PackageError> {
         let (Some(comment), Some(author)) =
             (document.comments.get(id as usize), authors.get(id as usize))
         else {
-            continue;
+            return Ok(None);
         };
-        if end <= start {
-            continue;
-        }
         let storage_id = *next_id;
-        let highlight_id = *next_id + 1;
-        *next_id += 2;
+        *next_id += 1;
         let span = tree
             .push_bytes(comment.text.as_bytes())
             .map_err(tree_error)?;
@@ -11013,8 +11268,19 @@ fn build_comment_objects(
             "author",
             Node::Reference(*author),
         )?;
+        let mut refs = vec![*author];
+        if let Some(reply) = replies {
+            push_field(
+                tree,
+                &mut chain,
+                storage_ref,
+                "replies",
+                Node::Reference(reply),
+            )?;
+            refs.push(reply);
+        }
         let info = build_archive_info(tree, storage_id, COMMENT_STORAGE)?;
-        add_object_references(tree, info, &[*author])?;
+        add_object_references(tree, info, &refs)?;
         objects.push(Object {
             identifier: storage_id,
             info,
@@ -11023,6 +11289,41 @@ fn build_comment_objects(
                 first: chain.first,
             }],
         });
+        Ok(Some(storage_id))
+    };
+    for (start, end, id) in ranges {
+        if document
+            .comments
+            .get(*id as usize)
+            .is_none_or(|comment| comment.reply_to.is_some())
+        {
+            continue;
+        }
+        // At least one character, within the text.
+        let start = (*start).min(text_length.saturating_sub(1));
+        let length = end.saturating_sub(start).max(1).min(text_length - start);
+        if length == 0 {
+            continue;
+        }
+        // The thread's replies, latest first, each storage pointing at the
+        // one after it.
+        let replies: Vec<Id> = document
+            .comments
+            .iter()
+            .enumerate()
+            .filter(|(_, comment)| comment.reply_to == Some(*id))
+            .map(|(index, _)| index as Id)
+            .collect();
+        let mut next_reply = None;
+        for reply in replies.iter().rev() {
+            next_reply =
+                storage_for(tree, &mut objects, *reply, next_reply, next_id)?.or(next_reply);
+        }
+        let Some(storage_id) = storage_for(tree, &mut objects, *id, next_reply, next_id)? else {
+            continue;
+        };
+        let highlight_id = *next_id;
+        *next_id += 1;
         // A random (version 4) UUID, as Pages gives each highlight.
         let uuid = fresh_uuid(highlight_id);
         let span = tree.push_bytes(&uuid).map_err(tree_error)?;
@@ -11051,15 +11352,9 @@ fn build_comment_objects(
                 first: chain.first,
             }],
         });
-        if entries.last().is_some_and(|(at, _)| *at == start) {
-            entries.pop();
-        }
-        if entries.is_empty() && start > 0 {
-            entries.push((0, None));
-        }
-        entries.push((start, Some(highlight_id)));
-        entries.push((end, None));
+        entries.push((start, length, highlight_id));
     }
+    entries.sort_by_key(|(start, _, _)| *start);
     Ok((objects, entries))
 }
 
@@ -11437,4 +11732,32 @@ fn build_change_objects(
     }
     add_object_references(&mut stream.tree, document_info, &session_ids)?;
     Ok(changes)
+}
+
+/// Every block of a table's cells, in order.
+fn table_blocks(table: &crate::document::Table) -> Vec<Block> {
+    table
+        .rows
+        .iter()
+        .flat_map(|row| row.cells.iter())
+        .flat_map(|cell| cell.blocks.iter().cloned())
+        .collect()
+}
+
+/// The comments whose markers blocks hold, nested tables included.
+fn comments_in(blocks: &[Block], out: &mut Vec<Id>) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                for run in &paragraph.runs {
+                    if let Inline::CommentStart(id) | Inline::CommentEnd(id) = run.content
+                        && !out.contains(&id)
+                    {
+                        out.push(id);
+                    }
+                }
+            }
+            Block::Table(table) => comments_in(&table_blocks(table), out),
+        }
+    }
 }

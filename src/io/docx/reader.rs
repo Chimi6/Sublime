@@ -85,6 +85,8 @@ pub fn read_docx(bytes: &[u8]) -> Result<Document, DocxError> {
         comments: Vec::new(),
         ranged_comments: Vec::new(),
         page_part: None,
+        pending_anchors: Vec::new(),
+        last_frame: None,
         drawing_layout: DrawingLayout::default(),
         floating_layouts: Vec::new(),
         pending_blocks: Vec::new(),
@@ -196,7 +198,7 @@ struct ParagraphHeader {
 
 /// A text frame: where it is placed from, its offset or alignment on each
 /// axis, and its size, in points (a size of `None` fits the text).
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 struct Frame {
     horizontal: Option<AnchorBase>,
     vertical: Option<AnchorBase>,
@@ -255,6 +257,10 @@ struct Reader<'a> {
     pending_floating: Vec<(usize, AnchorBase, AnchorBase)>,
     /// Blocks a paragraph's drawings leave to follow the paragraph.
     pending_blocks: Vec<Block>,
+    /// Anchors of body frames, for the paragraph after them.
+    pending_anchors: Vec<Run>,
+    /// The frame the previous paragraph was set in, and its box.
+    last_frame: Option<(Frame, usize)>,
     /// The header or footer being read, for the drawings it holds.
     page_part: Option<crate::document::PagePart>,
     /// How the drawing being read is placed and sized relative to the page.
@@ -734,6 +740,7 @@ impl Reader<'_> {
                 initials: attribute(&attributes, "w:initials").map(str::to_string),
                 date: attribute(&attributes, "w:date").map(str::to_string),
                 text: String::new(),
+                reply_to: None,
             };
             let anchoring = std::mem::replace(&mut self.anchoring, false);
             let blocks = self.read_blocks(&mut reader, "w:comment");
@@ -750,6 +757,78 @@ impl Reader<'_> {
             self.document
                 .comments
                 .push(crate::document::Comment { text, ..comment });
+        }
+        self.read_comment_threads(&text);
+    }
+
+    /// Word's comment threads (`commentsExtended.xml`): a comment's last
+    /// paragraph id, and the id of the comment it replies to.
+    fn read_comment_threads(&mut self, comments: &str) {
+        let part = format!("{}commentsExtended.xml", self.base);
+        let Some(extended) = self.part_text(&part) else {
+            return;
+        };
+        // Each comment's last paragraph id.
+        let mut last_paragraph: Vec<(i64, String)> = Vec::new();
+        let mut reader = XmlReader::new(comments);
+        let mut current: Option<i64> = None;
+        while let Some(event) = reader.next() {
+            if let XmlEvent::Start {
+                name, attributes, ..
+            } = event
+            {
+                match name {
+                    "w:comment" => {
+                        current = attribute(&attributes, "w:id").and_then(|id| id.parse().ok());
+                    }
+                    "w:p" => {
+                        if let (Some(id), Some(paragraph)) =
+                            (current, attribute(&attributes, "w14:paraId"))
+                        {
+                            last_paragraph.retain(|(known, _)| *known != id);
+                            last_paragraph.push((id, paragraph.to_string()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let comment_of = |paragraph: &str| {
+            last_paragraph
+                .iter()
+                .find(|(_, known)| known == paragraph)
+                .map(|(id, _)| *id)
+        };
+        let mut threads: Vec<(i64, i64)> = Vec::new();
+        let mut reader = XmlReader::new(&extended);
+        while let Some(event) = reader.next() {
+            let XmlEvent::Start {
+                name: "w15:commentEx",
+                attributes,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            if let (Some(child), Some(parent)) = (
+                attribute(&attributes, "w15:paraId").and_then(comment_of),
+                attribute(&attributes, "w15:paraIdParent").and_then(comment_of),
+            ) {
+                threads.push((child, parent));
+            }
+        }
+        for (child, parent) in threads {
+            let model = |word: i64| {
+                self.comments
+                    .iter()
+                    .find(|(known, _)| *known == word)
+                    .map(|(_, id)| *id)
+            };
+            if let (Some(child), Some(parent)) = (model(child), model(parent))
+                && let Some(comment) = self.document.comments.get_mut(child as usize)
+            {
+                comment.reply_to = Some(parent);
+            }
         }
     }
 
@@ -839,7 +918,15 @@ impl Reader<'_> {
         }
     }
 
-    fn finish_section(&mut self, header: SectionHeader, blocks: Vec<Block>) {
+    fn finish_section(&mut self, header: SectionHeader, mut blocks: Vec<Block>) {
+        // A frame ending the section anchors in a paragraph of its own.
+        if !self.pending_anchors.is_empty() {
+            blocks.push(Block::Paragraph(Paragraph {
+                runs: std::mem::take(&mut self.pending_anchors),
+                ..Paragraph::default()
+            }));
+        }
+        self.last_frame = None;
         let mut headers = PageVariants::default();
         let mut footers = PageVariants::default();
         for (is_header, kind, id) in &header.references {
@@ -1064,8 +1151,11 @@ impl Reader<'_> {
                             });
                         link = target.map(|target| self.document.intern_link(&target));
                     }
+                    // A reply shares its parent's range: no markers of its own.
                     "w:commentRangeStart" | "w:commentRangeEnd" => {
-                        if let Some(comment) = self.comment_for(&attributes) {
+                        if let Some(comment) = self.comment_for(&attributes).filter(|comment| {
+                            self.document.comments[*comment as usize].reply_to.is_none()
+                        }) {
                             let start = name == "w:commentRangeStart";
                             if start {
                                 self.ranged_comments.push(comment);
@@ -1120,9 +1210,31 @@ impl Reader<'_> {
         // A framed paragraph in a header or footer (a page number beside the
         // text, say) is a box of its own there, drawn on each of its pages.
         if let (Some(frame), Some(part)) = (frame, self.page_part) {
-            self.frame_paragraph(paragraph, frame, part);
+            self.frame_paragraph(paragraph, frame, Some(part));
             blocks.append(&mut self.pending_blocks);
             return section;
+        }
+        // One in the body's text is a box too: moving with the paragraph
+        // after it when placed from the text, else on its page.
+        // (A frame at the text's own left edge with no size of its own lays
+        // out as the paragraph it is, so it stays one.)
+        if let Some(frame) = frame.filter(|frame| {
+            frame.x != 0.0
+                || frame.align.0.is_some()
+                || frame.width.is_some()
+                || frame.horizontal == Some(AnchorBase::Page)
+                || matches!(frame.vertical, Some(AnchorBase::Page | AnchorBase::Margin))
+        }) && self.anchoring
+        {
+            self.frame_paragraph(paragraph, frame, None);
+            blocks.append(&mut self.pending_blocks);
+            return section;
+        }
+        self.last_frame = None;
+        // A frame waiting for a paragraph to move with anchors here.
+        if !self.pending_anchors.is_empty() {
+            let anchors = std::mem::take(&mut self.pending_anchors);
+            paragraph.runs.splice(0..0, anchors);
         }
         blocks.push(Block::Paragraph(paragraph));
         // What the paragraph's drawings hold that is not inline (a chart's
@@ -1137,7 +1249,7 @@ impl Reader<'_> {
         &mut self,
         paragraph: Paragraph,
         frame: Frame,
-        part: crate::document::PagePart,
+        part: Option<crate::document::PagePart>,
     ) {
         let size = paragraph
             .runs
@@ -1158,7 +1270,21 @@ impl Reader<'_> {
             .width
             .unwrap_or(characters.max(1) as f32 * size * 0.6 + 8.0);
         let height = frame.height.unwrap_or(size * 1.3 + 8.0);
+        // Consecutive paragraphs framed alike share one frame, as in Word.
+        if let Some((last, index)) = self.last_frame
+            && last == frame
+            && let Some(object) = self.document.floating.get_mut(index)
+            && let FloatingContent::TextBox { blocks, .. } = &mut object.content
+        {
+            blocks.push(Block::Paragraph(paragraph));
+            object.width = object.width.max(width);
+            if frame.height.is_none() {
+                object.height += height - 8.0;
+            }
+            return;
+        }
         let index = self.document.floating.len();
+        self.last_frame = Some((frame, index));
         self.document.floating.push(FloatingObject {
             page: self.page,
             x: frame.x,
@@ -1175,12 +1301,27 @@ impl Reader<'_> {
             },
             follows_text: false,
             wrap: crate::document::TextWrap::None,
-            repeats: Some(part),
+            repeats: part,
+            behind: false,
         });
+        let vertical = frame.vertical.unwrap_or(AnchorBase::Line);
+        // In the body, one placed from the text moves with the paragraph
+        // that follows it.
+        if part.is_none() && vertical == AnchorBase::Line {
+            self.document.floating[index].follows_text = true;
+            self.document.floating[index].wrap = crate::document::TextWrap::Around;
+            self.pending_anchors.push(Run {
+                style: None,
+                properties: None,
+                link: None,
+                revision: None,
+                content: Inline::Anchor(index as Id),
+            });
+        }
         self.pending_floating.push((
             index,
             frame.horizontal.unwrap_or(AnchorBase::Margin),
-            frame.vertical.unwrap_or(AnchorBase::Line),
+            vertical,
         ));
         self.floating_layouts.push((
             index,
@@ -1380,6 +1521,7 @@ impl Reader<'_> {
                     "w:commentReference" => {
                         if let Some(comment) = self.comment_for(&attributes)
                             && !self.ranged_comments.contains(&comment)
+                            && self.document.comments[comment as usize].reply_to.is_none()
                         {
                             for content in
                                 [Inline::CommentStart(comment), Inline::CommentEnd(comment)]
@@ -2131,6 +2273,7 @@ impl Reader<'_> {
         let mut description: Option<String> = None;
         let mut anchored = false;
         let mut wrap = crate::document::TextWrap::Around;
+        let mut behind = false;
         self.drawing_layout = DrawingLayout::default();
         let mut horizontal = Anchor {
             from: AnchorBase::Margin,
@@ -2169,6 +2312,8 @@ impl Reader<'_> {
         let mut in_line_ref = false;
         let mut style_line: Option<Color> = None;
         let mut scheme: Option<PendingSchemeColor> = None;
+        // The plain colour being read (for its modifiers), by where it goes.
+        let mut rgb_target: Option<ColorTarget> = None;
         while let Some(event) = reader.next() {
             match event {
                 XmlEvent::Start {
@@ -2176,7 +2321,10 @@ impl Reader<'_> {
                     attributes,
                     self_closing,
                 } => match name {
-                    "wp:anchor" => anchored = true,
+                    "wp:anchor" => {
+                        anchored = true;
+                        behind = matches!(attribute(&attributes, "behindDoc"), Some("1" | "true"));
+                    }
                     "wp:wrapNone" => wrap = crate::document::TextWrap::None,
                     "wp:wrapTopAndBottom" => wrap = crate::document::TextWrap::TopAndBottom,
                     "wp:extent" => {
@@ -2387,14 +2535,40 @@ impl Reader<'_> {
                             }
                             _ => attribute(&attributes, "val").and_then(parse_color),
                         };
-                        let target = match (in_shape_properties, in_line) {
-                            (true, true) => &mut line_color,
-                            (true, false) => &mut fill,
-                            _ if in_fill_ref => &mut style_fill,
-                            _ => &mut style_line,
+                        let target_kind = match (in_shape_properties, in_line) {
+                            (true, true) => ColorTarget::Line,
+                            (true, false) => ColorTarget::Fill,
+                            _ if in_fill_ref => ColorTarget::StyleFill,
+                            _ => ColorTarget::StyleLine,
+                        };
+                        let target = match target_kind {
+                            ColorTarget::Line => &mut line_color,
+                            ColorTarget::Fill => &mut fill,
+                            ColorTarget::StyleFill => &mut style_fill,
+                            ColorTarget::StyleLine => &mut style_line,
                         };
                         if target.is_none() {
                             *target = color;
+                            rgb_target = (!self_closing).then_some(target_kind);
+                        }
+                    }
+                    // A see-through colour, over the white page it sits on:
+                    // blended toward white as a tint is.
+                    "a:alpha" if scheme.is_none() && rgb_target.is_some() => {
+                        let opacity = attribute(&attributes, "val")
+                            .and_then(|value| value.parse::<f32>().ok())
+                            .map(|value| value / 100_000.0);
+                        let slot = match rgb_target {
+                            Some(ColorTarget::Line) => &mut line_color,
+                            Some(ColorTarget::Fill) => &mut fill,
+                            Some(ColorTarget::StyleFill) => &mut style_fill,
+                            _ => &mut style_line,
+                        };
+                        if let (Some(color), Some(opacity)) = (*slot, opacity) {
+                            *slot = Some(apply_color_modifiers(
+                                color,
+                                &[("tint".to_string(), opacity.clamp(0.0, 1.0))],
+                            ));
                         }
                     }
                     "a:schemeClr" if in_shape_properties || in_fill_ref || in_line_ref => {
@@ -2420,15 +2594,19 @@ impl Reader<'_> {
                             scheme = Some((name, Vec::new(), target));
                         }
                     }
-                    "a:lumMod" | "a:lumOff" | "a:shade" | "a:tint" if scheme.is_some() => {
+                    "a:lumMod" | "a:lumOff" | "a:shade" | "a:tint" | "a:alpha"
+                        if scheme.is_some() =>
+                    {
                         if let (Some((_, modifiers, _)), Some(value)) = (
                             scheme.as_mut(),
                             attribute(&attributes, "val").and_then(|v| v.parse::<f32>().ok()),
                         ) {
-                            modifiers.push((
-                                name.trim_start_matches("a:").to_string(),
-                                value / 100_000.0,
-                            ));
+                            // Opacity over a white page is a tint.
+                            let name = match name {
+                                "a:alpha" => "tint",
+                                other => other.trim_start_matches("a:"),
+                            };
+                            modifiers.push((name.to_string(), value / 100_000.0));
                         }
                     }
                     "w:txbxContent" if !self_closing => {
@@ -2501,6 +2679,7 @@ impl Reader<'_> {
                         follows_text: false,
                         wrap,
                         repeats: None,
+                        behind,
                     },
                     horizontal.from,
                     vertical.from,
@@ -2552,6 +2731,7 @@ impl Reader<'_> {
                             follows_text: false,
                             wrap,
                             repeats: None,
+                            behind,
                         },
                         horizontal.from,
                         vertical.from,
@@ -2577,6 +2757,7 @@ impl Reader<'_> {
                     follows_text: false,
                     wrap,
                     repeats: None,
+                    behind,
                 },
                 AnchorBase::Page,
                 AnchorBase::Page,
