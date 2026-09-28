@@ -1,6 +1,8 @@
 //! The one list of converters. Adding a converter is one line here plus one
 //! `pub mod` line in `src/converters/mod.rs`.
 
+use std::sync::OnceLock;
+
 use crate::converter::Converter;
 use crate::converters::csv_to_json;
 use crate::converters::csv_to_xlsx;
@@ -13,6 +15,7 @@ use crate::converters::html_to_markdown::HtmlToMarkdown;
 use crate::converters::html_to_pages::HtmlToPages;
 use crate::converters::html_to_text::HtmlToText;
 use crate::converters::hub;
+use crate::converters::image;
 use crate::converters::json_to_csv;
 use crate::converters::json_to_pages::JsonToPages;
 use crate::converters::json_to_toml::JsonToToml;
@@ -29,18 +32,22 @@ use crate::converters::pages_to_html::PagesToHtml;
 use crate::converters::pages_to_json::PagesToJson;
 use crate::converters::pages_to_markdown::PagesToMarkdown;
 use crate::converters::pages_to_text::PagesToText;
+use crate::converters::pdf_to_document;
+use crate::converters::pdf_to_text::PdfToText;
 use crate::converters::rows;
+use crate::converters::rows_document;
 use crate::converters::text_to_docx::TextToDocx;
 use crate::converters::text_to_html::TextToHtml;
 use crate::converters::text_to_markdown::TextToMarkdown;
 use crate::converters::text_to_pages::TextToPages;
+use crate::converters::to_pdf;
 use crate::converters::toml_to_json::TomlToJson;
 use crate::converters::xlsx_to_csv;
 use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 52] = [
+static CONVERTERS: [&dyn Converter; 65] = [
     &csv_to_json::CSV_TO_JSON,
     &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
@@ -67,6 +74,15 @@ static CONVERTERS: [&dyn Converter; 52] = [
     &TextToMarkdown,
     &TextToHtml,
     &TextToDocx,
+    &PdfToText,
+    &pdf_to_document::PDF_TO_MARKDOWN,
+    &pdf_to_document::PDF_TO_HTML,
+    &pdf_to_document::PDF_TO_DOCX,
+    &to_pdf::MARKDOWN_TO_PDF,
+    &to_pdf::HTML_TO_PDF,
+    &to_pdf::TEXT_TO_PDF,
+    &to_pdf::DOCX_TO_PDF,
+    &to_pdf::PAGES_TO_PDF,
     &TomlToJson,
     &JsonToToml,
     &YamlToJson,
@@ -93,10 +109,22 @@ static CONVERTERS: [&dyn Converter; 52] = [
     &xlsx_to_csv::XLSX_TO_TSV,
     &csv_to_xlsx::CSV_TO_XLSX,
     &csv_to_xlsx::TSV_TO_XLSX,
+    &rows_document::CSV_TO_MARKDOWN,
+    &rows_document::TSV_TO_MARKDOWN,
+    &rows_document::MARKDOWN_TO_CSV,
+    &rows_document::MARKDOWN_TO_TSV,
 ];
 
+/// The listed converters and the generated image pairs, gathered once.
 pub fn all_converters() -> &'static [&'static dyn Converter] {
-    &CONVERTERS
+    static ALL: OnceLock<Vec<&'static dyn Converter>> = OnceLock::new();
+    ALL.get_or_init(|| {
+        let mut all: Vec<&'static dyn Converter> = CONVERTERS.to_vec();
+        for pair in image::pairs() {
+            all.push(pair);
+        }
+        all
+    })
 }
 
 /// Every format referenced by a registered converter, unique, sorted by id.
@@ -164,18 +192,32 @@ mod tests {
         assert_eq!(
             ids,
             vec![
+                "bmp",
                 "csv",
+                "cur",
                 "docx",
                 "html",
+                "ico",
+                "jpeg",
                 "json",
                 "jsonl",
                 "markdown",
                 "markdown-json",
                 "pages",
                 "pages-json",
+                "pam",
+                "pbm",
+                "pdf",
+                "pgm",
+                "png",
+                "ppm",
+                "qoi",
                 "text",
+                "tga",
+                "tiff",
                 "toml",
                 "tsv",
+                "webp",
                 "xlsx",
                 "xml",
                 "yaml"

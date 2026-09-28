@@ -1,0 +1,24 @@
+Two Columns
+Left column sentence number 1 continues
+here. Left column sentence number 2
+continues here. Left column sentence
+number 3 continues here. Left column
+sentence number 4 continues here. Left
+column sentence number 5 continues here.
+Left column sentence number 6 continues
+here. Left column sentence number 7
+continues here. Left column sentence
+number 8 continues here.
+
+Right column sentence number 1 goes on
+too. Right column sentence number 2 goes
+on too. Right column sentence number 3
+goes on too. Right column sentence number
+4 goes on too. Right column sentence
+number 5 goes on too. Right column
+sentence number 6 goes on too. Right
+column sentence number 7 goes on too.
+Right column sentence number 8 goes on
+too.
+
+

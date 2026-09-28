@@ -119,9 +119,12 @@ impl fmt::Display for Location {
     }
 }
 
-/// A readable source that can restart from the beginning.
+/// A readable source that can restart from the beginning, or read from
+/// any offset (a bottom-up BMP reads its rows from the end).
 pub trait RewindableRead: Read + Send {
     fn rewind(&mut self) -> io::Result<()>;
+    /// Moves to `position` bytes from the start.
+    fn seek_to(&mut self, position: u64) -> io::Result<()>;
 }
 
 impl RewindableRead for File {
@@ -129,11 +132,21 @@ impl RewindableRead for File {
         self.seek(SeekFrom::Start(0))?;
         Ok(())
     }
+
+    fn seek_to(&mut self, position: u64) -> io::Result<()> {
+        self.seek(SeekFrom::Start(position))?;
+        Ok(())
+    }
 }
 
 impl<T: AsRef<[u8]> + Send> RewindableRead for Cursor<T> {
     fn rewind(&mut self) -> io::Result<()> {
         self.set_position(0);
+        Ok(())
+    }
+
+    fn seek_to(&mut self, position: u64) -> io::Result<()> {
+        self.set_position(position);
         Ok(())
     }
 }
@@ -192,6 +205,13 @@ impl RewindableRead for Rewound<'_> {
             Rewound::Buffered(cursor) => RewindableRead::rewind(cursor),
         }
     }
+
+    fn seek_to(&mut self, position: u64) -> io::Result<()> {
+        match self {
+            Rewound::Borrowed(reader) => reader.seek_to(position),
+            Rewound::Buffered(cursor) => cursor.seek_to(position),
+        }
+    }
 }
 
 impl<'a> Input<'a> {
@@ -244,6 +264,13 @@ pub struct ConvertOptions {
     /// The worksheet to read or the name to give the one written: a sheet
     /// name or a 1-based number; the first sheet when absent.
     pub sheet: Option<String>,
+    /// 1 to 100: the quality a lossy image writer encodes at (85 for
+    /// JPEG when absent), or a lossless writer's effort (WebP: 50 and
+    /// under fastest, 90 and up smallest).
+    pub quality: Option<u8>,
+    /// The page to read from a paged document (PDF): 1-based, the first
+    /// when absent.
+    pub page: Option<u32>,
 }
 
 /// One edge in the format graph. Implement this and add one line to

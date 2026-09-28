@@ -34,6 +34,120 @@ pub static XLSX: Format = Format {
     category: Category::Data,
 };
 
+pub static PNG: Format = Format {
+    id: "png",
+    display_name: "PNG image",
+    extensions: &["png"],
+    magic: Some(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']),
+    category: Category::Image,
+};
+
+pub static JPEG: Format = Format {
+    id: "jpeg",
+    display_name: "JPEG image",
+    extensions: &["jpg", "jpeg", "jpe"],
+    magic: Some(&[0xFF, 0xD8, 0xFF]),
+    category: Category::Image,
+};
+
+pub static WEBP: Format = Format {
+    id: "webp",
+    display_name: "WebP image",
+    extensions: &["webp"],
+    magic: Some(b"RIFF????WEBP"),
+    category: Category::Image,
+};
+
+pub static PBM: Format = Format {
+    id: "pbm",
+    display_name: "Netpbm bitmap (PBM)",
+    extensions: &["pbm"],
+    magic: Some(b"P4"),
+    category: Category::Image,
+};
+
+pub static PGM: Format = Format {
+    id: "pgm",
+    display_name: "Netpbm graymap (PGM)",
+    extensions: &["pgm"],
+    magic: Some(b"P5"),
+    category: Category::Image,
+};
+
+pub static PPM: Format = Format {
+    id: "ppm",
+    display_name: "Netpbm pixmap (PPM)",
+    extensions: &["ppm", "pnm"],
+    magic: Some(b"P6"),
+    category: Category::Image,
+};
+
+pub static PAM: Format = Format {
+    id: "pam",
+    display_name: "Netpbm arbitrary map (PAM)",
+    extensions: &["pam"],
+    magic: Some(b"P7"),
+    category: Category::Image,
+};
+
+pub static TGA: Format = Format {
+    id: "tga",
+    display_name: "Truevision TGA image",
+    extensions: &["tga", "icb", "vda", "vst"],
+    // No signature at the start; a TGA 2.0 file ends in one.
+    magic: None,
+    category: Category::Image,
+};
+
+pub static ICO: Format = Format {
+    id: "ico",
+    display_name: "Windows icon",
+    extensions: &["ico"],
+    magic: Some(b"\0\0\x01\0"),
+    category: Category::Image,
+};
+
+pub static CUR: Format = Format {
+    id: "cur",
+    display_name: "Windows cursor",
+    extensions: &["cur"],
+    magic: Some(b"\0\0\x02\0"),
+    category: Category::Image,
+};
+
+pub static TIFF: Format = Format {
+    id: "tiff",
+    display_name: "TIFF image",
+    extensions: &["tif", "tiff"],
+    // Little-endian; a big-endian file ("MM\0*") is known by extension.
+    magic: Some(b"II*\0"),
+    category: Category::Image,
+};
+
+pub static PDF: Format = Format {
+    id: "pdf",
+    display_name: "PDF document",
+    extensions: &["pdf"],
+    magic: Some(b"%PDF-"),
+    category: Category::Document,
+};
+
+pub static QOI: Format = Format {
+    id: "qoi",
+    display_name: "QOI image",
+    extensions: &["qoi"],
+    magic: Some(b"qoif"),
+    category: Category::Image,
+};
+
+pub static BMP: Format = Format {
+    id: "bmp",
+    display_name: "Windows bitmap",
+    extensions: &["bmp", "dib"],
+    magic: Some(b"BM"),
+    category: Category::Image,
+};
+
 pub static JSON: Format = Format {
     id: "json",
     display_name: "JSON",

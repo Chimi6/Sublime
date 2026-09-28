@@ -35,7 +35,9 @@ fn crates_markdown_to_docx(input: &str, output: &str) -> Result<(), String> {
     let mut open = false;
     for event in Parser::new_ext(&text, options) {
         match event {
-            Event::Start(Tag::Paragraph) | Event::Start(Tag::Item) | Event::Start(Tag::CodeBlock(_)) => {
+            Event::Start(Tag::Paragraph)
+            | Event::Start(Tag::Item)
+            | Event::Start(Tag::CodeBlock(_)) => {
                 open = true;
             }
             Event::Start(Tag::Heading { level, .. }) => {

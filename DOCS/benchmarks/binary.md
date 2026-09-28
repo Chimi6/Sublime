@@ -30,6 +30,150 @@ a comparison. Startup is implemented in `bench/src/startup.rs`.
 
 ## Results
 
+### 2026-09-27, 0.24.0 with PDF text
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 2539584 | <= 2550000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 2642656 | recorded | n/a |
+| WebAssembly module (bytes) | 1270282 | <= 1300000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 529014 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.340 (spawn 0.690, floor 0.350) | < 1 | PASS |
+
+commit: 786da4a (the release branch, versions bumped)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+### 2026-09-27, 0.23.1 with PDF page sizes and the BMP backward reader
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 2429024 | <= 2550000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 2532064 | recorded | n/a |
+| WebAssembly module (bytes) | 1197387 | <= 1300000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 494657 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.342 (spawn 0.791, floor 0.449) | < 1 | PASS |
+
+commit: 9d76ce0 (the release branch, versions bumped)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+### 2026-09-27, 0.23.0 with images <-> PDF
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 2420008 | <= 2550000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 2519776 | recorded | n/a |
+| WebAssembly module (bytes) | 1194261 | <= 1300000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 493228 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.404 (spawn 0.704, floor 0.300) | < 1 | PASS |
+
+commit: fd64e36 (the release branch, versions bumped)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+### 2026-09-27, 0.22.0 with the image set
+
+commit: a90eb92 (the release branch, versions bumped)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 2312824 | <= 2400000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 2413280 | recorded | n/a |
+| WebAssembly module (bytes) | 1134139 | <= 1200000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 467711 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.367 (spawn 0.704, floor 0.337) | < 1 | PASS |
+
+### 2026-09-27, 0.21.0 with WebP and the lazy deflate
+
+commit: 1029e9a (main before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 2200024 | <= 2250000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 2302624 | recorded | n/a |
+| WebAssembly module (bytes) | 1063134 | <= 1100000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 439263 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | -0.044 (spawn 0.594, floor 0.638) | < 1 | PASS |
+
+### 2026-09-26, 0.20.1 with the JPEG margin work
+
+commit: 78a2973 (the merge of the margins branch, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 2064496 | <= 2100000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 2167456 | recorded | n/a |
+| WebAssembly module (bytes) | 982748 | <= 1050000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 405503 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.236 (spawn 0.538, floor 0.302) | < 1 | PASS |
+
+### 2026-09-26, 0.20.0 with JPEG
+
+commit: d88773b (the merge of the JPEG branch, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 2060344 | <= 2100000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 2159264 | recorded | n/a |
+| WebAssembly module (bytes) | 982356 | <= 1050000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 405423 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | -0.028 (spawn 0.560, floor 0.588) | < 1 | PASS |
+
+The startup figure is below zero: our spawn and the `/bin/true` floor
+landed within noise of each other in this run.
+
+### 2026-09-26, 0.19.0 with the image category
+
+commit: 611f7ca (the merge of the streaming BMP reader, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 1960208 | <= 2000000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 2060960 | recorded | n/a |
+| WebAssembly module (bytes) | 937689 | <= 1000000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 386563 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.229 (spawn 0.530, floor 0.301) | < 1 | PASS |
+
+### 2026-09-26, 0.18.0 with batch conversion
+
+commit: b222f32 (the merge of the batch branch, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 1868064 | <= 1900000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 1966752 | recorded | n/a |
+| WebAssembly module (bytes) | 867813 | <= 900000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 349654 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | -0.029 (spawn 0.528, floor 0.557) | < 1 | PASS |
+
+Batch conversion (threads, the directory walk, the glob matcher, the
+part-file writer, three events) cost 17 KB of binary after a first
+draft on `std::sync::mpsc` was replaced by a mutex and a condition
+variable to save 10 KB; the per-category map rendering before it cost
+4 KB. The budget went to 1.9 MB (changelog).
+
+### 2026-09-25, 0.17.0 with the rows-to-document bridge
+
+commit: 0b33385 (the merge of the bridge branch, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 1796800 | <= 1800000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 1897120 | recorded | n/a |
+| WebAssembly module (bytes) | 867742 | <= 900000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 349443 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | -0.490 (spawn 0.823, floor 1.313) | < 1 | PASS |
+
+The bridge's two converter pairs and the Markdown changes cost 10 KB
+of binary and 5 KB of module; the binary sits 3 KB under its budget,
+so the next feature raises it. The startup row's negative value is the
+spawn floor swinging on a busy machine, not the binary.
+
 ### 2026-09-25, 0.16.0 with Excel workbooks
 
 commit: 8381f93 (the merge of the xlsx branch, before the version bump)
@@ -246,3 +390,13 @@ read as "under a millisecond", not as a trend.
 | 0.14.0 | 1,743,184 | 1,843,872 | 1,750,000 | 839,320 | 850,000 |
 | 0.15.0 | 1,755,616 | 1,856,160 | 1,800,000 | 845,902 | 850,000 |
 | 0.16.0 | 1,786,840 | 1,888,928 | 1,800,000 | 863,102 | 900,000 |
+| 0.17.0 | 1,796,800 | 1,897,120 | 1,800,000 | 867,742 | 900,000 |
+| 0.18.0 | 1,868,064 | 1,966,752 | 1,900,000 | 867,813 | 900,000 |
+| 0.19.0 | 1,960,208 | 2,060,960 | 2,000,000 | 937,689 | 1,000,000 |
+| 0.20.0 | 2,060,344 | 2,159,264 | 2,100,000 | 982,356 | 1,050,000 |
+| 0.20.1 | 2,064,496 | 2,167,456 | 2,100,000 | 982,748 | 1,050,000 |
+| 0.21.0 | 2,200,024 | 2,302,624 | 2,250,000 | 1,063,134 | 1,100,000 |
+| 0.22.0 | 2,312,824 | 2,413,280 | 2,400,000 | 1,134,139 | 1,200,000 |
+| 0.23.0 | 2,420,008 | 2,519,776 | 2,550,000 | 1,194,261 | 1,300,000 |
+| 0.23.1 | 2,429,024 | 2,532,064 | 2,550,000 | 1,197,387 | 1,300,000 |
+| 0.24.0 | 2,539,584 | 2,642,656 | 2,550,000 | 1,270,282 | 1,300,000 |

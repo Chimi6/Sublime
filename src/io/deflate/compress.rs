@@ -1,7 +1,8 @@
 //! DEFLATE compression: LZ77 over a 32 KiB window with hash chains, then
 //! dynamic Huffman blocks, falling back to stored blocks when they would
-//! be smaller. Written for a good ratio at a sensible speed, not for the
-//! last percent of either.
+//! be smaller. The default level is zlib's lazy evaluation with a price
+//! check on short matches; it writes zlib level 6's ratio or better at
+//! about its speed.
 
 use super::inflate::{CODE_LENGTH_ORDER, DISTANCE_BASE, DISTANCE_EXTRA, LENGTH_BASE, LENGTH_EXTRA};
 
@@ -10,17 +11,15 @@ const MIN_MATCH: usize = 3;
 const MAX_MATCH: usize = 258;
 const HASH_BITS: u32 = 15;
 const HASH_SIZE: usize = 1 << HASH_BITS;
-/// Positions examined per match search.
-const MAX_CHAIN: usize = 48;
 /// Symbols per block before its Huffman codes are rebuilt.
 const BLOCK_SYMBOLS: usize = 32 * 1024;
 const LITERALS: usize = 286;
 const DISTANCES: usize = 30;
 const END_OF_BLOCK: u16 = 256;
 
-/// How hard the matcher looks: `Default` walks 48 chain positions for a
-/// zlib level-6 ratio; `Fast` walks 4, for output nobody keeps compressed
-/// long (a Word body a reader re-saves), at two to three times the speed.
+/// How hard the matcher looks: `Default` is lazy matching over chains of
+/// up to 32 positions; `Fast` is greedy on the first candidate, for
+/// output nobody keeps compressed long (a Word body a reader re-saves).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Level {
     Fast,
@@ -53,12 +52,12 @@ pub fn deflate_part(input: &[u8], out: &mut Vec<u8>, level: Level, is_final: boo
         }
         return;
     }
-    let chain_limit = match level {
-        Level::Fast => 1,
-        Level::Default => MAX_CHAIN,
-    };
+    if level == Level::Default {
+        deflate_lazy(input, out, is_final);
+        return;
+    }
     let mut writer = BitWriter::new(out);
-    let mut matcher = Matcher::new(input.len(), chain_limit);
+    let mut matcher = Matcher::new();
     let mut symbols: Vec<Symbol> = Vec::with_capacity(BLOCK_SYMBOLS);
     let mut position = 0usize;
     let mut block_start = 0usize;
@@ -69,10 +68,9 @@ pub fn deflate_part(input: &[u8], out: &mut Vec<u8>, level: Level, is_final: boo
                 length: length as u16,
                 distance: distance as u16,
             });
-            // The fast level does not index the inside of long matches,
-            // as zlib's fast strategy does not; the next match starts
-            // after them anyway.
-            if level == Level::Default || length <= 8 {
+            // The inside of a long match is not indexed past eight bytes,
+            // as zlib's fast strategy does.
+            if length <= 8 {
                 matcher.insert_range(input, position + 1, position + length);
             }
             position += length;
@@ -101,24 +99,241 @@ pub fn deflate_part(input: &[u8], out: &mut Vec<u8>, level: Level, is_final: boo
     writer.finish();
 }
 
+/// A held match shorter than this is searched past (lazy evaluation);
+/// zlib's 16 searched past the five- to seven-byte matches that fill a
+/// photograph, nearly doubling the searches for 1.5% of size.
+const LAZY_LENGTH: usize = 4;
+/// A match this long ends a search.
+const NICE_LENGTH: usize = 128;
+/// Chain positions walked per search where matches pay (text, flat
+/// images). zlib's 128 bought 0.6% on a real photograph for 40% more
+/// time; libdeflate's middle levels walk about this many.
+const LAZY_CHAIN: usize = 32;
+/// Where accepted matches average under `SHORT` bytes (photographs),
+/// the walk is this long: a longer one found little better, at two to
+/// four times the time.
+const SHORT_CHAIN: usize = 2;
+const SHORT: u32 = 8 * 16;
+/// A three-byte match farther than this costs more than its literals.
+const TOO_FAR: usize = 4096;
+/// Of a maximal match (a run or a long repeat), only this many final
+/// positions are indexed: enough that the next search finds a near
+/// copy, where indexing all of a flat image's runs cost 10 times the
+/// time and indexing none tripled its size.
+const MAXIMAL_TAIL: usize = 8;
+/// The accepted-length average (times 16) under which searches stop at
+/// the first candidate: under a byte means noise, where walking on found
+/// nothing worth its bits.
+const NOISE: u32 = 16;
+/// On noise, one position in this many is searched and the rest written
+/// as literals: a filtered noise photograph deflates in 40% of the time
+/// and a little smaller (literals are what pays there); 16 began to lose
+/// ratio on a real photograph.
+const NOISE_STRIDE: usize = 8;
+
+/// What each symbol cost in the last block written, in bits: the price
+/// list for deciding whether a short match is cheaper than its literals.
+/// On filtered photographs most three- to five-byte matches are not
+/// (literals alone beat zlib's level 6 there by 5%).
+struct Costs {
+    literal: [u8; LITERALS],
+    distance: [u8; DISTANCES],
+}
+
+impl Costs {
+    /// Matches this long are always taken.
+    const SURE: usize = 16;
+
+    fn new() -> Costs {
+        let mut literal = [8u8; LITERALS];
+        for cost in &mut literal[257..] {
+            *cost = 7;
+        }
+        Costs {
+            literal,
+            distance: [5; DISTANCES],
+        }
+    }
+
+    fn learn(&mut self, literal_lengths: &[u8], distance_lengths: &[u8]) {
+        // An unseen symbol is priced as a rare one would be.
+        for (cost, length) in self.literal.iter_mut().zip(literal_lengths) {
+            *cost = if *length == 0 { 14 } else { *length };
+        }
+        for (cost, length) in self.distance.iter_mut().zip(distance_lengths) {
+            *cost = if *length == 0 { 10 } else { *length };
+        }
+    }
+
+    fn worth(&self, length: usize, distance: usize, bytes: &[u8]) -> bool {
+        if length >= Self::SURE {
+            return true;
+        }
+        let (length_code, length_extra, _) = length_symbol(length as u16);
+        let (distance_code, distance_extra, _) = distance_symbol(distance as u16);
+        let match_bits = u32::from(self.literal[usize::from(length_code)])
+            + u32::from(length_extra)
+            + u32::from(self.distance[usize::from(distance_code)])
+            + u32::from(distance_extra);
+        let literal_bits: u32 = bytes
+            .iter()
+            .map(|byte| u32::from(self.literal[usize::from(*byte)]))
+            .sum();
+        match_bits < literal_bits
+    }
+}
+
+/// The default level: zlib's lazy evaluation (`deflate_slow`). Every
+/// position is indexed; each match found is held while the next position
+/// is searched for a longer one.
+fn deflate_lazy(input: &[u8], out: &mut Vec<u8>, is_final: bool) {
+    let mut accepted = NOISE;
+    let mut costs = Costs::new();
+    let mut writer = BitWriter::new(out);
+    let mut matcher = Matcher::new();
+    let mut symbols: Vec<Symbol> = Vec::with_capacity(BLOCK_SYMBOLS);
+    let mut block_start = 0usize;
+    let mut position = 0usize;
+    // The match found at the previous position, and whether that
+    // position's byte is still owed (as a literal or the match's start).
+    let mut previous_length = 0usize;
+    let mut previous_distance = 0usize;
+    let mut pending = false;
+    let total = input.len();
+    while position < total {
+        // On noise (nothing accepted lately) most positions are written
+        // as literals without a search: a search every `NOISE_STRIDE`
+        // positions keeps the average current, so matching resumes when
+        // the data turns compressible.
+        if accepted < NOISE && previous_length < MIN_MATCH && position % NOISE_STRIDE != 0 {
+            if pending {
+                symbols.push(Symbol::Literal(input[position - 1]));
+                pending = false;
+            }
+            symbols.push(Symbol::Literal(input[position]));
+            position += 1;
+            previous_length = 0;
+            if symbols.len() >= BLOCK_SYMBOLS {
+                let (literal_lengths, distance_lengths) =
+                    write_block(&mut writer, &input[block_start..position], &symbols, false);
+                costs.learn(&literal_lengths, &distance_lengths);
+                symbols.clear();
+                block_start = position;
+            }
+            continue;
+        }
+        // Chains hash four bytes, as libdeflate's do: a three-byte hash
+        // chained every short repeat of a photograph, walked for matches
+        // the price check then refused (4% larger and slower).
+        let candidate = if position + 4 <= total {
+            let hash = Matcher::hash4(input, position);
+            matcher.link(hash, position)
+        } else {
+            u32::MAX
+        };
+        let mut length = 0;
+        let mut distance = 0;
+        if previous_length < LAZY_LENGTH {
+            let chain = if accepted < NOISE {
+                1
+            } else if accepted < SHORT {
+                SHORT_CHAIN
+            } else {
+                LAZY_CHAIN
+            };
+            (length, distance) = matcher.longest(
+                input,
+                position,
+                candidate,
+                previous_length,
+                chain,
+                NICE_LENGTH,
+            );
+            if length == MIN_MATCH && distance > TOO_FAR {
+                length = 0;
+            }
+            if length >= MIN_MATCH
+                && !costs.worth(length, distance, &input[position..position + length])
+            {
+                length = 0;
+            }
+            // A running average of accepted match lengths (times 16): on
+            // noise, where nothing past the first candidate pays, the walk
+            // stops there.
+            accepted = accepted - accepted / 16 + length as u32;
+        }
+        if previous_length >= MIN_MATCH && length <= previous_length {
+            // The held match wins: it starts at the previous position.
+            symbols.push(Symbol::Match {
+                length: previous_length as u16,
+                distance: previous_distance as u16,
+            });
+            let end = position - 1 + previous_length;
+            let index_from = if previous_length == MAX_MATCH {
+                (end - MAXIMAL_TAIL).max(position + 1)
+            } else {
+                position + 1
+            };
+            for inside in index_from..end.min(total) {
+                if inside + 4 <= total {
+                    let hash = Matcher::hash4(input, inside);
+                    matcher.link(hash, inside);
+                }
+            }
+            position = end;
+            previous_length = 0;
+            pending = false;
+        } else {
+            if pending {
+                symbols.push(Symbol::Literal(input[position - 1]));
+            }
+            pending = true;
+            previous_length = length;
+            previous_distance = distance;
+            position += 1;
+        }
+        if symbols.len() >= BLOCK_SYMBOLS {
+            // The block ends before any byte still owed.
+            let block_end = if pending { position - 1 } else { position };
+            let (literal_lengths, distance_lengths) =
+                write_block(&mut writer, &input[block_start..block_end], &symbols, false);
+            costs.learn(&literal_lengths, &distance_lengths);
+            symbols.clear();
+            block_start = block_end;
+        }
+    }
+    if pending {
+        symbols.push(Symbol::Literal(input[total - 1]));
+    }
+    write_block(&mut writer, &input[block_start..], &symbols, is_final);
+    if !is_final {
+        write_stored(&mut writer, &[], false);
+    }
+    writer.finish();
+}
+
 #[derive(Clone, Copy)]
 enum Symbol {
     Literal(u8),
     Match { length: u16, distance: u16 },
 }
 
+/// Finds earlier occurrences through hash chains. The chain links are a
+/// ring of sixteen-bit distances, one slot per window position, so the
+/// walk (a dependent load per step) stays in cache; an array of
+/// positions the size of the input missed on every step.
 struct Matcher {
     head: Vec<u32>,
-    prev: Vec<u32>,
-    chain_limit: usize,
+    /// Distance from a position to the previous one with the same hash,
+    /// indexed by position modulo the window; zero ends the chain.
+    prev: Vec<u16>,
 }
 
 impl Matcher {
-    fn new(length: usize, chain_limit: usize) -> Matcher {
+    fn new() -> Matcher {
         Matcher {
             head: vec![u32::MAX; HASH_SIZE],
-            prev: vec![u32::MAX; length],
-            chain_limit,
+            prev: vec![0; WINDOW],
         }
     }
 
@@ -129,13 +344,31 @@ impl Matcher {
         (word.wrapping_mul(0x9E37_79B1) >> (32 - HASH_BITS)) as usize
     }
 
+    fn hash4(input: &[u8], position: usize) -> usize {
+        let bytes: [u8; 4] = input[position..position + 4].try_into().unwrap();
+        let word = u32::from_le_bytes(bytes);
+        (word.wrapping_mul(0x9E37_79B1) >> (32 - HASH_BITS)) as usize
+    }
+
+    /// Links `position` into its chain; returns the previous head.
+    fn link(&mut self, hash: usize, position: usize) -> u32 {
+        let previous = self.head[hash];
+        let step = if previous == u32::MAX || position - previous as usize >= WINDOW {
+            0
+        } else {
+            (position - previous as usize) as u16
+        };
+        self.prev[position & (WINDOW - 1)] = step;
+        self.head[hash] = position as u32;
+        previous
+    }
+
     fn insert(&mut self, input: &[u8], position: usize) {
         if position + MIN_MATCH > input.len() {
             return;
         }
         let hash = Self::hash(input, position);
-        self.prev[position] = self.head[hash];
-        self.head[hash] = position as u32;
+        self.link(hash, position);
     }
 
     fn insert_range(&mut self, input: &[u8], from: usize, to: usize) {
@@ -144,45 +377,86 @@ impl Matcher {
         }
     }
 
-    /// Longest match ending the chain search early on a maximal one.
+    /// zlib's `longest_match`: walks the chain from `candidate` for a
+    /// match longer than `previous`, at most `chain` steps, stopping at
+    /// `nice`. A candidate is compared in full only when the two bytes
+    /// ending a longer match agree (miniz's and zlib's `scan_end`).
+    fn longest(
+        &self,
+        input: &[u8],
+        position: usize,
+        candidate: u32,
+        previous: usize,
+        mut chain: usize,
+        nice: usize,
+    ) -> (usize, usize) {
+        let limit = (input.len() - position).min(MAX_MATCH);
+        let nice = nice.min(limit);
+        let mut best_length = previous.max(MIN_MATCH - 1);
+        let mut best_distance = 0usize;
+        if candidate == u32::MAX || best_length >= limit {
+            return (0, 0);
+        }
+        let mut start = candidate as usize;
+        loop {
+            let distance = position - start;
+            if distance >= WINDOW || distance == 0 {
+                break;
+            }
+            // The two bytes at the end of a match one longer than the best.
+            let end = best_length - 1;
+            if input[start + end] == input[position + end]
+                && input[start + end + 1] == input[position + end + 1]
+                && input[start] == input[position]
+            {
+                let length = common_prefix(input, start, position, limit);
+                if length > best_length {
+                    best_length = length;
+                    best_distance = distance;
+                    if length >= nice {
+                        break;
+                    }
+                }
+            }
+            chain -= 1;
+            if chain == 0 {
+                break;
+            }
+            let step = usize::from(self.prev[start & (WINDOW - 1)]);
+            if step == 0 || step > start {
+                break;
+            }
+            start -= step;
+        }
+        if best_distance == 0 {
+            (0, 0)
+        } else {
+            (best_length, best_distance)
+        }
+    }
+
+    /// The fast level's search: the chain's first candidate only.
     /// Returns `(length, distance)`; a length under `MIN_MATCH` means none.
     fn find(&mut self, input: &[u8], position: usize) -> (usize, usize) {
         if position + MIN_MATCH > input.len() {
             return (0, 0);
         }
         let hash = Self::hash(input, position);
-        let mut candidate = self.head[hash];
-        self.prev[position] = candidate;
-        self.head[hash] = position as u32;
-        let limit = (input.len() - position).min(MAX_MATCH);
-        let mut best_length = 0usize;
-        let mut best_distance = 0usize;
-        let mut chain = 0usize;
-        while candidate != u32::MAX && chain < self.chain_limit {
-            let start = candidate as usize;
-            let distance = position - start;
-            if distance > WINDOW {
-                break;
-            }
-            if input[start + best_length.min(limit - 1)]
-                == input[position + best_length.min(limit - 1)]
-            {
-                let length = common_prefix(input, start, position, limit);
-                if length > best_length {
-                    best_length = length;
-                    best_distance = distance;
-                    if length == limit {
-                        break;
-                    }
-                }
-            }
-            candidate = self.prev[start];
-            chain += 1;
+        let candidate = self.link(hash, position);
+        if candidate == u32::MAX {
+            return (0, 0);
         }
-        (best_length, best_distance)
+        let start = candidate as usize;
+        let distance = position - start;
+        if distance >= WINDOW {
+            return (0, 0);
+        }
+        let limit = (input.len() - position).min(MAX_MATCH);
+        (common_prefix(input, start, position, limit), distance)
     }
 }
 
+#[inline(always)]
 fn common_prefix(input: &[u8], left: usize, right: usize, limit: usize) -> usize {
     let mut length = 0usize;
     while length + 8 <= limit {
@@ -209,7 +483,7 @@ fn eight(input: &[u8], at: usize) -> [u8; 8] {
 
 /// Canonical code lengths for `frequencies`, none longer than `limit`.
 /// Frequencies are halved and the tree rebuilt until the limit holds.
-fn code_lengths(frequencies: &[u32], limit: u8) -> Vec<u8> {
+pub(crate) fn code_lengths(frequencies: &[u32], limit: u8) -> Vec<u8> {
     let mut weights: Vec<u32> = frequencies.to_vec();
     loop {
         let lengths = huffman_lengths(&weights);
@@ -224,56 +498,64 @@ fn code_lengths(frequencies: &[u32], limit: u8) -> Vec<u8> {
     }
 }
 
-/// Unlimited Huffman code lengths by repeated merging of the two lightest
-/// nodes. A single used symbol gets length one, as deflate requires.
+/// Unlimited Huffman code lengths by merging the two lightest nodes, with
+/// the leaves sorted once and merged nodes kept in a second queue (they
+/// are made in nondecreasing weight order): O(n log n). A single used
+/// symbol gets length one, as deflate requires.
 fn huffman_lengths(weights: &[u32]) -> Vec<u8> {
     let count = weights.len();
     let mut lengths = vec![0u8; count];
-    let mut nodes: Vec<(u64, usize)> = weights
+    let mut leaves: Vec<(u64, usize)> = weights
         .iter()
         .enumerate()
         .filter(|(_, weight)| **weight > 0)
         .map(|(symbol, weight)| (u64::from(*weight), symbol))
         .collect();
-    if nodes.is_empty() {
+    if leaves.is_empty() {
         return lengths;
     }
-    if nodes.len() == 1 {
-        lengths[nodes[0].1] = 1;
+    if leaves.len() == 1 {
+        lengths[leaves[0].1] = 1;
         return lengths;
     }
-    // Node ids: symbols first, then internal nodes; parents track depth.
-    let mut parents: Vec<usize> = vec![usize::MAX; count];
-    let mut next_id = count;
-    let mut heap: Vec<(u64, usize)> = std::mem::take(&mut nodes);
-    while heap.len() > 1 {
-        heap.sort_unstable_by_key(|node| std::cmp::Reverse(node.0));
-        let (weight_a, node_a) = heap.pop().unwrap_or((0, 0));
-        let (weight_b, node_b) = heap.pop().unwrap_or((0, 0));
-        let id = next_id;
-        next_id += 1;
-        parents.push(usize::MAX);
+    leaves.sort_unstable();
+    let leaf_count = leaves.len();
+    // Node ids: leaves 0..leaf_count in sorted order, then merged nodes.
+    let mut parents: Vec<usize> = vec![usize::MAX; 2 * leaf_count - 1];
+    let mut merged: Vec<u64> = Vec::with_capacity(leaf_count - 1);
+    let (mut next_leaf, mut next_merged) = (0usize, 0usize);
+    for id in leaf_count..2 * leaf_count - 1 {
+        let mut take = || {
+            let leaf_first = next_merged >= merged.len()
+                || (next_leaf < leaf_count && leaves[next_leaf].0 <= merged[next_merged]);
+            if leaf_first {
+                next_leaf += 1;
+                (leaves[next_leaf - 1].0, next_leaf - 1)
+            } else {
+                next_merged += 1;
+                (merged[next_merged - 1], leaf_count + next_merged - 1)
+            }
+        };
+        let (weight_a, node_a) = take();
+        let (weight_b, node_b) = take();
         parents[node_a] = id;
         parents[node_b] = id;
-        heap.push((weight_a + weight_b, id));
+        merged.push(weight_a + weight_b);
     }
-    for (symbol, length) in lengths.iter_mut().enumerate() {
-        if weights[symbol] == 0 {
-            continue;
-        }
-        let mut depth = 0u8;
-        let mut node = symbol;
-        while parents[node] != usize::MAX {
-            node = parents[node];
-            depth = depth.saturating_add(1);
-        }
-        *length = depth;
+    // Parents always have higher ids: depths fill from the root down.
+    let root = 2 * leaf_count - 2;
+    let mut depths = vec![0u8; 2 * leaf_count - 1];
+    for id in (0..root).rev() {
+        depths[id] = depths[parents[id]].saturating_add(1);
+    }
+    for (index, (_, symbol)) in leaves.iter().enumerate() {
+        lengths[*symbol] = depths[index];
     }
     lengths
 }
 
 /// Canonical codes from lengths, bit-reversed for LSB-first output.
-fn canonical_codes(lengths: &[u8]) -> Vec<u16> {
+pub(crate) fn canonical_codes(lengths: &[u8]) -> Vec<u16> {
     let mut counts = [0u16; 16];
     for length in lengths {
         counts[usize::from(*length)] += 1;
@@ -308,25 +590,86 @@ fn reverse(code: u16, length: u8) -> u16 {
 
 // ----- blocks -----
 
+/// Length to length-code index, for every length 0 to 258.
+const fn length_codes() -> [u8; MAX_MATCH + 1] {
+    let mut table = [0u8; MAX_MATCH + 1];
+    let mut length = MIN_MATCH;
+    while length <= MAX_MATCH {
+        let mut index = 0;
+        while index + 1 < LENGTH_BASE.len() && LENGTH_BASE[index + 1] as usize <= length {
+            index += 1;
+        }
+        table[length] = index as u8;
+        length += 1;
+    }
+    table
+}
+
+/// Distance to distance-code index: distances 1 to 256 directly, and
+/// beyond that by 128s, since every code boundary past 256 falls on one.
+const fn distance_codes() -> [u8; 512] {
+    let mut table = [0u8; 512];
+    let mut index = 0;
+    while index < DISTANCE_BASE.len() {
+        let first = DISTANCE_BASE[index] as usize;
+        let last = if index + 1 < DISTANCE_BASE.len() {
+            DISTANCE_BASE[index + 1] as usize - 1
+        } else {
+            WINDOW
+        };
+        if last <= 256 {
+            let mut distance = first;
+            while distance <= last {
+                table[distance - 1] = index as u8;
+                distance += 1;
+            }
+        } else {
+            let mut slot = 256 + ((first - 1) >> 7);
+            let end = 256 + ((last - 1) >> 7);
+            while slot <= end {
+                table[slot] = index as u8;
+                slot += 1;
+            }
+        }
+        index += 1;
+    }
+    table
+}
+
+static LENGTH_CODES: [u8; MAX_MATCH + 1] = length_codes();
+static DISTANCE_CODES: [u8; 512] = distance_codes();
+
 fn length_symbol(length: u16) -> (u16, u8, u16) {
-    let index = LENGTH_BASE
-        .iter()
-        .rposition(|base| *base <= length)
-        .unwrap_or(0);
-    let extra_bits = LENGTH_EXTRA[index];
-    (257 + index as u16, extra_bits, length - LENGTH_BASE[index])
+    let index = usize::from(LENGTH_CODES[usize::from(length)]);
+    (
+        257 + index as u16,
+        LENGTH_EXTRA[index],
+        length - LENGTH_BASE[index],
+    )
 }
 
 fn distance_symbol(distance: u16) -> (u16, u8, u16) {
-    let index = DISTANCE_BASE
-        .iter()
-        .rposition(|base| *base <= distance)
-        .unwrap_or(0);
-    let extra_bits = DISTANCE_EXTRA[index];
-    (index as u16, extra_bits, distance - DISTANCE_BASE[index])
+    let slot = if distance <= 256 {
+        usize::from(distance) - 1
+    } else {
+        256 + ((usize::from(distance) - 1) >> 7)
+    };
+    let index = usize::from(DISTANCE_CODES[slot]);
+    (
+        index as u16,
+        DISTANCE_EXTRA[index],
+        distance - DISTANCE_BASE[index],
+    )
 }
 
-fn write_block(writer: &mut BitWriter<'_>, raw: &[u8], symbols: &[Symbol], is_final: bool) {
+/// Writes one block; returns its literal/length and distance code
+/// lengths (the lazy level prices its next block's matches by them).
+fn write_block(
+    writer: &mut BitWriter<'_>,
+    raw: &[u8],
+    symbols: &[Symbol],
+    is_final: bool,
+) -> (Vec<u8>, Vec<u8>) {
     let mut literal_frequencies = [0u32; LITERALS];
     let mut distance_frequencies = [0u32; DISTANCES];
     for symbol in symbols {
@@ -395,7 +738,7 @@ fn write_block(writer: &mut BitWriter<'_>, raw: &[u8], symbols: &[Symbol], is_fi
     let stored_bits = raw.len().div_ceil(65535).max(1) * 40 + raw.len() * 8;
     if stored_bits <= dynamic_bits {
         write_stored(writer, raw, is_final);
-        return;
+        return (literal_lengths, distance_lengths);
     }
 
     writer.bits(u32::from(is_final), 1);
@@ -445,6 +788,7 @@ fn write_block(writer: &mut BitWriter<'_>, raw: &[u8], symbols: &[Symbol], is_fi
         literal_codes[usize::from(END_OF_BLOCK)],
         literal_lengths[usize::from(END_OF_BLOCK)],
     );
+    (literal_lengths, distance_lengths)
 }
 
 fn write_stored(writer: &mut BitWriter<'_>, raw: &[u8], is_final: bool) {
@@ -530,13 +874,17 @@ impl<'o> BitWriter<'o> {
         }
     }
 
+    /// Appends `count` bits (at most 32); whole 32-bit words go out at
+    /// once, where a push per byte was a tenth of a photo's encode.
+    #[inline]
     fn bits(&mut self, value: u32, count: u32) {
         self.buffer |= u64::from(value) << self.count;
         self.count += count;
-        while self.count >= 8 {
-            self.out.push(self.buffer as u8);
-            self.buffer >>= 8;
-            self.count -= 8;
+        if self.count >= 32 {
+            self.out
+                .extend_from_slice(&(self.buffer as u32).to_le_bytes());
+            self.buffer >>= 32;
+            self.count -= 32;
         }
     }
 
@@ -545,11 +893,12 @@ impl<'o> BitWriter<'o> {
     }
 
     fn align(&mut self) {
-        if self.count > 0 {
+        while self.count > 0 {
             self.out.push(self.buffer as u8);
-            self.buffer = 0;
-            self.count = 0;
+            self.buffer >>= 8;
+            self.count = self.count.saturating_sub(8);
         }
+        self.buffer = 0;
     }
 
     fn bytes(&mut self, bytes: &[u8]) {

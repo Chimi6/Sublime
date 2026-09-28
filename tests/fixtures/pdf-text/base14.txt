@@ -1,0 +1,8 @@
+A Plain Title
+The quick brown fox jumps over the lazy dog.
+Accents and marks: café, naïve, ·quoted·, a dash · and ·5.
+Courier follows.
+fixed width 0123
+Times roman line
+
+

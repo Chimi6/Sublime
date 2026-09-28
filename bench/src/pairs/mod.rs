@@ -2,12 +2,14 @@
 //! match arm in `run`; the pair's run script lives in `bench/pairs/`.
 
 pub mod csv_json;
+pub mod csv_markdown;
 pub mod docx_html;
 pub mod docx_markdown;
 pub mod docx_text;
 pub mod html_docx;
 pub mod html_markdown;
 pub mod html_text;
+pub mod ico_png;
 pub mod jsonl_json;
 pub mod markdown_docx;
 pub mod markdown_html;
@@ -18,7 +20,16 @@ pub mod pages_html;
 pub mod pages_json;
 pub mod pages_markdown;
 pub mod pages_text;
+pub mod pdf;
+pub mod pdf_text;
+pub mod jpeg_png;
+pub mod png_bmp;
+pub mod ppm_png;
+pub mod qoi_png;
+pub mod webp_png;
 pub mod text_markdown;
+pub mod tga_png;
+pub mod tiff_png;
 pub mod toml_json;
 pub mod xlsx_csv;
 pub mod xml_json;
@@ -26,6 +37,7 @@ pub mod yaml_json;
 
 pub const NAMES: &[&str] = &[
     "csv-json",
+    "csv-markdown",
     "tsv-json",
     "jsonl-json",
     "docx-markdown",
@@ -47,12 +59,24 @@ pub const NAMES: &[&str] = &[
     "toml-json",
     "xml-json",
     "xlsx-csv",
+    "jpeg-png",
+    "png-bmp",
+    "webp-png",
+    "qoi-png",
+    "ppm-png",
+    "tga-png",
+    "ico-png",
+    "tiff-png",
+    "png-pdf",
+    "jpeg-pdf",
+    "pdf-text",
     "yaml-json",
 ];
 
 pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
     match pair {
         "csv-json" => csv_json::run(mode, args),
+        "csv-markdown" => csv_markdown::run(mode, args),
         "tsv-json" => csv_json::run(mode, args),
         "jsonl-json" => jsonl_json::run(mode, args),
         "docx-markdown" => docx_markdown::run(mode, args),
@@ -74,6 +98,17 @@ pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
         "toml-json" => toml_json::run(mode, args),
         "xml-json" => xml_json::run(mode, args),
         "xlsx-csv" => xlsx_csv::run(mode, args),
+        "jpeg-png" => jpeg_png::run(mode, args),
+        "png-bmp" => png_bmp::run(mode, args),
+        "webp-png" => webp_png::run(mode, args),
+        "qoi-png" => qoi_png::run(mode, args),
+        "ppm-png" => ppm_png::run(mode, args),
+        "tga-png" => tga_png::run(mode, args),
+        "ico-png" => ico_png::run(mode, args),
+        "tiff-png" => tiff_png::run(mode, args),
+        "png-pdf" => pdf::run(mode, args),
+        "jpeg-pdf" => pdf::run(mode, args),
+        "pdf-text" => pdf_text::run(mode, args),
         "yaml-json" => yaml_json::run(mode, args),
         other => Err(format!(
             "unknown pair '{other}'; known: {}",

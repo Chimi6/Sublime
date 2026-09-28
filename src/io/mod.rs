@@ -1,19 +1,30 @@
 //! Our own format readers and writers. Zero dependencies.
 
 pub mod base64;
+pub mod bmp;
 pub mod csv;
 pub mod deflate;
 pub mod docx;
 pub mod html;
+pub mod ico;
 pub mod iwa;
+pub mod jpeg;
 pub mod json;
+pub mod lzw;
 pub mod markdown;
+pub mod netpbm;
 pub mod pages;
+pub mod pdf;
+pub mod png;
 pub mod protobuf;
+pub mod qoi;
 pub mod scan;
 pub mod snappy;
 pub mod text;
+pub mod tga;
+pub mod tiff;
 pub mod toml;
+pub mod webp;
 pub mod xlsx;
 pub mod xml;
 pub mod yaml;
