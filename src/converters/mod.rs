@@ -29,6 +29,7 @@ pub mod pages_to_html;
 pub mod pages_to_json;
 pub mod pages_to_markdown;
 pub mod pages_to_text;
+pub mod pdf_to_document;
 pub mod pdf_to_text;
 pub mod rows;
 pub mod rows_document;
