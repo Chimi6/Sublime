@@ -1,6 +1,6 @@
 # PDF -> Text
 
-**Latest** (2026-09-27, pdf-text branch: every line PASSES)
+**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
 
 ## Purpose
 
@@ -46,6 +46,23 @@ outputs are removed before each run.
   not read those CID fonts); its time there is for less work.
 
 ## Results
+
+### 2026-09-27, 0.24.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pdf -> text, story (2.9 MB, 300 pages): throughput (MB/s of PDF) | 66.8 | 3.9 (pdf-extract); 22.8 (pdftotext) | PASS |
+| pdf -> text, story: peak memory (MB) | 7.4 | 14.1 (pdf-extract); 17.2 (pdftotext) | PASS |
+| pdf -> text, story: words out [extra] | 116700 | 116700 (pdf-extract); 116700 (pdftotext) | n/a |
+| pdf -> text, gs (0.2 MB, 300 pages): throughput (MB/s of PDF) | 4.2 | 2.2 (pdf-extract); 2.1 (pdftotext) | PASS |
+| pdf -> text, gs: peak memory (MB) | 5.8 | 8.5 (pdf-extract); 17.4 (pdftotext) | PASS |
+| pdf -> text, gs: words out [extra] | 116700 | 5978 (pdf-extract); 116700 (pdftotext) | n/a |
+| pdf -> text, base14 (3.1 MB, 300 pages): throughput (MB/s of PDF) | 23.6 | 2.4 (pdf-extract); 14.0 (pdftotext) | PASS |
+| pdf -> text, base14: peak memory (MB) | 9.2 | 25.9 (pdf-extract); 17.7 (pdftotext) | PASS |
+| pdf -> text, base14: words out [extra] | 172800 | 172800 (pdf-extract); 172800 (pdftotext) | n/a |
+
+commit: e8088c4 (main at the release, before the version bump)
+machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(TM) i7-13700K
 
 ### 2026-09-27, pdf-text branch
 
