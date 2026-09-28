@@ -518,3 +518,69 @@ fn tracked_changes_reach_pages() {
     let round = read_document(&package);
     assert_eq!(tracked(&round), changes);
 }
+
+/// A page colour reaches Pages as the sections' background and Word as the
+/// document background it is told to show.
+#[test]
+fn page_color_reaches_both_formats() {
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let mut document = read_docx(&bytes).expect("Word package reads");
+    let yellow = sublime::document::Color {
+        red: 255,
+        green: 255,
+        blue: 204,
+    };
+    document.page_color = Some(yellow);
+    let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
+    let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
+    assert_eq!(read_document(&package).page_color, Some(yellow));
+    let word = write_docx(&document, Vec::new()).expect("writes Word");
+    assert_eq!(read_docx(&word).expect("reads").page_color, Some(yellow));
+}
+
+/// A drawing a header repeats on its pages comes back from our Word output
+/// in that header, not on one page of the body.
+#[test]
+fn header_drawings_stay_in_their_header() {
+    use sublime::document::{
+        FloatingContent, FloatingObject, PageKind, PagePart, Paragraph, TextWrap,
+    };
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let mut document = read_docx(&bytes).expect("Word package reads");
+    let part = PagePart {
+        footer: false,
+        pages: PageKind::Default,
+    };
+    document.sections[0].headers.default = Some(vec![Block::Paragraph(Paragraph::default())]);
+    document.floating.push(FloatingObject {
+        page: 0,
+        x: 36.0,
+        y: 20.0,
+        width: 100.0,
+        height: 40.0,
+        content: FloatingContent::TextBox {
+            blocks: Vec::new(),
+            fill: Some(sublime::document::Color {
+                red: 200,
+                green: 0,
+                blue: 0,
+            }),
+            line: None,
+            geometry: Default::default(),
+            flip: (false, false),
+            ends: (None, None),
+        },
+        follows_text: false,
+        wrap: TextWrap::None,
+        repeats: Some(part),
+    });
+    let written = write_docx(&document, Vec::new()).expect("writes");
+    let round = read_docx(&written).expect("reads");
+    let repeated: Vec<_> = round
+        .floating
+        .iter()
+        .filter(|object| object.repeats == Some(part))
+        .collect();
+    assert_eq!(repeated.len(), 1);
+    assert!((repeated[0].x - 36.0).abs() < 0.5 && (repeated[0].y - 20.0).abs() < 0.5);
+}

@@ -79,10 +79,14 @@ pub fn read_docx(bytes: &[u8]) -> Result<Document, DocxError> {
         rels: Vec::new(),
         page: 0,
         even_headers: false,
+        shows_background: false,
         pending_floating: Vec::new(),
         anchoring: true,
         comments: Vec::new(),
         ranged_comments: Vec::new(),
+        page_part: None,
+        drawing_layout: DrawingLayout::default(),
+        floating_layouts: Vec::new(),
         pending_blocks: Vec::new(),
         theme_colors: HashMap::new(),
         theme_fonts: [None, None],
@@ -229,11 +233,19 @@ struct Reader<'a> {
     /// Pages begun so far, by explicit breaks, for floating objects.
     page: u32,
     even_headers: bool,
+    /// Word draws the page colour (it is kept only then).
+    shows_background: bool,
     /// Floating objects of the section being read, by index, with the bases
     /// their offsets are measured from.
     pending_floating: Vec<(usize, AnchorBase, AnchorBase)>,
     /// Blocks a paragraph's drawings leave to follow the paragraph.
     pending_blocks: Vec<Block>,
+    /// The header or footer being read, for the drawings it holds.
+    page_part: Option<crate::document::PagePart>,
+    /// How the drawing being read is placed and sized relative to the page.
+    drawing_layout: DrawingLayout,
+    /// Floating objects placed that way: (index, layout).
+    floating_layouts: Vec<(usize, DrawingLayout)>,
     /// Comment ids (`w:id`) to the model's comments.
     comments: Vec<(i64, Id)>,
     /// Comments whose range has begun (their reference adds no markers).
@@ -634,6 +646,7 @@ impl Reader<'_> {
         let part = format!("{}settings.xml", self.base);
         if let Some(text) = self.part_text(&part) {
             self.even_headers = text.contains("<w:evenAndOddHeaders");
+            self.shows_background = text.contains("<w:displayBackgroundShape");
         }
     }
 
@@ -747,6 +760,16 @@ impl Reader<'_> {
                     self_closing: false,
                     ..
                 } => in_body = true,
+                // The page colour, stated before the body.
+                XmlEvent::Start {
+                    name: "w:background",
+                    attributes,
+                    ..
+                } if !in_body && self.shows_background => {
+                    self.document.page_color = attribute(&attributes, "w:color")
+                        .and_then(parse_color)
+                        .filter(|color| (color.red, color.green, color.blue) != (255, 255, 255));
+                }
                 XmlEvent::Start {
                     name: "w:p",
                     self_closing,
@@ -816,7 +839,28 @@ impl Reader<'_> {
             let mut reader = XmlReader::new(&text);
             let root = if *is_header { "w:hdr" } else { "w:ftr" };
             let anchoring = std::mem::replace(&mut self.anchoring, false);
+            let used = match kind.as_str() {
+                "first" => header.title_page,
+                "even" => self.even_headers,
+                _ => true,
+            };
+            self.page_part = Some(crate::document::PagePart {
+                footer: !*is_header,
+                pages: match kind.as_str() {
+                    "first" => crate::document::PageKind::First,
+                    "even" => crate::document::PageKind::Even,
+                    _ => crate::document::PageKind::Default,
+                },
+            });
+            let floating_before = self.document.floating.len();
             let part_blocks = self.read_blocks(&mut reader, root);
+            self.page_part = None;
+            // Drawings of a variant Word does not show are not shown.
+            if !used {
+                self.document.floating.truncate(floating_before);
+                self.pending_floating
+                    .retain(|(index, _, _)| *index < floating_before);
+            }
             self.anchoring = anchoring;
             self.rels = saved_rels;
             let variants = if *is_header {
@@ -842,13 +886,59 @@ impl Reader<'_> {
         // Offsets from the margin (or, approximately, from the anchoring
         // paragraph, taken as the top of the text area) become page
         // coordinates now that the section's margins are known.
+        let page = &header.page;
+        let layouts = std::mem::take(&mut self.floating_layouts);
+        let text_width = page.width - page.margin_left - page.margin_right;
+        let text_height = page.height - page.margin_top - page.margin_bottom;
         for (index, horizontal, vertical) in std::mem::take(&mut self.pending_floating) {
             if let Some(object) = self.document.floating.get_mut(index) {
-                if horizontal != AnchorBase::Page {
-                    object.x += header.page.margin_left;
+                let layout = layouts
+                    .iter()
+                    .find(|(at, _)| *at == index)
+                    .map(|(_, layout)| *layout)
+                    .unwrap_or_default();
+                let across = match horizontal {
+                    AnchorBase::Page => page.width,
+                    _ => text_width,
+                };
+                let down = match vertical {
+                    AnchorBase::Page => page.height,
+                    _ => text_height,
+                };
+                // A size given as a share of the page (or margins).
+                if let Some((share, of_page)) = layout.size.0 {
+                    object.width = share * if of_page { page.width } else { text_width };
                 }
-                if vertical != AnchorBase::Page && !object.follows_text {
-                    object.y += header.page.margin_top;
+                if let Some((share, of_page)) = layout.size.1 {
+                    object.height = share * if of_page { page.height } else { text_height };
+                }
+                // An offset given as a share, or an alignment, within what
+                // it is placed from.
+                if let Some(share) = layout.share.0 {
+                    object.x += share * across;
+                }
+                if let Some(share) = layout.share.1 {
+                    object.y += share * down;
+                }
+                if let Some(factor) = layout.align.0 {
+                    object.x += factor * (across - object.width);
+                }
+                if let Some(factor) = layout.align.1 {
+                    object.y += factor * (down - object.height);
+                }
+                if horizontal != AnchorBase::Page {
+                    object.x += page.margin_left;
+                }
+                // One in a header or footer placed from its paragraph sits
+                // from the header's (or footer's) first line.
+                match (vertical, object.repeats) {
+                    (AnchorBase::Page, _) => {}
+                    (AnchorBase::Line, Some(part)) if part.footer => {
+                        object.y += page.height - page.footer_distance - FOOTER_LINE;
+                    }
+                    (AnchorBase::Line, Some(_)) => object.y += page.header_distance,
+                    _ if !object.follows_text => object.y += page.margin_top,
+                    _ => {}
                 }
             }
         }
@@ -1255,6 +1345,8 @@ impl Reader<'_> {
                                 Drawn::Blocks(mut drawn) => self.pending_blocks.append(&mut drawn),
                                 Drawn::Floating(mut object, horizontal, vertical) => {
                                     let index = self.document.floating.len();
+                                    object.repeats = self.page_part;
+                                    self.floating_layouts.push((index, self.drawing_layout));
                                     // One placed from its paragraph moves with
                                     // the text: anchored here by a run.
                                     if vertical == AnchorBase::Line && self.anchoring {
@@ -1930,6 +2022,7 @@ impl Reader<'_> {
         let mut description: Option<String> = None;
         let mut anchored = false;
         let mut wrap = crate::document::TextWrap::Around;
+        self.drawing_layout = DrawingLayout::default();
         let mut horizontal = Anchor {
             from: AnchorBase::Margin,
             offset: 0.0,
@@ -1939,6 +2032,7 @@ impl Reader<'_> {
             offset: 0.0,
         };
         let mut position_axis: Option<bool> = None;
+        let mut size_axis: Option<(bool, bool)> = None;
         let mut media: Option<MediaId> = None;
         let mut shapes: Vec<ShapeRead> = Vec::new();
         let mut chart: Option<String> = None;
@@ -2010,6 +2104,54 @@ impl Reader<'_> {
                             Some(true) => horizontal.offset = offset,
                             Some(false) => vertical.offset = offset,
                             None => {}
+                        }
+                    }
+                    // An offset as a share of what it is measured from, in
+                    // thousandths of a percent (Word 2010's relative position).
+                    "wp14:pctPosHOffset" | "wp14:pctPosVOffset" if !self_closing => {
+                        let share = read_element_text(reader, name)
+                            .trim()
+                            .parse::<f32>()
+                            .ok()
+                            .map(|value| value / 100_000.0);
+                        if name == "wp14:pctPosHOffset" {
+                            self.drawing_layout.share.0 = share;
+                        } else {
+                            self.drawing_layout.share.1 = share;
+                        }
+                    }
+                    // Aligned in what it is placed from, rather than offset.
+                    "wp:align" if !self_closing => {
+                        let factor = match read_element_text(reader, name).trim() {
+                            "center" => Some(0.5),
+                            "right" | "bottom" | "outside" => Some(1.0),
+                            "left" | "top" | "inside" => Some(0.0),
+                            _ => None,
+                        };
+                        match position_axis {
+                            Some(true) => self.drawing_layout.align.0 = factor,
+                            Some(false) => self.drawing_layout.align.1 = factor,
+                            None => {}
+                        }
+                    }
+                    // A size as a share of the page or its margins.
+                    "wp14:sizeRelH" | "wp14:sizeRelV" if !self_closing => {
+                        let of_page = attribute(&attributes, "relativeFrom") == Some("page");
+                        size_axis = Some((name == "wp14:sizeRelH", of_page));
+                    }
+                    "wp14:pctWidth" | "wp14:pctHeight" if !self_closing => {
+                        let share = read_element_text(reader, name)
+                            .trim()
+                            .parse::<f32>()
+                            .ok()
+                            .map(|value| value / 100_000.0)
+                            .filter(|share| *share > 0.0);
+                        if let (Some(share), Some((horizontal, of_page))) = (share, size_axis) {
+                            if horizontal {
+                                self.drawing_layout.size.0 = Some((share, of_page));
+                            } else {
+                                self.drawing_layout.size.1 = Some((share, of_page));
+                            }
                         }
                     }
                     // A cropped picture: thousandths of a percent cut per edge.
@@ -2236,6 +2378,7 @@ impl Reader<'_> {
                         content: FloatingContent::Chart(chart),
                         follows_text: false,
                         wrap,
+                        repeats: None,
                     },
                     horizontal.from,
                     vertical.from,
@@ -2286,6 +2429,7 @@ impl Reader<'_> {
                             },
                             follows_text: false,
                             wrap,
+                            repeats: None,
                         },
                         horizontal.from,
                         vertical.from,
@@ -2310,6 +2454,7 @@ impl Reader<'_> {
                     content: FloatingContent::Image(media),
                     follows_text: false,
                     wrap,
+                    repeats: None,
                 },
                 AnchorBase::Page,
                 AnchorBase::Page,
@@ -3162,6 +3307,22 @@ fn emu_to_points(value: &str) -> Option<f32> {
     let emu: f32 = value.parse().ok()?;
     Some(emu / 12_700.0)
 }
+
+/// How a drawing is placed and sized relative to what it is anchored to,
+/// beyond fixed offsets: shares of it, alignments in it (0 start, 0.5
+/// centre, 1 end), and sizes as shares of the page (`true`) or margins.
+#[derive(Clone, Copy, Default)]
+struct DrawingLayout {
+    share: (Option<f32>, Option<f32>),
+    align: (Option<f32>, Option<f32>),
+    size: (Option<RelativeSize>, Option<RelativeSize>),
+}
+
+/// A share of the page (`true`) or of its margins.
+type RelativeSize = (f32, bool);
+
+/// A footer line's height, to place what sits on it from the page foot.
+const FOOTER_LINE: f32 = 14.0;
 
 fn parse_color(value: &str) -> Option<Color> {
     let hex = value.trim_start_matches('#');

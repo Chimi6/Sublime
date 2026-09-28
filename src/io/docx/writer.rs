@@ -13,9 +13,9 @@ use std::io;
 
 use crate::document::{
     Alignment, Anchor, AnchorBase, Baseline, Block, Caps, Document, FloatingContent, Inline,
-    InlineImage, LineSpacing, ListLabel, Merge, NumberKind, Paragraph, ParagraphProperties,
-    Placement, RevisionKind, Run, RunProperties, Section, SectionStart, Table, TextWrap,
-    VerticalAlignment, mathml_text,
+    InlineImage, LineSpacing, ListLabel, Merge, NumberKind, PageKind, Paragraph,
+    ParagraphProperties, Placement, RevisionKind, Run, RunProperties, Section, SectionStart, Table,
+    TextWrap, VerticalAlignment, mathml_text,
 };
 use crate::io::deflate::Level;
 use crate::io::xml::{escape_attribute, escape_text};
@@ -171,8 +171,11 @@ fn write_parts<W: io::Write>(
             )?;
         }
     }
-    if writer.even_pages {
-        zip.add_deflated("word/settings.xml", settings_xml().as_bytes())?;
+    if writer.needs_settings(document) {
+        zip.add_deflated(
+            "word/settings.xml",
+            settings_xml(writer.even_pages, document.page_color.is_some()).as_bytes(),
+        )?;
     }
     if !document.comments.is_empty() {
         zip.add_deflated("word/comments.xml", comments_xml(document).as_bytes())?;
@@ -286,7 +289,11 @@ impl DocxWriter {
     ) -> io::Result<()> {
         let mut body = std::mem::take(&mut self.body);
         body.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
-        let _ = write!(body, "<w:document {W} {R} {DRAWING}><w:body>");
+        let _ = write!(body, "<w:document {W} {R} {DRAWING}>");
+        if let Some(color) = document.page_color {
+            let _ = write!(body, "<w:background w:color=\"{}\"/>", color.hex());
+        }
+        body.push_str("<w:body>");
         // Floating objects are anchored to the first paragraph on their
         // page, counting the page breaks the document spells out.
         let mut page = 0u32;
@@ -350,8 +357,9 @@ impl DocxWriter {
     fn floating_due(&mut self, document: &Document, page: u32, all: bool) -> Vec<usize> {
         let mut due = Vec::new();
         for (index, object) in document.floating.iter().enumerate() {
-            // One moving with the text is written at its anchor run.
-            if self.floating_done[index] || object.follows_text {
+            // One moving with the text is written at its anchor run, one
+            // repeating in its header or footer.
+            if self.floating_done[index] || object.follows_text || object.repeats.is_some() {
                 continue;
             }
             if all || object.page <= page {
@@ -1008,6 +1016,11 @@ impl DocxWriter {
         Some(target)
     }
 
+    /// Whether the document needs a settings part.
+    fn needs_settings(&self, document: &Document) -> bool {
+        self.even_pages || document.page_color.is_some()
+    }
+
     fn relationship_for(&mut self, kind: RelationshipKind, target: &str) -> usize {
         self.relationships.push(Relationship {
             kind,
@@ -1037,8 +1050,24 @@ impl DocxWriter {
         document: &Document,
         blocks: &[Block],
         kind: RelationshipKind,
+        part: crate::document::PagePart,
     ) -> usize {
-        let (inner, relationships) = self.render_part(document, blocks);
+        let (mut inner, relationships) = self.render_part(document, blocks);
+        // The drawings this header or footer repeats on its pages, anchored
+        // in a paragraph of their own at its start (with the part's own
+        // relationships, which they add to).
+        let outer = std::mem::replace(&mut self.relationships, relationships);
+        let mut drawings = String::new();
+        for index in 0..document.floating.len() {
+            if !self.floating_done[index] && document.floating[index].repeats == Some(part) {
+                self.floating_done[index] = true;
+                self.render_floating(document, index, &mut drawings);
+            }
+        }
+        let relationships = std::mem::replace(&mut self.relationships, outer);
+        if !drawings.is_empty() {
+            inner.insert_str(0, &format!("<w:p>{drawings}</w:p>"));
+        }
         let (element, prefix) = match kind {
             RelationshipKind::Header => ("w:hdr", "header"),
             _ => ("w:ftr", "footer"),
@@ -1080,15 +1109,19 @@ impl DocxWriter {
         ];
         for (variant, kind, element) in variants {
             let pages = [
-                ("default", &variant.default),
-                ("first", &variant.first),
-                ("even", &variant.even),
+                ("default", &variant.default, PageKind::Default),
+                ("first", &variant.first, PageKind::First),
+                ("even", &variant.even, PageKind::Even),
             ];
-            for (page_kind, blocks) in pages {
+            for (page_kind, blocks, pages) in pages {
                 let Some(blocks) = blocks else {
                     continue;
                 };
-                let id = self.page_part(document, blocks, kind);
+                let part = crate::document::PagePart {
+                    footer: kind != RelationshipKind::Header,
+                    pages,
+                };
+                let id = self.page_part(document, blocks, kind, part);
                 let _ = write!(
                     xml,
                     "<w:{element} w:type=\"{page_kind}\" r:id=\"rId{id}\"/>"
@@ -1180,7 +1213,7 @@ impl DocxWriter {
                     "<Relationship Id=\"rId3\" Type=\"{REL}/footnotes\" Target=\"footnotes.xml\"/>"
                 );
             }
-            if self.even_pages {
+            if self.needs_settings(document) {
                 let _ = write!(
                     xml,
                     "<Relationship Id=\"rId4\" Type=\"{REL}/settings\" Target=\"settings.xml\"/>"
@@ -1243,7 +1276,7 @@ impl DocxWriter {
         if !document.footnotes.is_empty() {
             xml.push_str("<Override PartName=\"/word/footnotes.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml\"/>");
         }
-        if self.even_pages {
+        if self.needs_settings(document) {
             xml.push_str("<Override PartName=\"/word/settings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml\"/>");
         }
         if !document.comments.is_empty() {
@@ -1490,9 +1523,21 @@ fn root_relationships() -> String {
     )
 }
 
-fn settings_xml() -> String {
+/// The settings part: odd and even pages' own headers, and showing the page
+/// colour (Word draws it only when told to).
+fn settings_xml(even_pages: bool, page_color: bool) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:settings {W}><w:evenAndOddHeaders/></w:settings>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:settings {W}>{}{}</w:settings>",
+        if page_color {
+            "<w:displayBackgroundShape/>"
+        } else {
+            ""
+        },
+        if even_pages {
+            "<w:evenAndOddHeaders/>"
+        } else {
+            ""
+        }
     )
 }
 

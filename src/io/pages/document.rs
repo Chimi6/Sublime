@@ -752,12 +752,22 @@ impl Reader<'_> {
                 }
                 if let Some(section_object) = section_here {
                     let previous = sections.last();
-                    let (headers, footers) = self.section_page_text(section_object, previous);
+                    let (headers, footers) =
+                        self.section_page_text(section_object, previous, page.height);
                     current.headers = headers;
                     current.footers = footers;
                     // Page numbering that restarts (kind 1) at a number.
                     if let Some(section) = self.graph.object(section_object) {
                         let section = View::of(section);
+                        // A section's background colour fills the pages.
+                        if let Some(fill) = section
+                            .message("background_fill")
+                            .and_then(|fill| fill.message("color"))
+                            .and_then(color)
+                            .filter(|fill| (fill.red, fill.green, fill.blue) != (255, 255, 255))
+                        {
+                            self.document.page_color = Some(fill);
+                        }
                         if section.integer("section_page_number_kind") == Some(1) {
                             current.page.page_number_start = section
                                 .integer("section_page_number_start")
@@ -855,6 +865,7 @@ impl Reader<'_> {
                         content: FloatingContent::Chart(chart),
                         follows_text: false,
                         wrap,
+                        repeats: None,
                     });
                 }
             }
@@ -882,6 +893,7 @@ impl Reader<'_> {
                     },
                     follows_text: false,
                     wrap,
+                    repeats: None,
                 });
             }
             return;
@@ -954,6 +966,7 @@ impl Reader<'_> {
             content,
             follows_text: false,
             wrap,
+            repeats: None,
         });
     }
 
@@ -1069,6 +1082,7 @@ impl Reader<'_> {
         &mut self,
         section: u64,
         previous: Option<&Section>,
+        page_height: f32,
     ) -> (PageVariants, PageVariants) {
         let Some(message) = self.graph.object(section) else {
             return (PageVariants::default(), PageVariants::default());
@@ -1106,6 +1120,39 @@ impl Reader<'_> {
             let (header, footer) = self.template_page_text(template);
             headers.first = header;
             footers.first = footer;
+        }
+        // What the templates draw on every page of theirs: a header's or a
+        // footer's by the half of the page it sits in.
+        use crate::document::{PageKind, PagePart};
+        for (template, pages, used) in [
+            (odd, PageKind::Default, true),
+            (even, PageKind::Even, even_differs),
+            (first, PageKind::First, first_differs),
+        ] {
+            let Some(template) = template.filter(|_| used) else {
+                continue;
+            };
+            let drawables = self
+                .graph
+                .object(template)
+                .map(|message| View::of(message).references("section_template_drawables"))
+                .unwrap_or_default();
+            for drawable in drawables {
+                let before = self.document.floating.len();
+                self.floating_object(drawable, 0, 0.0, 0.0);
+                for object in &mut self.document.floating[before..] {
+                    let footer = object.y + object.height / 2.0 > page_height / 2.0;
+                    object.repeats = Some(PagePart { footer, pages });
+                    // The part the drawing belongs to exists, if empty.
+                    let variants = if footer { &mut footers } else { &mut headers };
+                    let slot = match pages {
+                        PageKind::Default => &mut variants.default,
+                        PageKind::Even => &mut variants.even,
+                        PageKind::First => &mut variants.first,
+                    };
+                    slot.get_or_insert_with(Vec::new);
+                }
+            }
         }
         (headers, footers)
     }
