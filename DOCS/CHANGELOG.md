@@ -8,7 +8,8 @@ section under a version heading.
 
 ### Added
 
-- PDF to text (`src/io/pdf/content.rs`, `font.rs`, `text.rs`): every page, or `--page N`, laid out as pdftotext lays it out; ToUnicode, the standard encodings with `/Differences`, Type0 Identity fonts, Type3, and the Core 14 widths (`scripts/gen-pdf-tables.py`). Matches pdftotext line for line on 13 fixtures from PyMuPDF, Ghostscript, and hand-built files. Other document formats are reached through text for now.
+- PDF to text (`src/io/pdf/content.rs`, `font.rs`, `text.rs`): every page, or `--page N`, laid out as pdftotext lays it out; ToUnicode, the standard encodings with `/Differences`, Type0 Identity fonts, Type3, and the Core 14 widths (`scripts/gen-pdf-tables.py`). Matches pdftotext line for line on 14 fixtures, dehyphenation included.
+- PDF to Markdown, HTML, and Word (`src/io/pdf/markdown.rs`): headings from type size and weight (three levels by size and bold lines below them), bullet and numbered lists, paragraphs with hyphenated words joined, and page numbers dropped.
 
 ## [0.23.1] - 2026-09-27
 
