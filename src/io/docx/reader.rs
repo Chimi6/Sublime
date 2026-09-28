@@ -190,6 +190,21 @@ struct ParagraphHeader {
     numbering: Option<(i64, u8)>,
     mark: RunProperties,
     section: Option<SectionHeader>,
+    /// A frame (`w:framePr`) the paragraph is set in, apart from the text.
+    frame: Option<Frame>,
+}
+
+/// A text frame: where it is placed from, its offset or alignment on each
+/// axis, and its size, in points (a size of `None` fits the text).
+#[derive(Clone, Copy, Default)]
+struct Frame {
+    horizontal: Option<AnchorBase>,
+    vertical: Option<AnchorBase>,
+    x: f32,
+    y: f32,
+    align: (Option<f32>, Option<f32>),
+    width: Option<f32>,
+    height: Option<f32>,
 }
 
 /// A section's properties as read; the header and footer parts are
@@ -1012,6 +1027,7 @@ impl Reader<'_> {
     ) -> Option<SectionHeader> {
         let mut paragraph = Paragraph::default();
         let mut section = None;
+        let mut frame: Option<Frame> = None;
         let mut link: Option<u32> = None;
         let mut revision: Option<u32> = None;
         let mut fields = FieldState::default();
@@ -1024,6 +1040,7 @@ impl Reader<'_> {
                 } => match name {
                     "w:pPr" if !self_closing => {
                         let header = self.read_paragraph_properties(reader);
+                        frame = header.frame;
                         paragraph.style = header.style;
                         paragraph.list = header
                             .numbering
@@ -1100,11 +1117,78 @@ impl Reader<'_> {
                 XmlEvent::Text(_) => {}
             }
         }
+        // A framed paragraph in a header or footer (a page number beside the
+        // text, say) is a box of its own there, drawn on each of its pages.
+        if let (Some(frame), Some(part)) = (frame, self.page_part) {
+            self.frame_paragraph(paragraph, frame, part);
+            blocks.append(&mut self.pending_blocks);
+            return section;
+        }
         blocks.push(Block::Paragraph(paragraph));
         // What the paragraph's drawings hold that is not inline (a chart's
         // data) follows it.
         blocks.append(&mut self.pending_blocks);
         section
+    }
+
+    /// A framed paragraph as a text box on the pages of its header or
+    /// footer, sized to its text unless the frame says otherwise.
+    fn frame_paragraph(
+        &mut self,
+        paragraph: Paragraph,
+        frame: Frame,
+        part: crate::document::PagePart,
+    ) {
+        let size = paragraph
+            .runs
+            .first()
+            .and_then(|run| self.document.effective_run(&paragraph, run).size)
+            .unwrap_or(11.0);
+        // Page fields show a number or two; text runs show themselves.
+        let characters: usize = paragraph
+            .runs
+            .iter()
+            .map(|run| match run.content {
+                Inline::Text(span) => self.document.text(span).chars().count(),
+                Inline::PageNumber | Inline::PageCount => 3,
+                _ => 1,
+            })
+            .sum();
+        let width = frame
+            .width
+            .unwrap_or(characters.max(1) as f32 * size * 0.6 + 8.0);
+        let height = frame.height.unwrap_or(size * 1.3 + 8.0);
+        let index = self.document.floating.len();
+        self.document.floating.push(FloatingObject {
+            page: self.page,
+            x: frame.x,
+            y: frame.y,
+            width,
+            height,
+            content: FloatingContent::TextBox {
+                blocks: vec![Block::Paragraph(paragraph)],
+                fill: None,
+                line: None,
+                geometry: Default::default(),
+                flip: (false, false),
+                ends: (None, None),
+            },
+            follows_text: false,
+            wrap: crate::document::TextWrap::None,
+            repeats: Some(part),
+        });
+        self.pending_floating.push((
+            index,
+            frame.horizontal.unwrap_or(AnchorBase::Margin),
+            frame.vertical.unwrap_or(AnchorBase::Line),
+        ));
+        self.floating_layouts.push((
+            index,
+            DrawingLayout {
+                align: frame.align,
+                ..DrawingLayout::default()
+            },
+        ));
     }
 
     /// What a field instruction means for the runs that follow: a link
@@ -1510,6 +1594,31 @@ impl Reader<'_> {
                 } => {
                     let value = attribute(&attributes, "w:val");
                     match name {
+                        "w:framePr" => {
+                            let points =
+                                |key: &str| attribute(&attributes, key).and_then(twips_to_points);
+                            let base = |key: &str| match attribute(&attributes, key) {
+                                Some("page") => Some(AnchorBase::Page),
+                                Some("text") => Some(AnchorBase::Line),
+                                Some(_) => Some(AnchorBase::Margin),
+                                None => None,
+                            };
+                            let align = |key: &str| match attribute(&attributes, key) {
+                                Some("center") => Some(0.5),
+                                Some("right" | "bottom" | "outside") => Some(1.0),
+                                Some("left" | "top" | "inside") => Some(0.0),
+                                _ => None,
+                            };
+                            header.frame = Some(Frame {
+                                horizontal: base("w:hAnchor"),
+                                vertical: base("w:vAnchor"),
+                                x: points("w:x").unwrap_or(0.0),
+                                y: points("w:y").unwrap_or(0.0),
+                                align: (align("w:xAlign"), align("w:yAlign")),
+                                width: points("w:w").filter(|width| *width > 0.0),
+                                height: points("w:h").filter(|height| *height > 0.0),
+                            });
+                        }
                         "w:pStyle" => {
                             header.style =
                                 value.and_then(|id| self.paragraph_styles.get(id)).copied();
@@ -2169,10 +2278,23 @@ impl Reader<'_> {
                     "c:chart" => {
                         chart = attribute(&attributes, "r:id").map(str::to_string);
                     }
+                    // A drawing may offer its picture twice (a PDF or
+                    // metafile, then a PNG); the common raster is kept.
                     "a:blip" => {
-                        if media.is_none() {
-                            media = attribute(&attributes, "r:embed")
+                        let raster = |document: &Document, id: MediaId| {
+                            document
+                                .media
+                                .get(id)
+                                .is_some_and(|file| is_raster(&file.name))
+                        };
+                        if media.is_none_or(|id| !raster(&self.document, id)) {
+                            let offered = attribute(&attributes, "r:embed")
                                 .and_then(|id| self.load_media(id));
+                            if media.is_none()
+                                || offered.is_some_and(|id| raster(&self.document, id))
+                            {
+                                media = offered.or(media);
+                            }
                         }
                     }
                     "wps:spPr" if !self_closing => in_shape_properties = true,
@@ -3321,6 +3443,13 @@ struct DrawingLayout {
 /// A share of the page (`true`) or of its margins.
 type RelativeSize = (f32, bool);
 
+/// Whether a picture file is a common raster (PNG, JPEG, GIF) every
+/// target shows.
+fn is_raster(name: &str) -> bool {
+    let extension = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "gif")
+}
+
 /// A footer line's height, to place what sits on it from the page foot.
 const FOOTER_LINE: f32 = 14.0;
 
@@ -3565,6 +3694,41 @@ mod tests {
         zip.add("word/document.xml", document.as_bytes()).unwrap();
         zip.add("word/styles.xml", styles.as_bytes()).unwrap();
         zip.finish().unwrap()
+    }
+
+    /// A page number in a frame beside a footer's text is a box of its own,
+    /// right-aligned on the footer's line of every page, not a paragraph
+    /// before the text.
+    #[test]
+    fn footer_frames_become_repeating_boxes() {
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships""#;
+        let document = format!(
+            r#"<w:document {w}><w:body><w:p><w:r><w:t>Body</w:t></w:r></w:p><w:sectPr><w:footerReference w:type="default" r:id="rIdF"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440" w:footer="720"/></w:sectPr></w:body></w:document>"#
+        );
+        let footer = format!(
+            r#"<w:ftr {w}><w:p><w:pPr><w:framePr w:wrap="around" w:vAnchor="text" w:hAnchor="margin" w:xAlign="right" w:y="1"/></w:pPr><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText>PAGE</w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>7</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t>Title</w:t></w:r></w:p></w:ftr>"#
+        );
+        let rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/></Relationships>"#;
+        let mut zip = crate::io::zip::ZipWriter::new(Vec::new());
+        zip.add("word/document.xml", document.as_bytes()).unwrap();
+        zip.add("word/footer1.xml", footer.as_bytes()).unwrap();
+        zip.add("word/_rels/document.xml.rels", rels.as_bytes())
+            .unwrap();
+        let read = read_docx(&zip.finish().unwrap()).expect("reads");
+        let footer_blocks = read.sections[0].footers.default.as_ref().expect("footer");
+        assert_eq!(
+            footer_blocks.len(),
+            1,
+            "only the title stays in the footer text"
+        );
+        let framed = read
+            .floating
+            .iter()
+            .find(|object| object.repeats.is_some_and(|part| part.footer))
+            .expect("the page number is a repeating box");
+        // Right-aligned within the margins, on the footer's line.
+        assert!((framed.x + framed.width - (612.0 - 72.0)).abs() < 0.5);
+        assert!(framed.y > 792.0 - 36.0 - 20.0 && framed.y < 792.0 - 36.0);
     }
 
     #[test]
