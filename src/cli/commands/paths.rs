@@ -7,7 +7,6 @@ use crate::cli::args::LogFormat;
 use crate::cli::render::json_lines::write_hop;
 use crate::cli::{CliError, ExitCode};
 use crate::converter::{Converter, FidelityKind};
-use crate::converters::image;
 use crate::format::{Category, Format};
 use crate::io::json::JsonWriter;
 use crate::planner::{self, Plan, PlanOptions};
@@ -170,7 +169,7 @@ pub fn render_markdown() -> String {
     }
 
     text.push_str("\n## Map\n\n");
-    text.push_str("One graph per category and one for the crossings between them. A line joins two formats with a converter between them, in either direction; the image category joins every format to its pixel hub instead, since every image converts through it. The grid under each graph gives every pair (rows from, columns to): ● lossless, ■ conditional, ▲ lossy, with the number of hops (1 is a direct converter), blank for no path. The Paths table above has each path and what it loses.\n\n");
+    text.push_str("One graph per category and one for the crossings between them. A line joins two formats with a direct converter between them, in either direction. The grid under each graph gives every pair (rows from, columns to): <img src=\"map/lossless.svg\" width=\"18\" alt=\"lossless\"> lossless, <img src=\"map/conditional.svg\" width=\"18\" alt=\"conditional\"> conditional, <img src=\"map/lossy.svg\" width=\"18\" alt=\"lossy\"> lossy, with the number of steps (1 is a direct converter), blank for no path. The Paths table above has each path and what it loses.\n\n");
     text.push_str(&render_mermaid());
     text
 }
@@ -194,30 +193,31 @@ fn render_mermaid() -> String {
     for category in &categories {
         text.push_str("### ");
         text.push_str(category.label());
-        text.push_str("\n\n```mermaid\ngraph LR\n");
+        text.push_str("\n\n");
+        let members: Vec<&str> = formats
+            .iter()
+            .filter(|format| format.category == *category)
+            .map(|format| format.id)
+            .collect();
         let mut lines: Vec<(String, String)> = Vec::new();
-        if *category == Category::Image {
-            // Every other format on the hub's left, so the spokes split
-            // over two short columns rather than one long one.
-            let spokes = image::codecs().filter(|(format, _, _)| format.category == *category);
-            for (index, (format, _, _)) in spokes.enumerate() {
-                if index % 2 == 0 {
-                    add_line(&mut lines, format.id, HUB);
-                } else {
-                    add_line(&mut lines, HUB, format.id);
-                }
-            }
-            text.push_str(&format!("  {HUB}{{{{\"{HUB} hub\"}}}}\n"));
-        }
         for converter in converters {
             let inside =
                 converter.from().category == *category && converter.to().category == *category;
-            if inside && !through_hub(*converter) {
+            if inside {
                 add_line(&mut lines, converter.from().id, converter.to().id);
             }
         }
-        push_lines(&mut text, &lines);
-        text.push_str("```\n\n");
+        // Every format joined to every other (images, all generated
+        // through one hub) says it in a sentence; the graph would be a
+        // line per pair and nothing more.
+        let pairs = members.len() * (members.len() - 1) / 2;
+        if members.len() > 2 && lines.len() == pairs {
+            push_all_to_all(&mut text, category.label(), &members, converters);
+        } else {
+            text.push_str("```mermaid\ngraph LR\n");
+            push_lines(&mut text, &lines);
+            text.push_str("```\n\n");
+        }
         push_matrix(&mut text, &formats, *category, &plans);
     }
     // Across categories: the other side drawn as its category.
@@ -245,14 +245,33 @@ fn render_mermaid() -> String {
     text
 }
 
-/// The hub node of the image category: decoded pixels.
-const HUB: &str = "pixels";
-
-/// Whether a converter is one of the pairs generated through the hub.
-fn through_hub(converter: &dyn Converter) -> bool {
-    image::pairs()
-        .iter()
-        .any(|pair| pair.name == converter.name())
+/// The sentence that stands for a category whose formats all convert
+/// directly to each other, naming any format only read or only written.
+fn push_all_to_all(
+    text: &mut String,
+    label: &str,
+    members: &[&str],
+    converters: &[&dyn Converter],
+) {
+    let only = |wanted: &dyn Fn(&dyn Converter, &str) -> bool| -> Vec<&str> {
+        members
+            .iter()
+            .copied()
+            .filter(|id| !converters.iter().any(|converter| wanted(*converter, id)))
+            .collect()
+    };
+    let read_only = only(&|converter, id| converter.to().id == id && converter.from().id != id);
+    let write_only = only(&|converter, id| converter.from().id == id && converter.to().id != id);
+    text.push_str(&format!(
+        "Every {label} format converts directly to every other, in one step"
+    ));
+    if !read_only.is_empty() {
+        text.push_str(&format!(" ({} is read only)", read_only.join(", ")));
+    }
+    if !write_only.is_empty() {
+        text.push_str(&format!(" ({} is written only)", write_only.join(", ")));
+    }
+    text.push_str(", so the grid is the map.\n\n");
 }
 
 /// Adds a line between two nodes unless one is there either way.
@@ -290,9 +309,11 @@ fn push_lines(text: &mut String, lines: &[(String, String)]) {
 /// The grid's shape for a fidelity.
 fn kind_mark(kind: FidelityKind) -> &'static str {
     match kind {
-        FidelityKind::Lossless => "●",
-        FidelityKind::Conditional => "■",
-        FidelityKind::Lossy => "▲",
+        FidelityKind::Lossless => "<img src=\"map/lossless.svg\" width=\"18\" alt=\"lossless\">",
+        FidelityKind::Conditional => {
+            "<img src=\"map/conditional.svg\" width=\"18\" alt=\"conditional\">"
+        }
+        FidelityKind::Lossy => "<img src=\"map/lossy.svg\" width=\"18\" alt=\"lossy\">",
     }
 }
 
