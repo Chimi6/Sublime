@@ -73,6 +73,10 @@ pub fn read_png(bytes: &[u8]) -> Result<(Image, PngNotes), PngError> {
 pub trait RowSink {
     fn start(&mut self, width: u32, height: u32, color: ColorType) -> std::io::Result<()>;
     fn row(&mut self, pixels: &[u8]) -> std::io::Result<()>;
+    /// The resolution the file records, in pixels per inch across and
+    /// down, when it records one; readers call it before `start`. Only
+    /// a sink with a physical size (a PDF page) uses it.
+    fn density(&mut self, _across: f64, _down: f64) {}
 }
 
 /// A sink that keeps the rows as an image: the whole-image readers
@@ -196,6 +200,18 @@ fn read_png_inner(
                 let data = source.whole_chunk(length, &kind)?;
                 crc = crc32_update(crc, data);
                 transparency = data.to_vec();
+            }
+            // Pixels per metre across and down, when the unit is metres.
+            b"pHYs" => {
+                let data = source.whole_chunk(length, &kind)?;
+                crc = crc32_update(crc, data);
+                if let (Some(sink), 9, Some(1)) = (sink.as_deref_mut(), data.len(), data.get(8)) {
+                    let across = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+                    let down = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+                    if across > 0 && down > 0 {
+                        sink.density(f64::from(across) * 0.0254, f64::from(down) * 0.0254);
+                    }
+                }
             }
             b"IDAT" => {
                 let decoder = match decoder.as_mut() {

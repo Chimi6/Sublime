@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Fixed
+
+- Images to PDF: a page takes the image's physical size from the resolution it records (PNG, JPEG, TIFF, BMP), so a 300-dpi scan becomes a letter-sized page rather than one a point per pixel; images without one stay a point per pixel. Readers report resolution through `RowSink::density`.
+
 ### Changed
 
 - The format map in `DOCS/FORMATS.md` (`sublime paths --markdown`) is readable at size: a graph shows only which formats convert directly, one plain line per pair. Under each graph a from-by-to grid gives every pair's fidelity as a shape (a filled circle lossless, a square half filled on the diagonal conditional, a hollow triangle lossy; `DOCS/map/`) and its number of steps.

@@ -195,3 +195,55 @@ fn a_jpeg_is_embedded_byte_for_byte() {
     assert!(text.contains("/Count 2"));
     assert!(text.contains("/MediaBox [0 0 200 130]"));
 }
+
+/// The page a PDF of one image has, as `[width, height]` in points.
+fn media_box(pdf: &[u8]) -> [f64; 2] {
+    let at = find(pdf, b"/MediaBox [0 0 ", 0).expect("MediaBox") + b"/MediaBox [0 0 ".len();
+    let end = find(pdf, b"]", at).expect("MediaBox end");
+    let text = std::str::from_utf8(&pdf[at..end]).expect("text");
+    let mut numbers = text
+        .split_whitespace()
+        .map(|number| number.parse::<f64>().expect(number));
+    [
+        numbers.next().expect("width"),
+        numbers.next().expect("height"),
+    ]
+}
+
+fn convert_to_pdf(path: &str, from: &str) -> Vec<u8> {
+    use sublime::converter::{ConvertOptions, Converter, Input};
+    use sublime::event::{Context, NullSink};
+    let mut input = std::io::Cursor::new(fixture(path));
+    let mut output = Vec::new();
+    let options = ConvertOptions::default();
+    let mut sink = NullSink;
+    let mut context = Context::new(&mut sink, &options);
+    sublime::converters::image::pair(from, "pdf")
+        .convert(Input::Stream(&mut input), &mut output, &mut context)
+        .expect(path);
+    output
+}
+
+/// A 120 by 60 image fills a page of its physical size: 72 points per
+/// inch over the resolution its file records (PNG pHYs, JPEG JFIF in
+/// inches or centimetres, TIFF, BMP), and a point a pixel without one.
+#[test]
+fn a_page_takes_the_size_the_image_records() {
+    let cases = [
+        ("tests/fixtures/dpi/r300.png", "png", [28.8, 14.4]),
+        ("tests/fixtures/dpi/r300.jpg", "jpeg", [28.8, 14.4]),
+        ("tests/fixtures/dpi/cm300.jpg", "jpeg", [28.8, 14.4]),
+        ("tests/fixtures/dpi/r150.tif", "tiff", [57.6, 28.8]),
+        ("tests/fixtures/dpi/r150.bmp", "bmp", [57.6, 28.8]),
+        ("tests/fixtures/dpi/none.png", "png", [120.0, 60.0]),
+    ];
+    for (path, from, expected) in cases {
+        let page = media_box(&convert_to_pdf(path, from));
+        for (got, want) in page.iter().zip(expected) {
+            assert!(
+                (got - want).abs() < 0.05,
+                "{path}: page {page:?}, expected {expected:?}"
+            );
+        }
+    }
+}
