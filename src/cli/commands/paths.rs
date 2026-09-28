@@ -215,8 +215,8 @@ fn render_mermaid() -> String {
             }
         }
         // Every format joined to every other (images, all generated
-        // through one hub) says it in a sentence; the graph would be a
-        // line per pair and nothing more.
+        // through one hub) is drawn as one box of formats; lines would be
+        // one per pair and say nothing more.
         let pairs = members.len() * (members.len() - 1) / 2;
         if members.len() > 2 && lines.len() == pairs {
             push_all_to_all(&mut text, category.label(), &members, converters);
@@ -252,8 +252,8 @@ fn render_mermaid() -> String {
     text
 }
 
-/// The sentence that stands for a category whose formats all convert
-/// directly to each other, naming any format only read or only written.
+/// The graph of a category whose formats all convert directly to each
+/// other: the formats in one box, marking any only read or only written.
 fn push_all_to_all(
     text: &mut String,
     label: &str,
@@ -269,16 +269,30 @@ fn push_all_to_all(
     };
     let read_only = only(&|converter, id| converter.to().id == id && converter.from().id != id);
     let write_only = only(&|converter, id| converter.from().id == id && converter.to().id != id);
+    // One box of formats, no lines: in rows of five, chained by
+    // invisible links so the box stays compact.
     text.push_str(&format!(
-        "Every {label} format converts directly to every other, in one step"
+        "```mermaid\ngraph TB\n  subgraph {label}[\"every {label} format converts to every other in one step\"]\n    direction TB\n"
     ));
-    if !read_only.is_empty() {
-        text.push_str(&format!(" ({} is read only)", read_only.join(", ")));
+    for row in members.chunks(5) {
+        text.push_str("    ");
+        for (index, id) in row.iter().enumerate() {
+            if index > 0 {
+                text.push_str(" ~~~ ");
+            }
+            let note = if read_only.contains(id) {
+                " (read only)"
+            } else if write_only.contains(id) {
+                " (written only)"
+            } else {
+                ""
+            };
+            push_mermaid_id(text, id);
+            text.push_str(&format!("[\"{id}{note}\"]"));
+        }
+        text.push('\n');
     }
-    if !write_only.is_empty() {
-        text.push_str(&format!(" ({} is written only)", write_only.join(", ")));
-    }
-    text.push_str(", so the grid is the map.\n\n");
+    text.push_str("  end\n```\n\n");
 }
 
 /// Adds a line between two nodes unless one is there either way.
