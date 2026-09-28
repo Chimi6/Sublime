@@ -14,7 +14,8 @@ section under a version heading.
 
 ### Changed
 
-- The binary size budget is raised 2.70 -> 3.60 MB and the WebAssembly budget 1.40 -> 1.85 MB for Word <-> Apple Pages (the Pages writer, about 300 KB of code on its own, its 83 KB template, and the Word and Pages readers' new mappings); set from the macOS build's growth with headroom, to be tightened to the Linux figures CI reports.
+- The binary size budget is raised 2.70 -> 3.60 MB and the WebAssembly budget 1.40 -> 2.00 MB for Word <-> Apple Pages (the Pages writer, about 300 KB of code on its own, its 83 KB template, and the Word and Pages readers' new mappings). The module measures 1.96 MB; the binary budget is set from the macOS build's growth with headroom, to be tightened to the Linux figure.
+- The Pages writer draws its fresh identities without the clock or the process id on WebAssembly, where asking for either panics: the module's `csv -> pages` smoke check now converts.
 - The binary size budget is raised 2.55 -> 2.70 MB and the WebAssembly budget 1.30 -> 1.40 MB for documents to PDF (the composer and five converters, about 62 KB) and the font reader that follows.
 
 ## [0.24.0] - 2026-09-27
