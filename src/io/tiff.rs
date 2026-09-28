@@ -108,6 +108,20 @@ impl File<'_> {
     }
 }
 
+impl File<'_> {
+    /// An entry's first RATIONAL value, when it is one and not zero over
+    /// zero.
+    fn rational(&self, entry: usize) -> Option<f64> {
+        if self.u16(entry + 2).ok()? != 5 {
+            return None;
+        }
+        let at = self.u32(entry + 8).ok()? as usize;
+        let numerator = self.u32(at).ok()?;
+        let denominator = self.u32(at + 4).ok()?;
+        (denominator != 0).then(|| f64::from(numerator) / f64::from(denominator))
+    }
+}
+
 /// The tags of the first page that the pixels need.
 #[derive(Default)]
 struct Tags {
@@ -128,6 +142,10 @@ struct Tags {
     extra: Vec<u32>,
     sample_format: u32,
     ink_set: u32,
+    /// Pixels per resolution unit across and down.
+    resolution: (Option<f64>, Option<f64>),
+    /// 1 none, 2 inches (the default), 3 centimetres.
+    resolution_unit: u32,
 }
 
 /// Reads the header and the first IFD; counts the pages after it.
@@ -150,6 +168,7 @@ fn read_tags(bytes: &[u8]) -> Result<(File<'_>, Tags, usize), TiffError> {
         predictor: 1,
         sample_format: 1,
         ink_set: 1,
+        resolution_unit: 2,
         ..Tags::default()
     };
     let count = usize::from(file.u16(first)?);
@@ -172,6 +191,9 @@ fn read_tags(bytes: &[u8]) -> Result<(File<'_>, Tags, usize), TiffError> {
             277 => tags.samples = first_value()?,
             278 => tags.rows_per_strip = first_value()?,
             279 => tags.counts = file.values(entry)?,
+            282 => tags.resolution.0 = file.rational(entry),
+            283 => tags.resolution.1 = file.rational(entry),
+            296 => tags.resolution_unit = first_value()?,
             284 => tags.planar = first_value()?,
             317 => tags.predictor = first_value()?,
             320 => tags.color_map = file.values(entry)?,
@@ -471,6 +493,16 @@ fn decode(bytes: &[u8], sink: &mut dyn RowSink) -> Result<TiffNotes, RowsError> 
     let fail = |failure: TiffError| RowsError::Png(PngError(failure.0));
     let (file, tags, other_pages) = read_tags(bytes).map_err(fail)?;
     let layout = layout(&tags, file.big).map_err(fail)?;
+    if let (Some(across), Some(down)) = tags.resolution {
+        let per_inch = match tags.resolution_unit {
+            2 => Some(1.0),
+            3 => Some(2.54),
+            _ => None,
+        };
+        if let Some(scale) = per_inch.filter(|_| across > 0.0 && down > 0.0) {
+            sink.density(across * scale, down * scale);
+        }
+    }
     sink.start(layout.width as u32, layout.height as u32, layout.color)
         .map_err(RowsError::Io)?;
     let planar = tags.planar == 2 && layout.samples > 1;
