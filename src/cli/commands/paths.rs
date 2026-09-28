@@ -169,7 +169,7 @@ pub fn render_markdown() -> String {
     }
 
     text.push_str("\n## Map\n\n");
-    text.push_str("One graph per category and one for the crossings between them. A line joins two formats with a direct converter between them, in either direction. The grid under each graph gives every pair (rows from, columns to): <img src=\"map/lossless.svg\" width=\"18\" alt=\"lossless\"> lossless, <img src=\"map/conditional.svg\" width=\"18\" alt=\"conditional\"> conditional, <img src=\"map/lossy.svg\" width=\"18\" alt=\"lossy\"> lossy, with the number of steps (1 is a direct converter), blank for no path. The Paths table above has each path and what it loses.\n\n");
+    text.push_str(&format!("One graph per category and one for the crossings between them. A line joins two formats with a direct converter between them, in either direction. The grid under each graph gives every pair (rows from, columns to): {} lossless, {} conditional, {} lossy, with the number of steps (1 is a direct converter), blank for no path. The Paths table above has each path and what it loses.\n\n", kind_mark(FidelityKind::Lossless), kind_mark(FidelityKind::Conditional), kind_mark(FidelityKind::Lossy)));
     text.push_str(&render_mermaid());
     text
 }
@@ -307,15 +307,18 @@ fn push_lines(text: &mut String, lines: &[(String, String)]) {
 }
 
 /// The grid's shape for a fidelity.
-fn kind_mark(kind: FidelityKind) -> &'static str {
-    match kind {
-        FidelityKind::Lossless => "<img src=\"map/lossless.svg\" width=\"18\" alt=\"lossless\">",
-        FidelityKind::Conditional => {
-            "<img src=\"map/conditional.svg\" width=\"18\" alt=\"conditional\">"
-        }
-        FidelityKind::Lossy => "<img src=\"map/lossy.svg\" width=\"18\" alt=\"lossy\">",
-    }
+fn kind_mark(kind: FidelityKind) -> String {
+    let name = match kind {
+        FidelityKind::Lossless => "lossless",
+        FidelityKind::Conditional => "conditional",
+        FidelityKind::Lossy => "lossy",
+    };
+    format!("<img src=\"map/{name}.svg?v={ICON_VERSION}\" width=\"18\" alt=\"{name}\">")
 }
+
+/// Bumped whenever an icon in DOCS/map changes, so browsers and GitHub's
+/// image cache fetch the new file instead of showing the old one.
+const ICON_VERSION: u32 = 2;
 
 /// A from-by-to grid of a category's formats: each cell the worst
 /// fidelity of the path between them and its number of hops.
