@@ -2,6 +2,7 @@
 //! with PNG predictors, or a JPEG embedded unchanged), streaming; and a
 //! reader of a page's image through the object model in `document`.
 
+pub mod compose;
 pub mod content;
 pub mod document;
 pub mod filter;

@@ -36,6 +36,7 @@ pub mod rows_document;
 pub mod text_to_docx;
 pub mod text_to_html;
 pub mod text_to_markdown;
+pub mod to_pdf;
 pub mod toml_to_json;
 pub mod xlsx_to_csv;
 pub mod xml_to_json;
