@@ -3,9 +3,10 @@
 The Portable Document Format. Sublime writes PDFs of images (a page of
 each image, at the image's own size) and reads a page's image back out
 (`src/io/pdf`), and reads its text as plain text, Markdown, HTML, and
-Word, and writes PDF from Markdown, HTML, text, Word, and Pages.
-Embedding the fonts on the user's machine (for scripts beyond Western
-European) is next; rendering vector pages is not planned.
+Word, and writes PDF from Markdown, HTML, text, Word, and Pages, in the
+standard fonts with the machine's own fonts embedded for other scripts.
+Images in written documents are next; rendering vector pages is not
+planned.
 
 ## Status
 
@@ -65,17 +66,29 @@ pixels from our PDFs, and `pdfinfo` reads their pages.
 |---|---|
 | Input | any reader's Markdown event stream (markdown, html, text directly; docx and pages through the document model) |
 | Page | US Letter, one-inch margins; a page is written when the next line would pass the bottom margin, so one page is held |
-| Fonts | the base-14 Helvetica, Helvetica-Bold, -Oblique, -BoldOblique, Courier, Courier-Bold, WinAnsi, not embedded; widths from their AFM metrics |
+| Fonts | the base-14 Helvetica, Helvetica-Bold, -Oblique, -BoldOblique, Courier, Courier-Bold, WinAnsi, not embedded; widths from their AFM metrics. A character outside WinAnsi is set in a font installed on the machine that has it (`src/io/font/system.rs`: broad sans serifs first, then one per script, symbols, the large CJK fallbacks, then every other font, each probed by its character map alone), embedded as a subset (Type0, Identity-H, CIDFontType2 over a TrueType program holding only the glyphs used, with `/W` widths and a ToUnicode map). `--font file.ttf` (or `ConvertOptions::font`, which the WebAssembly module takes as bytes) sets all body text in that font instead, code staying in Courier. Only fonts with TrueType outlines are embedded; a character no such font has is `?` and reported |
 | Text | paragraphs 11/15 pt, broken first fit on real widths (a word wider than the line is split by characters); headings 20, 16, 13 pt bold (4 to 6 at 11), kept with the two lines after them; soft breaks are spaces, hard breaks end the line |
 | Inline | bold, italic, and code change the font; links are blue and carry a URI annotation over each piece; footnote references as `[n]`; task markers as `[x]`/`[ ]` |
 | Blocks | lists indented 18 pt a level with `•` or `n.`, tight ones close; block quotes indented 16 pt with a gray bar; code 9.5 pt Courier on a gray band, lines kept, long ones wrapped; rules; tables sized from their content (natural widths when they fit, else the longest word plus a share of the rest), cells wrapped and aligned, header bold, a grid, rows kept whole across pages |
 | Document | the first heading is the `/Title` in the information dictionary, `/Producer` Sublime |
 
+The font reader (`src/io/font`): table directories of fonts and
+collections, cmap formats 4 and 12, hmtx, head, hhea, maxp, OS/2, post,
+name; subsets follow composite glyphs, keep every glyph at its own id
+(no renumbering), and keep cvt, fpgm, and prep for hinting; tests on
+Droid Sans (`tests/fixtures/fonts`, Apache-2.0) check the map, the
+advances, a subset's kept and emptied glyphs, and its checksums.
+
 Oracle: `tests/to_pdf.rs`: a Markdown document set as PDF reads back
 through our PDF reader as the identical Markdown; a 40-section document
 fills over ten pages, keeps every word in order, and every line lies
 inside the margins; a link is a URI annotation; a character outside
-WinAnsi reads as `?`; HTML, text, Word, and Pages all reach PDF. Every
+WinAnsi that no font has reads as `?`; a font given with `--font` is
+subset and embedded (Greek and Cyrillic read back as written, the file
+under a quarter of the font); HTML, text, Word, and Pages all reach
+PDF. Greek, Cyrillic, Hebrew, Arabic, Chinese, Japanese, Hindi, Thai,
+and symbols set from this machine's fonts read back through pdftotext
+as written. Every
 Pages and Word fixture converts, and poppler's pdfinfo, pdftotext, and
 pdftoppm read and render each without an error.
 
@@ -121,9 +134,15 @@ Markdown.
 
 ## Known deviations
 
-- Writing: characters outside WinAnsi are `?` until the user's fonts are
-  embedded; images show their alt text; no hyphenation, page numbers,
-  headers, or footers; right-to-left text is set left to right.
+- Writing: images show their alt text; no hyphenation, page numbers,
+  headers, or footers. Complex scripts are set glyph by glyph in logical
+  order: Hebrew and Arabic read left to right (no bidirectional
+  reordering), Arabic letters take their isolated forms, and Indic
+  conjuncts are not formed (no shaping). Fonts with CFF outlines (most
+  CJK `.otf`/`.ttc`) are not embedded yet; another installed TrueType
+  font is used when one covers the text. A tab in running text is a
+  space. With `--font`, bold and italic body text is set in the one font
+  given.
 
 - WebP, QOI, TGA, Netpbm, and ICO record no resolution a page could use (WebP's lives in EXIF, which is not read), so their pages are a point per pixel.
 - Text is read in drawing order: a page that draws its columns or

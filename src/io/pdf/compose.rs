@@ -8,9 +8,13 @@
 //! (nothing embedded); text is WinAnsi, and a character outside it is
 //! set as `?` and counted as a loss.
 
+use std::collections::HashMap;
 use std::io;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
+use crate::io::font::Font;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::io::font::system::SystemFonts;
 use crate::io::markdown::{Alignment, Event, EventSink, Tag, TagEnd};
 use crate::io::pdf::tables::{self, Widths};
 use crate::io::pdf::writer::{PdfDocument, StandardFont, TextPage, literal, number_text};
@@ -78,6 +82,122 @@ impl Style {
     }
 }
 
+/// Where a character is set from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Face {
+    /// The style's base-14 font (the character is WinAnsi).
+    Standard,
+    /// An embedded font, by its slot in `Faces::fonts`.
+    Embedded(usize),
+    /// No font has it: set as `?` and counted.
+    Missing,
+}
+
+/// The fonts text is set in beyond the base-14: a font the caller chose
+/// for all body text, and fonts found on this machine for the characters
+/// the standard fonts lack.
+pub struct Faces {
+    forced: Option<usize>,
+    fonts: Vec<Arc<Font>>,
+    /// Each slot's index in the document's embedded fonts, once used.
+    embedded: Vec<Option<usize>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    system: Option<SystemFonts>,
+    cache: HashMap<(char, bool), Face>,
+}
+
+impl Faces {
+    /// `forced` sets all body text (not code); `system` searches the
+    /// machine's fonts for characters nothing else covers.
+    pub fn new(forced: Option<Arc<Font>>, system: bool) -> Faces {
+        let mut fonts = Vec::new();
+        let forced = forced.map(|font| {
+            fonts.push(font);
+            0
+        });
+        let embedded = vec![None; fonts.len()];
+        #[cfg(target_arch = "wasm32")]
+        let _ = system;
+        Faces {
+            forced,
+            fonts,
+            embedded,
+            #[cfg(not(target_arch = "wasm32"))]
+            system: system.then(SystemFonts::default),
+            cache: HashMap::new(),
+        }
+    }
+
+    /// Only the base-14 fonts: characters outside WinAnsi are `?`.
+    pub fn standard() -> Faces {
+        Faces::new(None, false)
+    }
+
+    fn face(&mut self, char: char, code: bool) -> Face {
+        if let Some(face) = self.cache.get(&(char, code)) {
+            return *face;
+        }
+        let face = self.resolve(char, code);
+        self.cache.insert((char, code), face);
+        face
+    }
+
+    fn resolve(&mut self, char: char, code: bool) -> Face {
+        if !code
+            && let Some(slot) = self.forced
+            && self.fonts[slot].glyph(char).is_some()
+        {
+            return Face::Embedded(slot);
+        }
+        if win_ansi_byte(char).is_some() {
+            return Face::Standard;
+        }
+        if let Some(slot) = self
+            .fonts
+            .iter()
+            .position(|font| font.glyph(char).is_some())
+        {
+            return Face::Embedded(slot);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(system) = &mut self.system
+            && let Some((_, font)) = system.font_for(char)
+        {
+            let slot = match self
+                .fonts
+                .iter()
+                .position(|known| Arc::ptr_eq(known, &font))
+            {
+                Some(slot) => slot,
+                None => {
+                    self.fonts.push(font);
+                    self.embedded.push(None);
+                    self.fonts.len() - 1
+                }
+            };
+            return Face::Embedded(slot);
+        }
+        Face::Missing
+    }
+
+    /// The width of `text` in `style` at `size`.
+    fn width(&mut self, style: &Style, size: f64, text: &str) -> f64 {
+        let mut total = 0.0;
+        for char in text.chars() {
+            total += match self.face(char, style.code) {
+                Face::Standard => char_width(style.font(), size, char),
+                Face::Embedded(slot) => {
+                    let font = &self.fonts[slot];
+                    let glyph = font.glyph(char).unwrap_or(0);
+                    font.to_thousandths(f64::from(font.advance(glyph))) / 1000.0 * size
+                }
+                Face::Missing => char_width(style.font(), size, '?'),
+            };
+        }
+        total
+    }
+}
+
 /// Styled text inside a block; `"\n"` alone is a hard line break.
 #[derive(Debug, Clone)]
 struct Run {
@@ -137,10 +257,17 @@ pub struct Composer<'w, 'a> {
     image_depth: usize,
     pub notes: ComposeNotes,
     error: Option<io::Error>,
+    faces: Faces,
+    /// Embedded fonts the page being set uses, by document index.
+    page_embedded: Vec<usize>,
 }
 
 impl<'w, 'a> Composer<'w, 'a> {
-    pub fn new(document: &'w mut PdfDocument<'a>, setup: PageSetup) -> Composer<'w, 'a> {
+    pub fn new(
+        document: &'w mut PdfDocument<'a>,
+        setup: PageSetup,
+        faces: Faces,
+    ) -> Composer<'w, 'a> {
         Composer {
             document,
             setup,
@@ -165,6 +292,8 @@ impl<'w, 'a> Composer<'w, 'a> {
             image_depth: 0,
             notes: ComposeNotes::default(),
             error: None,
+            faces,
+            page_embedded: Vec::new(),
         }
     }
 
@@ -234,6 +363,7 @@ impl<'w, 'a> Composer<'w, 'a> {
             height: self.setup.height,
             content: self.content.as_bytes(),
             fonts: &self.fonts,
+            embedded: &self.page_embedded,
             links: &self.links,
         };
         if let Err(error) = self.document.text_page(&page) {
@@ -242,6 +372,7 @@ impl<'w, 'a> Composer<'w, 'a> {
         self.notes.pages += 1;
         self.content.clear();
         self.fonts.clear();
+        self.page_embedded.clear();
         self.links.clear();
         self.top = self.setup.height - self.setup.margin;
         self.page_has_content = false;
@@ -278,23 +409,27 @@ impl<'w, 'a> Composer<'w, 'a> {
             if piece.text.is_empty() {
                 continue;
             }
-            let font = piece.style.font();
-            self.use_font(font);
-            let (bytes, missing) = win_ansi(&piece.text);
-            self.notes.unset_characters += missing;
             let colored = piece.style.link.is_some();
             if colored {
                 self.content.push_str(LINK_COLOR);
                 self.content.push('\n');
             }
-            self.content.push_str(&format!(
-                "BT /{} {} Tf 1 0 0 1 {} {} Tm {} Tj ET\n",
-                font.resource(),
-                number_text(size),
-                number_text(left + piece.x),
-                number_text(baseline),
-                literal(&bytes)
-            ));
+            // Runs of characters set from one face.
+            let mut x = left + piece.x;
+            let chars: Vec<char> = piece.text.chars().collect();
+            let mut start = 0;
+            while start < chars.len() {
+                let face = self.faces.face(chars[start], piece.style.code);
+                let mut end = start + 1;
+                while end < chars.len() && self.faces.face(chars[end], piece.style.code) == face {
+                    end += 1;
+                }
+                let segment: String = chars[start..end].iter().collect();
+                let width = self.faces.width(&piece.style, size, &segment);
+                self.set_segment(face, &piece.style, &segment, x, baseline, size);
+                x += width;
+                start = end;
+            }
             if colored {
                 self.content.push_str("0 g\n");
             }
@@ -315,6 +450,54 @@ impl<'w, 'a> Composer<'w, 'a> {
         self.page_has_content = true;
     }
 
+    /// Shows text of one face at a position.
+    fn set_segment(
+        &mut self,
+        face: Face,
+        style: &Style,
+        text: &str,
+        x: f64,
+        baseline: f64,
+        size: f64,
+    ) {
+        let (resource, string) = match face {
+            Face::Embedded(slot) => {
+                let index = match self.faces.embedded[slot] {
+                    Some(index) => index,
+                    None => {
+                        let index = self.document.embed(self.faces.fonts[slot].clone());
+                        self.faces.embedded[slot] = Some(index);
+                        index
+                    }
+                };
+                if !self.page_embedded.contains(&index) {
+                    self.page_embedded.push(index);
+                }
+                let mut hex = String::from("<");
+                for char in text.chars() {
+                    let glyph = self.faces.fonts[slot].glyph(char).unwrap_or(0);
+                    self.document.use_glyph(index, glyph, char);
+                    hex.push_str(&format!("{glyph:04X}"));
+                }
+                hex.push('>');
+                (format!("E{}", index + 1), hex)
+            }
+            Face::Standard | Face::Missing => {
+                let font = style.font();
+                self.use_font(font);
+                let (bytes, missing) = win_ansi(text);
+                self.notes.unset_characters += missing;
+                (font.resource().to_string(), literal(&bytes))
+            }
+        };
+        self.content.push_str(&format!(
+            "BT /{resource} {} Tf 1 0 0 1 {} {} Tm {string} Tj ET\n",
+            number_text(size),
+            number_text(x),
+            number_text(baseline),
+        ));
+    }
+
     // ----------------------------------------------------------- blocks
 
     /// Sets the collected runs as a paragraph (or heading, or item).
@@ -332,7 +515,7 @@ impl<'w, 'a> Composer<'w, 'a> {
         };
         let left = self.left();
         let width = self.right() - left;
-        let lines = break_lines(&runs, width, size);
+        let lines = break_lines(&runs, width, size, &mut self.faces);
         if lines.is_empty() {
             return;
         }
@@ -354,7 +537,7 @@ impl<'w, 'a> Composer<'w, 'a> {
             if index == 0
                 && let Some(marker) = &marker
             {
-                let marker_width = text_width(StandardFont::Helvetica, size, marker);
+                let marker_width = self.faces.width(&Style::default(), size, marker);
                 let x = left - marker_width - 5.0;
                 let piece = Piece {
                     text: marker.clone(),
@@ -490,10 +673,9 @@ impl<'w, 'a> Composer<'w, 'a> {
                 for run in cell {
                     let mut style = run.style.clone();
                     style.bold |= bold;
-                    let font = style.font();
-                    line += text_width(font, BODY, &run.text);
+                    line += self.faces.width(&style, BODY, &run.text);
                     for word in run.text.split_whitespace() {
-                        least[column] = least[column].max(text_width(font, BODY, word));
+                        least[column] = least[column].max(self.faces.width(&style, BODY, word));
                     }
                 }
                 natural[column] = natural[column].max(line);
@@ -528,7 +710,7 @@ impl<'w, 'a> Composer<'w, 'a> {
                         run.style.bold = true;
                     }
                 }
-                cell_lines.push(break_lines(&runs, width - pad, BODY));
+                cell_lines.push(break_lines(&runs, width - pad, BODY, &mut self.faces));
             }
             let height = cell_lines.iter().map(Vec::len).max().unwrap_or(1).max(1) as f64
                 * BODY_LEADING
@@ -719,6 +901,9 @@ impl<'a> EventSink<'a> for Composer<'_, '_> {
             },
             Event::Text(text) => match &mut self.code {
                 Some(code) => code.push_str(&text),
+                // A tab in running text is spacing (tab stops are not
+                // laid out); no font draws it.
+                None if text.contains('\t') => self.push_text(&text.replace('\t', " "), false),
                 None => self.push_text(&text, false),
             },
             Event::Code(text) => self.push_text(&text, true),
@@ -749,30 +934,35 @@ fn font_widths(font: StandardFont) -> Option<&'static Widths> {
     }
 }
 
-/// The width of `text` set in `font` at `size`.
-fn text_width(font: StandardFont, size: f64, text: &str) -> f64 {
+/// The width of a character set in a standard `font` at `size`.
+fn char_width(font: StandardFont, size: f64, char: char) -> f64 {
     let Some(widths) = font_widths(font) else {
-        return text.chars().count() as f64 * 0.6 * size;
+        return 0.6 * size;
     };
-    let units: u32 = text
-        .chars()
-        .map(|char| {
-            let code = u16::try_from(u32::from(char)).unwrap_or(u16::MAX);
-            let width = widths
-                .pairs
-                .binary_search_by_key(&code, |pair| pair.0)
-                .map_or(widths.default, |index| widths.pairs[index].1);
-            u32::from(width)
-        })
-        .sum();
-    f64::from(units) / 1000.0 * size
+    let code = u16::try_from(u32::from(char)).unwrap_or(u16::MAX);
+    let width = widths
+        .pairs
+        .binary_search_by_key(&code, |pair| pair.0)
+        .map_or(widths.default, |index| widths.pairs[index].1);
+    f64::from(width) / 1000.0 * size
 }
 
-/// `text` as WinAnsi bytes, and how many characters WinAnsi lacks (each
-/// set as `?`).
-fn win_ansi(text: &str) -> (Vec<u8>, usize) {
+/// A character's WinAnsi byte, when it has one.
+fn win_ansi_byte(char: char) -> Option<u8> {
+    if (' '..='~').contains(&char) {
+        return Some(char as u8);
+    }
+    let code = u16::try_from(u32::from(char)).ok()?;
+    let reverse = win_ansi_reverse();
+    reverse
+        .binary_search_by_key(&code, |pair| pair.0)
+        .ok()
+        .map(|index| reverse[index].1)
+}
+
+fn win_ansi_reverse() -> &'static [(u16, u8)] {
     static REVERSE: OnceLock<Vec<(u16, u8)>> = OnceLock::new();
-    let reverse = REVERSE.get_or_init(|| {
+    REVERSE.get_or_init(|| {
         let mut pairs: Vec<(u16, u8)> = tables::WIN_ANSI
             .iter()
             .enumerate()
@@ -782,17 +972,17 @@ fn win_ansi(text: &str) -> (Vec<u8>, usize) {
         pairs.sort_unstable();
         pairs.dedup_by_key(|pair| pair.0);
         pairs
-    });
+    })
+}
+
+/// `text` as WinAnsi bytes, and how many characters WinAnsi lacks (each
+/// set as `?`).
+fn win_ansi(text: &str) -> (Vec<u8>, usize) {
     let mut bytes = Vec::with_capacity(text.len());
     let mut missing = 0;
     for char in text.chars() {
-        if (' '..='~').contains(&char) {
-            bytes.push(char as u8);
-            continue;
-        }
-        let code = u16::try_from(u32::from(char)).ok();
-        match code.and_then(|code| reverse.binary_search_by_key(&code, |pair| pair.0).ok()) {
-            Some(index) => bytes.push(reverse[index].1),
+        match win_ansi_byte(char) {
+            Some(byte) => bytes.push(byte),
             None => {
                 bytes.push(b'?');
                 missing += 1;
@@ -805,7 +995,7 @@ fn win_ansi(text: &str) -> (Vec<u8>, usize) {
 /// Breaks runs into lines at most `width` wide, first fit: words go on a
 /// line while they fit; a word wider than a line is split by characters;
 /// a `"\n"` run ends the line.
-fn break_lines(runs: &[Run], width: f64, size: f64) -> Vec<Line> {
+fn break_lines(runs: &[Run], width: f64, size: f64, faces: &mut Faces) -> Vec<Line> {
     // Words: pieces of one or more styles with no space between them,
     // each with the space that follows it.
     struct Word {
@@ -858,7 +1048,7 @@ fn break_lines(runs: &[Run], width: f64, size: f64) -> Vec<Line> {
         let word_width: f64 = word
             .pieces
             .iter()
-            .map(|(text, style)| text_width(style.font(), size, text))
+            .map(|(text, style)| faces.width(style, size, text))
             .sum();
         if !word.pieces.is_empty() {
             let gap = space.as_ref().map_or(0.0, |(width, _)| *width);
@@ -877,14 +1067,13 @@ fn break_lines(runs: &[Run], width: f64, size: f64) -> Vec<Line> {
                 }
             }
             for (text, style) in word.pieces {
-                let piece_width = text_width(style.font(), size, &text);
+                let piece_width = faces.width(&style, size, &text);
                 if x + piece_width > width && x == 0.0 {
                     // Wider than a line on its own: split by characters.
                     let mut chunk = String::new();
                     let mut chunk_width = 0.0;
                     for char in text.chars() {
-                        let char_width =
-                            text_width(style.font(), size, char.encode_utf8(&mut [0; 4]));
+                        let char_width = faces.width(&style, size, char.encode_utf8(&mut [0; 4]));
                         if chunk_width + char_width > width && !chunk.is_empty() {
                             line.push(Piece {
                                 text: std::mem::take(&mut chunk),
@@ -918,7 +1107,7 @@ fn break_lines(runs: &[Run], width: f64, size: f64) -> Vec<Line> {
         }
         space = word
             .space_after
-            .map(|style| (text_width(style.font(), size, " "), style));
+            .map(|style| (faces.width(&style, size, " "), style));
         if word.hard_break {
             lines.push(std::mem::take(&mut line));
             x = 0.0;
@@ -946,7 +1135,7 @@ mod tests {
     fn words_fill_lines_first_fit() {
         // "aaaa " is 4 x 556 + 278 = 2502 units: two words fit in 5 points
         // at size 1, three do not.
-        let lines = break_lines(&[run("aaaa aaaa aaaa")], 5.0, 1.0);
+        let lines = break_lines(&[run("aaaa aaaa aaaa")], 5.0, 1.0, &mut Faces::standard());
         let texts: Vec<String> = lines
             .iter()
             .map(|line| line.iter().map(|piece| piece.text.as_str()).collect())

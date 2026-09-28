@@ -21,9 +21,12 @@ fn fixture(path: &str) -> Vec<u8> {
 }
 
 fn convert(converter: &dyn Converter, input: &[u8]) -> Vec<u8> {
+    convert_with(converter, input, ConvertOptions::default())
+}
+
+fn convert_with(converter: &dyn Converter, input: &[u8], options: ConvertOptions) -> Vec<u8> {
     let mut input = std::io::Cursor::new(input.to_vec());
     let mut output = Vec::new();
-    let options = ConvertOptions::default();
     let mut sink = NullSink;
     let mut context = Context::new(&mut sink, &options);
     converter
@@ -80,16 +83,18 @@ fn a_long_document_fills_pages_and_keeps_every_word() {
 
 #[test]
 fn links_become_uri_annotations_and_losses_are_counted() {
+    // U+0378 is unassigned: no font on any machine has it.
     let pdf = convert(
         &MARKDOWN_TO_PDF,
-        b"A [site](https://example.com/a) and a check \xe2\x9c\x93.\n",
+        "A [site](https://example.com/a) and a mark \u{378}.\n".as_bytes(),
     );
     let text = String::from_utf8_lossy(&pdf);
     assert!(text.contains("/Subtype /Link"));
     assert!(text.contains("/URI (https://example.com/a)"));
     let mut out = Vec::new();
     write_pdf_text(&pdf, None, &mut out).expect("reads");
-    assert!(String::from_utf8(out).unwrap().contains("check ?"));
+    let out = String::from_utf8(out).unwrap();
+    assert!(out.contains("mark ?"), "{out:?}");
 }
 
 #[test]
@@ -111,4 +116,34 @@ fn every_document_format_reaches_pdf() {
         assert!(out.contains(expect), "{}: {out}", converter.name());
         assert!(!out.trim().is_empty(), "{} wrote no text", converter.name());
     }
+}
+
+/// A font given for the body sets every character it has, subset and
+/// embedded with widths and a ToUnicode map: Greek and Cyrillic read back
+/// as written, and the file carries far less than the whole font.
+#[test]
+fn a_given_font_is_subset_and_embedded() {
+    let font = fixture("tests/fixtures/fonts/DroidSans.ttf");
+    let options = ConvertOptions {
+        font: Some(std::sync::Arc::new(font.clone())),
+        ..ConvertOptions::default()
+    };
+    let text = "# Καλημέρα\n\nПривет, мир. Plain Latin too.\n";
+    let pdf = convert_with(&MARKDOWN_TO_PDF, text.as_bytes(), options);
+    let raw = String::from_utf8_lossy(&pdf);
+    assert!(raw.contains("/Subtype /CIDFontType2"));
+    assert!(raw.contains("/FontFile2"));
+    assert!(raw.contains("+DroidSans"));
+    assert!(
+        pdf.len() < font.len() / 4,
+        "{} bytes for a {}-byte font",
+        pdf.len(),
+        font.len()
+    );
+    let mut out = Vec::new();
+    write_pdf_text(&pdf, None, &mut out).expect("reads");
+    assert_eq!(
+        words(&String::from_utf8(out).unwrap()),
+        words("Καλημέρα Привет, мир. Plain Latin too.")
+    );
 }
