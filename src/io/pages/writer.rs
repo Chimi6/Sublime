@@ -52,9 +52,12 @@ const ATTACHMENT: char = '\u{FFFC}';
 pub fn write(document: &Document) -> Result<Vec<u8>, PackageError> {
     // Identities drawn for this output vary with its text, which is all a
     // WebAssembly build has to vary them with.
-    let digest = document.text.bytes().fold(0xCBF2_9CE4_8422_2325_u64, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01B3)
-    });
+    let digest = document
+        .text
+        .bytes()
+        .fold(0xCBF2_9CE4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01B3)
+        });
     OUTPUT_SALT.store(digest, std::sync::atomic::Ordering::Relaxed);
     let mut package = Package::read(TEMPLATE)?;
     let styles = collect_style_names(&package);
@@ -6283,7 +6286,9 @@ static OUTPUT_SALT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 fn entropy() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static CALLS: AtomicU64 = AtomicU64::new(0);
-    let calls = CALLS.fetch_add(1, Ordering::Relaxed).wrapping_mul(0xD1B5_4A32_D192_ED03);
+    let calls = CALLS
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_mul(0xD1B5_4A32_D192_ED03);
     let mixed = calls ^ OUTPUT_SALT.load(Ordering::Relaxed);
     #[cfg(not(target_family = "wasm"))]
     let mixed = {
