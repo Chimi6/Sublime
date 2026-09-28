@@ -271,6 +271,10 @@ pub struct ConvertOptions {
     /// The page to read from a paged document (PDF): 1-based, the first
     /// when absent.
     pub page: Option<u32>,
+    /// A font file (TrueType, `.ttf`) to set a written document's body
+    /// text in (PDF); the standard fonts, with the machine's fonts for
+    /// other scripts, when absent.
+    pub font: Option<std::sync::Arc<Vec<u8>>>,
 }
 
 /// One edge in the format graph. Implement this and add one line to

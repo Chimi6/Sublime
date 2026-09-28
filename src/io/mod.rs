@@ -5,6 +5,7 @@ pub mod bmp;
 pub mod csv;
 pub mod deflate;
 pub mod docx;
+pub mod font;
 pub mod html;
 pub mod ico;
 pub mod iwa;

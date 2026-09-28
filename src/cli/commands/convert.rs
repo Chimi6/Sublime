@@ -48,6 +48,7 @@ pub fn run(
         sheet: args.sheet.clone(),
         quality: args.quality,
         page: args.page,
+        font: crate::cli::commands::font_option(args.font.as_deref())?,
     };
     let mut collector = CollectingSink::new();
     let mut multi = MultiSink::new(vec![renderer, &mut collector]);

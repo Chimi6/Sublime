@@ -5,10 +5,13 @@
 //! (72 points per inch over the resolution the image records, a pixel a
 //! point when it records none).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
+use std::sync::Arc;
 
 use crate::image::ColorType;
 use crate::io::deflate::deflate;
+use crate::io::font::{Font, FontError};
 use crate::io::pdf::PdfError;
 use crate::io::png::writer::FilteredZlib;
 use crate::io::png::{RowSink, adler32};
@@ -29,6 +32,17 @@ pub struct PdfDocument<'a> {
     fonts: Vec<(StandardFont, u32)>,
     /// The document's title, for its information dictionary.
     title: Option<String>,
+    /// Fonts embedded for text the standard fonts cannot set.
+    embedded: Vec<Embedded>,
+}
+
+/// An embedded font: its Type0 object number (reserved when first used,
+/// written at the end, when every glyph a page used is known) and the
+/// glyphs used with the text each stands for.
+struct Embedded {
+    number: u32,
+    font: Arc<Font>,
+    used: BTreeMap<u16, char>,
 }
 
 /// A base-14 font: every viewer has it, so nothing is embedded. Text in
@@ -75,6 +89,8 @@ pub struct TextPage<'c> {
     pub height: f64,
     pub content: &'c [u8],
     pub fonts: &'c [StandardFont],
+    /// Embedded fonts the content names (`/E1`, `/E2`, ...), by index.
+    pub embedded: &'c [usize],
     pub links: &'c [([f64; 4], String)],
 }
 
@@ -88,6 +104,7 @@ impl<'a> PdfDocument<'a> {
             pages: Vec::new(),
             fonts: Vec::new(),
             title: None,
+            embedded: Vec::new(),
         };
         document.put(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")?;
         Ok(document)
@@ -198,6 +215,9 @@ impl<'a> PdfDocument<'a> {
     /// Closes the document: the page tree, the catalog, the cross
     /// reference table, and the trailer.
     pub fn finish(mut self) -> io::Result<()> {
+        for index in 0..self.embedded.len() {
+            self.write_embedded(index)?;
+        }
         let kids: Vec<String> = self
             .pages
             .iter()
@@ -239,6 +259,126 @@ impl<'a> PdfDocument<'a> {
         self.sink.flush()
     }
 
+    /// Embeds a font (once): the index its pages name it by, as `/E<n+1>`.
+    pub fn embed(&mut self, font: Arc<Font>) -> usize {
+        if let Some(index) = self
+            .embedded
+            .iter()
+            .position(|known| Arc::ptr_eq(&known.font, &font))
+        {
+            return index;
+        }
+        let number = self.allocate();
+        self.embedded.push(Embedded {
+            number,
+            font,
+            used: BTreeMap::new(),
+        });
+        self.embedded.len() - 1
+    }
+
+    /// Records that a page set `glyph` of embedded font `index` for `text`.
+    pub fn use_glyph(&mut self, index: usize, glyph: u16, text: char) {
+        if let Some(embedded) = self.embedded.get_mut(index) {
+            embedded.used.entry(glyph).or_insert(text);
+        }
+    }
+
+    /// Writes an embedded font: the subset program, its descriptor, the
+    /// CID font with the used glyphs' widths, the ToUnicode map, and the
+    /// Type0 font at its reserved number.
+    fn write_embedded(&mut self, index: usize) -> io::Result<()> {
+        let font = self.embedded[index].font.clone();
+        let used = self.embedded[index].used.clone();
+        let number = self.embedded[index].number;
+        let invalid = |error: FontError| io::Error::new(io::ErrorKind::InvalidData, error.0);
+        let glyphs: BTreeSet<u16> = used.keys().copied().collect();
+        let program = font.subset(&glyphs).map_err(invalid)?;
+        let name = subset_name(&font.family, &glyphs);
+        let mut compressed = vec![0x78, 0x9c];
+        deflate(&program, &mut compressed);
+        compressed.extend_from_slice(&adler32(&program).to_be_bytes());
+        let file = self.allocate();
+        self.object(
+            file,
+            &format!(
+                "<< /Length {} /Length1 {} /Filter /FlateDecode >>",
+                compressed.len(),
+                program.len()
+            ),
+            Some(&compressed),
+        )?;
+        let scale = |units: i16| number_text(font.to_thousandths(f64::from(units)));
+        let mut flags = 32;
+        if font.fixed_pitch {
+            flags |= 1;
+        }
+        if font.italic_angle != 0.0 {
+            flags |= 64;
+        }
+        let descriptor = self.allocate();
+        self.object(
+            descriptor,
+            &format!(
+                "<< /Type /FontDescriptor /FontName /{name} /Flags {flags} /FontBBox [{} {} {} {}] /ItalicAngle {} /Ascent {} /Descent {} /CapHeight {} /StemV {} /FontFile2 {file} 0 R >>",
+                scale(font.bbox[0]),
+                scale(font.bbox[1]),
+                scale(font.bbox[2]),
+                scale(font.bbox[3]),
+                number_text(font.italic_angle),
+                scale(font.ascent),
+                scale(font.descent),
+                scale(font.cap_height),
+                if font.weight >= 600 { 140 } else { 80 }
+            ),
+            None,
+        )?;
+        let mut widths = String::new();
+        for glyph in &glyphs {
+            let width = font.to_thousandths(f64::from(font.advance(*glyph)));
+            widths.push_str(&format!("{glyph} [{}] ", number_text(width)));
+        }
+        let cid_font = self.allocate();
+        self.object(
+            cid_font,
+            &format!(
+                "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{name} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {descriptor} 0 R /CIDToGIDMap /Identity /DW 1000 /W [{widths}] >>"
+            ),
+            None,
+        )?;
+        let mut cmap = String::from(
+            "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
+        );
+        let entries: Vec<(&u16, &char)> = used.iter().collect();
+        for chunk in entries.chunks(100) {
+            cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
+            for (glyph, text) in chunk {
+                let mut units = [0u16; 2];
+                let hex: String = text
+                    .encode_utf16(&mut units)
+                    .iter()
+                    .map(|unit| format!("{unit:04X}"))
+                    .collect();
+                cmap.push_str(&format!("<{glyph:04X}> <{hex}>\n"));
+            }
+            cmap.push_str("endbfchar\n");
+        }
+        cmap.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
+        let to_unicode = self.allocate();
+        self.object(
+            to_unicode,
+            &format!("<< /Length {} >>", cmap.len()),
+            Some(cmap.as_bytes()),
+        )?;
+        self.object(
+            number,
+            &format!(
+                "<< /Type /Font /Subtype /Type0 /BaseFont /{name} /Encoding /Identity-H /DescendantFonts [{cid_font} 0 R] /ToUnicode {to_unicode} 0 R >>"
+            ),
+            None,
+        )
+    }
+
     /// Sets the title the document's information dictionary carries.
     pub fn set_title(&mut self, title: &str) {
         self.title = Some(title.to_string());
@@ -265,6 +405,11 @@ impl<'a> PdfDocument<'a> {
                 }
             };
             resources.push_str(&format!("/{} {number} 0 R ", font.resource()));
+        }
+        for index in page.embedded {
+            if let Some(embedded) = self.embedded.get(*index) {
+                resources.push_str(&format!("/E{} {} 0 R ", index + 1, embedded.number));
+            }
         }
         let mut compressed = vec![0x78, 0x9c];
         deflate(page.content, &mut compressed);
@@ -483,6 +628,30 @@ pub struct JpegInfo {
     pub adobe: bool,
     /// Pixels per inch from the JFIF header, when it gives them.
     pub density: Option<(f64, f64)>,
+}
+
+/// A subset font's name: six capital letters from the glyphs it holds,
+/// a plus, and the family without spaces or delimiters.
+fn subset_name(family: &str, glyphs: &BTreeSet<u16>) -> String {
+    let mut hash: u32 = 2_166_136_261;
+    for glyph in glyphs {
+        for byte in glyph.to_be_bytes() {
+            hash = (hash ^ u32::from(byte)).wrapping_mul(16_777_619);
+        }
+    }
+    let mut tag = String::new();
+    for _ in 0..6 {
+        tag.push((b'A' + (hash % 26) as u8) as char);
+        hash /= 26;
+    }
+    let mut family: String = family
+        .chars()
+        .filter(|char| char.is_ascii_alphanumeric())
+        .collect();
+    if family.is_empty() {
+        family.push_str("Font");
+    }
+    format!("{tag}+{family}")
 }
 
 /// A number for a PDF dictionary: to a hundredth, without trailing zeros.
