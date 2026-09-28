@@ -305,6 +305,13 @@ pub fn read_bmp_rows(
     reader.read_exact(&mut preamble[54..])?;
     let layout = layout(&preamble)?;
     let stride = layout.width as usize * layout.color.channels();
+    // The info header's pixels per metre across and down; zero when the
+    // writer left them out.
+    let across = u32_at(&preamble, 38);
+    let down = u32_at(&preamble, 42);
+    if across > 0 && down > 0 {
+        sink.density(f64::from(across) * 0.0254, f64::from(down) * 0.0254);
+    }
     sink.start(layout.width, layout.height, layout.color)?;
     let mut pixels = vec![0u8; stride];
     if layout.top_down {

@@ -38,7 +38,7 @@ pixels from our PDFs, and `pdfinfo` reads their pages.
 | Part | Written |
 |---|---|
 | Header | `%PDF-1.7` and a binary comment line |
-| Pages | one per image: `/MediaBox [0 0 w h]`, a point per pixel (72 per inch; the hub carries no resolution), content `q w 0 0 h 0 0 cm /Im0 Do Q` |
+| Pages | one per image at its physical size: `/MediaBox [0 0 w h]` with w = pixels × 72 / pixels per inch, from the resolution the image records (PNG `pHYs` in metres, JPEG JFIF in inches or centimetres, TIFF `XResolution` and `ResolutionUnit`, BMP pixels per metre); a point per pixel when it records none or an implausible one (outside 1 to 10,000 per inch). Content `q w 0 0 h 0 0 cm /Im0 Do Q` |
 | Pixels | `/FlateDecode` with `/DecodeParms << /Predictor 15 >>`: the rows filtered as our PNG writer filters them; `/DeviceGray` or `/DeviceRGB`, 8 bits |
 | Alpha | an `/SMask` gray image, compressed in memory while the color streams |
 | JPEG | the file itself; gray, RGB, or CMYK from its frame header, `/Decode [1 0 1 0 1 0 1 0]` for Adobe's inverted CMYK |
@@ -63,7 +63,7 @@ first.
 
 ## Known deviations
 
-- Page size is a point per pixel; an image's DPI is not carried yet.
+- WebP, QOI, TGA, Netpbm, and ICO record no resolution a page could use (WebP's lives in EXIF, which is not read), so their pages are a point per pixel.
 - Not read: encrypted files (even with an empty password), JPEG 2000,
   CCITT fax and JBIG2 images (common for black-and-white scans),
   Separation, DeviceN, and Lab color, and a PDF's text or vector

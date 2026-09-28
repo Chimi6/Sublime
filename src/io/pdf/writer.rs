@@ -2,7 +2,8 @@
 //! offsets recorded, a stream's length is an object written after the
 //! stream (so no stream is held), and the page tree, catalog, and cross
 //! reference table close the file. A page is one image at its own size
-//! (a pixel a point, 72 per inch).
+//! (72 points per inch over the resolution the image records, a pixel a
+//! point when it records none).
 
 use std::io::{self, Write};
 
@@ -68,9 +69,21 @@ impl<'a> PdfDocument<'a> {
 
     /// The page object and its content for an image object already
     /// written: the image fills a page of its own size.
-    fn page(&mut self, image: u32, width: u32, height: u32) -> io::Result<()> {
+    fn page(
+        &mut self,
+        image: u32,
+        (width, height): (u32, u32),
+        density: Option<(f64, f64)>,
+    ) -> io::Result<()> {
         let content_number = self.allocate();
         let page_number = self.allocate();
+        let (width, height) = match density {
+            Some((across, down)) => (
+                points(f64::from(width) * 72.0 / across),
+                points(f64::from(height) * 72.0 / down),
+            ),
+            None => (width.to_string(), height.to_string()),
+        };
         let content = format!("q {width} 0 0 {height} 0 0 cm /Im0 Do Q");
         self.object(
             content_number,
@@ -93,6 +106,7 @@ impl<'a> PdfDocument<'a> {
         PdfPage {
             document: self,
             state: None,
+            density: None,
         }
     }
 
@@ -123,7 +137,8 @@ impl<'a> PdfDocument<'a> {
             Some(jpeg),
         )
         .map_err(io)?;
-        self.page(image, info.width, info.height).map_err(io)
+        self.page(image, (info.width, info.height), info.density)
+            .map_err(io)
     }
 
     /// Closes the document: the page tree, the catalog, the cross
@@ -185,6 +200,8 @@ struct Streaming {
 pub struct PdfPage<'d, 'a> {
     document: &'d mut PdfDocument<'a>,
     state: Option<Streaming>,
+    /// Pixels per inch the image records, when it records them.
+    density: Option<(f64, f64)>,
 }
 
 impl PdfPage<'_, '_> {
@@ -213,7 +230,8 @@ impl PdfPage<'_, '_> {
                 Some(&bytes),
             )?;
         }
-        self.document.page(state.image, state.width, state.height)
+        self.document
+            .page(state.image, (state.width, state.height), self.density)
     }
 
     /// The soft mask's number: allocated right after the image's length.
@@ -223,6 +241,15 @@ impl PdfPage<'_, '_> {
 }
 
 impl RowSink for PdfPage<'_, '_> {
+    fn density(&mut self, across: f64, down: f64) {
+        // A resolution far outside what scanners and screens write
+        // (1 to 10,000 per inch) is a broken header, not a page size.
+        let plausible = |value: f64| (1.0..=10_000.0).contains(&value);
+        if plausible(across) && plausible(down) {
+            self.density = Some((across, down));
+        }
+    }
+
     fn start(&mut self, width: u32, height: u32, color: ColorType) -> io::Result<()> {
         let (colors, space, alpha) = match color {
             ColorType::Gray => (1, "/DeviceGray", false),
@@ -316,6 +343,14 @@ pub struct JpegInfo {
     pub components: u8,
     /// An Adobe APP14 segment is present (its CMYK is stored inverted).
     pub adobe: bool,
+    /// Pixels per inch from the JFIF header, when it gives them.
+    pub density: Option<(f64, f64)>,
+}
+
+/// A page dimension in points, to a hundredth, without trailing zeros.
+fn points(value: f64) -> String {
+    let text = format!("{value:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /// Reads a JPEG's frame header (and whether it carries Adobe's marker).
@@ -326,6 +361,7 @@ pub fn jpeg_info(jpeg: &[u8]) -> Result<JpegInfo, PdfError> {
     }
     let mut at = 2;
     let mut adobe = false;
+    let mut density = None;
     loop {
         while at < jpeg.len() && jpeg[at] != 0xff {
             at += 1;
@@ -349,6 +385,21 @@ pub fn jpeg_info(jpeg: &[u8]) -> Result<JpegInfo, PdfError> {
             .ok_or_else(|| fail("JPEG cut short"))?;
         match marker {
             0xee if segment.starts_with(b"Adobe") => adobe = true,
+            // JFIF: units (1 per inch, 2 per centimetre), then densities.
+            0xe0 if segment.starts_with(b"JFIF\0") && segment.len() >= 12 => {
+                let across = f64::from(u16::from_be_bytes([segment[8], segment[9]]));
+                let down = f64::from(u16::from_be_bytes([segment[10], segment[11]]));
+                let scale = match segment[7] {
+                    1 => Some(1.0),
+                    2 => Some(2.54),
+                    _ => None,
+                };
+                let plausible = |value: f64| (1.0..=10_000.0).contains(&value);
+                if let Some(scale) = scale {
+                    density = Some((across * scale, down * scale))
+                        .filter(|(x, y)| plausible(*x) && plausible(*y));
+                }
+            }
             0xc0..=0xcf if !matches!(marker, 0xc4 | 0xc8 | 0xcc) => {
                 if segment.len() < 6 {
                     return Err(fail("JPEG frame header cut short"));
@@ -364,6 +415,7 @@ pub fn jpeg_info(jpeg: &[u8]) -> Result<JpegInfo, PdfError> {
                     height,
                     components,
                     adobe,
+                    density,
                 });
             }
             0xda | 0xd9 => return Err(fail("JPEG has no frame header")),
