@@ -1,0 +1,15 @@
+Report Title
+An opening paragraph that runs long enough to wrap across more than one line
+of the text block, so a paragraph is several lines.
+
+First Section
+Section text with bold words in the middle.
+• First bullet item
+• Second bullet item
+
+Second Section
+1. Numbered one
+2. Numbered two
+Closing paragraph.
+
+

@@ -1,0 +1,16 @@
+Kerned words with no spaces.
+Next line by T-star.
+Quote operator line.
+Double quote with spacing.
+Stretched by Tz.
+Baseraised back
+
+Scaled twice by cm.
+find the flow of fish.
+
+Text inside a form XObject.
+
+Hex string follows: Hex!
+WinAnsi: “quoted” — € 5 ™
+
+
