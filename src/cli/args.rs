@@ -7,7 +7,7 @@ pub const HELP: &str = "\
 sublime: universal efficient file conversion
 
 USAGE
-  sublime convert <input> [output] [--to <format>] [--from <format>] [--strict] [--via <format>] [--sheet <name|number>] [--page <n>] [--quality <1-100>]
+  sublime convert <input> [output] [--to <format>] [--from <format>] [--strict] [--via <format>] [--sheet <name|number>] [--page <n>] [--font <file.ttf>] [--quality <1-100>]
   sublime convert <inputs...> [out-dir/] --to <format> [--out-dir <dir>] [-r] [--jobs <n>] [--dry-run]
   sublime convert <images...> <output.pdf>
   sublime check <from> <to> [--strict]
@@ -29,6 +29,8 @@ FLAGS
   --strict            Refuse any path that is lossy or conditional.
   --sheet <name|n>    The worksheet to read from a workbook (a name or a 1-based number; the first when absent), or the name to give the sheet written.
   --page <n>          The page to read from a PDF (1-based; the first when absent).
+  --font <file.ttf>   The font to set a written PDF's text in (the standard fonts,
+                      with this machine's fonts for other scripts, when absent).
   --quality <1-100>   JPEG: the quality written at (85 when absent). Lossless WebP: effort, as cwebp reads it (50 and under fastest, 90 and up smallest).
   --out-dir <dir>     Batch: write outputs into this directory (created if needed), keeping each input's name with the new extension. A trailing positional ending in / does the same. Without it, outputs go beside their inputs.
   -r, --recursive     Batch: descend into directories given as inputs, mirroring their structure under --out-dir.
@@ -101,6 +103,8 @@ pub struct ConvertArgs {
     pub sheet: Option<String>,
     pub quality: Option<u8>,
     pub page: Option<u32>,
+    /// A font file to set written PDFs' body text in.
+    pub font: Option<String>,
     pub via: Option<String>,
     /// The inputs are images merged into `output`, a page each (the last
     /// of three or more positionals names a PDF).
@@ -285,6 +289,7 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
     let mut sheet: Option<String> = None;
     let mut quality: Option<u8> = None;
     let mut page: Option<u32> = None;
+    let mut font: Option<String> = None;
     let mut out_dir: Option<String> = None;
     let mut jobs: Option<usize> = None;
     let mut recursive = false;
@@ -297,6 +302,7 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
             "--from" => from = Some(take_value(&mut iterator, "--from")?),
             "--via" => via = Some(take_value(&mut iterator, "--via")?),
             "--sheet" => sheet = Some(take_value(&mut iterator, "--sheet")?),
+            "--font" => font = Some(take_value(&mut iterator, "--font")?),
             "--page" => {
                 let value = take_value(&mut iterator, "--page")?;
                 page = Some(match value.parse::<u32>() {
@@ -386,6 +392,7 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
         sheet,
         quality,
         page,
+        font,
     })
 }
 

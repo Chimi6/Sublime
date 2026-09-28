@@ -21,6 +21,7 @@ fn convert_with(
         sheet: sheet.map(str::to_string),
         quality: None,
         page: None,
+        font: None,
     };
     let mut sink = NullSink;
     let mut context = Context::new(&mut sink, &options);
