@@ -38,6 +38,7 @@ describes.
 
 The document category's one-way streets are closed (0.8.0 to 0.10.0) and the data category's planned set is in (0.11.0 to 0.16.0). What follows, in order:
 
+- 2026-09-27, PDF first (a flagship, complete both ways before 1.0): 0.23.1 page sizes from the image's DPI; 0.24 PDF to text and Markdown (text operators, fonts and encodings, ToUnicode, reading order; every page with a break marker, `--page N` for one; headings from font size), reaching HTML and Word through the bridge; then documents to PDF (Markdown, HTML, and Word through the document model: a layout engine, font embedding, line breaking), its own plan. Encrypted PDFs with an empty user password (RC4, AES) as their own item.
 - 2026-09-25, spreadsheets as a family (the XLSX reader and writer are the model; every entry below reads into rows and writes from them so it reaches CSV, TSV, JSON, JSON Lines, and the hub formats through the planner):
   - **Apple Numbers** (`.numbers`, Mac session): IWA package like Pages, so the Snappy and protobuf readers and the Pages fixtures pipeline apply; tables of the first sheet to rows first, then sheet and table selection through `--sheet`. Needs Numbers-made fixtures with Numbers' own CSV exports as references, which only the Mac can produce. Reader before writer; a writer needs the same object-graph work as the Pages writer and waits on that decision.
   - **OpenDocument spreadsheet** (`.ods`): the same keystones as XLSX (ZIP, XML) with `content.xml` rows and `table:table-cell` repeats; LibreOffice's own CSV exports as references. Reader and writer, a week.
@@ -46,7 +47,7 @@ The document category's one-way streets are closed (0.8.0 to 0.10.0) and the dat
   - **Excel-made fixtures** for the XLSX reader (Mac session, Excel or Numbers export), and number formats beyond dates.
 - 2026-09-26, the image category after PNG, BMP, and JPEG: GIF once there is somewhere for its frames to go (APNG or video); until then its first frame is a small reader on the hub. Every codec lands in the pixel hub and ships with a pair against a real crate. JPEG levers in Tech Debt: subsampling chosen from the chroma's detail, optimized Huffman tables, progressive output, Exif orientation on the image path.
 - 2026-09-25, the cheap hub batch: INI, plist (XML and binary), MessagePack, CBOR, each a day on the value tree.
-- Then the document category: ODT and EPUB, which reuse the Word and HTML work almost entirely; RTF; then PDF write as its own plan.
+- Then the document category: ODT and EPUB, which reuse the Word and HTML work almost entirely; RTF.
 - The Pages writer decision stays with the Mac session.
 
 ## Future
@@ -192,6 +193,7 @@ WebP color cache stays).
 
 ## Decisions
 
+- 2026-09-27: PDF is a flagship format: 1.0 does not ship until PDF converts both ways with documents (text and Markdown out, Markdown, HTML, and Word in) and with images (shipped 0.23.0). PDF read and write for documents come before the spreadsheet and hub batches.
 - 2026-09-27: 0.22.0 ships with two lines the owner counts as wins for size: the `ico-png` icon from a 256-pixel source takes about 8 ms in process against the image crate's 5 for its whole run, because our seven PNG entries are at our default deflate level and its are at its fast level (our icon 44% smaller); and the `qoi-png` stock encode is a tie (754 against 750 to 753 ms, the PNG decode at parity). Rule: somewhat slower but significantly smaller, still lossless, is a win when it is written down; the speed levers stay under Tech Debt > Optimization.
 - 2026-09-27: WebP ships with the lossless photo encode line failing by design: the owner keeps the color cache and the predictor search for smaller files over a speed tie with image-webp, which writes neither. The lossless photo decode's 2% miss ships with it.
 - 2026-09-23: Licensed AGPL-3.0-or-later, contributions inbound under Apache-2.0, no CLA, no public commercial track. The goal is that nobody paywalls the work without sharing back; exceptions are handled privately on request (`LICENSING.md`). Releases 0.1.0 to 0.3.0 stay Apache-2.0.
