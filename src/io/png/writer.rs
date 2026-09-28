@@ -58,6 +58,7 @@ impl FilteredZlib {
     }
 
     /// Filters a row into the pending part.
+    #[inline]
     pub(crate) fn row(&mut self, pixels: &[u8]) {
         // The filter is chosen by trial on every fourth row and kept for
         // the rows between: image statistics change slowly down the
@@ -81,6 +82,7 @@ impl FilteredZlib {
 
     /// A compressed part when enough rows are pending (call `finish`
     /// instead after the last row, so the stream ends in one part).
+    #[inline]
     pub(crate) fn take_part(&mut self) -> Option<&[u8]> {
         if self.filtered.len() >= PART_SIZE {
             self.part(false);

@@ -6,6 +6,11 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Performance
+
+- A bottom-up BMP (the common kind) read from a file is read from its end a block of rows at a time instead of whole: `bmp -> png` on a 61 MB photo holds 5.6 MB instead of 66 and runs 2.6% ahead of the crates (it had slipped 1.4% behind in 0.23.0). Converter inputs that are files can now seek (`RewindableRead::seek_to`).
+- The PNG writer's per-row calls are inlined again (0.23.0's shared `FilteredZlib` had lost it).
+
 ### Fixed
 
 - Images to PDF: a page takes the image's physical size from the resolution it records (PNG, JPEG, TIFF, BMP), so a 300-dpi scan becomes a letter-sized page rather than one a point per pixel; images without one stay a point per pixel. Readers report resolution through `RowSink::density`.
