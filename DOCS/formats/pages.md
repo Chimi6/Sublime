@@ -234,9 +234,10 @@ Established from the fixtures with `sublime inspect` (a `dev-tools` build).
 Measured on 2026-10-03 against Apple's own import and export, through
 three-way renders (Pages' own PDF or LibreOffice as the reference, ours, and
 Apple's): both directions match or beat Apple. These are the known gaps, most
-useful first. The harnesses are scratch scripts (open in Pages, export a PDF,
-read Pages' log for `needs repair` and `modified during read`); every change
-should be checked the same way.
+useful first. The harness is `scripts/pages-check` (open in Pages, export a
+PDF, read Pages' log for `needs repair` and `modified during read`, compare
+three-way against LibreOffice and Apple; see its README); every change should
+be checked the same way.
 
 1. **Pages -> Word page counts where Apple's export is closer.** Six files
    (`bug57031`, `table_alignment`, and four user documents) come out a page
