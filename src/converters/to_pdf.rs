@@ -3,6 +3,7 @@
 //! Letter pages, one-inch margins, the base-14 Helvetica and Courier.
 
 use std::io::{Read, Write};
+use std::sync::Arc;
 
 use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
 use crate::converters::input::read_text_document;
@@ -12,12 +13,13 @@ use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
 use crate::io::docx::read_docx;
+use crate::io::font::Font;
 use crate::io::markdown::{EventSink, Options};
 use crate::io::pages::{Package, Scope, read_document};
 use crate::io::pdf::PdfDocument;
-use crate::io::pdf::compose::{ComposeNotes, Composer, PageSetup};
+use crate::io::pdf::compose::{ComposeNotes, Composer, Faces, PageSetup};
 
-const FIDELITY_NOTE: &str = "set on Letter pages in Helvetica and Courier; images are shown by their alt text, raw HTML is dropped, and characters outside Western European text become ?";
+const FIDELITY_NOTE: &str = "set on Letter pages in Helvetica and Courier, with fonts installed on this machine (subset and embedded) for other scripts; images are shown by their alt text, raw HTML is dropped, and characters no installed font covers become ?";
 
 #[derive(Clone, Copy)]
 enum Source {
@@ -91,8 +93,24 @@ impl Converter for ToPdf {
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
+        let forced = match &context.options.font {
+            Some(bytes) => Some(Arc::new(Font::parse(bytes.clone(), 0).map_err(
+                |error| ConvertError::Malformed {
+                    location: Location::default(),
+                    message: format!("the font: {error}"),
+                },
+            )?)),
+            None => None,
+        };
+        if forced.as_ref().is_some_and(|font| !font.has_glyf()) {
+            return Err(ConvertError::Malformed {
+                location: Location::default(),
+                message: "the font has CFF outlines; only TrueType-outline fonts (.ttf) are embedded so far".to_string(),
+            });
+        }
+        let faces = Faces::new(forced, true);
         let mut document = PdfDocument::new(&mut *output)?;
-        let mut composer = Composer::new(&mut document, PageSetup::default());
+        let mut composer = Composer::new(&mut document, PageSetup::default(), faces);
         match self.source {
             Source::Markdown => {
                 let text = read_text_document(&mut input)?;
@@ -150,7 +168,7 @@ fn report(notes: &ComposeNotes, name: &'static str, context: &mut Context<'_>) {
             name,
             Location::default(),
             format!(
-                "{} characters outside Western European text set as ? (the standard PDF fonts cover WinAnsi only)",
+                "{} characters no available font covers set as ?",
                 notes.unset_characters
             ),
         );
