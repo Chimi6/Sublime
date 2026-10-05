@@ -200,6 +200,15 @@ impl<'p> View<'p> {
             .collect()
     }
 
+    /// A number field at full precision (a double, or a float widened).
+    fn double(&self, name: &str) -> Option<f64> {
+        match self.node(name)? {
+            Node::Double(value) => Some(value),
+            Node::Float(value) => Some(f64::from(value)),
+            _ => None,
+        }
+    }
+
     fn float(&self, name: &str) -> Option<f32> {
         match self.node(name)? {
             Node::Float(value) => Some(value),
@@ -449,6 +458,8 @@ fn within(spans: &[Span], from: usize, to: usize) -> &[Span] {
 }
 
 pub struct Reader<'p> {
+    /// The document lays one full-width header and footer, not three zones.
+    single_header_footer: bool,
     package: &'p Package,
     graph: Graph<'p>,
     document: Document,
@@ -472,6 +483,14 @@ pub struct Reader<'p> {
     boundary_scratch: Vec<usize>,
     /// Where the storage being read sits in the text arena.
     storage_base: u32,
+    /// The storage's comment edges, by UTF-16 offset, in order.
+    comment_marks: Vec<(usize, Inline)>,
+    /// How many of them are already placed.
+    comment_marks_done: usize,
+    /// Highlight objects -> the model's comments.
+    comment_ids: HashMap<u64, Id>,
+    /// Which drawable each run of floating objects came from.
+    floating_sources: Vec<(u64, std::ops::Range<usize>)>,
     /// Positions into the storage's tables, advanced as the text is
     /// walked, so each lookup is a step rather than a search.
     cursors: Cursors,
@@ -519,12 +538,17 @@ pub fn read_document(package: &Package) -> Document {
         revision_ids: HashMap::new(),
         boundary_scratch: Vec::new(),
         storage_base: 0,
+        comment_marks: Vec::new(),
+        comment_marks_done: 0,
+        comment_ids: HashMap::new(),
+        floating_sources: Vec::new(),
         cursors: Cursors::default(),
         pending_blocks: Vec::new(),
         following_blocks: Vec::new(),
         media: HashMap::new(),
         data_files: None,
         merges: None,
+        single_header_footer: false,
     };
     reader.read();
     reader.document
@@ -566,6 +590,8 @@ const CELL_FIELDS: [(u32, usize); 21] = [
 #[derive(Default)]
 struct CellRecord {
     kind: u8,
+    /// A number stored as decimal128, written out exactly.
+    decimal: Option<String>,
     double: Option<f64>,
     seconds: Option<f64>,
     string: Option<u32>,
@@ -591,6 +617,7 @@ fn cell_record(bytes: &[u8]) -> Option<CellRecord> {
         }
         let field = bytes.get(offset..offset + size)?;
         match flag {
+            0x1 => record.decimal = decimal128_text(field),
             0x2 => record.double = Some(f64::from_le_bytes(field.try_into().ok()?)),
             0x4 => record.seconds = Some(f64::from_le_bytes(field.try_into().ok()?)),
             0x8 => record.string = Some(u32::from_le_bytes(field.try_into().ok()?)),
@@ -602,6 +629,40 @@ fn cell_record(bytes: &[u8]) -> Option<CellRecord> {
         offset += size;
     }
     Some(record)
+}
+
+/// A cell's decimal128 number (as Pages stores it: a binary mantissa and a
+/// biased power of ten) as exact decimal text, e.g. `42.5` or `-3`.
+fn decimal128_text(bytes: &[u8]) -> Option<String> {
+    let bytes: [u8; 16] = bytes.try_into().ok()?;
+    let negative = bytes[15] & 0x80 != 0;
+    let exponent = ((i32::from(bytes[15] & 0x7F) << 7) | i32::from(bytes[14] >> 1)) - 0x1820;
+    let mut mantissa = u128::from(bytes[14] & 1);
+    for byte in bytes[..14].iter().rev() {
+        mantissa = mantissa * 256 + u128::from(*byte);
+    }
+    let digits = mantissa.to_string();
+    let mut text = if exponent >= 0 {
+        if mantissa == 0 {
+            "0".to_string()
+        } else {
+            digits + &"0".repeat(exponent as usize)
+        }
+    } else {
+        let shift = (-exponent) as usize;
+        let padded = format!("{digits:0>width$}", width = shift + 1);
+        let (whole, fraction) = padded.split_at(padded.len() - shift);
+        let fraction = fraction.trim_end_matches('0');
+        if fraction.is_empty() {
+            whole.to_string()
+        } else {
+            format!("{whole}.{fraction}")
+        }
+    };
+    if negative && text != "0" {
+        text.insert(0, '-');
+    }
+    Some(text)
 }
 
 /// The lookup tables of one table's data store.
@@ -624,6 +685,9 @@ impl Reader<'_> {
         let page = root
             .map(|root| page_setup(View::of(root)))
             .unwrap_or_default();
+        self.single_header_footer = root
+            .and_then(|root| View::of(root).boolean("uses_single_header_footer"))
+            .unwrap_or(false);
         let body = root
             .and_then(|root| View::of(root).reference("body_storage"))
             .and_then(|identifier| self.graph.object(identifier))
@@ -678,6 +742,8 @@ impl Reader<'_> {
                         page: page.clone(),
                         columns: current.columns,
                         start: SectionStart::Continuous,
+                        column_gap: None,
+                        column_widths: Vec::new(),
                         headers: current.headers.clone(),
                         footers: current.footers.clone(),
                         blocks: Vec::new(),
@@ -689,12 +755,35 @@ impl Reader<'_> {
                 }
                 if let Some(section_object) = section_here {
                     let previous = sections.last();
-                    let (headers, footers) = self.section_page_text(section_object, previous);
+                    let (headers, footers) =
+                        self.section_page_text(section_object, previous, page.height);
                     current.headers = headers;
                     current.footers = footers;
+                    // Page numbering that restarts (kind 1) at a number.
+                    if let Some(section) = self.graph.object(section_object) {
+                        let section = View::of(section);
+                        // A section's background colour fills the pages.
+                        if let Some(fill) = section
+                            .message("background_fill")
+                            .and_then(|fill| fill.message("color"))
+                            .and_then(color)
+                            .filter(|fill| (fill.red, fill.green, fill.blue) != (255, 255, 255))
+                        {
+                            self.document.page_color = Some(fill);
+                        }
+                        if section.integer("section_page_number_kind") == Some(1) {
+                            current.page.page_number_start = section
+                                .integer("section_page_number_start")
+                                .map(|start| start.max(0) as u32);
+                        }
+                    }
                 }
                 if let Some(layout_object) = layout_here {
-                    current.columns = self.column_count(layout_object);
+                    let text_width = page.width - page.margin_left - page.margin_right;
+                    let (count, gap, widths) = self.column_layout(layout_object, text_width);
+                    current.columns = count;
+                    current.column_gap = gap;
+                    current.column_widths = widths;
                 }
             }
             current.blocks.push(block);
@@ -704,6 +793,29 @@ impl Reader<'_> {
         if let Some(floating) = root.and_then(|root| View::of(root).reference("floating_drawables"))
         {
             self.floating_drawables(floating);
+        }
+        // Drawables the z-order lists before the body text are behind it.
+        if let Some(root) = root {
+            let root = View::of(root);
+            let body = root.reference("body_storage");
+            let order = root
+                .reference("drawables_zorder")
+                .and_then(|zorder| self.graph.object(zorder))
+                .map(|zorder| View::of(zorder).references("drawables"))
+                .unwrap_or_default();
+            if let Some(body_at) = body.and_then(|body| order.iter().position(|id| *id == body)) {
+                for (drawable, range) in std::mem::take(&mut self.floating_sources) {
+                    if order
+                        .iter()
+                        .position(|id| *id == drawable)
+                        .is_some_and(|at| at < body_at)
+                    {
+                        for object in &mut self.document.floating[range] {
+                            object.behind = true;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -717,7 +829,10 @@ impl Reader<'_> {
             let page = group.integer("page_index").unwrap_or(0).max(0) as u32;
             for entry in group.messages("drawables") {
                 if let Some(drawable) = entry.reference("drawable") {
+                    let before = self.document.floating.len();
                     self.floating_object(drawable, page, 0.0, 0.0);
+                    self.floating_sources
+                        .push((drawable, before..self.document.floating.len()));
                 }
             }
         }
@@ -748,10 +863,69 @@ impl Reader<'_> {
         let y = offset_y + position.and_then(|p| p.float("y")).unwrap_or(0.0);
         let width = size.and_then(|s| s.float("width")).unwrap_or(0.0);
         let height = size.and_then(|s| s.float("height")).unwrap_or(0.0);
+        let wrap = match base
+            .and_then(|base| base.message("exterior_text_wrap"))
+            .and_then(|wrap| wrap.integer("type"))
+        {
+            Some(2) => crate::document::TextWrap::TopAndBottom,
+            Some(5) => crate::document::TextWrap::None,
+            _ => crate::document::TextWrap::Around,
+        };
         let children = view.references("children");
         if !children.is_empty() {
             for child in children {
                 self.floating_object(child, page, x, y);
+            }
+            return;
+        }
+        // A chart: its data grid, series by row (or by column).
+        if let Some(unity) = view.message("unity")
+            && let Some(grid) = unity.message("grid")
+        {
+            if width > 0.0 && height > 0.0 {
+                let chart = chart_from_grid(unity, grid);
+                if !chart.series.is_empty() {
+                    self.document.floating.push(FloatingObject {
+                        page,
+                        x,
+                        y,
+                        width,
+                        height,
+                        content: FloatingContent::Chart(chart),
+                        follows_text: false,
+                        wrap,
+                        repeats: None,
+                        behind: false,
+                    });
+                }
+            }
+            return;
+        }
+        // A table placed on the page: a text box holding it.
+        if let Some(model) = view.reference("tableModel") {
+            let Some(table) = self.table(model) else {
+                return;
+            };
+            if width > 0.0 && height > 0.0 {
+                self.document.floating.push(FloatingObject {
+                    page,
+                    x,
+                    y,
+                    width,
+                    height,
+                    content: FloatingContent::TextBox {
+                        blocks: vec![Block::Table(Box::new(table))],
+                        fill: None,
+                        line: None,
+                        geometry: Default::default(),
+                        flip: (false, false),
+                        ends: (None, None),
+                    },
+                    follows_text: false,
+                    wrap,
+                    repeats: None,
+                    behind: false,
+                });
             }
             return;
         }
@@ -770,18 +944,48 @@ impl Reader<'_> {
                 Block::Paragraph(paragraph) => !paragraph.runs.is_empty(),
                 Block::Table(_) => true,
             });
-            if !has_text {
+            let shape = view.message("super");
+            let style = shape.and_then(|shape| shape.reference("style"));
+            let fill = style.and_then(|style| self.shape_fill(style));
+            let line = style.and_then(|style| self.shape_stroke(style));
+            // A shape that holds no text and draws nothing leaves no trace.
+            if !has_text && fill.is_none() && line.is_none() {
                 return;
             }
-            let fill = view
-                .message("super")
-                .and_then(|shape| shape.reference("style"))
-                .and_then(|style| self.shape_fill(style));
-            FloatingContent::TextBox { blocks, fill }
+            let source = shape.and_then(|shape| shape.message("pathsource"));
+            let flip = (
+                source
+                    .and_then(|s| s.boolean("horizontalFlip"))
+                    .unwrap_or(false),
+                source
+                    .and_then(|s| s.boolean("verticalFlip"))
+                    .unwrap_or(false),
+            );
+            let geometry = source
+                .and_then(|source| source.message("bezier_path_source"))
+                .and_then(|bezier| self.shape_path(bezier))
+                .unwrap_or_default();
+            FloatingContent::TextBox {
+                blocks,
+                fill,
+                line,
+                geometry,
+                flip,
+                ends: style.map_or((None, None), |style| self.shape_ends(style)),
+            }
         } else {
             return;
         };
-        if width <= 0.0 || height <= 0.0 {
+        // A flat (or upright) line has no height (or width); anything else
+        // needs both.
+        let is_line = matches!(
+            content,
+            FloatingContent::TextBox {
+                geometry: crate::document::ShapeGeometry::Line,
+                ..
+            }
+        );
+        if width <= 0.0 && height <= 0.0 || !is_line && (width <= 0.0 || height <= 0.0) {
             return;
         }
         self.document.floating.push(FloatingObject {
@@ -791,10 +995,143 @@ impl Reader<'_> {
             width,
             height,
             content,
+            follows_text: false,
+            wrap,
+            repeats: None,
+            behind: false,
         });
     }
 
     /// The solid fill of a shape style, through its parents.
+    /// A shape style's outline, through its parents: a solid stroke's width
+    /// and colour, or `None` when it draws none.
+    fn shape_stroke(&self, style: u64) -> Option<crate::document::Border> {
+        let mut current = Some(style);
+        for _ in 0..64 {
+            let message = self.graph.object(current?)?;
+            let base = View::of(message).message("super")?;
+            if let Some(stroke) = base
+                .message("shape_properties")
+                .and_then(|properties| properties.message("stroke"))
+            {
+                let solid = stroke
+                    .message("pattern")
+                    .and_then(|pattern| pattern.integer("type"))
+                    == Some(1);
+                let width = stroke.float("width").unwrap_or(0.0);
+                return (solid && width > 0.0).then(|| crate::document::Border {
+                    width,
+                    color: stroke.message("color").and_then(color),
+                });
+            }
+            current = base.message("super").and_then(|s| s.reference("parent"));
+        }
+        None
+    }
+
+    /// A shape style's line marks through its parents: (start, end), Pages'
+    /// tail and head.
+    fn shape_ends(
+        &self,
+        style: u64,
+    ) -> (
+        Option<crate::document::LineEnd>,
+        Option<crate::document::LineEnd>,
+    ) {
+        let kind = |end: View<'_>| {
+            let name = end.string("identifier").unwrap_or("").to_ascii_lowercase();
+            if end.message("path").is_none() && name.is_empty() {
+                return None;
+            }
+            Some(if name.contains("circle") {
+                crate::document::LineEnd::Circle
+            } else if name.contains("diamond") || name.contains("square") {
+                crate::document::LineEnd::Diamond
+            } else if name.contains("open") || name.contains("line") {
+                crate::document::LineEnd::OpenArrow
+            } else {
+                crate::document::LineEnd::Arrow
+            })
+        };
+        let (mut start, mut end) = (None, None);
+        let mut current = Some(style);
+        for _ in 0..64 {
+            let Some(message) = current.and_then(|id| self.graph.object(id)) else {
+                break;
+            };
+            let Some(base) = View::of(message).message("super") else {
+                break;
+            };
+            if let Some(properties) = base.message("shape_properties") {
+                if end.is_none() {
+                    end = properties.message("head_line_end").and_then(kind);
+                }
+                if start.is_none() {
+                    start = properties.message("tail_line_end").and_then(kind);
+                }
+            }
+            current = base.message("super").and_then(|s| s.reference("parent"));
+        }
+        (start, end)
+    }
+
+    /// A shape's Bézier outline as model geometry: a plain rectangle or a
+    /// line as such, any other path kept whole.
+    fn shape_path(&mut self, bezier: View<'_>) -> Option<crate::document::ShapeGeometry> {
+        use crate::document::{PathStep, ShapeGeometry, ShapePath};
+        let size = bezier.message("naturalSize")?;
+        let (width, height) = (size.float("width")?, size.float("height")?);
+        let mut steps = Vec::new();
+        for element in bezier.message("path")?.messages("elements") {
+            let points: Vec<(f32, f32)> = element
+                .messages("points")
+                .into_iter()
+                .map(|point| {
+                    (
+                        point.float("x").unwrap_or(0.0),
+                        point.float("y").unwrap_or(0.0),
+                    )
+                })
+                .collect();
+            let step = match (element.integer("type")?, points.as_slice()) {
+                (1, [p, ..]) => PathStep::Move(p.0, p.1),
+                (2, [p, ..]) => PathStep::Line(p.0, p.1),
+                (4, [a, b, c, ..]) => PathStep::Curve([*a, *b, *c]),
+                (5, _) => PathStep::Close,
+                _ => continue,
+            };
+            steps.push(step);
+        }
+        let lines = steps
+            .iter()
+            .filter(|step| matches!(step, PathStep::Line(..)))
+            .count();
+        let curves = steps.iter().any(|step| matches!(step, PathStep::Curve(_)));
+        if !curves && lines == 1 && steps.len() == 2 {
+            return Some(ShapeGeometry::Line);
+        }
+        let corners = [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)];
+        let near =
+            |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 0.5 && (a.1 - b.1).abs() < 0.5;
+        let points: Vec<(f32, f32)> = steps
+            .iter()
+            .filter_map(|step| match *step {
+                PathStep::Move(x, y) | PathStep::Line(x, y) => Some((x, y)),
+                _ => None,
+            })
+            .collect();
+        if !curves && points.len() >= 4 && points[..4].iter().zip(corners).all(|(a, b)| near(*a, b))
+        {
+            return Some(ShapeGeometry::Rectangle);
+        }
+        self.document.paths.push(ShapePath {
+            width,
+            height,
+            steps,
+        });
+        Some(ShapeGeometry::Path((self.document.paths.len() - 1) as u32))
+    }
+
     fn shape_fill(&self, style: u64) -> Option<Color> {
         let mut current = Some(style);
         let mut depth = 0;
@@ -823,6 +1160,7 @@ impl Reader<'_> {
         &mut self,
         section: u64,
         previous: Option<&Section>,
+        page_height: f32,
     ) -> (PageVariants, PageVariants) {
         let Some(message) = self.graph.object(section) else {
             return (PageVariants::default(), PageVariants::default());
@@ -861,6 +1199,39 @@ impl Reader<'_> {
             headers.first = header;
             footers.first = footer;
         }
+        // What the templates draw on every page of theirs: a header's or a
+        // footer's by the half of the page it sits in.
+        use crate::document::{PageKind, PagePart};
+        for (template, pages, used) in [
+            (odd, PageKind::Default, true),
+            (even, PageKind::Even, even_differs),
+            (first, PageKind::First, first_differs),
+        ] {
+            let Some(template) = template.filter(|_| used) else {
+                continue;
+            };
+            let drawables = self
+                .graph
+                .object(template)
+                .map(|message| View::of(message).references("section_template_drawables"))
+                .unwrap_or_default();
+            for drawable in drawables {
+                let before = self.document.floating.len();
+                self.floating_object(drawable, 0, 0.0, 0.0);
+                for object in &mut self.document.floating[before..] {
+                    let footer = object.y + object.height / 2.0 > page_height / 2.0;
+                    object.repeats = Some(PagePart { footer, pages });
+                    // The part the drawing belongs to exists, if empty.
+                    let variants = if footer { &mut footers } else { &mut headers };
+                    let slot = match pages {
+                        PageKind::Default => &mut variants.default,
+                        PageKind::Even => &mut variants.even,
+                        PageKind::First => &mut variants.first,
+                    };
+                    slot.get_or_insert_with(Vec::new);
+                }
+            }
+        }
         (headers, footers)
     }
 
@@ -892,8 +1263,10 @@ impl Reader<'_> {
             if !has_text {
                 continue;
             }
-            // The center and right areas align that way unless told otherwise.
+            // The center and right areas align that way unless told otherwise;
+            // a single full-width area takes its paragraphs' own alignment.
             let alignment = match position {
+                _ if self.single_header_footer => None,
                 1 => Some(Alignment::Center),
                 2 => Some(Alignment::Right),
                 _ => None,
@@ -921,11 +1294,13 @@ impl Reader<'_> {
 
     /// The column count of a column style, through its variation chain.
     #[inline(never)]
-    fn column_count(&self, layout: u64) -> u16 {
+    /// A layout style's columns, through its parents: how many, the gap
+    /// between equal ones, and each column's width and following gap when
+    /// they differ (Pages stores them as shares of the text width).
+    fn column_layout(&self, layout: u64, text_width: f32) -> (u16, Option<f32>, Vec<(f32, f32)>) {
         let mut current = Some(layout);
-        let mut depth = 0;
-        while let Some(identifier) = current {
-            let Some(message) = self.graph.object(identifier) else {
+        for _ in 0..64 {
+            let Some(message) = current.and_then(|identifier| self.graph.object(identifier)) else {
                 break;
             };
             let view = View::of(message);
@@ -933,23 +1308,27 @@ impl Reader<'_> {
                 .message("column_properties")
                 .and_then(|properties| properties.message("columns"));
             if let Some(columns) = columns {
-                if let Some(count) = columns
-                    .message("equal_columns")
-                    .and_then(|equal| equal.integer("count"))
-                {
-                    return count.clamp(1, 64) as u16;
+                if let Some(equal) = columns.message("equal_columns") {
+                    let count = equal.integer("count").unwrap_or(1).clamp(1, 64) as u16;
+                    let gap = equal.float("gap").map(|share| share * text_width);
+                    return (count, gap, Vec::new());
                 }
                 if let Some(unequal) = columns.message("non_equal_columns") {
-                    return (unequal.messages("columns").len() + 1).clamp(1, 64) as u16;
+                    let following = unequal.messages("following");
+                    let mut widths = Vec::new();
+                    let mut width = unequal.float("first").unwrap_or(0.0) * text_width;
+                    for next in &following {
+                        let gap = next.float("gap").unwrap_or(0.0) * text_width;
+                        widths.push((width, gap));
+                        width = next.float("width").unwrap_or(0.0) * text_width;
+                    }
+                    widths.push((width, 0.0));
+                    return ((following.len() + 1).clamp(1, 64) as u16, None, widths);
                 }
             }
             current = view.message("super").and_then(|s| s.reference("parent"));
-            depth += 1;
-            if depth > 64 {
-                break;
-            }
         }
-        1
+        (1, None, Vec::new())
     }
 
     /// The blocks of a storage read on its own: the running paragraph
@@ -960,7 +1339,11 @@ impl Reader<'_> {
         let outer_following = std::mem::take(&mut self.following_blocks);
         let outer_cursors = self.cursors;
         let outer_base = self.storage_base;
+        let outer_marks = std::mem::take(&mut self.comment_marks);
+        let outer_done = self.comment_marks_done;
         let blocks = self.storage_blocks(storage);
+        self.comment_marks = outer_marks;
+        self.comment_marks_done = outer_done;
         self.last_paragraph_style = outer_style;
         self.pending_blocks = outer_pending;
         self.following_blocks = outer_following;
@@ -1003,6 +1386,33 @@ impl Reader<'_> {
         let footnotes = attribute_table(&storage, "table_footnote");
         let insertions = attribute_table(&storage, "table_insertion");
         let deletions = attribute_table(&storage, "table_deletion");
+        self.comment_marks = self.comment_marks_of(
+            &attribute_table(&storage, "table_highlight"),
+            text.encode_utf16().count(),
+        );
+        // Comments kept as overlapping ranges, as current Pages writes them.
+        let overlapping: Vec<(usize, usize, u64)> = storage
+            .message("table_overlapping_highlight")
+            .map(|table| table.messages("entries"))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|entry| {
+                let range = entry.message("range")?;
+                let start = range.integer("location")?.max(0) as usize;
+                let length = range.integer("length").unwrap_or(0).max(0) as usize;
+                Some((start, start + length, entry.reference("field")?))
+            })
+            .collect();
+        for (start, end, highlight) in overlapping {
+            if let Some(comment) = self.comment_for(highlight) {
+                self.comment_marks
+                    .push((start, Inline::CommentStart(comment)));
+                self.comment_marks.push((end, Inline::CommentEnd(comment)));
+            }
+        }
+        self.comment_marks
+            .sort_by_key(|(unit, mark)| (*unit, matches!(mark, Inline::CommentStart(_))));
+        self.comment_marks_done = 0;
         let data = paragraph_data(&storage);
         let starts = paragraph_starts(&storage);
         let mut blocks = Vec::new();
@@ -1031,20 +1441,25 @@ impl Reader<'_> {
                 && matches!(leading, PAGE_BREAK | SECTION_BREAK | LAYOUT_BREAK)
             {
                 let mut marker = self.break_paragraph(start_units, &paragraph_styles);
-                if leading == PAGE_BREAK {
+                let content = match leading {
+                    PAGE_BREAK => Some(Inline::PageBreak),
+                    LAYOUT_BREAK => Some(Inline::ColumnBreak),
+                    _ => None,
+                };
+                if let Some(content) = content {
                     marker.runs.push(Run {
                         style: None,
                         properties: None,
                         link: None,
                         revision: None,
-                        content: Inline::PageBreak,
+                        content,
                     });
                 }
                 blocks.push((start_units, Block::Paragraph(marker)));
                 start += leading.len_utf8();
                 start_units += 1;
             }
-            let paragraph = self.paragraph(
+            let mut paragraph = self.paragraph(
                 &text[start..end],
                 start,
                 start_units,
@@ -1059,7 +1474,50 @@ impl Reader<'_> {
                 &data,
                 &starts,
             );
-            for table in self.pending_blocks.drain(..) {
+            // A paragraph without text is as tall as its mark: the font and
+            // size of the newline that ends it.
+            if end < bytes.len()
+                && !paragraph
+                    .runs
+                    .iter()
+                    .any(|run| matches!(run.content, Inline::Text(_)))
+            {
+                let end_units = start_units + text[start..end].encode_utf16().count();
+                if let (_, Some(id)) = self.run_formatting(end_units, &character_styles) {
+                    let mark = self.document.run_properties(&Run {
+                        style: None,
+                        properties: Some(id),
+                        link: None,
+                        revision: None,
+                        content: Inline::LineBreak,
+                    });
+                    if mark.size.is_some() || mark.font.is_some() {
+                        paragraph.mark = self.document.intern_run_properties(RunProperties {
+                            size: mark.size,
+                            font: mark.font,
+                            ..RunProperties::default()
+                        });
+                    }
+                }
+            }
+            // A table takes its place from the paragraph holding it: that
+            // paragraph's alignment and left indent, as Pages lays it.
+            // (Resolved only when the paragraph holds a table: it walks the
+            // style chain.)
+            let holder = if self.pending_blocks.is_empty() {
+                Default::default()
+            } else {
+                self.document.effective_paragraph(&paragraph)
+            };
+            for mut table in self.pending_blocks.drain(..) {
+                if let Block::Table(table) = &mut table {
+                    table.alignment = table.alignment.or(holder.alignment.filter(|alignment| {
+                        matches!(alignment, Alignment::Center | Alignment::Right)
+                    }));
+                    table.indent = table
+                        .indent
+                        .or(holder.left_indent.filter(|indent| *indent > 0.0));
+                }
                 blocks.push((start_units, table));
             }
             blocks.push((start_units, Block::Paragraph(paragraph)));
@@ -1187,9 +1645,16 @@ impl Reader<'_> {
                 probe += 1;
             }
         }
+        boundaries.extend(
+            self.comment_marks
+                .iter()
+                .map(|(unit, _)| *unit)
+                .filter(|unit| *unit > unit_start && *unit < paragraph_unit_end),
+        );
         boundaries.sort_unstable();
         boundaries.dedup();
         paragraph.runs.reserve(boundaries.len() + 1);
+        self.place_comment_marks(&mut paragraph, unit_start);
         let tracked = !insertions.is_empty() || !deletions.is_empty();
         let bytes = text.as_bytes();
         if ascii {
@@ -1228,6 +1693,7 @@ impl Reader<'_> {
                 }
                 if next == next_special {
                     let ch = char::from(bytes[next]);
+                    self.place_comment_marks(&mut paragraph, unit_start + next);
                     let run = self.special_run(
                         ch,
                         unit_start + next,
@@ -1275,6 +1741,7 @@ impl Reader<'_> {
                     );
                 }
             }
+            self.place_comment_marks(&mut paragraph, paragraph_unit_end);
             self.boundary_scratch = boundaries;
             return paragraph;
         }
@@ -1305,6 +1772,7 @@ impl Reader<'_> {
                 boundary_index += 1;
             }
             if special {
+                self.place_comment_marks(&mut paragraph, unit);
                 let run = self.special_run(
                     ch,
                     unit,
@@ -1336,6 +1804,7 @@ impl Reader<'_> {
                 self.mark_revision(&mut paragraph, piece_start_units, insertions, deletions);
             }
         }
+        self.place_comment_marks(&mut paragraph, paragraph_unit_end);
         self.boundary_scratch = boundaries;
         paragraph
     }
@@ -1394,6 +1863,103 @@ impl Reader<'_> {
 
     /// A text run for `bytes` (a byte range of the storage text), whose
     /// text is already in the arena at `storage_base`.
+    /// The comment edges of a storage's highlight table: a start where a
+    /// highlight begins, an end where the next entry begins (or the text
+    /// ends); ends first at a shared offset.
+    fn comment_marks_of(&mut self, highlights: &[Span], length: usize) -> Vec<(usize, Inline)> {
+        let mut marks = Vec::new();
+        for (index, span) in highlights.iter().enumerate() {
+            let Some(object) = span.object() else {
+                continue;
+            };
+            let Some(comment) = self.comment_for(object) else {
+                continue;
+            };
+            let end = highlights
+                .get(index + 1)
+                .map_or(length, |next| next.start as usize);
+            marks.push((span.start as usize, Inline::CommentStart(comment)));
+            marks.push((end, Inline::CommentEnd(comment)));
+        }
+        marks.sort_by_key(|(unit, mark)| (*unit, matches!(mark, Inline::CommentStart(_))));
+        marks
+    }
+
+    /// The model comment a highlight's comment storage holds.
+    fn comment_for(&mut self, highlight: u64) -> Option<Id> {
+        if let Some(id) = self.comment_ids.get(&highlight) {
+            return Some(*id);
+        }
+        let view = View::of(self.graph.object(highlight)?);
+        let storage = View::of(self.graph.object(view.reference("commentStorage")?)?);
+        let author = storage
+            .reference("author")
+            .and_then(|author| self.graph.object(author))
+            .and_then(|author| View::of(author).string("name").map(str::to_string))
+            .unwrap_or_default();
+        let date = storage
+            .message("creation_date")
+            .and_then(|date| date.double("seconds"))
+            .map(iso_from_2001);
+        let comment = crate::document::Comment {
+            author,
+            initials: None,
+            date,
+            text: storage.string("text").unwrap_or_default().to_string(),
+            reply_to: None,
+        };
+        let id = self.document.comments.len() as Id;
+        self.document.comments.push(comment);
+        self.comment_ids.insert(highlight, id);
+        // Its replies, in their thread.
+        let mut replies = storage.references("replies");
+        let mut seen = 0;
+        while let Some(reply) = replies.first().copied() {
+            replies.remove(0);
+            seen += 1;
+            if seen > 256 {
+                break;
+            }
+            let Some(message) = self.graph.object(reply) else {
+                continue;
+            };
+            let view = View::of(message);
+            let author = view
+                .reference("author")
+                .and_then(|author| self.graph.object(author))
+                .and_then(|author| View::of(author).string("name").map(str::to_string))
+                .unwrap_or_default();
+            self.document.comments.push(crate::document::Comment {
+                author,
+                initials: None,
+                date: view
+                    .message("creation_date")
+                    .and_then(|date| date.double("seconds"))
+                    .map(iso_from_2001),
+                text: view.string("text").unwrap_or_default().to_string(),
+                reply_to: Some(id),
+            });
+            replies.extend(view.references("replies"));
+        }
+        Some(id)
+    }
+
+    /// Places the comment edges at or before `unit` that are not yet placed.
+    fn place_comment_marks(&mut self, paragraph: &mut Paragraph, unit: usize) {
+        while let Some((at, mark)) = self.comment_marks.get(self.comment_marks_done).copied()
+            && at <= unit
+        {
+            paragraph.runs.push(Run {
+                style: None,
+                properties: None,
+                link: None,
+                revision: None,
+                content: mark,
+            });
+            self.comment_marks_done += 1;
+        }
+    }
+
     fn push_text_run(
         &mut self,
         paragraph: &mut Paragraph,
@@ -1402,6 +1968,7 @@ impl Reader<'_> {
         character_styles: &[Span],
         smart_fields: &[Span],
     ) {
+        self.place_comment_marks(paragraph, unit);
         let (style, properties) = self.run_formatting(unit, character_styles);
         let link = self.link_id(unit, smart_fields);
         let span = crate::document::Span {
@@ -1506,7 +2073,7 @@ impl Reader<'_> {
         let view = View::of(message);
         if let Some(model) = view.reference("tableModel") {
             let table = self.table(model)?;
-            self.pending_blocks.push(Block::Table(table));
+            self.pending_blocks.push(Block::Table(Box::new(table)));
             return None;
         }
         // An equation is an image object carrying its MathML source.
@@ -1516,6 +2083,51 @@ impl Reader<'_> {
         if view.message("data").is_some() {
             let image = self.image(view, attachment)?;
             return Some(Inline::Image(self.document.push_image(image)));
+        }
+        // A shape in the text moves with it: in the line itself (wrap type
+        // 0), or anchored here, measured from the paragraph's top (and the
+        // page's left edge or its own position).
+        let wrap_type = view
+            .message("super")
+            .and_then(|shape| shape.message("super"))
+            .and_then(|base| base.message("exterior_text_wrap"))
+            .and_then(|wrap| wrap.integer("type"));
+        let v_offset = attachment
+            .float("v_offset")
+            .filter(|value| value.is_finite());
+        if view
+            .message("super")
+            .and_then(|shape| shape.message("pathsource"))
+            .is_some()
+            && view.reference("toc_settings").is_none()
+            && attachment.integer("v_offset_type").unwrap_or(0) == 0
+            && (wrap_type == Some(0) || v_offset.is_some())
+        {
+            let index = self.document.floating.len();
+            self.floating_object(drawable, 0, 0.0, 0.0);
+            self.floating_sources
+                .push((drawable, index..self.document.floating.len()));
+            if self.document.floating.len() != index + 1 {
+                self.document.floating.truncate(index);
+                return None;
+            }
+            let object = &mut self.document.floating[index];
+            object.follows_text = true;
+            if wrap_type == Some(0) {
+                object.wrap = crate::document::TextWrap::Inline;
+                object.x = 0.0;
+                object.y = 0.0;
+                return Some(Inline::Anchor(index as crate::document::Id));
+            }
+            object.y = v_offset.unwrap_or(0.0);
+            if attachment.integer("h_offset_type") == Some(2)
+                && let Some(h_offset) = attachment
+                    .float("h_offset")
+                    .filter(|value| value.is_finite())
+            {
+                object.x = h_offset;
+            }
+            return Some(Inline::Anchor(index as crate::document::Id));
         }
         // A table of contents keeps its rendered entries in the storage
         // its shape owns; they follow the paragraph as text, as Pages
@@ -1548,10 +2160,16 @@ impl Reader<'_> {
             .and_then(|drawable| drawable.string("accessibility_description"))
             .filter(|text| !text.is_empty())
             .map(str::to_string);
-        // Inline attachments carry no offsets (NaN); anchored ones do.
+        // An image sits in the text line when its wrap type is inline (0), as
+        // Pages decides; older files also mark inline attachments with NaN
+        // offsets.
+        let inline_wrap = drawable
+            .and_then(|drawable| drawable.message("exterior_text_wrap"))
+            .and_then(|wrap| wrap.integer("type"))
+            == Some(0);
         let horizontal = attachment
             .float("h_offset")
-            .filter(|value| value.is_finite());
+            .filter(|value| value.is_finite() && !inline_wrap);
         let placement = match horizontal {
             Some(offset) => Placement::Floating {
                 horizontal: Anchor {
@@ -1581,6 +2199,7 @@ impl Reader<'_> {
             height,
             description,
             placement,
+            crop: None,
         })
     }
 
@@ -1663,6 +2282,21 @@ impl Reader<'_> {
         let body_fill = view
             .reference("body_cell_style")
             .and_then(|style| self.cell_fill(style));
+        // The cells' padding, from the body cell style: Word's cell margins.
+        // A Pages row's size includes it; a Word row's height does too, but
+        // Word adds the margins it states, so the height leaves them out.
+        let padding = view.reference("body_cell_style").and_then(|style| {
+            self.cell_property(style, |properties| {
+                let padding = properties.message("padding")?;
+                Some(crate::document::CellMargins {
+                    top: padding.float("top").unwrap_or(0.0),
+                    bottom: padding.float("bottom").unwrap_or(0.0),
+                    left: padding.float("left").unwrap_or(0.0),
+                    right: padding.float("right").unwrap_or(0.0),
+                })
+            })
+        });
+        let vertical_padding = padding.map_or(0.0, |padding| padding.top + padding.bottom);
         let mut rows: Vec<Row> = (0..row_count)
             .map(|row| Row {
                 cells: (0..column_count)
@@ -1677,7 +2311,7 @@ impl Reader<'_> {
                         ..Cell::default()
                     })
                     .collect(),
-                height: Some(heights[row]).filter(|height| *height > 0.0),
+                height: Some(heights[row] - vertical_padding).filter(|height| *height > 0.0),
             })
             .collect();
         if let Some(tiles) = store.message("tiles") {
@@ -1718,6 +2352,10 @@ impl Reader<'_> {
             rows,
             header_rows,
             columns,
+            borders: None,
+            cell_margins: padding,
+            alignment: None,
+            indent: None,
         })
     }
 
@@ -1764,12 +2402,17 @@ impl Reader<'_> {
         lists: &TableLists,
         default_text_style: Option<u64>,
     ) {
+        // The cell's own style decides its fill (an empty one is none, over
+        // the table's) and where its text sits.
         if let Some(style) = record
             .cell_style
             .and_then(|id| lists.styles.get(&id))
-            .and_then(|object| self.cell_fill(*object))
+            .copied()
         {
-            cell.background = Some(style);
+            if let Some(fill) = self.cell_fill_stated(style) {
+                cell.background = fill;
+            }
+            cell.vertical_alignment = self.cell_vertical_alignment(style);
         }
         let text = match record.kind {
             // Rich text: a storage of its own.
@@ -1786,7 +2429,10 @@ impl Reader<'_> {
                 return;
             }
             3 => record.string.and_then(|id| lists.strings.get(&id)).cloned(),
-            2 | 10 => record.double.map(format_number),
+            2 | 10 => record
+                .decimal
+                .clone()
+                .or_else(|| record.double.map(format_number)),
             6 => record.double.map(|value| {
                 if value != 0.0 {
                     "TRUE".to_string()
@@ -1813,6 +2459,15 @@ impl Reader<'_> {
             paragraph.properties = properties;
             paragraph.run_properties = run;
         }
+        // Pages sets numbers and dates against the right edge unless the
+        // cell's style aligns them.
+        if matches!(record.kind, 2 | 5 | 7 | 10) {
+            let mut properties = self.document.paragraph_properties(&paragraph);
+            if properties.alignment.is_none() {
+                properties.alignment = Some(Alignment::Right);
+                paragraph.properties = self.document.intern_paragraph_properties(properties);
+            }
+        }
         let span = self.document.push_text(&text);
         paragraph.runs.push(Run {
             style: None,
@@ -1822,6 +2477,41 @@ impl Reader<'_> {
             content: Inline::Text(span),
         });
         cell.blocks = vec![Block::Paragraph(paragraph)];
+    }
+
+    /// The fill a `TST.CellStyleArchive` states, through its parents: `None`
+    /// when none does, `Some(None)` for a stated empty fill.
+    fn cell_fill_stated(&self, style: u64) -> Option<Option<Color>> {
+        self.cell_property(style, |properties| {
+            properties
+                .message("cell_fill")
+                .map(|fill| fill.message("color").and_then(color))
+        })
+    }
+
+    /// Where a `TST.CellStyleArchive` sets its text: centre (1) or bottom (2);
+    /// top otherwise.
+    fn cell_vertical_alignment(&self, style: u64) -> Option<crate::document::VerticalAlignment> {
+        match self.cell_property(style, |properties| properties.integer("vertical_alignment"))? {
+            1 => Some(crate::document::VerticalAlignment::Center),
+            2 => Some(crate::document::VerticalAlignment::Bottom),
+            _ => None,
+        }
+    }
+
+    /// The first value `read` finds in a cell style's properties, through its
+    /// parents.
+    fn cell_property<T>(&self, style: u64, read: impl Fn(View<'_>) -> Option<T>) -> Option<T> {
+        let mut current = Some(style);
+        for _ in 0..64 {
+            let message = self.graph.object(current?)?;
+            let view = View::of(message);
+            if let Some(value) = view.message("cell_properties").and_then(&read) {
+                return Some(value);
+            }
+            current = view.message("super").and_then(|s| s.reference("parent"));
+        }
+        None
     }
 
     /// The fill color of a `TST.CellStyleArchive`, through its parents.
@@ -2040,7 +2730,7 @@ impl Reader<'_> {
             }
             let paragraph = view
                 .message("para_properties")
-                .map(paragraph_properties)
+                .map(|properties| self.paragraph_properties_with_tabs(properties))
                 .unwrap_or_default();
             let characters = view
                 .message("char_properties")
@@ -2107,6 +2797,38 @@ impl Reader<'_> {
     /// The model style for a named Pages paragraph style, created on
     /// first use with its parent chain.
     #[inline(never)]
+    /// A style's paragraph properties with its tab stops.
+    fn paragraph_properties_with_tabs(&mut self, view: View<'_>) -> ParagraphProperties {
+        let mut properties = paragraph_properties(view);
+        let tabs: Vec<crate::document::TabStop> = view
+            .message("tabs")
+            .map(|tabs| {
+                tabs.messages("tabs")
+                    .into_iter()
+                    .filter_map(|tab| {
+                        Some(crate::document::TabStop {
+                            position: tab.float("position")?,
+                            alignment: match tab.integer("alignment").unwrap_or(0) {
+                                1 => crate::document::TabAlignment::Center,
+                                2 => crate::document::TabAlignment::Right,
+                                3 => crate::document::TabAlignment::Decimal,
+                                _ => crate::document::TabAlignment::Left,
+                            },
+                            leader: tab
+                                .string("leader")
+                                .and_then(|leader| leader.chars().next())
+                                .filter(|leader| !leader.is_whitespace()),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !tabs.is_empty() {
+            properties.tabs = Some(self.document.intern_tabs(tabs));
+        }
+        properties
+    }
+
     fn paragraph_style_id(&mut self, object: u64) -> StyleId {
         if let Some(id) = self.paragraph_styles.get(&object) {
             return *id;
@@ -2127,7 +2849,7 @@ impl Reader<'_> {
                 .to_string();
             style.paragraph = view
                 .message("para_properties")
-                .map(paragraph_properties)
+                .map(|properties| self.paragraph_properties_with_tabs(properties))
                 .unwrap_or_default();
             style.run = view
                 .message("char_properties")
@@ -2195,20 +2917,28 @@ impl Reader<'_> {
         let strings = view.strings("strings");
         let indents = view.floats("indents");
         let text_indents = view.floats("text_indents");
+        let tiered: Vec<bool> = view
+            .entries("tiered_numbers")
+            .map(|node| matches!(node, Node::Bool(true)))
+            .collect();
         let mut levels = Vec::new();
         for (level, kind) in label_types.iter().enumerate() {
             let label = match kind {
                 2 => ListLabel::Text(strings.get(level).map_or("\u{2022}", |s| s).to_string()),
-                3 => {
-                    ListLabel::Number(number_format(number_types.get(level).copied().unwrap_or(0)))
-                }
+                3 => ListLabel::Number(number_format(
+                    number_types.get(level).copied().unwrap_or(0),
+                    tiered.get(level).copied().unwrap_or(false),
+                )),
                 _ => ListLabel::None,
             };
-            let indent = indents.get(level).copied().unwrap_or(0.0);
+            // `indents` places the label; `text_indents` is the gap from the
+            // label to the text, in ems of the body text.
+            let label_indent = indents.get(level).copied().unwrap_or(0.0);
+            let gap = text_indents.get(level).copied().unwrap_or(0.0) * LIST_EM;
             levels.push(ListLevel {
                 label,
-                indent,
-                label_indent: indent + text_indents.get(level).copied().unwrap_or(0.0),
+                indent: label_indent + gap,
+                label_indent,
             });
         }
         let id = self.document.styles.list.len();
@@ -2250,6 +2980,10 @@ fn paragraph_properties(view: View<'_>) -> ParagraphProperties {
             .filter(|level| (0..=8).contains(level))
             .map(|level| level as u8),
         background: view.message("fill").and_then(color),
+        contextual_spacing: None,
+        border: None,
+        tabs: None,
+        page_break_before: view.boolean("page_break_before"),
     }
 }
 
@@ -2287,6 +3021,8 @@ impl Reader<'_> {
             language: view
                 .string("language")
                 .map(|language| self.document.intern_string(language)),
+            hidden: None,
+            shift: view.float("baseline_shift").filter(|shift| *shift != 0.0),
         }
     }
 }
@@ -2360,6 +3096,7 @@ fn page_setup(root: View<'_>) -> PageSetup {
         footer_distance: root
             .float("footer_margin")
             .unwrap_or(default.footer_distance),
+        page_number_start: None,
     }
 }
 
@@ -2457,7 +3194,7 @@ fn color(view: View<'_>) -> Option<Color> {
 }
 
 /// `TSWP.ListStyleArchive.NumberType` to a format.
-fn number_format(number_type: i64) -> NumberFormat {
+fn number_format(number_type: i64, tiered: bool) -> NumberFormat {
     let kind = match number_type {
         3..=5 => NumberKind::UpperRoman,
         6..=8 => NumberKind::LowerRoman,
@@ -2473,5 +3210,130 @@ fn number_format(number_type: i64) -> NumberFormat {
     NumberFormat {
         kind,
         pattern: pattern.to_string(),
+        tiered,
+    }
+}
+
+/// The em a list's label-to-text gap is measured in: Pages' body text size.
+const LIST_EM: f32 = 11.0;
+
+/// A Pages chart's data (`TSCH.ChartArchive` "unity" and its grid): each
+/// grid row is a series over the column names, unless the chart takes its
+/// series by column.
+fn chart_from_grid(unity: View<'_>, grid: View<'_>) -> crate::document::Chart {
+    use crate::document::{Chart, ChartKind, ChartSeries};
+    let rows: Vec<String> = grid
+        .strings("row_name")
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    let columns: Vec<String> = grid
+        .strings("column_name")
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    let values: Vec<Vec<Option<f64>>> = grid
+        .messages("grid_row")
+        .into_iter()
+        .map(|row| {
+            row.messages("value")
+                .into_iter()
+                .map(|value| value.double("numeric_value"))
+                .collect()
+        })
+        .collect();
+    let by_column = unity.integer("series_direction") == Some(2);
+    let (names, categories) = if by_column {
+        (columns, rows)
+    } else {
+        (rows, columns)
+    };
+    let series = names
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| ChartSeries {
+            name,
+            values: (0..categories.len())
+                .map(|at| {
+                    let (row, column) = if by_column { (at, index) } else { (index, at) };
+                    values
+                        .get(row)
+                        .and_then(|row: &Vec<Option<f64>>| row.get(column))
+                        .copied()
+                        .flatten()
+                })
+                .collect(),
+        })
+        .collect();
+    let kind = match unity.integer("chart_type").unwrap_or(1) {
+        2 => ChartKind::Bar,
+        3 => ChartKind::Line,
+        4 => ChartKind::Area,
+        5 => ChartKind::Pie,
+        6 => ChartKind::Scatter,
+        _ => ChartKind::Column,
+    };
+    Chart {
+        kind,
+        categories,
+        series,
+    }
+}
+
+/// Seconds since 2001-01-01 UTC (Pages' epoch) as ISO 8601.
+fn iso_from_2001(seconds: f64) -> String {
+    let total = seconds.round() as i64 + 11_323 * 86_400;
+    let days = total.div_euclid(86_400);
+    let rest = total.rem_euclid(86_400);
+    // The civil date from days since 1970 (Howard Hinnant's algorithm).
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3_600,
+        rest % 3_600 / 60,
+        rest % 60
+    )
+}
+
+#[cfg(test)]
+mod decimal_tests {
+    use super::decimal128_text;
+
+    fn encode(mantissa: u128, exponent: i32, negative: bool) -> Vec<u8> {
+        let mut bytes = mantissa.to_le_bytes().to_vec();
+        let biased = (exponent + 0x1820) as u32;
+        bytes[14] = (bytes[14] & 1) | ((biased & 0x7F) << 1) as u8;
+        bytes[15] = ((biased >> 7) & 0x7F) as u8 | if negative { 0x80 } else { 0 };
+        bytes
+    }
+
+    #[test]
+    fn decimal128_numbers_read_exactly() {
+        assert_eq!(decimal128_text(&encode(3, 0, false)).as_deref(), Some("3"));
+        assert_eq!(
+            decimal128_text(&encode(4250, -2, false)).as_deref(),
+            Some("42.5")
+        );
+        assert_eq!(
+            decimal128_text(&encode(5, -3, true)).as_deref(),
+            Some("-0.005")
+        );
+        assert_eq!(
+            decimal128_text(&encode(12, 2, false)).as_deref(),
+            Some("1200")
+        );
     }
 }

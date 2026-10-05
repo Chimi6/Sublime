@@ -40,7 +40,9 @@ const csv = new TextEncoder().encode("a,b\n1,2\n");
 const json = sublime.convert(csv, "csv", "json");
 check(new TextDecoder().decode(json.bytes).includes("\"a\""), "csv -> json");
 check(sublime.convert(csv, "csv", "nope").status === "unknown-format", "unknown format id");
-check(sublime.convert(csv, "csv", "pages").status === "no-path", "no path");
+// Every format now reaches every other: rows reach Pages as a table.
+const table = sublime.convert(csv, "csv", "pages");
+check(table.status.startsWith("converted") && table.bytes[0] === 0x50 && table.bytes[1] === 0x4b, `csv -> pages: ${table.status} ${table.message}`);
 
 console.log(`sublime.wasm: ${readFileSync(wasmPath).length} bytes; pages -> docx on text-styles.pages in ${elapsed.toFixed(1)} ms`);
 if (failures.length) {

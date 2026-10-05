@@ -13,8 +13,9 @@ use std::io;
 
 use crate::document::{
     Alignment, Anchor, AnchorBase, Baseline, Block, Caps, Document, FloatingContent, Inline,
-    InlineImage, LineSpacing, ListLabel, Merge, NumberKind, Paragraph, ParagraphProperties,
-    Placement, RevisionKind, Run, RunProperties, Section, SectionStart, Table, mathml_text,
+    InlineImage, LineSpacing, ListLabel, Merge, NumberKind, PageKind, Paragraph,
+    ParagraphProperties, Placement, RevisionKind, Run, RunProperties, Section, SectionStart, Table,
+    TextWrap, VerticalAlignment, mathml_text,
 };
 use crate::io::deflate::Level;
 use crate::io::xml::{escape_attribute, escape_text};
@@ -29,6 +30,8 @@ const R: &str = r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/200
 const DRAWING: &str = r#"xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape""#;
 const SHAPE: &str = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape";
 const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const W14: &str = "http://schemas.microsoft.com/office/word/2010/wordml";
+const W15: &str = "http://schemas.microsoft.com/office/word/2012/wordml";
 const PACKAGE_REL: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 const PICTURE: &str = "http://schemas.openxmlformats.org/drawingml/2006/picture";
 
@@ -101,6 +104,74 @@ impl<W: io::Write> DocxStream<W> {
     }
 }
 
+/// The comments part: each comment's author, date, and paragraphs.
+fn comments_xml(document: &Document) -> String {
+    let mut xml = String::new();
+    xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
+    let _ = write!(xml, "<w:comments {W} xmlns:w14=\"{W14}\">");
+    for (id, comment) in document.comments.iter().enumerate() {
+        let _ = write!(xml, "<w:comment w:id=\"{id}\" w:author=\"");
+        escape_attribute(&mut xml, &comment.author);
+        xml.push('"');
+        if let Some(date) = &comment.date {
+            xml.push_str(" w:date=\"");
+            escape_attribute(&mut xml, date);
+            xml.push('"');
+        }
+        if let Some(initials) = &comment.initials {
+            xml.push_str(" w:initials=\"");
+            escape_attribute(&mut xml, initials);
+            xml.push('"');
+        }
+        xml.push('>');
+        let lines: Vec<&str> = comment.text.split('\n').collect();
+        for (index, line) in lines.iter().enumerate() {
+            // The last paragraph is the comment's id in its thread.
+            if index + 1 == lines.len() {
+                let _ = write!(xml, "<w:p w14:paraId=\"{}\">", comment_paragraph(id));
+            } else {
+                xml.push_str("<w:p>");
+            }
+            xml.push_str("<w:r><w:t xml:space=\"preserve\">");
+            escape_text(&mut xml, line);
+            xml.push_str("</w:t></w:r></w:p>");
+        }
+        xml.push_str("</w:comment>");
+    }
+    xml.push_str("</w:comments>");
+    xml
+}
+
+/// The paragraph id a comment is known by in its thread.
+fn comment_paragraph(id: usize) -> String {
+    format!("{:08X}", 0x0C00_0000 + id)
+}
+
+/// Word's comment threads: each comment's paragraph id, a reply's with its
+/// parent's.
+fn comments_extended_xml(document: &Document) -> String {
+    let mut xml = String::new();
+    xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
+    let _ = write!(xml, "<w15:commentsEx xmlns:w15=\"{W15}\">");
+    for (id, comment) in document.comments.iter().enumerate() {
+        let _ = write!(
+            xml,
+            "<w15:commentEx w15:paraId=\"{}\"",
+            comment_paragraph(id)
+        );
+        if let Some(parent) = comment.reply_to {
+            let _ = write!(
+                xml,
+                " w15:paraIdParent=\"{}\"",
+                comment_paragraph(parent as usize)
+            );
+        }
+        xml.push_str(" w15:done=\"0\"/>");
+    }
+    xml.push_str("</w15:commentsEx>");
+    xml
+}
+
 /// Every part but the body, from the writer's bookkeeping and the
 /// document's tables.
 fn write_parts<W: io::Write>(
@@ -139,8 +210,18 @@ fn write_parts<W: io::Write>(
             )?;
         }
     }
-    if writer.even_pages {
-        zip.add_deflated("word/settings.xml", settings_xml().as_bytes())?;
+    if writer.needs_settings(document) {
+        zip.add_deflated(
+            "word/settings.xml",
+            settings_xml(writer.even_pages, document.page_color.is_some()).as_bytes(),
+        )?;
+    }
+    if !document.comments.is_empty() {
+        zip.add_deflated("word/comments.xml", comments_xml(document).as_bytes())?;
+        zip.add_deflated(
+            "word/commentsExtended.xml",
+            comments_extended_xml(document).as_bytes(),
+        )?;
     }
     for part in &writer.page_parts {
         zip.add_deflated(&format!("word/{}", part.name), part.xml.as_bytes())?;
@@ -152,6 +233,12 @@ fn write_parts<W: io::Write>(
                     .as_bytes(),
             )?;
         }
+    }
+    for (index, chart) in writer.charts.iter().enumerate() {
+        zip.add_deflated(
+            &format!("word/charts/chart{}.xml", index + 1),
+            chart.as_bytes(),
+        )?;
     }
     for (index, target) in writer.media_targets.iter().enumerate() {
         if let Some(target) = target {
@@ -172,6 +259,8 @@ struct DocxWriter {
     media_targets: Vec<Option<String>>,
     /// Drawings written so far, for unique ids.
     drawings: u32,
+    /// Chart parts (`charts/chart<n>.xml`), in order.
+    charts: Vec<String>,
     /// Some section has an even-page header or footer.
     even_pages: bool,
     /// Which floating objects have been anchored to a paragraph.
@@ -197,6 +286,7 @@ enum RelationshipKind {
     Image,
     Header,
     Footer,
+    Chart,
 }
 
 /// A part rendered on its own, with its own relationships.
@@ -224,6 +314,7 @@ impl DocxWriter {
             page_parts: Vec::new(),
             media_targets: vec![None; document.media.len()],
             drawings: 0,
+            charts: Vec::new(),
             even_pages: false,
             floating_done: vec![false; document.floating.len()],
             revisions: 0,
@@ -241,7 +332,11 @@ impl DocxWriter {
     ) -> io::Result<()> {
         let mut body = std::mem::take(&mut self.body);
         body.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
-        let _ = write!(body, "<w:document {W} {R} {DRAWING}><w:body>");
+        let _ = write!(body, "<w:document {W} {R} {DRAWING}>");
+        if let Some(color) = document.page_color {
+            let _ = write!(body, "<w:background w:color=\"{}\"/>", color.hex());
+        }
+        body.push_str("<w:body>");
         // Floating objects are anchored to the first paragraph on their
         // page, counting the page breaks the document spells out.
         let mut page = 0u32;
@@ -305,7 +400,9 @@ impl DocxWriter {
     fn floating_due(&mut self, document: &Document, page: u32, all: bool) -> Vec<usize> {
         let mut due = Vec::new();
         for (index, object) in document.floating.iter().enumerate() {
-            if self.floating_done[index] {
+            // One moving with the text is written at its anchor run, one
+            // repeating in its header or footer.
+            if self.floating_done[index] || object.follows_text || object.repeats.is_some() {
                 continue;
             }
             if all || object.page <= page {
@@ -341,8 +438,45 @@ impl DocxWriter {
         let total: i64 = (0..column_count).map(column_width).sum();
         let _ = write!(
             out,
-            "<w:tbl><w:tblPr><w:tblStyle w:val=\"TableGrid\"/><w:tblW w:w=\"{total}\" w:type=\"dxa\"/><w:tblLayout w:type=\"fixed\"/></w:tblPr><w:tblGrid>"
+            "<w:tbl><w:tblPr><w:tblStyle w:val=\"TableGrid\"/><w:tblW w:w=\"{total}\" w:type=\"dxa\"/>"
         );
+        match table.alignment {
+            Some(Alignment::Center) => out.push_str("<w:jc w:val=\"center\"/>"),
+            Some(Alignment::Right) => out.push_str("<w:jc w:val=\"right\"/>"),
+            _ => {}
+        }
+        if let Some(indent) = table.indent {
+            let _ = write!(out, "<w:tblInd w:w=\"{}\" w:type=\"dxa\"/>", twips(indent));
+        }
+        // The table's own lines and margins, over the grid style's.
+        if let Some(borders) = table.borders {
+            out.push_str("<w:tblBorders>");
+            for (name, line) in [
+                ("top", borders.top),
+                ("left", borders.left),
+                ("bottom", borders.bottom),
+                ("right", borders.right),
+                ("insideH", borders.inside_horizontal),
+                ("insideV", borders.inside_vertical),
+            ] {
+                border_xml(name, Some(line), out);
+            }
+            out.push_str("</w:tblBorders>");
+        }
+        out.push_str("<w:tblLayout w:type=\"fixed\"/>");
+        if let Some(margins) = table.cell_margins {
+            out.push_str("<w:tblCellMar>");
+            for (name, points) in [
+                ("top", margins.top),
+                ("left", margins.left),
+                ("bottom", margins.bottom),
+                ("right", margins.right),
+            ] {
+                let _ = write!(out, "<w:{name} w:w=\"{}\" w:type=\"dxa\"/>", twips(points));
+            }
+            out.push_str("</w:tblCellMar>");
+        }
+        out.push_str("</w:tblPr><w:tblGrid>");
         for column in 0..column_count {
             let _ = write!(out, "<w:gridCol w:w=\"{}\"/>", column_width(column));
         }
@@ -380,12 +514,49 @@ impl DocxWriter {
                     Merge::Above => out.push_str("<w:vMerge/>"),
                     _ => {}
                 }
+                let sides = [
+                    ("top", cell.borders.top),
+                    ("left", cell.borders.left),
+                    ("bottom", cell.borders.bottom),
+                    ("right", cell.borders.right),
+                ];
+                if sides.iter().any(|(_, side)| side.is_some()) {
+                    out.push_str("<w:tcBorders>");
+                    for (name, side) in sides {
+                        border_xml(name, side, out);
+                    }
+                    out.push_str("</w:tcBorders>");
+                }
                 if let Some(background) = cell.background {
                     let _ = write!(
                         out,
                         "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{}\"/>",
                         background.hex()
                     );
+                }
+                let [top, bottom, left, right] = cell.margins;
+                if cell.margins.iter().any(Option::is_some) {
+                    out.push_str("<w:tcMar>");
+                    for (name, points) in [
+                        ("top", top),
+                        ("left", left),
+                        ("bottom", bottom),
+                        ("right", right),
+                    ] {
+                        if let Some(points) = points {
+                            let _ =
+                                write!(out, "<w:{name} w:w=\"{}\" w:type=\"dxa\"/>", twips(points));
+                        }
+                    }
+                    out.push_str("</w:tcMar>");
+                }
+                if let Some(vertical) = cell.vertical_alignment {
+                    let value = match vertical {
+                        VerticalAlignment::Top => "top",
+                        VerticalAlignment::Center => "center",
+                        VerticalAlignment::Bottom => "bottom",
+                    };
+                    let _ = write!(out, "<w:vAlign w:val=\"{value}\"/>");
                 }
                 out.push_str("</w:tcPr>");
                 // A cell holds at least one paragraph, and ends with one.
@@ -424,24 +595,33 @@ impl DocxWriter {
                 style_id(&document.styles.paragraph[style].name)
             );
         }
-        if let Some(item) = paragraph.list {
+        let numbering = paragraph.list.map(|item| {
             let instance = self
                 .numbering
                 .instance_for(item.style, item.starts_list, item.start);
-            let _ = write!(
-                properties,
+            format!(
                 "<w:numPr><w:ilvl w:val=\"{}\"/><w:numId w:val=\"{}\"/></w:numPr>",
                 item.level,
                 instance + 1
-            );
+            )
+        });
+        let mut own = document.paragraph_properties(paragraph);
+        if paragraph.list.is_some() {
+            // A list paragraph is indented by its list level (Pages keeps the
+            // paragraph's own indents at zero); stating them would override it.
+            own.left_indent = None;
+            own.first_line_indent = None;
         }
-        paragraph_properties_xml(&document.paragraph_properties(paragraph), &mut properties);
-        let mut mark = String::new();
-        run_properties_xml(
-            document,
-            &document.paragraph_run_properties(paragraph),
-            &mut mark,
+        paragraph_properties_xml(
+            &own,
+            numbering.as_deref(),
+            document.tab_set(own.tabs),
+            &mut properties,
         );
+        let mut mark = String::new();
+        let mut mark_properties = document.paragraph_run_properties(paragraph);
+        mark_properties.overlay(&document.paragraph_mark_properties(paragraph));
+        run_properties_xml(document, &mark_properties, &mut mark);
         if !mark.is_empty() {
             let _ = write!(properties, "<w:rPr>{mark}</w:rPr>");
         }
@@ -553,6 +733,48 @@ impl DocxWriter {
             );
             return;
         }
+        // A comment's range is marked between runs; its end carries the
+        // reference Word shows the comment at.
+        // A thread's replies share its range.
+        let thread = |id: u32| {
+            std::iter::once(id).chain(
+                document
+                    .comments
+                    .iter()
+                    .enumerate()
+                    .filter(move |(_, comment)| comment.reply_to == Some(id))
+                    .map(|(reply, _)| reply as u32),
+            )
+        };
+        match run.content {
+            Inline::CommentStart(id) => {
+                for id in thread(id) {
+                    let _ = write!(out, "<w:commentRangeStart w:id=\"{id}\"/>");
+                }
+                return;
+            }
+            Inline::CommentEnd(id) => {
+                for id in thread(id) {
+                    let _ = write!(
+                        out,
+                        "<w:commentRangeEnd w:id=\"{id}\"/><w:r><w:commentReference w:id=\"{id}\"/></w:r>"
+                    );
+                }
+                return;
+            }
+            _ => {}
+        }
+        // An object moving with the text is drawn at its anchor.
+        if let Inline::Anchor(index) = run.content {
+            if document
+                .floating
+                .get(index as usize)
+                .is_some_and(|object| object.follows_text)
+            {
+                self.render_floating(document, index as usize, out);
+            }
+            return;
+        }
         out.push_str("<w:r>");
         out.push_str(&properties);
         let deleted = document.is_deleted(run);
@@ -571,6 +793,7 @@ impl DocxWriter {
                 let _ = write!(out, "</{element}>");
             }
             Inline::PageBreak => out.push_str("<w:br w:type=\"page\"/>"),
+            Inline::ColumnBreak => out.push_str("<w:br w:type=\"column\"/>"),
             // Equations are written as their text until Office Math is
             // supported.
             Inline::Math(span) => {
@@ -588,7 +811,11 @@ impl DocxWriter {
                     self.render_image(document, image, out);
                 }
             }
-            Inline::PageNumber | Inline::PageCount => {}
+            Inline::PageNumber
+            | Inline::PageCount
+            | Inline::Anchor(_)
+            | Inline::CommentStart(_)
+            | Inline::CommentEnd(_) => {}
         }
         out.push_str("</w:r>");
     }
@@ -627,6 +854,21 @@ impl DocxWriter {
         let number = self.drawings;
         let width = emu(image.width);
         let height = emu(image.height);
+        // A cropped picture: the share cut from each edge, in thousandths of
+        // a percent.
+        let crop = image
+            .crop
+            .map_or_else(String::new, |[left, top, right, bottom]| {
+                let share = |value: f32| (value * 100_000.0).round() as i64;
+                format!(
+                    "<a:srcRect l=\"{}\" t=\"{}\" r=\"{}\" b=\"{}\"/>",
+                    share(left),
+                    share(top),
+                    share(right),
+                    share(bottom)
+                )
+            });
+
         let mut description = String::new();
         escape_attribute(&mut description, image.description.as_deref().unwrap_or(""));
         let mut name = String::new();
@@ -635,7 +877,7 @@ impl DocxWriter {
             "<wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>"
         );
         let graphic = format!(
-            "<wp:docPr id=\"{number}\" name=\"{name}\" descr=\"{description}\"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri=\"{PICTURE}\"><pic:pic><pic:nvPicPr><pic:cNvPr id=\"{number}\" name=\"{name}\"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed=\"rId{id}\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>"
+            "<wp:docPr id=\"{number}\" name=\"{name}\" descr=\"{description}\"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\"1\"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri=\"{PICTURE}\"><pic:pic><pic:nvPicPr><pic:cNvPr id=\"{number}\" name=\"{name}\"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed=\"rId{id}\"/>{crop}<a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>"
         );
         out.push_str("<w:drawing>");
         match image.placement {
@@ -678,8 +920,26 @@ impl DocxWriter {
             offset: object.x,
         };
         let vertical = Anchor {
-            from: AnchorBase::Page,
+            from: if object.follows_text {
+                AnchorBase::Line
+            } else {
+                AnchorBase::Page
+            },
             offset: object.y,
+        };
+        let wrap_xml = match object.wrap {
+            TextWrap::Around => "<wp:wrapSquare wrapText=\"bothSides\"/>",
+            TextWrap::TopAndBottom => "<wp:wrapTopAndBottom/>",
+            TextWrap::None => "<wp:wrapNone/>",
+            // Only a shape is written in the line itself (below).
+            TextWrap::Inline => "<wp:wrapTopAndBottom/>",
+        };
+        let behind = u8::from(object.behind);
+        // Word measures an anchored object from its paragraph.
+        let from_v = if object.follows_text {
+            "paragraph"
+        } else {
+            "page"
         };
         match &object.content {
             FloatingContent::Image(media) => {
@@ -692,12 +952,38 @@ impl DocxWriter {
                         horizontal,
                         vertical,
                     },
+                    crop: None,
                 };
                 out.push_str("<w:r>");
                 self.render_image(document, &image, out);
                 out.push_str("</w:r>");
             }
-            FloatingContent::TextBox { blocks, fill } => {
+            FloatingContent::Chart(chart) => {
+                self.charts.push(chart_xml(chart));
+                let target = format!("charts/chart{}.xml", self.charts.len());
+                let relationship = self.relationship_for(RelationshipKind::Chart, &target);
+                self.drawings += 1;
+                let number = self.drawings;
+                let _ = write!(
+                    out,
+                    "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"{behind}\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"{from_v}\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{}\" cy=\"{}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>{wrap_xml}<wp:docPr id=\"{number}\" name=\"Chart {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{CHART}\"><c:chart xmlns:c=\"{CHART}\" r:id=\"rId{}\"/></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
+                    251_658_240 + number,
+                    emu(object.x),
+                    emu(object.y),
+                    emu(object.width),
+                    emu(object.height),
+                    relationship,
+                );
+            }
+            FloatingContent::TextBox {
+                blocks,
+                fill,
+                line,
+                geometry,
+                flip,
+                ends,
+            } => {
+                let has_text = !blocks.is_empty();
                 let mut content = String::new();
                 self.render_blocks(document, blocks, &mut content);
                 if content.is_empty() {
@@ -714,12 +1000,67 @@ impl DocxWriter {
                     ),
                     None => "<a:noFill/>".to_string(),
                 };
+                // Arrowheads: Word's head is the line's start, its tail the end.
+                let mark = |element: &str, end: Option<crate::document::LineEnd>| {
+                    end.map_or_else(String::new, |end| {
+                        let kind = match end {
+                            crate::document::LineEnd::Arrow => "triangle",
+                            crate::document::LineEnd::OpenArrow => "arrow",
+                            crate::document::LineEnd::Diamond => "diamond",
+                            crate::document::LineEnd::Circle => "oval",
+                        };
+                        format!("<a:{element} type=\"{kind}\"/>")
+                    })
+                };
+                let line_xml = match line {
+                    Some(line) => format!(
+                        "<a:ln w=\"{}\"><a:solidFill><a:srgbClr val=\"{}\"/></a:solidFill>{}{}</a:ln>",
+                        emu(line.width),
+                        line.color
+                            .map_or_else(|| "000000".to_string(), |color| color.hex()),
+                        mark("headEnd", ends.0),
+                        mark("tailEnd", ends.1)
+                    ),
+                    None => "<a:ln><a:noFill/></a:ln>".to_string(),
+                };
+                let geometry_xml = geometry_xml(document, *geometry);
+                let flips = format!(
+                    "{}{}",
+                    if flip.0 { " flipH=\"1\"" } else { "" },
+                    if flip.1 { " flipV=\"1\"" } else { "" }
+                );
+                // A shape with text holds it in a text box body; one without
+                // is only drawn.
+                let (kind, body) = if has_text {
+                    (
+                        "<wps:cNvSpPr txBox=\"1\"/>",
+                        format!("<wps:txbx><w:txbxContent>{content}</w:txbxContent></wps:txbx>"),
+                    )
+                } else {
+                    ("<wps:cNvSpPr/>", String::new())
+                };
+                // A shape in the text line sits in it; any other is anchored.
+                let (frame, frame_end) = if object.wrap == TextWrap::Inline {
+                    (
+                        format!(
+                            "<wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\"><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>"
+                        ),
+                        "</wp:inline>",
+                    )
+                } else {
+                    (
+                        format!(
+                            "<wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"{behind}\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"{from_v}\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>{wrap_xml}",
+                            251_658_240 + number,
+                            emu(object.x),
+                            emu(object.y),
+                        ),
+                        "</wp:anchor>",
+                    )
+                };
                 let _ = write!(
                     out,
-                    "<w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{}\" behindDoc=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"page\"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx=\"{width}\" cy=\"{height}\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/><wp:wrapSquare wrapText=\"bothSides\"/><wp:docPr id=\"{number}\" name=\"Text Box {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{SHAPE}\"><wps:wsp><wps:cNvSpPr txBox=\"1\"/><wps:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>{fill_xml}<a:ln><a:noFill/></a:ln></wps:spPr><wps:txbx><w:txbxContent>{content}</w:txbxContent></wps:txbx><wps:bodyPr wrap=\"square\" lIns=\"50800\" tIns=\"50800\" rIns=\"50800\" bIns=\"50800\" anchor=\"t\"><a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>",
-                    251_658_240 + number,
-                    emu(object.x),
-                    emu(object.y),
+                    "<w:r><w:drawing>{frame}<wp:docPr id=\"{number}\" name=\"Shape {number}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"{SHAPE}\"><wps:wsp>{kind}<wps:spPr><a:xfrm{flips}><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm>{geometry_xml}{fill_xml}{line_xml}</wps:spPr>{body}<wps:bodyPr wrap=\"square\" lIns=\"50800\" tIns=\"50800\" rIns=\"50800\" bIns=\"50800\" anchor=\"t\"><a:noAutofit/></wps:bodyPr></wps:wsp></a:graphicData></a:graphic>{frame_end}</w:drawing></w:r>",
                 );
             }
         }
@@ -746,6 +1087,11 @@ impl DocxWriter {
         }
         self.media_targets[media] = Some(target.clone());
         Some(target)
+    }
+
+    /// Whether the document needs a settings part.
+    fn needs_settings(&self, document: &Document) -> bool {
+        self.even_pages || document.page_color.is_some()
     }
 
     fn relationship_for(&mut self, kind: RelationshipKind, target: &str) -> usize {
@@ -777,8 +1123,24 @@ impl DocxWriter {
         document: &Document,
         blocks: &[Block],
         kind: RelationshipKind,
+        part: crate::document::PagePart,
     ) -> usize {
-        let (inner, relationships) = self.render_part(document, blocks);
+        let (mut inner, relationships) = self.render_part(document, blocks);
+        // The drawings this header or footer repeats on its pages, anchored
+        // in a paragraph of their own at its start (with the part's own
+        // relationships, which they add to).
+        let outer = std::mem::replace(&mut self.relationships, relationships);
+        let mut drawings = String::new();
+        for index in 0..document.floating.len() {
+            if !self.floating_done[index] && document.floating[index].repeats == Some(part) {
+                self.floating_done[index] = true;
+                self.render_floating(document, index, &mut drawings);
+            }
+        }
+        let relationships = std::mem::replace(&mut self.relationships, outer);
+        if !drawings.is_empty() {
+            inner.insert_str(0, &format!("<w:p>{drawings}</w:p>"));
+        }
         let (element, prefix) = match kind {
             RelationshipKind::Header => ("w:hdr", "header"),
             _ => ("w:ftr", "footer"),
@@ -820,15 +1182,19 @@ impl DocxWriter {
         ];
         for (variant, kind, element) in variants {
             let pages = [
-                ("default", &variant.default),
-                ("first", &variant.first),
-                ("even", &variant.even),
+                ("default", &variant.default, PageKind::Default),
+                ("first", &variant.first, PageKind::First),
+                ("even", &variant.even, PageKind::Even),
             ];
-            for (page_kind, blocks) in pages {
+            for (page_kind, blocks, pages) in pages {
                 let Some(blocks) = blocks else {
                     continue;
                 };
-                let id = self.page_part(document, blocks, kind);
+                let part = crate::document::PagePart {
+                    footer: kind != RelationshipKind::Header,
+                    pages,
+                };
+                let id = self.page_part(document, blocks, kind, part);
                 let _ = write!(
                     xml,
                     "<w:{element} w:type=\"{page_kind}\" r:id=\"rId{id}\"/>"
@@ -854,12 +1220,33 @@ impl DocxWriter {
             twips(page.header_distance),
             twips(page.footer_distance),
         );
+        if let Some(start) = page.page_number_start {
+            let _ = write!(xml, "<w:pgNumType w:start=\"{start}\"/>");
+        }
         if section.columns > 1 {
-            let _ = write!(
-                xml,
-                "<w:cols w:num=\"{}\" w:space=\"708\"/>",
-                section.columns
-            );
+            let gap = section.column_gap.map_or(708, twips);
+            if section.column_widths.is_empty() {
+                let _ = write!(
+                    xml,
+                    "<w:cols w:num=\"{}\" w:space=\"{gap}\"/>",
+                    section.columns
+                );
+            } else {
+                let _ = write!(
+                    xml,
+                    "<w:cols w:num=\"{}\" w:space=\"{gap}\" w:equalWidth=\"0\">",
+                    section.columns
+                );
+                for (width, space) in &section.column_widths {
+                    let _ = write!(
+                        xml,
+                        "<w:col w:w=\"{}\" w:space=\"{}\"/>",
+                        twips(*width),
+                        twips(*space)
+                    );
+                }
+                xml.push_str("</w:cols>");
+            }
         }
         if section.headers.first.is_some() || section.footers.first.is_some() {
             xml.push_str("<w:titlePg/>");
@@ -899,10 +1286,16 @@ impl DocxWriter {
                     "<Relationship Id=\"rId3\" Type=\"{REL}/footnotes\" Target=\"footnotes.xml\"/>"
                 );
             }
-            if self.even_pages {
+            if self.needs_settings(document) {
                 let _ = write!(
                     xml,
                     "<Relationship Id=\"rId4\" Type=\"{REL}/settings\" Target=\"settings.xml\"/>"
+                );
+            }
+            if !document.comments.is_empty() {
+                let _ = write!(
+                    xml,
+                    "<Relationship Id=\"rId5\" Type=\"{REL}/comments\" Target=\"comments.xml\"/><Relationship Id=\"rId6\" Type=\"http://schemas.microsoft.com/office/2011/relationships/commentsExtended\" Target=\"commentsExtended.xml\"/>"
                 );
             }
         }
@@ -911,6 +1304,7 @@ impl DocxWriter {
                 RelationshipKind::Image => "image",
                 RelationshipKind::Header => "header",
                 RelationshipKind::Footer => "footer",
+                RelationshipKind::Chart => "chart",
             };
             let _ = write!(
                 xml,
@@ -955,8 +1349,19 @@ impl DocxWriter {
         if !document.footnotes.is_empty() {
             xml.push_str("<Override PartName=\"/word/footnotes.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml\"/>");
         }
-        if self.even_pages {
+        if self.needs_settings(document) {
             xml.push_str("<Override PartName=\"/word/settings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml\"/>");
+        }
+        if !document.comments.is_empty() {
+            xml.push_str("<Override PartName=\"/word/comments.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml\"/>");
+            xml.push_str("<Override PartName=\"/word/commentsExtended.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml\"/>");
+        }
+        for index in 0..self.charts.len() {
+            let _ = write!(
+                xml,
+                "<Override PartName=\"/word/charts/chart{}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.drawingml.chart+xml\"/>",
+                index + 1
+            );
         }
         for part in &self.page_parts {
             let kind = if part.name.starts_with("header") {
@@ -1000,7 +1405,12 @@ impl DocxWriter {
                 );
             }
             let mut paragraph = String::new();
-            paragraph_properties_xml(&style.paragraph, &mut paragraph);
+            paragraph_properties_xml(
+                &style.paragraph,
+                None,
+                document.tab_set(style.paragraph.tabs),
+                &mut paragraph,
+            );
             if !paragraph.is_empty() {
                 let _ = write!(xml, "<w:pPr>{paragraph}</w:pPr>");
             }
@@ -1102,7 +1512,15 @@ impl DocxWriter {
                             NumberKind::LowerRoman => "lowerRoman",
                             NumberKind::UpperRoman => "upperRoman",
                         },
-                        number.pattern.replace("%1", &format!("%{}", level + 1)),
+                        {
+                            // A tiered level leads with its parents' numbers.
+                            let parents: String = if number.tiered {
+                                (1..=level).map(|parent| format!("%{parent}.")).collect()
+                            } else {
+                                String::new()
+                            };
+                            parents + &number.pattern.replace("%1", &format!("%{}", level + 1))
+                        },
                     ),
                 };
                 let left = twips(definition.indent);
@@ -1179,9 +1597,21 @@ fn root_relationships() -> String {
     )
 }
 
-fn settings_xml() -> String {
+/// The settings part: odd and even pages' own headers, and showing the page
+/// colour (Word draws it only when told to).
+fn settings_xml(even_pages: bool, page_color: bool) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:settings {W}><w:evenAndOddHeaders/></w:settings>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:settings {W}>{}{}</w:settings>",
+        if page_color {
+            "<w:displayBackgroundShape/>"
+        } else {
+            ""
+        },
+        if even_pages {
+            "<w:evenAndOddHeaders/>"
+        } else {
+            ""
+        }
     )
 }
 
@@ -1197,12 +1627,26 @@ fn image_content_type(extension: &str) -> Option<&'static str> {
     }
 }
 
-fn paragraph_properties_xml(properties: &ParagraphProperties, out: &mut String) {
+/// A paragraph's properties in `w:pPr` schema order, with its list
+/// numbering (`w:numPr`) and tab stops placed where Word expects them.
+fn paragraph_properties_xml(
+    properties: &ParagraphProperties,
+    numbering: Option<&str>,
+    tabs: &[crate::document::TabStop],
+    out: &mut String,
+) {
     if properties.keep_with_next == Some(true) {
         out.push_str("<w:keepNext/>");
     }
     if properties.keep_lines_together == Some(true) {
         out.push_str("<w:keepLines/>");
+    }
+    if let Some(page_break) = properties.page_break_before {
+        out.push_str(if page_break {
+            "<w:pageBreakBefore/>"
+        } else {
+            "<w:pageBreakBefore w:val=\"0\"/>"
+        });
     }
     if let Some(widows) = properties.widow_control {
         let _ = write!(
@@ -1211,12 +1655,53 @@ fn paragraph_properties_xml(properties: &ParagraphProperties, out: &mut String) 
             if widows { "1" } else { "0" }
         );
     }
+    if let Some(numbering) = numbering {
+        out.push_str(numbering);
+    }
+    if let Some(border) = properties.border {
+        out.push_str("<w:pBdr>");
+        for (name, drawn) in [
+            ("top", border.top),
+            ("left", border.left),
+            ("bottom", border.bottom),
+            ("right", border.right),
+        ] {
+            if drawn {
+                border_xml(name, Some(Some(border.line)), out);
+            }
+        }
+        out.push_str("</w:pBdr>");
+    }
     if let Some(background) = properties.background {
         let _ = write!(
             out,
             "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{}\"/>",
             background.hex()
         );
+    }
+    if !tabs.is_empty() {
+        out.push_str("<w:tabs>");
+        for tab in tabs {
+            let alignment = match tab.alignment {
+                crate::document::TabAlignment::Left => "left",
+                crate::document::TabAlignment::Center => "center",
+                crate::document::TabAlignment::Right => "right",
+                crate::document::TabAlignment::Decimal => "decimal",
+            };
+            let leader = match tab.leader {
+                Some('.') => " w:leader=\"dot\"",
+                Some('-') => " w:leader=\"hyphen\"",
+                Some('_') => " w:leader=\"underscore\"",
+                Some('·') => " w:leader=\"middleDot\"",
+                _ => "",
+            };
+            let _ = write!(
+                out,
+                "<w:tab w:val=\"{alignment}\"{leader} w:pos=\"{}\"/>",
+                twips(tab.position)
+            );
+        }
+        out.push_str("</w:tabs>");
     }
     let has_spacing = properties.space_before.is_some()
         || properties.space_after.is_some()
@@ -1317,12 +1802,34 @@ fn run_properties_xml(document: &Document, properties: &RunProperties, out: &mut
             "<w:strike w:val=\"0\"/>"
         });
     }
+    if let Some(hidden) = properties.hidden {
+        out.push_str(if hidden {
+            "<w:vanish/>"
+        } else {
+            "<w:vanish w:val=\"0\"/>"
+        });
+    }
     if let Some(color) = properties.color {
         let _ = write!(out, "<w:color w:val=\"{}\"/>", color.hex());
+    }
+    if let Some(shift) = properties.shift {
+        let _ = write!(
+            out,
+            "<w:position w:val=\"{}\"/>",
+            (shift * 2.0).round() as i64
+        );
     }
     if let Some(size) = properties.size {
         let half_points = (size * 2.0).round() as i64;
         let _ = write!(out, "<w:sz w:val=\"{half_points}\"/>");
+    }
+    // Schema order: the underline comes before the shading.
+    if let Some(underline) = properties.underline {
+        out.push_str(if underline {
+            "<w:u w:val=\"single\"/>"
+        } else {
+            "<w:u w:val=\"none\"/>"
+        });
     }
     if let Some(highlight) = properties.highlight {
         let _ = write!(
@@ -1330,13 +1837,6 @@ fn run_properties_xml(document: &Document, properties: &RunProperties, out: &mut
             "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"{}\"/>",
             highlight.hex()
         );
-    }
-    if let Some(underline) = properties.underline {
-        out.push_str(if underline {
-            "<w:u w:val=\"single\"/>"
-        } else {
-            "<w:u w:val=\"none\"/>"
-        });
     }
     match properties.baseline {
         Some(Baseline::Superscript) => out.push_str("<w:vertAlign w:val=\"superscript\"/>"),
@@ -1362,6 +1862,7 @@ fn split_for_style(merged: RunProperties) -> (RunProperties, RunProperties) {
         underline: merged.underline,
         baseline: merged.baseline,
         language: merged.language,
+        shift: merged.shift,
         ..RunProperties::default()
     };
     let inline = RunProperties {
@@ -1369,6 +1870,7 @@ fn split_for_style(merged: RunProperties) -> (RunProperties, RunProperties) {
         italic: merged.italic,
         strike: merged.strike,
         caps: merged.caps,
+        hidden: merged.hidden,
         ..RunProperties::default()
     };
     (styled, inline)
@@ -1427,6 +1929,176 @@ fn twips(points: f32) -> i64 {
 /// English metric units, as drawings are measured.
 fn emu(points: f32) -> i64 {
     (points * 12_700.0).round() as i64
+}
+
+/// One border side: a line, `nil` for a stated "no line", or nothing when
+/// unstated.
+fn border_xml(name: &str, side: Option<Option<crate::document::Border>>, out: &mut String) {
+    match side {
+        Some(Some(line)) => {
+            let color = line
+                .color
+                .map_or_else(|| "auto".to_string(), |color| color.hex());
+            let _ = write!(
+                out,
+                "<w:{name} w:val=\"single\" w:sz=\"{}\" w:space=\"0\" w:color=\"{color}\"/>",
+                ((line.width * 8.0).round() as i64).clamp(2, 96)
+            );
+        }
+        Some(None) => {
+            let _ = write!(out, "<w:{name} w:val=\"nil\"/>");
+        }
+        None => {}
+    }
+}
+
+/// The DrawingML chart namespace (also the chart graphic's URI).
+const CHART: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
+
+/// A chart part: the chart's kind, its series, and their cached values
+/// (which Word draws from; there is no embedded workbook).
+fn chart_xml(chart: &crate::document::Chart) -> String {
+    use crate::document::ChartKind;
+    let mut xml = String::new();
+    let _ = write!(
+        xml,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><c:chartSpace xmlns:c=\"{CHART}\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><c:roundedCorners val=\"0\"/><c:chart><c:autoTitleDeleted val=\"1\"/><c:plotArea><c:layout/>"
+    );
+    let (element, extra) = match chart.kind {
+        ChartKind::Column => (
+            "c:barChart",
+            "<c:barDir val=\"col\"/><c:grouping val=\"clustered\"/>",
+        ),
+        ChartKind::Bar => (
+            "c:barChart",
+            "<c:barDir val=\"bar\"/><c:grouping val=\"clustered\"/>",
+        ),
+        ChartKind::Line => ("c:lineChart", "<c:grouping val=\"standard\"/>"),
+        ChartKind::Area => ("c:areaChart", "<c:grouping val=\"standard\"/>"),
+        ChartKind::Pie => ("c:pieChart", ""),
+        ChartKind::Scatter => ("c:scatterChart", "<c:scatterStyle val=\"lineMarker\"/>"),
+    };
+    let _ = write!(xml, "<{element}>{extra}<c:varyColors val=\"0\"/>");
+    let count = chart.categories.len();
+    for (index, series) in chart.series.iter().enumerate() {
+        let _ = write!(
+            xml,
+            "<c:ser><c:idx val=\"{index}\"/><c:order val=\"{index}\"/><c:tx><c:strRef><c:f/><c:strCache><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>"
+        );
+        escape_text(&mut xml, &series.name);
+        xml.push_str("</c:v></c:pt></c:strCache></c:strRef></c:tx>");
+        // Each series in its own colour, as Pages draws them.
+        const PALETTE: [&str; 6] = ["4A9CF5", "7ED957", "F5A623", "E8505B", "9B6BD9", "4FC9C1"];
+        let color = PALETTE[index % PALETTE.len()];
+        if chart.kind == ChartKind::Line || chart.kind == ChartKind::Scatter {
+            let _ = write!(
+                xml,
+                "<c:spPr><a:ln w=\"28575\"><a:solidFill><a:srgbClr val=\"{color}\"/></a:solidFill></a:ln></c:spPr>"
+            );
+        } else {
+            let _ = write!(
+                xml,
+                "<c:spPr><a:solidFill><a:srgbClr val=\"{color}\"/></a:solidFill></c:spPr>"
+            );
+        }
+        let (categories, values) = if chart.kind == ChartKind::Scatter {
+            ("c:xVal", "c:yVal")
+        } else {
+            ("c:cat", "c:val")
+        };
+        let _ = write!(
+            xml,
+            "<{categories}><c:strRef><c:f/><c:strCache><c:ptCount val=\"{count}\"/>"
+        );
+        for (point, category) in chart.categories.iter().enumerate() {
+            let _ = write!(xml, "<c:pt idx=\"{point}\"><c:v>");
+            escape_text(&mut xml, category);
+            xml.push_str("</c:v></c:pt>");
+        }
+        let _ = write!(
+            xml,
+            "</c:strCache></c:strRef></{categories}><{values}><c:numRef><c:f/><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val=\"{count}\"/>"
+        );
+        for (point, value) in series.values.iter().enumerate() {
+            if let Some(value) = value {
+                let _ = write!(xml, "<c:pt idx=\"{point}\"><c:v>{value}</c:v></c:pt>");
+            }
+        }
+        let _ = write!(xml, "</c:numCache></c:numRef></{values}></c:ser>");
+    }
+    if chart.kind == ChartKind::Pie {
+        let _ = write!(xml, "</{element}>");
+    } else {
+        let _ = write!(
+            xml,
+            "<c:axId val=\"1\"/><c:axId val=\"2\"/></{element}><c:catAx><c:axId val=\"1\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"{}\"/><c:crossAx val=\"2\"/></c:catAx><c:valAx><c:axId val=\"2\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"{}\"/><c:majorGridlines/><c:crossAx val=\"1\"/></c:valAx>",
+            if chart.kind == ChartKind::Bar {
+                "l"
+            } else {
+                "b"
+            },
+            if chart.kind == ChartKind::Bar {
+                "b"
+            } else {
+                "l"
+            },
+        );
+    }
+    xml.push_str("</c:plotArea><c:legend><c:legendPos val=\"t\"/><c:overlay val=\"0\"/></c:legend><c:plotVisOnly val=\"1\"/></c:chart></c:chartSpace>");
+    xml
+}
+
+/// A shape's outline in DrawingML: a preset by name, or its own path.
+fn geometry_xml(document: &Document, geometry: crate::document::ShapeGeometry) -> String {
+    use crate::document::{PathStep, ShapeGeometry as G};
+    let preset = match geometry {
+        G::Rectangle => "rect",
+        G::RoundedRectangle => "roundRect",
+        G::Ellipse => "ellipse",
+        G::Triangle => "triangle",
+        G::RightTriangle => "rtTriangle",
+        G::Diamond => "diamond",
+        G::Pentagon => "pentagon",
+        G::Hexagon => "hexagon",
+        G::Octagon => "octagon",
+        G::Star => "star5",
+        G::RightArrow => "rightArrow",
+        G::LeftArrow => "leftArrow",
+        G::UpArrow => "upArrow",
+        G::DownArrow => "downArrow",
+        G::Line => "line",
+        G::Path(index) => {
+            let Some(path) = document.paths.get(index as usize) else {
+                return "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>".to_string();
+            };
+            let point = |(x, y): (f32, f32)| format!("<a:pt x=\"{}\" y=\"{}\"/>", emu(x), emu(y));
+            let mut commands = String::new();
+            for step in &path.steps {
+                match *step {
+                    PathStep::Move(x, y) => {
+                        let _ = write!(commands, "<a:moveTo>{}</a:moveTo>", point((x, y)));
+                    }
+                    PathStep::Line(x, y) => {
+                        let _ = write!(commands, "<a:lnTo>{}</a:lnTo>", point((x, y)));
+                    }
+                    PathStep::Curve(points) => {
+                        commands.push_str("<a:cubicBezTo>");
+                        for p in points {
+                            commands.push_str(&point(p));
+                        }
+                        commands.push_str("</a:cubicBezTo>");
+                    }
+                    PathStep::Close => commands.push_str("<a:close/>"),
+                }
+            }
+            return format!(
+                "<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l=\"0\" t=\"0\" r=\"r\" b=\"b\"/><a:pathLst><a:path w=\"{}\" h=\"{}\">{commands}</a:path></a:pathLst></a:custGeom>",
+                emu(path.width.max(0.01)),
+                emu(path.height.max(0.01))
+            );
+        }
+    };
+    format!("<a:prstGeom prst=\"{preset}\"><a:avLst/></a:prstGeom>")
 }
 
 #[cfg(test)]

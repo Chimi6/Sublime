@@ -441,6 +441,7 @@ impl<'s> DocumentBuilder<'s> {
                 height: 0.0,
                 description,
                 placement: Placement::Inline,
+                crop: None,
             });
             self.push_inline(Inline::Image(id));
             return;
@@ -634,11 +635,15 @@ impl<'s> DocumentBuilder<'s> {
                         row.cells.push(empty_cell());
                     }
                 }
-                self.push_block(Block::Table(Table {
+                self.push_block(Block::Table(Box::new(Table {
                     rows,
                     header_rows: table.header_rows,
                     columns: vec![width; columns],
-                }));
+                    borders: None,
+                    cell_margins: None,
+                    alignment: None,
+                    indent: None,
+                })));
             }
             TagEnd::TableHead => {
                 self.close_paragraph();
@@ -672,6 +677,9 @@ impl<'s> DocumentBuilder<'s> {
                         row_span: 1,
                         background: None,
                         merge: crate::document::Merge::Origin,
+                        borders: Default::default(),
+                        vertical_alignment: None,
+                        margins: [None; 4],
                     });
                 }
             }
@@ -738,6 +746,9 @@ fn empty_cell() -> Cell {
         row_span: 1,
         background: None,
         merge: crate::document::Merge::Origin,
+        borders: Default::default(),
+        vertical_alignment: None,
+        margins: [None; 4],
     }
 }
 
@@ -830,6 +841,7 @@ fn built_in_styles(document: &mut Document) -> BuiltInStyles {
             label: ListLabel::Number(NumberFormat {
                 kind: NumberKind::Decimal,
                 pattern: "%1.".to_string(),
+                tiered: false,
             }),
             indent: LEVEL_INDENT * (level as f32 + 1.0),
             label_indent: LEVEL_INDENT * (level as f32 + 1.0) - 18.0,
