@@ -157,6 +157,7 @@ pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliE
         sheet: args.sheet.clone(),
         quality: args.quality,
         page: args.page,
+        font: crate::cli::commands::font_option(args.font.as_deref())?,
     };
     let workers = args
         .jobs
