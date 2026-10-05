@@ -13,7 +13,7 @@ use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
 use crate::io::markdown::{Options, parse_into};
-use crate::io::pages::write_package;
+use crate::io::pages::write_package_to;
 
 const NAME: &str = "markdown-to-pages";
 const FIDELITY_NOTE: &str = "paragraphs, headings, bulleted and numbered lists, and tables reach Pages with its named styles, bold and italic runs reuse its character styles, and links become clickable hyperlinks; images are not yet written";
@@ -52,8 +52,11 @@ impl Converter for MarkdownToPages {
         builder.reserve_text(text.len());
         parse_into(&text, Options::default(), &mut builder);
         let document = builder.finish();
-        let bytes = write_package(&document).map_err(package_error)?;
-        output.write_all(&bytes)?;
+        drop(text);
+        let mut sink = std::io::BufWriter::with_capacity(64 * 1024, &mut *output);
+        write_package_to(&document, &mut sink).map_err(package_error)?;
+        sink.flush()?;
+        drop(sink);
         output.flush()?;
         Ok(())
     }
