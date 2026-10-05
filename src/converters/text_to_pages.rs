@@ -10,7 +10,7 @@ use crate::document::from_events::DocumentBuilder;
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
-use crate::io::pages::write_package;
+use crate::io::pages::write_package_to;
 use crate::io::text::reader::parse_into;
 
 const NAME: &str = "text-to-pages";
@@ -50,8 +50,11 @@ impl Converter for TextToPages {
         builder.reserve_text(text.len());
         parse_into(&text, &mut builder);
         let document = builder.finish();
-        let bytes = write_package(&document).map_err(package_error)?;
-        output.write_all(&bytes)?;
+        drop(text);
+        let mut sink = std::io::BufWriter::with_capacity(64 * 1024, &mut *output);
+        write_package_to(&document, &mut sink).map_err(package_error)?;
+        sink.flush()?;
+        drop(sink);
         output.flush()?;
         Ok(())
     }

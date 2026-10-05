@@ -274,6 +274,17 @@ be checked the same way.
 9. **Size budget.** The release binary budget (`size-budget`) was raised
    from the macOS build's growth with headroom; tighten it to the Linux
    figure CI reports.
+10. **More than about 2,180 tables (Word -> Pages).** Each table brings
+    about 30 single-object streams (data lists, tiles, header buckets), and
+    the ZIP writer stops at 65,535 entries, so a larger document fails to
+    write. Either ZIP64 (once Pages is shown to read it) or fewer streams
+    per table lifts it.
+11. **Memory per table (Word -> Pages).** A table costs about 250 KB while
+    the package is assembled, held as 32-byte tree entries against a few
+    bytes encoded (35 MB at 100 tables, 570 MB at 2,000). Encoding each
+    table's objects once its rewrite is done, and compacting what that
+    leaves, would bring it near the encoded size; so would a slimmer tree
+    entry, shared with the Pages reader.
 
 ## Sources
 

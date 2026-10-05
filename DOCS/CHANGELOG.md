@@ -6,7 +6,7 @@ section under a version heading.
 
 ## [Unreleased]
 
-## [0.25.0] - 2026-10-03
+## [0.25.0] - 2026-10-05
 
 ### Added
 
@@ -20,6 +20,11 @@ section under a version heading.
 - The binary size budget is raised 2.70 -> 3.60 MB and the WebAssembly budget 1.40 -> 2.00 MB for Word <-> Apple Pages (the Pages writer, about 300 KB of code on its own, its 83 KB template, and the Word and Pages readers' new mappings). The module measures 1.96 MB; the binary budget is set from the macOS build's growth with headroom, to be tightened to the Linux figure.
 - The Pages writer draws its fresh identities without the clock or the process id on WebAssembly, where asking for either panics: the module's `csv -> pages` smoke check now converts.
 - The binary size budget is raised 2.55 -> 2.70 MB and the WebAssembly budget 1.30 -> 1.40 MB for documents to PDF (the composer and five converters, about 62 KB) and the font reader that follows.
+
+### Performance
+
+- Word -> Pages takes linear time in the number of tables: objects are found by a remembered position (checked on every use) instead of a search of the package, and table copies are made in one pass. 400 tables take 0.22 s instead of 9.7, and 1000 tables 0.56 s instead of 111.
+- Word -> Pages holds about half the memory: the body's character tables are kept encoded (about 6 bytes a row instead of 100), paragraph and run formats are stored once and referenced, the text is moved into the package rather than copied, streams are compressed a chunk at a time and written straight to the output, and big trees grow to their projected size instead of doubling. Prose peaks at 57 MB instead of 94, styled at 40 instead of 70 (macOS), inside the 64 MB every other Pages path meets. Tables still cost about 250 KB each.
 
 ## [0.24.0] - 2026-09-27
 

@@ -13,7 +13,9 @@ use crate::document::{
     Block, Color, Document, Id, Inline, ListItem, ListLabel, MediaId, NumberKind, Paragraph,
 };
 use crate::io::protobuf::schema::MessageRef;
-use crate::io::protobuf::tree::{Chain, Entry as TreeEntry, NONE, Node, Tree, TreeError};
+use crate::io::protobuf::tree::{
+    Chain, Entry as TreeEntry, NONE, Node, Tree, TreeError, write_varint,
+};
 
 /// A blank Pages 12 document with the preview thumbnails stripped: the
 /// scaffolding every written document is built on. Made once on a Mac and
@@ -50,6 +52,14 @@ const ATTACHMENT: char = '\u{FFFC}';
 
 /// Renders the document model to a `.pages` package.
 pub fn write(document: &Document) -> Result<Vec<u8>, PackageError> {
+    let mut bytes = Vec::new();
+    write_to(document, &mut bytes)?;
+    Ok(bytes)
+}
+
+/// Writes the document as a Pages package into `sink`, a part at a time, so
+/// the package is never held whole.
+pub fn write_to(document: &Document, sink: &mut dyn std::io::Write) -> Result<(), PackageError> {
     // Identities drawn for this output vary with its text, which is all a
     // WebAssembly build has to vary them with.
     let digest = document
@@ -61,6 +71,16 @@ pub fn write(document: &Document) -> Result<Vec<u8>, PackageError> {
     OUTPUT_SALT.store(digest, std::sync::atomic::Ordering::Relaxed);
     forget_object_positions();
     let mut package = Package::read(TEMPLATE)?;
+    // Decoding sizes the trees generously; most of the template is copied
+    // through as is, so give the slack back before the body adds its own.
+    for entry in &mut package.entries {
+        if let Entry::Stream(stream) = entry {
+            let tree = &mut stream.tree;
+            tree.entries
+                .shrink_to(tree.entries.len() + tree.entries.len() / 16);
+            tree.text.shrink_to(tree.text.len() + tree.text.len() / 16);
+        }
+    }
     let styles = collect_style_names(&package);
     let formats = collect_char_formats(&package);
     let lists = collect_list_styles(&package);
@@ -115,7 +135,8 @@ pub fn write(document: &Document) -> Result<Vec<u8>, PackageError> {
     // sidecar keyed by the document UUID, and reusing the template's would pair
     // every converted file with another file's stale objects.
     renew_document_identity(&mut package);
-    package.write(Vec::new())
+    package.write(sink)?;
+    Ok(())
 }
 
 /// Maps each named paragraph and character style in the template to its
@@ -261,9 +282,9 @@ fn rebuild_body(
     let (all_formats, style_refs) = match (base_style, stylesheet_id) {
         (Some(parent), Some(sheet)) => {
             let needed = body
-                .char_marks
+                .char_formats
                 .iter()
-                .map(|mark| mark.format)
+                .copied()
                 .chain(body.tables.iter().flat_map(|table| {
                     table.cells.iter().flat_map(|cell| {
                         cell.marks
@@ -327,8 +348,11 @@ fn rebuild_body(
         (Some(sheet), Some(cell)) => {
             let mut needed: Vec<(u64, ParaFormat)> = Vec::new();
             for mark in &body.paragraphs {
-                let parent = style_identifier(document, styles, mark.style_name.as_deref());
-                needed.push((parent, mark.format));
+                let parent = style_identifier(document, styles, body.style_name(document, mark));
+                let pair = (parent, body.para_formats[mark.format as usize]);
+                if !needed.contains(&pair) {
+                    needed.push(pair);
+                }
             }
             for table in &body.tables {
                 for content in &table.cells {
@@ -481,7 +505,10 @@ fn rebuild_body(
     let mut anchors: Vec<(u32, u64)> = Vec::new();
     let mut fill_styles: CellFillStyles = HashMap::new();
     let mut unbanded: HashMap<u64, u64> = HashMap::new();
-    for (mark, table) in body.tables.iter().zip(&template_tables) {
+    let growth = GrowthPlan::new(package, 10_000);
+    let total = body.tables.len().min(template_tables.len());
+    for (done, (mark, table)) in body.tables.iter().zip(&template_tables).enumerate() {
+        growth.reserve(package, done, total);
         reuse_table(
             package,
             table,
@@ -494,6 +521,18 @@ fn rebuild_body(
             &mut next_id,
         )?;
         anchors.push((mark.offset, table.attach_id));
+    }
+    // Each table's own small streams were rewritten in place: give back what
+    // their growth left over, which across thousands of tables adds up.
+    if total > 1 {
+        for entry in &mut package.entries {
+            if let Entry::Stream(stream) = entry
+                && stream.tree.entries.len() < 10_000
+            {
+                stream.tree.entries.shrink_to_fit();
+                stream.tree.text.shrink_to_fit();
+            }
+        }
     }
     // The template carries one image as a prototype: the first model image
     // reuses it; any others clone it so every image reaches Pages, each with its
@@ -671,11 +710,14 @@ fn rebuild_body(
         &mut next_id,
     )?;
 
+    // The text goes to the storage, which drops it once copied.
+    let text = std::mem::take(&mut body.text);
     let (new_first, list_refs) = build_storage(
         &mut stream.tree,
         old_first,
         document,
         &body,
+        text,
         styles,
         &all_formats,
         lists,
@@ -3093,6 +3135,7 @@ fn build_storage(
     old_first: u32,
     document: &Document,
     body: &Body,
+    text: String,
     styles: &HashMap<String, u64>,
     formats: &HashMap<Format, u64>,
     lists: &HashMap<String, u64>,
@@ -3168,22 +3211,28 @@ fn build_storage(
             .map_err(tree_error)?;
     }
 
-    let span = tree.push_bytes(body.text.as_bytes()).map_err(tree_error)?;
+    // The text and the encoded tables after it, in room made once: grown by
+    // doubling, the tree's bytes would be copied (and held twice) on the way.
+    let table_rows = 5 * body.paragraphs.len() + body.char_marks.len();
+    tree.text.reserve(text.len() + 12 * table_rows);
+    let span = tree.push_bytes(text.as_bytes()).map_err(tree_error)?;
+    drop(text);
     push_field(tree, &mut chain, storage, "text", Node::Str(span))?;
 
     let paragraph_entries: Vec<(u32, Option<u64>)> = body
         .paragraphs
         .iter()
         .map(|paragraph| {
-            let identifier = style_identifier(document, styles, paragraph.style_name.as_deref());
+            let identifier =
+                style_identifier(document, styles, body.style_name(document, paragraph));
             let identifier = paras
-                .get(&(identifier, paragraph.format))
+                .get(&(identifier, body.para_formats[paragraph.format as usize]))
                 .copied()
                 .unwrap_or(identifier);
             (paragraph.offset, Some(identifier))
         })
         .collect();
-    emit_reference_table(
+    emit_reference_table_encoded(
         tree,
         &mut chain,
         storage,
@@ -3200,13 +3249,16 @@ fn build_storage(
     let mut char_entries: Vec<(u32, Option<u64>)> = body
         .char_marks
         .iter()
-        .map(|mark| (mark.offset, char_style_for(mark.format, formats).or(base)))
+        .map(|mark| {
+            let format = body.char_formats[mark.format as usize];
+            (mark.offset, char_style_for(format, formats).or(base))
+        })
         .collect();
     if char_entries.first().is_none_or(|(offset, _)| *offset != 0) {
         char_entries.insert(0, (0, base));
     }
     if char_entries.iter().any(|(_, object)| object.is_some()) {
-        emit_reference_table(tree, &mut chain, storage, "table_char_style", &char_entries)?;
+        emit_reference_table_encoded(tree, &mut chain, storage, "table_char_style", &char_entries)?;
     }
 
     // Objects the new tables reference that the template's storage did not
@@ -3242,7 +3294,7 @@ fn build_storage(
                 references.push(*id);
             }
         }
-        emit_reference_table(
+        emit_reference_table_encoded(
             tree,
             &mut chain,
             storage,
@@ -3260,7 +3312,7 @@ fn build_storage(
                 (mark.offset, level, starts)
             })
             .collect();
-        emit_data_table(
+        emit_data_table_encoded(
             tree,
             &mut chain,
             storage,
@@ -3279,7 +3331,7 @@ fn build_storage(
                 (mark.offset, start, 0)
             })
             .collect();
-        emit_data_table(
+        emit_data_table_encoded(
             tree,
             &mut chain,
             storage,
@@ -3294,12 +3346,12 @@ fn build_storage(
             .iter()
             .map(|(offset, id)| (*offset, Some(*id)))
             .collect();
-        emit_reference_table(tree, &mut chain, storage, "table_footnote", &entries)?;
+        emit_reference_table_encoded(tree, &mut chain, storage, "table_footnote", &entries)?;
     }
 
     // Tracked insertions and deletions over their text, gaps between.
     if !changes.insertions.is_empty() {
-        emit_reference_table(
+        emit_reference_table_encoded(
             tree,
             &mut chain,
             storage,
@@ -3308,7 +3360,7 @@ fn build_storage(
         )?;
     }
     if !changes.deletions.is_empty() {
-        emit_reference_table(
+        emit_reference_table_encoded(
             tree,
             &mut chain,
             storage,
@@ -3378,11 +3430,11 @@ fn build_storage(
             .iter()
             .map(|(offset, id)| (*offset, Some(*id)))
             .collect();
-        emit_reference_table(tree, &mut chain, storage, "table_layout_style", &entries)?;
+        emit_reference_table_encoded(tree, &mut chain, storage, "table_layout_style", &entries)?;
     }
 
     // One bidirectional-text entry for the whole text, as Pages writes it.
-    emit_data_table(tree, &mut chain, storage, "table_para_bidi", &[(0, 0, 0)])?;
+    emit_data_table_encoded(tree, &mut chain, storage, "table_para_bidi", &[(0, 0, 0)])?;
 
     // Each model table anchors a reused template table by its drawable
     // attachment at the offset of its U+FFFC character.
@@ -3391,7 +3443,7 @@ fn build_storage(
             .iter()
             .map(|(offset, attach_id)| (*offset, Some(*attach_id)))
             .collect();
-        emit_reference_table(
+        emit_reference_table_encoded(
             tree,
             &mut chain,
             storage,
@@ -3408,7 +3460,7 @@ fn build_storage(
         if link_entries.first().is_none_or(|(offset, _)| *offset != 0) {
             link_entries.insert(0, (0, None));
         }
-        emit_reference_table(tree, &mut chain, storage, "table_smartfield", &link_entries)?;
+        emit_reference_table_encoded(tree, &mut chain, storage, "table_smartfield", &link_entries)?;
     }
 
     Ok((sorted_chain(tree, storage, chain.first)?, references))
@@ -3542,9 +3594,12 @@ impl Format {
 /// membership (the model's item, resolved to a template list style later).
 struct ParagraphMark {
     offset: u32,
-    style_name: Option<String>,
+    /// The paragraph style, an index into the document's paragraph styles.
+    style: Option<crate::document::StyleId>,
     list: Option<ListItem>,
-    format: ParaFormat,
+    /// Its formatting, an index into `Body::para_formats` (a body's paragraphs
+    /// share a few distinct formattings).
+    format: u32,
     /// Word's contextual spacing: no space against a same-style neighbour.
     contextual: bool,
     /// A list paragraph's own indents where they differ from its list's.
@@ -3554,7 +3609,8 @@ struct ParagraphMark {
 /// A point in the text where the character formatting changes.
 struct CharMark {
     offset: u32,
-    format: Format,
+    /// An index into `Body::char_formats`.
+    format: u32,
 }
 
 /// A point in the text where the link target changes: the interned link id
@@ -3652,6 +3708,9 @@ struct Body {
     text: String,
     paragraphs: Vec<ParagraphMark>,
     char_marks: Vec<CharMark>,
+    /// The distinct paragraph and character formattings the marks index.
+    para_formats: Vec<ParaFormat>,
+    char_formats: Vec<Format>,
     link_marks: Vec<LinkMark>,
     tables: Vec<TableMark>,
     images: Vec<ImageMark>,
@@ -3662,14 +3721,26 @@ struct Body {
     revisions: Vec<(u32, u32, Id)>,
 }
 
+impl Body {
+    /// A paragraph's style name.
+    fn style_name<'a>(&self, document: &'a Document, mark: &ParagraphMark) -> Option<&'a str> {
+        mark.style
+            .map(|style| document.styles.paragraph[style].name.as_str())
+    }
+}
+
 /// Flattens the document into one text string (paragraphs joined by `\n`)
 /// with paragraph and character marks. Each table becomes one anchor
 /// paragraph holding a `U+FFFC`, with its grid recorded for later synthesis.
 fn flatten(document: &Document) -> Body {
     let mut walk = Walk {
-        text: String::new(),
+        // The body's text is the model's, plus a character per paragraph
+        // break and anchor: sized once rather than grown by doubling.
+        text: String::with_capacity(document.text.len() + document.text.len() / 16),
         paragraphs: Vec::new(),
         char_marks: Vec::new(),
+        para_formats: Interner::new(),
+        char_formats: Interner::new(),
         link_marks: Vec::new(),
         tables: Vec::new(),
         images: Vec::new(),
@@ -3714,7 +3785,7 @@ fn flatten(document: &Document) -> Body {
             walk.comments.push((0, 1, id));
         }
     }
-    apply_contextual_spacing(&mut walk.paragraphs);
+    apply_contextual_spacing(&mut walk.paragraphs, &mut walk.para_formats);
     Body {
         layouts: walk.layouts,
         anchored: walk.anchored,
@@ -3724,6 +3795,8 @@ fn flatten(document: &Document) -> Body {
         text: walk.text,
         paragraphs: walk.paragraphs,
         char_marks: walk.char_marks,
+        para_formats: walk.para_formats.values,
+        char_formats: walk.char_formats.values,
         link_marks: walk.link_marks,
         tables: walk.tables,
         images: walk.images,
@@ -3732,19 +3805,45 @@ fn flatten(document: &Document) -> Body {
 
 /// Word's contextual spacing, which Pages lacks: between two paragraphs of
 /// the same style, one that asks for it drops its space on that side.
-fn apply_contextual_spacing(paragraphs: &mut [ParagraphMark]) {
+fn apply_contextual_spacing(paragraphs: &mut [ParagraphMark], formats: &mut Interner<ParaFormat>) {
     for index in 1..paragraphs.len() {
         let (before, after) = paragraphs.split_at_mut(index);
         let (previous, next) = (&mut before[index - 1], &mut after[0]);
-        if previous.style_name != next.style_name {
+        if previous.style != next.style {
             continue;
         }
         if previous.contextual {
-            previous.format.space_after = Some(0);
+            let mut format = formats.values[previous.format as usize];
+            format.space_after = Some(0);
+            previous.format = formats.id(format);
         }
         if next.contextual {
-            next.format.space_before = Some(0);
+            let mut format = formats.values[next.format as usize];
+            format.space_before = Some(0);
+            next.format = formats.id(format);
         }
+    }
+}
+
+/// Distinct values in first-seen order, each named by its index.
+struct Interner<T> {
+    values: Vec<T>,
+    index: HashMap<T, u32>,
+}
+
+impl<T: Copy + Eq + std::hash::Hash> Interner<T> {
+    fn new() -> Self {
+        Interner {
+            values: Vec::new(),
+            index: HashMap::new(),
+        }
+    }
+
+    fn id(&mut self, value: T) -> u32 {
+        *self.index.entry(value).or_insert_with(|| {
+            self.values.push(value);
+            (self.values.len() - 1) as u32
+        })
     }
 }
 
@@ -3752,6 +3851,8 @@ struct Walk {
     text: String,
     paragraphs: Vec<ParagraphMark>,
     char_marks: Vec<CharMark>,
+    para_formats: Interner<ParaFormat>,
+    char_formats: Interner<Format>,
     link_marks: Vec<LinkMark>,
     tables: Vec<TableMark>,
     images: Vec<ImageMark>,
@@ -3855,11 +3956,12 @@ impl Walk {
             first_line_indent: indent,
             ..ParaFormat::default()
         };
+        let format = self.para_formats.id(anchor);
         self.paragraphs.push(ParagraphMark {
             offset: self.offset,
-            style_name: None,
+            style: None,
             list: None,
-            format: anchor,
+            format,
             contextual: false,
             list_indents: None,
         });
@@ -4024,14 +4126,12 @@ impl Walk {
             self.offset += 1;
         }
         self.terminator = mark_format(document, paragraph);
-        let style_name = paragraph
-            .style
-            .map(|style| document.styles.paragraph[style].name.clone());
+        let format = self.para_formats.id(para_format(document, paragraph));
         self.paragraphs.push(ParagraphMark {
             offset: self.offset,
-            style_name,
+            style: paragraph.style,
             list: paragraph.list,
-            format: para_format(document, paragraph),
+            format,
             contextual: document
                 .effective_paragraph(paragraph)
                 .contextual_spacing
@@ -4161,7 +4261,7 @@ impl Walk {
         if let Some(last) = self.paragraphs.last() {
             let mark = ParagraphMark {
                 offset: self.offset,
-                style_name: last.style_name.clone(),
+                style: last.style,
                 list: last.list,
                 format: last.format,
                 contextual: last.contextual,
@@ -4190,9 +4290,10 @@ impl Walk {
 
     fn mark(&mut self, format: Format) {
         if format != self.current {
+            let format_id = self.char_formats.id(format);
             self.char_marks.push(CharMark {
                 offset: self.offset,
-                format,
+                format: format_id,
             });
             self.current = format;
         }
@@ -4724,6 +4825,123 @@ fn emit_reference_table(
         field,
         field.number,
         Node::Message(table_chain.first),
+    )
+    .map_err(tree_error)?;
+    Ok(())
+}
+
+/// Builds an attribute table as `emit_reference_table` does, but stored as its
+/// encoded bytes: a body's tables have a row per paragraph or run, and a row
+/// kept as tree entries costs about ten times its encoding.
+fn emit_reference_table_encoded(
+    tree: &mut Tree,
+    chain: &mut Chain,
+    parent: MessageRef,
+    field_name: &str,
+    entries: &[(u32, Option<u64>)],
+) -> Result<(), PackageError> {
+    emit_encoded_table(
+        tree,
+        chain,
+        parent,
+        field_name,
+        entries.len(),
+        |row, entry_chain, entry, index| {
+            let (character_index, identifier) = entries[index];
+            push_field(
+                row,
+                entry_chain,
+                entry,
+                "character_index",
+                Node::Uint(u64::from(character_index)),
+            )?;
+            if let Some(identifier) = identifier {
+                push_field(
+                    row,
+                    entry_chain,
+                    entry,
+                    "object",
+                    Node::Reference(identifier),
+                )?;
+            }
+            Ok(())
+        },
+    )
+}
+
+/// Builds a two-integer attribute table as `emit_data_table` does, stored as
+/// its encoded bytes.
+fn emit_data_table_encoded(
+    tree: &mut Tree,
+    chain: &mut Chain,
+    parent: MessageRef,
+    field_name: &str,
+    entries: &[(u32, u64, u64)],
+) -> Result<(), PackageError> {
+    emit_encoded_table(
+        tree,
+        chain,
+        parent,
+        field_name,
+        entries.len(),
+        |row, entry_chain, entry, index| {
+            let (character_index, first, second) = entries[index];
+            push_field(
+                row,
+                entry_chain,
+                entry,
+                "character_index",
+                Node::Uint(u64::from(character_index)),
+            )?;
+            push_field(row, entry_chain, entry, "first", Node::Uint(first))?;
+            push_field(row, entry_chain, entry, "second", Node::Uint(second))
+        },
+    )
+}
+
+/// Adds `field_name` of the parent as an attribute table of `rows` entries,
+/// each built by `build` in a scratch tree and encoded straight away, so the
+/// table is held as bytes (`Node::Deferred`) rather than entries.
+fn emit_encoded_table(
+    tree: &mut Tree,
+    chain: &mut Chain,
+    parent: MessageRef,
+    field_name: &str,
+    rows: usize,
+    mut build: impl FnMut(&mut Tree, &mut Chain, MessageRef, usize) -> Result<(), PackageError>,
+) -> Result<(), PackageError> {
+    let (slot, field) = parent
+        .slot_named(field_name)
+        .ok_or_else(|| malformed("table field is not in the schema"))?;
+    let table = message_of(field.kind)?;
+    let (_, entries_field) = table
+        .slot_named("entries")
+        .ok_or_else(|| malformed("attribute table has no entries field"))?;
+    let entry = message_of(entries_field.kind)?;
+    let tag = (u64::from(entries_field.number) << 3) | 2;
+    let mut scratch = Tree::new(&SCHEMA);
+    let mut encoded = Vec::new();
+    let mut row = Vec::new();
+    for index in 0..rows {
+        scratch.clear();
+        let mut entry_chain = Chain::new();
+        build(&mut scratch, &mut entry_chain, entry, index)?;
+        row.clear();
+        scratch
+            .encode(entry_chain.first, &mut row)
+            .map_err(tree_error)?;
+        write_varint(&mut encoded, tag);
+        write_varint(&mut encoded, row.len() as u64);
+        encoded.extend_from_slice(&row);
+    }
+    let span = tree.push_bytes(&encoded).map_err(tree_error)?;
+    tree.push_known(
+        chain,
+        parent,
+        slot,
+        field,
+        field.number,
+        Node::Deferred(span),
     )
     .map_err(tree_error)?;
     Ok(())
@@ -6021,6 +6239,82 @@ mod tests {
 
 // ----- component metadata -----
 
+/// Sizes the big trees a repeated rewrite grows (a clone or a rewrite per
+/// table) by projection, so a tree that would overflow grows to what the
+/// remaining work needs rather than doubling. A tree hundreds of megabytes
+/// large that doubles holds both copies while it moves, and keeps the unused
+/// half.
+struct GrowthPlan {
+    /// (package entry, entries and text bytes when the work began)
+    streams: Vec<(usize, usize, usize)>,
+}
+
+impl GrowthPlan {
+    /// Plans for the streams with at least `min_entries` entries.
+    fn new(package: &Package, min_entries: usize) -> GrowthPlan {
+        let streams = package
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| match entry {
+                Entry::Stream(stream) if stream.tree.entries.len() >= min_entries => {
+                    Some((index, stream.tree.entries.len(), stream.tree.text.len()))
+                }
+                _ => None,
+            })
+            .collect();
+        GrowthPlan { streams }
+    }
+
+    /// After `done` of `total` units, makes room for the rest where a tree
+    /// is about to run out.
+    fn reserve(&self, package: &mut Package, done: usize, total: usize) {
+        if done == 0 || done >= total {
+            return;
+        }
+        let remaining = total - done;
+        for &(index, entries_start, text_start) in &self.streams {
+            let Some(Entry::Stream(stream)) = package.entries.get_mut(index) else {
+                continue;
+            };
+            let tree = &mut stream.tree;
+            let per = tree.entries.len().saturating_sub(entries_start) / done;
+            if tree.entries.capacity() - tree.entries.len() < 2 * per {
+                tree.entries
+                    .reserve_exact(per * remaining + per * remaining / 8 + 2 * per);
+            }
+            let per = tree.text.len().saturating_sub(text_start) / done;
+            if tree.text.capacity() - tree.text.len() < 2 * per {
+                tree.text
+                    .reserve_exact(per * remaining + per * remaining / 8 + 2 * per);
+            }
+        }
+    }
+}
+
+/// Links unchained entries (`(field number, entry)`, in field-number order)
+/// into a message chain in field-number order, each after the existing entries
+/// of its number. Returns the chain's (possibly new) first entry.
+fn merge_in_order(tree: &mut Tree, first: u32, added: &[(u32, u32)]) -> u32 {
+    let mut head = first;
+    let mut previous = NONE;
+    let mut cursor = first;
+    for &(number, index) in added {
+        while cursor != NONE && tree.entries[cursor as usize].number <= number {
+            previous = cursor;
+            cursor = tree.entries[cursor as usize].next;
+        }
+        tree.entries[index as usize].next = cursor;
+        if previous == NONE {
+            head = index;
+        } else {
+            tree.entries[previous as usize].next = index;
+        }
+        previous = index;
+    }
+    head
+}
+
 /// Brings `PackageMetadata`'s per-component bookkeeping in line with the
 /// objects the writer produced. Pages loads each `.iwa` stream as a component
 /// and aborts if an object in it references an object in another component that
@@ -6188,12 +6482,9 @@ fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
         }
         added += missing_refs.len() + missing_uuids.len();
 
-        // Rebuild the component message in field-number order with the new
-        // entries alongside the kept ones.
-        let mut fields: Vec<(u32, Node)> = tree
-            .chain(component_entry.first)
-            .map(|(_, field)| (field.number, field.value))
-            .collect();
+        // The new entries, merged into the component message in field-number
+        // order (its existing entries stay where they are).
+        let mut fields: Vec<(u32, Node)> = Vec::new();
         for (component_id, object_id) in missing_refs {
             let mut chain = Chain::new();
             push_field(
@@ -6240,7 +6531,7 @@ fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
             fields.push((number, Node::Message(chain.first)));
         }
         fields.sort_by_key(|(number, _)| *number);
-        let mut chain = Chain::new();
+        let mut added_entries: Vec<(u32, u32)> = Vec::with_capacity(fields.len());
         for (number, value) in fields {
             let slot = component
                 .slot(number)
@@ -6248,10 +6539,13 @@ fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
             let field = component
                 .field_at(slot)
                 .ok_or_else(|| malformed("component field slot out of range"))?;
-            tree.push_known(&mut chain, component, slot, field, number, value)
+            let index = tree
+                .push_known(&mut Chain::new(), component, slot, field, number, value)
                 .map_err(tree_error)?;
+            added_entries.push((number, index));
         }
-        rebuilt.push((component_entry.entry, chain.first));
+        let first = merge_in_order(tree, component_entry.first, &added_entries);
+        rebuilt.push((component_entry.entry, first));
     }
     for (entry, first) in rebuilt {
         tree.entries[entry as usize].value = Node::Message(first);
@@ -6985,7 +7279,9 @@ fn clone_template_tables(
     let mut new_streams: Vec<(Stream, u64, u64)> = Vec::new();
     // Each source stream's component base name, the same for every clone.
     let mut bases: HashMap<String, String> = HashMap::new();
+    let growth = GrowthPlan::new(package, 0);
     for clone in 0..count {
+        growth.reserve(package, clone, count);
         let mut families: HashMap<[u8; 12], [u8; 12]> = HashMap::new();
         for family in &family_keys {
             let fresh = fresh_uuid(families.len() as u64 + *next_id);

@@ -199,20 +199,35 @@ impl Package {
         let mut zip = ZipWriter::new(sink);
         let mut encoded = Vec::new();
         let mut chunked = Vec::new();
+        let mut block = Vec::new();
+        // Each stream is compressed a chunk at a time as its objects are
+        // encoded, so only the object being encoded (and not the whole
+        // stream) is held uncompressed.
+        let mut compress = |encoded: &mut Vec<u8>, chunked: &mut Vec<u8>, all: bool| {
+            let mut start = 0;
+            while encoded.len() - start >= CHUNK_SIZE || (all && start < encoded.len()) {
+                let end = (start + CHUNK_SIZE).min(encoded.len());
+                block.clear();
+                compress_block(&encoded[start..end], &mut block);
+                chunked.push(0);
+                chunked.extend_from_slice(&(block.len() as u32).to_le_bytes()[..3]);
+                chunked.extend_from_slice(&block);
+                start = end;
+            }
+            encoded.drain(..start);
+        };
         for entry in &self.entries {
             match entry {
                 Entry::File { name, bytes } => zip.add(name, bytes)?,
                 Entry::Stream(stream) => {
                     encoded.clear();
-                    encode_stream(stream, &mut encoded)?;
                     chunked.clear();
-                    for chunk in encoded.chunks(CHUNK_SIZE) {
-                        let mut block = Vec::with_capacity(chunk.len() + 8);
-                        compress_block(chunk, &mut block);
-                        chunked.push(0);
-                        chunked.extend_from_slice(&(block.len() as u32).to_le_bytes()[..3]);
-                        chunked.extend_from_slice(&block);
+                    let mut scratch = ObjectScratch::default();
+                    for object in &stream.objects {
+                        encode_object(stream, object, &mut scratch, &mut encoded)?;
+                        compress(&mut encoded, &mut chunked, false);
                     }
+                    compress(&mut encoded, &mut chunked, true);
                     zip.add(&stream.name, &chunked)?;
                 }
             }
@@ -355,32 +370,54 @@ fn decode_objects(
 /// Re-encodes a stream's objects into one decompressed stream. Each
 /// `MessageInfo.length` is set from its encoded message.
 pub fn encode_stream(stream: &Stream, out: &mut Vec<u8>) -> Result<(), PackageError> {
-    let tree = &stream.tree;
-    let tree_error = |error| PackageError::Tree {
-        stream: stream.name.clone(),
-        error,
-    };
-    let mut info_bytes = Vec::new();
-    let mut lengths = Vec::new();
+    let mut scratch = ObjectScratch::default();
     for object in &stream.objects {
-        lengths.clear();
-        for message in &object.messages {
-            lengths.push(tree.size(message.first));
+        encode_object(stream, object, &mut scratch, out)?;
+    }
+    Ok(())
+}
+
+/// Buffers `encode_object` reuses from one object to the next.
+#[derive(Default)]
+struct ObjectScratch {
+    info_bytes: Vec<u8>,
+    lengths: Vec<usize>,
+}
+
+/// Appends one object of a stream, its `ArchiveInfo` then its messages.
+fn encode_object(
+    stream: &Stream,
+    object: &Object,
+    scratch: &mut ObjectScratch,
+    out: &mut Vec<u8>,
+) -> Result<(), PackageError> {
+    let tree = &stream.tree;
+    let lengths = &mut scratch.lengths;
+    lengths.clear();
+    for message in &object.messages {
+        lengths.push(tree.size(message.first));
+    }
+    // The info chain is encoded with lengths patched in place, on a
+    // copy of the tree's entries only where needed: patch, encode, restore.
+    let info_bytes = &mut scratch.info_bytes;
+    info_bytes.clear();
+    encode_info(tree, object.info, lengths, info_bytes).map_err(|what| {
+        PackageError::Malformed {
+            stream: stream.name.clone(),
+            what,
         }
-        // The info chain is encoded with lengths patched in place, on a
-        // copy of the tree's entries only where needed: patch, encode, restore.
-        info_bytes.clear();
-        encode_info(tree, object.info, &lengths, &mut info_bytes).map_err(|what| {
-            PackageError::Malformed {
+    })?;
+    // Sized once: a text storage is megabytes, and growing to it by
+    // doubling would hold up to twice that.
+    out.reserve(10 + info_bytes.len() + lengths.iter().sum::<usize>());
+    write_varint(out, info_bytes.len() as u64);
+    out.extend_from_slice(info_bytes);
+    for message in &object.messages {
+        tree.encode(message.first, out)
+            .map_err(|error| PackageError::Tree {
                 stream: stream.name.clone(),
-                what,
-            }
-        })?;
-        write_varint(out, info_bytes.len() as u64);
-        out.extend_from_slice(&info_bytes);
-        for message in &object.messages {
-            tree.encode(message.first, out).map_err(tree_error)?;
-        }
+                error,
+            })?;
     }
     Ok(())
 }
