@@ -635,7 +635,7 @@ impl<'s> DocumentBuilder<'s> {
                         row.cells.push(empty_cell());
                     }
                 }
-                self.push_block(Block::Table(Table {
+                self.push_block(Block::Table(Box::new(Table {
                     rows,
                     header_rows: table.header_rows,
                     columns: vec![width; columns],
@@ -643,7 +643,7 @@ impl<'s> DocumentBuilder<'s> {
                     cell_margins: None,
                     alignment: None,
                     indent: None,
-                }));
+                })));
             }
             TagEnd::TableHead => {
                 self.close_paragraph();

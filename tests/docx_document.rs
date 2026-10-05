@@ -209,7 +209,7 @@ fn tables_keep_their_grid_and_merges() {
         .iter()
         .flat_map(|section| section.blocks.iter())
         .filter_map(|block| match block {
-            Block::Table(table) => Some(table),
+            Block::Table(table) => Some(&**table),
             Block::Paragraph(_) => None,
         })
         .collect();

@@ -445,7 +445,9 @@ impl Default for PageSetup {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
     Paragraph(Paragraph),
-    Table(Table),
+    /// Boxed: a table carries far more than a paragraph, and every block
+    /// would otherwise be as large as one.
+    Table(Box<Table>),
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

@@ -5,7 +5,7 @@
 //! setting the text and one paragraph-style run per paragraph. Everything the
 //! template already holds (the named styles, page setup) is reused.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::package::{Entry, Object, ObjectMessage, Package, PackageError, Stream};
 use super::schema::SCHEMA;
@@ -59,6 +59,7 @@ pub fn write(document: &Document) -> Result<Vec<u8>, PackageError> {
             (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01B3)
         });
     OUTPUT_SALT.store(digest, std::sync::atomic::Ordering::Relaxed);
+    forget_object_positions();
     let mut package = Package::read(TEMPLATE)?;
     let styles = collect_style_names(&package);
     let formats = collect_char_formats(&package);
@@ -470,8 +471,8 @@ fn rebuild_body(
     // the pristine prototype per extra table (cloned before any rewrite).
     let mut template_tables = collect_template_tables(package);
     if let Some(prototype) = template_tables.first().copied() {
-        while template_tables.len() < body.tables.len() {
-            let attach = clone_template_table(package, &prototype, &mut next_id)?;
+        let extra = body.tables.len().saturating_sub(template_tables.len());
+        for attach in clone_template_tables(package, &prototype, extra, &mut next_id)? {
             let table = traverse_template_table(package, attach)
                 .ok_or_else(|| malformed("cloned table does not resolve"))?;
             template_tables.push(table);
@@ -627,11 +628,7 @@ fn rebuild_body(
 
     let stream = document_stream(package)?;
     let body_id = body_storage_identifier(stream)?;
-    let Some(index) = stream
-        .objects
-        .iter()
-        .position(|object| object.identifier == body_id)
-    else {
+    let Some(index) = object_position(&stream.objects, body_id) else {
         return Err(malformed("body storage object is missing"));
     };
     let old_first = match stream.objects[index].messages.first() {
@@ -1169,26 +1166,23 @@ fn reference_of(value: Option<Node>) -> Option<u64> {
 /// The tree and message-chain start of the object with `id`, in whatever
 /// stream holds it.
 fn object_message(package: &Package, id: u64) -> Option<(&Tree, u32)> {
-    for entry in &package.entries {
-        if let Entry::Stream(stream) = entry
-            && let Some(object) = stream.objects.iter().find(|object| object.identifier == id)
-        {
-            return Some((&stream.tree, object.messages.first()?.first));
-        }
-    }
-    None
+    let (index, position) = locate_object(package, id)?;
+    let Entry::Stream(stream) = &package.entries[index] else {
+        return None;
+    };
+    Some((
+        &stream.tree,
+        stream.objects[position].messages.first()?.first,
+    ))
 }
 
 /// The object with `id` in whatever stream holds it.
 fn package_object(package: &Package, id: u64) -> Option<&Object> {
-    for entry in &package.entries {
-        if let Entry::Stream(stream) = entry
-            && let Some(object) = stream.objects.iter().find(|object| object.identifier == id)
-        {
-            return Some(object);
-        }
+    let (index, position) = locate_object(package, id)?;
+    match &package.entries[index] {
+        Entry::Stream(stream) => stream.objects.get(position),
+        _ => None,
     }
-    None
 }
 
 /// A reference field of an object anywhere in the package.
@@ -1226,11 +1220,7 @@ fn reuse_table(
             }
         };
         let stream = stream_containing(package, table.model_id)?;
-        if let Some(object) = stream
-            .objects
-            .iter()
-            .find(|object| object.identifier == table.model_id)
-        {
+        if let Some(object) = find_object(&stream.objects, table.model_id) {
             let (first, info) = (object.messages[0].first, object.info);
             if let Some(index) = field_entry(&stream.tree, first, "table_style") {
                 stream.tree.entries[index as usize].value = Node::Reference(variation);
@@ -1473,10 +1463,7 @@ fn set_table_frame(
     height: f32,
 ) -> Result<(), PackageError> {
     let stream = stream_containing(package, info_id)?;
-    let first = stream
-        .objects
-        .iter()
-        .find(|object| object.identifier == info_id)
+    let first = find_object(&stream.objects, info_id)
         .and_then(|object| object.messages.first())
         .map(|message| message.first)
         .ok_or_else(|| malformed("table info is missing"))?;
@@ -1615,19 +1602,15 @@ fn rewrite_object(
     id: u64,
     builder: impl FnOnce(&mut Tree) -> Result<u32, PackageError>,
 ) -> Result<(), PackageError> {
-    for entry in &mut package.entries {
-        if let Entry::Stream(stream) = entry
-            && let Some(position) = stream
-                .objects
-                .iter()
-                .position(|object| object.identifier == id)
-        {
-            let new_first = builder(&mut stream.tree)?;
-            stream.objects[position].messages[0].first = new_first;
-            return Ok(());
-        }
-    }
-    Err(malformed("table object to rewrite is missing"))
+    let Some((index, position)) = locate_object(package, id) else {
+        return Err(malformed("table object to rewrite is missing"));
+    };
+    let Entry::Stream(stream) = &mut package.entries[index] else {
+        return Err(malformed("table object to rewrite is missing"));
+    };
+    let new_first = builder(&mut stream.tree)?;
+    stream.objects[position].messages[0].first = new_first;
+    Ok(())
 }
 
 /// Updates a table model's row, column, and header counts and default sizes,
@@ -1637,20 +1620,16 @@ fn update_model_dims(
     model_id: u64,
     mark: &TableMark,
 ) -> Result<(), PackageError> {
-    for entry in &mut package.entries {
-        if let Entry::Stream(stream) = entry
-            && let Some(position) = stream
-                .objects
-                .iter()
-                .position(|object| object.identifier == model_id)
-        {
-            let old_first = stream.objects[position].messages[0].first;
-            let new_first = rebuild_model_dims(&mut stream.tree, mark, old_first)?;
-            stream.objects[position].messages[0].first = new_first;
-            return Ok(());
-        }
-    }
-    Err(malformed("table model to rewrite is missing"))
+    let Some((index, position)) = locate_object(package, model_id) else {
+        return Err(malformed("table model to rewrite is missing"));
+    };
+    let Entry::Stream(stream) = &mut package.entries[index] else {
+        return Err(malformed("table model to rewrite is missing"));
+    };
+    let old_first = stream.objects[position].messages[0].first;
+    let new_first = rebuild_model_dims(&mut stream.tree, mark, old_first)?;
+    stream.objects[position].messages[0].first = new_first;
+    Ok(())
 }
 
 /// An image the template carries, by the identifiers a rewrite touches: the
@@ -1878,10 +1857,7 @@ fn clone_object(
     new_id: u64,
 ) -> Result<(u32, u32), PackageError> {
     let (message_type, message_first, info_first) = {
-        let source = stream
-            .objects
-            .iter()
-            .find(|object| object.identifier == source_id)
+        let source = find_object(&stream.objects, source_id)
             .ok_or_else(|| malformed("clone source object is missing"))?;
         let message = source
             .messages
@@ -1944,19 +1920,47 @@ fn add_data_file(package: &mut Package, name: &str, bytes: &[u8]) {
 
 /// The stream holding the package metadata, and the metadata message's chain.
 fn metadata_message(package: &mut Package) -> Option<(&mut Stream, u32)> {
-    for entry in &mut package.entries {
-        if let Entry::Stream(stream) = entry
-            && let Some(first) = stream
+    let (index, position) = metadata_at(package)?;
+    let Entry::Stream(stream) = &mut package.entries[index] else {
+        return None;
+    };
+    let first = stream.objects[position].messages.first()?.first;
+    Some((stream, first))
+}
+
+/// Where the package metadata object lives (package entry, position in its
+/// stream). Many clones ask for it, and it sits behind streams that grow
+/// with them, so its place is remembered and checked on every use.
+fn metadata_at(package: &Package) -> Option<(usize, usize)> {
+    let holds = |(index, position): (usize, usize)| {
+        matches!(package.entries.get(index), Some(Entry::Stream(stream))
+            if stream.objects.get(position).is_some_and(|object| first_type(object) == Some(PACKAGE_METADATA)))
+    };
+    if let Some(at) = METADATA_AT.with(|cache| cache.get())
+        && holds(at)
+    {
+        return Some(at);
+    }
+    let at = package
+        .entries
+        .iter()
+        .enumerate()
+        .find_map(|(index, entry)| match entry {
+            Entry::Stream(stream) => stream
                 .objects
                 .iter()
-                .find(|object| first_type(object) == Some(PACKAGE_METADATA))
-                .and_then(|object| object.messages.first())
-                .map(|message| message.first)
-        {
-            return Some((stream, first));
-        }
-    }
-    None
+                .position(|object| first_type(object) == Some(PACKAGE_METADATA))
+                .map(|position| (index, position)),
+            _ => None,
+        })?;
+    METADATA_AT.with(|cache| cache.set(Some(at)));
+    Some(at)
+}
+
+thread_local! {
+    /// Where the package metadata was last found.
+    static METADATA_AT: std::cell::Cell<Option<(usize, usize)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// Appends a `Node::Message` to a repeated field at the end of a chain.
@@ -2076,7 +2080,7 @@ fn clone_image(
                 let Node::Reference(old) = stream.tree.entries[index as usize].value else {
                     continue;
                 };
-                if !stream.objects.iter().any(|object| object.identifier == old) {
+                if object_position(&stream.objects, old).is_none() {
                     continue;
                 }
                 let new = *next_object_id;
@@ -2713,20 +2717,16 @@ fn rewrite_object_with(
     id: u64,
     builder: impl FnOnce(&mut Tree, u32) -> Result<u32, PackageError>,
 ) -> Result<(), PackageError> {
-    for entry in &mut package.entries {
-        if let Entry::Stream(stream) = entry
-            && let Some(position) = stream
-                .objects
-                .iter()
-                .position(|object| object.identifier == id)
-        {
-            let old_first = stream.objects[position].messages[0].first;
-            let new_first = builder(&mut stream.tree, old_first)?;
-            stream.objects[position].messages[0].first = new_first;
-            return Ok(());
-        }
-    }
-    Err(malformed("object to rewrite is missing"))
+    let Some((index, position)) = locate_object(package, id) else {
+        return Err(malformed("object to rewrite is missing"));
+    };
+    let Entry::Stream(stream) = &mut package.entries[index] else {
+        return Err(malformed("object to rewrite is missing"));
+    };
+    let old_first = stream.objects[position].messages[0].first;
+    let new_first = builder(&mut stream.tree, old_first)?;
+    stream.objects[position].messages[0].first = new_first;
+    Ok(())
 }
 
 /// The `Data/` file name a data reference names, from the package metadata.
@@ -2971,14 +2971,103 @@ fn document_stream(package: &mut Package) -> Result<&mut Stream, PackageError> {
 /// live in it, so rich cells must be built into the list's own stream, not the
 /// document stream.
 fn stream_containing(package: &mut Package, id: u64) -> Result<&mut Stream, PackageError> {
-    for entry in &mut package.entries {
-        if let Entry::Stream(stream) = entry
-            && stream.objects.iter().any(|object| object.identifier == id)
-        {
-            return Ok(stream);
+    match locate_object(package, id).map(|(index, _)| &mut package.entries[index]) {
+        Some(Entry::Stream(stream)) => Ok(stream),
+        _ => Err(malformed("the object's stream is missing")),
+    }
+}
+
+/// The package entry and position within its stream of the object with `id`.
+/// A document with thousands of tables has hundreds of thousands of objects:
+/// where each lives is remembered and checked on every use (so a stale answer
+/// is never trusted). Objects are only ever added, so a miss learns just the
+/// objects added since; a stale answer relearns everything.
+fn locate_object(package: &Package, id: u64) -> Option<(usize, usize)> {
+    let holds = |(index, position): (usize, usize)| {
+        matches!(package.entries.get(index), Some(Entry::Stream(stream))
+            if stream.objects.get(position).is_some_and(|object| object.identifier == id))
+    };
+    OBJECT_STREAMS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        match cache.at.get(&id).copied() {
+            Some(at) if holds(at) => return Some(at),
+            Some(_) => *cache = ObjectIndex::default(),
+            None => {}
+        }
+        cache.learn(package);
+        cache.at.get(&id).copied().filter(|at| holds(*at))
+    })
+}
+
+/// Where each object of the package being written lives, and how many of
+/// each entry's objects that covers.
+#[derive(Default)]
+struct ObjectIndex {
+    at: HashMap<u64, (usize, usize)>,
+    learned: Vec<usize>,
+}
+
+impl ObjectIndex {
+    /// Learns the objects added since the last call.
+    fn learn(&mut self, package: &Package) {
+        self.learned.resize(package.entries.len(), 0);
+        for (index, entry) in package.entries.iter().enumerate() {
+            let Entry::Stream(stream) = entry else {
+                continue;
+            };
+            if stream.objects.len() < self.learned[index] {
+                // Objects went away: start over.
+                *self = ObjectIndex::default();
+                return self.learn(package);
+            }
+            for position in self.learned[index]..stream.objects.len() {
+                self.at
+                    .entry(stream.objects[position].identifier)
+                    .or_insert((index, position));
+            }
+            self.learned[index] = stream.objects.len();
         }
     }
-    Err(malformed("the object's stream is missing"))
+}
+
+/// Forgets every learned object position, for a new package.
+fn forget_object_positions() {
+    OBJECT_STREAMS.with(|cache| *cache.borrow_mut() = ObjectIndex::default());
+    FORMULA_OWNERS.with(|cache| cache.borrow_mut().clear());
+    METADATA_AT.with(|cache| cache.set(None));
+}
+
+/// The position of the object with `id` in a stream's objects: where it was
+/// last learned to be (by `locate_object`), checked, else by a scan.
+fn object_position(objects: &[Object], id: u64) -> Option<usize> {
+    let cached = OBJECT_STREAMS.with(|streams| streams.borrow().at.get(&id).copied());
+    match cached {
+        Some((_, position))
+            if objects
+                .get(position)
+                .is_some_and(|object| object.identifier == id) =>
+        {
+            Some(position)
+        }
+        _ => objects.iter().position(|object| object.identifier == id),
+    }
+}
+
+/// The object with `id` among a stream's objects.
+fn find_object(objects: &[Object], id: u64) -> Option<&Object> {
+    object_position(objects, id).map(|position| &objects[position])
+}
+
+/// The object with `id` among a stream's objects, to change.
+fn find_object_mut(objects: &mut [Object], id: u64) -> Option<&mut Object> {
+    object_position(objects, id).map(|position| &mut objects[position])
+}
+
+thread_local! {
+    /// Where each object lives (package entry, position in its stream), as
+    /// last learned.
+    static OBJECT_STREAMS: std::cell::RefCell<ObjectIndex> =
+        std::cell::RefCell::new(ObjectIndex::default());
 }
 
 /// The identifier of the object `DocumentArchive.body_storage` points at.
@@ -5211,18 +5300,14 @@ fn create_cell_styles(
 
 /// Adds object references to an object's `ArchiveInfo`, wherever it lives.
 fn add_object_refs(package: &mut Package, id: u64, refs: &[u64]) -> Result<(), PackageError> {
-    for entry in &mut package.entries {
-        if let Entry::Stream(stream) = entry
-            && let Some(info) = stream
-                .objects
-                .iter()
-                .find(|object| object.identifier == id)
-                .map(|object| object.info)
-        {
-            return add_object_references(&mut stream.tree, info, refs);
-        }
-    }
-    Ok(())
+    let Some((index, position)) = locate_object(package, id) else {
+        return Ok(());
+    };
+    let Entry::Stream(stream) = &mut package.entries[index] else {
+        return Ok(());
+    };
+    let info = stream.objects[position].info;
+    add_object_references(&mut stream.tree, info, refs)
 }
 
 /// Synthesises a character style in the document stream for each distinct
@@ -5946,7 +6031,9 @@ mod tests {
 fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
     // Where each object lives, what each stream references, and its storages.
     let mut owner: HashMap<u64, String> = HashMap::new();
-    let mut references: HashMap<String, Vec<u64>> = HashMap::new();
+    // (In order, without repeats: sets alongside, as a stream can reference
+    // thousands of components.)
+    let mut references: HashMap<String, (Vec<u64>, HashSet<u64>)> = HashMap::new();
     let mut storages: HashMap<String, Vec<u64>> = HashMap::new();
     for entry in &package.entries {
         let Entry::Stream(stream) = entry else {
@@ -5954,9 +6041,9 @@ fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
         };
         for object in &stream.objects {
             owner.insert(object.identifier, stream.name.clone());
-            let refs = references.entry(stream.name.clone()).or_default();
+            let (refs, seen) = references.entry(stream.name.clone()).or_default();
             for id in archive_references(&stream.tree, object.info) {
-                if !refs.contains(&id) {
+                if seen.insert(id) {
                     refs.push(id);
                 }
             }
@@ -6032,8 +6119,8 @@ fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
     let mut rebuilt: Vec<(u32, u32)> = Vec::new();
     for component_entry in &components {
         // What the component already declares.
-        let mut declared: Vec<(u64, Option<u64>)> = Vec::new();
-        let mut mapped: Vec<u64> = Vec::new();
+        let mut declared: HashSet<(u64, Option<u64>)> = HashSet::new();
+        let mut mapped: HashSet<u64> = HashSet::new();
         for (_, field) in tree.chain(component_entry.first) {
             let name = tree.field(field).map(|f| f.name);
             let Node::Message(first) = field.value else {
@@ -6049,11 +6136,11 @@ fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
                         Some(Node::Uint(id)) => Some(id),
                         _ => None,
                     };
-                    declared.push((component_id, object_id));
+                    declared.insert((component_id, object_id));
                 }
                 Some("object_uuid_map_entries") => {
                     if let Some(Node::Uint(id)) = field_value(tree, first, "identifier") {
-                        mapped.push(id);
+                        mapped.insert(id);
                     }
                 }
                 _ => {}
@@ -6062,8 +6149,10 @@ fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
 
         // What it needs: every reference out of its stream, by owning component.
         let mut missing_refs: Vec<(u64, Option<u64>)> = Vec::new();
+        let mut missing_seen: HashSet<(u64, Option<u64>)> = HashSet::new();
         for id in references
             .get(&component_entry.stream)
+            .map(|(refs, _)| refs)
             .into_iter()
             .flatten()
         {
@@ -6083,10 +6172,7 @@ fn reconcile_components(package: &mut Package) -> Result<usize, PackageError> {
             } else {
                 (target, Some(*id))
             };
-            let known = declared.iter().any(|(c, o)| {
-                *c == wanted.0 && (*o == wanted.1 || (wanted.1.is_none() && o.is_none()))
-            });
-            if !known && !missing_refs.contains(&wanted) {
+            if !declared.contains(&wanted) && missing_seen.insert(wanted) {
                 missing_refs.push(wanted);
             }
         }
@@ -6703,7 +6789,12 @@ fn copy_within(tree: &mut Tree, first: u32, map: &CloneMap) -> Result<u32, Packa
 /// cloned object — right after the original, remapped to the clone. This is
 /// how the calculation engine's owner map, dependency lists, and per-table
 /// registries learn about the new table. Returns whether anything was added.
-fn register_clone(tree: &mut Tree, first: u32, map: &CloneMap) -> Result<bool, PackageError> {
+fn register_clones(tree: &mut Tree, first: u32, maps: &[CloneMap]) -> Result<bool, PackageError> {
+    let Some(probe) = maps.first() else {
+        return Ok(false);
+    };
+    // The entries as they were: copies added below are not revisited (they
+    // name the clones, which no map maps again).
     let entries: Vec<(u32, TreeEntry)> = tree
         .chain(first)
         .map(|(index, entry)| (index, *entry))
@@ -6713,27 +6804,31 @@ fn register_clone(tree: &mut Tree, first: u32, map: &CloneMap) -> Result<bool, P
         let Some(field) = tree.field(&entry) else {
             continue;
         };
-        let duplicate = match entry.value {
-            Node::Message(child) if field.repeated && mentions_clone(tree, child, map) => {
-                Some(Node::Message(copy_within(tree, child, map)?))
+        // Every map clones the same originals, so one tells for all.
+        let mut copies: Vec<Node> = Vec::new();
+        match entry.value {
+            Node::Message(child) if field.repeated && mentions_clone(tree, child, probe) => {
+                for map in maps {
+                    copies.push(Node::Message(copy_within(tree, child, map)?));
+                }
             }
-            Node::Message(child) => {
-                added |= register_clone(tree, child, map)?;
-                None
+            Node::Message(child) => added |= register_clones(tree, child, maps)?,
+            Node::Reference(id) if field.repeated && probe.ids.contains_key(&id) => {
+                copies.extend(maps.iter().map(|map| Node::Reference(map.id(id))));
             }
-            Node::Reference(id) if field.repeated && map.ids.contains_key(&id) => {
-                Some(Node::Reference(map.id(id)))
-            }
-            _ => None,
-        };
-        if let Some(value) = duplicate {
+            _ => {}
+        }
+        // Each copy follows the original (and the copies before it).
+        let mut after = index;
+        for value in copies {
             let mut copy = entry;
             copy.value = value;
-            copy.next = tree.entries[index as usize].next;
+            copy.next = tree.entries[after as usize].next;
             let mut chain = Chain::new();
             let new_index = tree.push(&mut chain, copy).map_err(tree_error)?;
             tree.entries[new_index as usize].next = copy.next;
-            tree.entries[index as usize].next = new_index;
+            tree.entries[after as usize].next = new_index;
+            after = new_index;
             added = true;
         }
     }
@@ -6759,12 +6854,19 @@ fn chain_references(tree: &Tree, first: u32) -> Vec<u64> {
 /// tiles, data lists, header buckets, and calculation-engine owners — into a
 /// distinct table, registered with the calculation engine and the package
 /// metadata. Returns the new drawable attachment for the body to anchor.
-fn clone_template_table(
+fn clone_template_tables(
     package: &mut Package,
     proto: &TemplateTable,
+    count: usize,
     next_id: &mut u64,
-) -> Result<u64, PackageError> {
-    // Where every object lives and what it references.
+) -> Result<Vec<u64>, PackageError> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    // Everything about the prototype is read once, from the package as the
+    // template left it: where every object lives, the cluster to copy, its
+    // UUID families, its engine owners, and the shared engine objects that
+    // list it. Each clone then costs the same however many came before.
     let mut location: HashMap<u64, (usize, usize)> = HashMap::new();
     for (stream_index, entry) in package.entries.iter().enumerate() {
         if let Entry::Stream(stream) = entry {
@@ -6782,8 +6884,8 @@ fn clone_template_table(
     let mut cluster: Vec<u64> = Vec::new();
     extend_cluster(package, &location, &mut cluster, vec![proto.info_id]);
 
-    // The UUID families the cluster uses, each given fresh bytes.
-    let mut families: HashMap<[u8; 12], [u8; 12]> = HashMap::new();
+    // The UUID families the cluster uses (each clone gives them fresh bytes).
+    let mut family_keys: Vec<[u8; 12]> = Vec::new();
     for id in &cluster {
         let (stream_index, object_index) = location[id];
         let stream = stream_at(package, stream_index).expect("stream");
@@ -6794,23 +6896,26 @@ fn clone_template_table(
                         UuidAt::Words(_, b) | UuidAt::Pair(_, b) | UuidAt::Text(b) => b,
                     };
                     let family: [u8; 12] = bytes[4..].try_into().expect("12");
-                    if family.iter().any(|byte| *byte != 0) && !families.contains_key(&family) {
-                        let fresh = fresh_uuid(families.len() as u64 + *next_id);
-                        let fresh = parse_uuid_text(&fresh).expect("uuid");
-                        families.insert(family, fresh[4..].try_into().expect("12"));
+                    if family.iter().any(|byte| *byte != 0) && !family_keys.contains(&family) {
+                        family_keys.push(family);
                     }
                 }
             });
         }
     }
-    let mut map = CloneMap {
+    // A map that only recognises the prototype (families to themselves), to
+    // ask what mentions it.
+    let probe = CloneMap {
         ids: HashMap::new(),
-        families,
+        families: family_keys
+            .iter()
+            .map(|family| (*family, *family))
+            .collect(),
         owners: HashMap::new(),
     };
 
-    // The engine's per-owner dependency objects for the table's owners are
-    // cloned too; the owner map gives each owner a new internal number.
+    // The engine's owners for the table, and its per-owner dependency
+    // objects (cloned too: sharing them would give two owners one record).
     let engine = stream_at(package, engine_stream).expect("stream");
     let engine_archive = engine
         .objects
@@ -6836,7 +6941,7 @@ fn clone_template_table(
                 if let Node::Message(child) = entry.value {
                     for uuid in chain_uuids(tree, child) {
                         if let UuidAt::Words(_, bytes) | UuidAt::Pair(_, bytes) = uuid
-                            && map.uuid(bytes).is_some()
+                            && probe.uuid(bytes).is_some()
                         {
                             mentions = true;
                         }
@@ -6848,134 +6953,157 @@ fn clone_template_table(
             }
         },
     );
-    for (offset, owner) in table_owners.iter().enumerate() {
-        map.owners.insert(*owner, max_owner + 1 + offset as u64);
-    }
-    // Each such object, with what it references (its cell-record tiles),
-    // belongs to the clone: sharing them would give two owners one record.
     let owner_objects: Vec<u64> = engine
         .objects
         .iter()
         .filter(|object| {
             first_type(object) == Some(FORMULA_OWNER_DEPENDENCIES)
-                && mentions_clone(&engine.tree, object.messages[0].first, &map)
+                && mentions_clone(&engine.tree, object.messages[0].first, &probe)
         })
         .map(|object| object.identifier)
         .collect();
     extend_cluster(package, &location, &mut cluster, owner_objects);
     cluster.push(proto.attach_id);
-    for id in &cluster {
-        map.ids.insert(*id, *next_id);
-        *next_id += 1;
-    }
+    // The shared engine objects a clone is registered in: the engine
+    // archive and the owner-dependency and 6366 objects outside the cluster.
+    let shared: Vec<(u32, u32)> = engine
+        .objects
+        .iter()
+        .filter(|object| !cluster.contains(&object.identifier))
+        .filter(|object| {
+            object.identifier == engine_id
+                || matches!(
+                    first_type(object),
+                    Some(FORMULA_OWNER_DEPENDENCIES) | Some(6366)
+                )
+        })
+        .map(|object| (object.info, object.messages[0].first))
+        .collect();
 
-    // Copy each object: into its own stream when it shares the engine or the
-    // document stream, otherwise into a new single-object component stream.
+    let mut maps: Vec<CloneMap> = Vec::with_capacity(count);
+    let mut attaches = Vec::with_capacity(count);
     let mut new_streams: Vec<(Stream, u64, u64)> = Vec::new();
-    for id in &cluster {
-        let (stream_index, object_index) = location[id];
-        let new_id = map.id(*id);
-        let (name, source_object) = {
-            let stream = stream_at(package, stream_index).expect("stream");
-            (stream.name.clone(), stream.objects[object_index].identifier)
-        };
-        let shared = stream_index == engine_stream || name == "Index/Document.iwa";
-        if shared {
-            let Entry::Stream(stream) = &mut package.entries[stream_index] else {
-                unreachable!()
-            };
-            let source = stream.objects[object_index].clone_shape();
-            let mut messages = Vec::new();
-            for (message_type, first) in &source.1 {
-                messages.push(ObjectMessage {
-                    message_type: *message_type,
-                    first: copy_within(&mut stream.tree, *first, &map)?,
-                });
-            }
-            let info = copy_within(&mut stream.tree, source.0, &map)?;
-            set_field_uint(&mut stream.tree, info, "identifier", new_id);
-            stream.objects.push(Object {
-                identifier: new_id,
-                info,
-                messages,
-            });
-        } else {
-            let stream = stream_at(package, stream_index).expect("stream");
-            let object = &stream.objects[object_index];
-            let mut tree = Tree::new(&SCHEMA);
-            let mut messages = Vec::new();
-            for message in &object.messages {
-                messages.push(ObjectMessage {
-                    message_type: message.message_type,
-                    first: copy_chain(&stream.tree, message.first, &mut tree, &map)?,
-                });
-            }
-            let info = copy_chain(&stream.tree, object.info, &mut tree, &map)?;
-            set_field_uint(&mut tree, info, "identifier", new_id);
-            let locator = component_locator(package, &name).unwrap_or_else(|| {
-                name.trim_start_matches("Index/")
-                    .trim_end_matches(".iwa")
-                    .to_string()
-            });
-            let base = locator.split('-').next().unwrap_or(&locator).to_string();
-            new_streams.push((
-                Stream {
-                    name: format!("Index/{base}-{new_id}.iwa"),
-                    tree,
-                    objects: vec![Object {
-                        identifier: new_id,
-                        info,
-                        messages,
-                    }],
-                },
-                source_object,
-                new_id,
-            ));
+    // Each source stream's component base name, the same for every clone.
+    let mut bases: HashMap<String, String> = HashMap::new();
+    for clone in 0..count {
+        let mut families: HashMap<[u8; 12], [u8; 12]> = HashMap::new();
+        for family in &family_keys {
+            let fresh = fresh_uuid(families.len() as u64 + *next_id);
+            let fresh = parse_uuid_text(&fresh).expect("uuid");
+            families.insert(*family, fresh[4..].try_into().expect("12"));
         }
+        let mut map = CloneMap {
+            ids: HashMap::new(),
+            families,
+            owners: HashMap::new(),
+        };
+        // Each clone's owners follow the ones before it.
+        let first_owner = max_owner + 1 + (clone * table_owners.len()) as u64;
+        for (offset, owner) in table_owners.iter().enumerate() {
+            map.owners.insert(*owner, first_owner + offset as u64);
+        }
+        for id in &cluster {
+            map.ids.insert(*id, *next_id);
+            *next_id += 1;
+        }
+
+        // Copy each object: into its own stream when it shares the engine or the
+        // document stream, otherwise into a new single-object component stream.
+        for id in &cluster {
+            let (stream_index, object_index) = location[id];
+            let new_id = map.id(*id);
+            let (name, source_object) = {
+                let stream = stream_at(package, stream_index).expect("stream");
+                (stream.name.clone(), stream.objects[object_index].identifier)
+            };
+            let shared = stream_index == engine_stream || name == "Index/Document.iwa";
+            if shared {
+                let Entry::Stream(stream) = &mut package.entries[stream_index] else {
+                    unreachable!()
+                };
+                let source = stream.objects[object_index].clone_shape();
+                let mut messages = Vec::new();
+                for (message_type, first) in &source.1 {
+                    messages.push(ObjectMessage {
+                        message_type: *message_type,
+                        first: copy_within(&mut stream.tree, *first, &map)?,
+                    });
+                }
+                let info = copy_within(&mut stream.tree, source.0, &map)?;
+                set_field_uint(&mut stream.tree, info, "identifier", new_id);
+                stream.objects.push(Object {
+                    identifier: new_id,
+                    info,
+                    messages,
+                });
+            } else {
+                let stream = stream_at(package, stream_index).expect("stream");
+                let object = &stream.objects[object_index];
+                let mut tree = Tree::new(&SCHEMA);
+                let mut messages = Vec::new();
+                for message in &object.messages {
+                    messages.push(ObjectMessage {
+                        message_type: message.message_type,
+                        first: copy_chain(&stream.tree, message.first, &mut tree, &map)?,
+                    });
+                }
+                let info = copy_chain(&stream.tree, object.info, &mut tree, &map)?;
+                set_field_uint(&mut tree, info, "identifier", new_id);
+                let base = bases
+                    .entry(name.clone())
+                    .or_insert_with(|| {
+                        let locator = component_locator(package, &name).unwrap_or_else(|| {
+                            name.trim_start_matches("Index/")
+                                .trim_end_matches(".iwa")
+                                .to_string()
+                        });
+                        locator.split('-').next().unwrap_or(&locator).to_string()
+                    })
+                    .clone();
+                new_streams.push((
+                    Stream {
+                        name: format!("Index/{base}-{new_id}.iwa"),
+                        tree,
+                        objects: vec![Object {
+                            identifier: new_id,
+                            info,
+                            messages,
+                        }],
+                    },
+                    source_object,
+                    new_id,
+                ));
+            }
+        }
+        attaches.push(map.id(proto.attach_id));
+        maps.push(map);
     }
 
-    // Register the clone in the engine's shared containers and every shared
-    // engine object that lists the table's owners.
+    // Register every clone in the shared engine objects, in one walk each.
     {
         let Entry::Stream(stream) = &mut package.entries[engine_stream] else {
             unreachable!()
         };
-        let shared: Vec<(u64, u32, u32)> = stream
-            .objects
-            .iter()
-            .filter(|object| !map.ids.values().any(|new| *new == object.identifier))
-            .filter(|object| !map.ids.contains_key(&object.identifier))
-            .map(|object| (object.identifier, object.info, object.messages[0].first))
-            .collect();
-        for (id, info, first) in shared {
-            if id != engine_id
-                && !matches!(
-                    stream
-                        .objects
-                        .iter()
-                        .find(|o| o.identifier == id)
-                        .and_then(first_type),
-                    Some(FORMULA_OWNER_DEPENDENCIES) | Some(6366)
-                )
-            {
-                continue;
-            }
-            if register_clone(&mut stream.tree, first, &map)? {
+        for (info, first) in shared {
+            if register_clones(&mut stream.tree, first, &maps)? {
                 let references = chain_references(&stream.tree, first);
                 add_object_references(&mut stream.tree, info, &references)?;
             }
         }
     }
 
-    // Components for the new streams, and UUID-map entries for cloned objects.
-    for (_, old_id, new_id) in &new_streams {
-        add_component_clone(package, *old_id, *new_id)?;
-    }
-    add_uuid_map_clones(package, &map)?;
+    // Components for the new streams, and UUID-map entries for cloned
+    // objects, each in one pass over the package metadata.
+    let pairs: Vec<(u64, u64)> = new_streams
+        .iter()
+        .map(|(_, old_id, new_id)| (*old_id, *new_id))
+        .collect();
+    add_component_clones(package, &pairs)?;
+    add_uuid_map_clones(package, &maps)?;
     for (stream, _, _) in new_streams {
         package.entries.push(Entry::Stream(stream));
     }
-    Ok(map.id(proto.attach_id))
+    Ok(attaches)
 }
 
 impl Object {
@@ -7013,31 +7141,28 @@ fn component_locator(package: &Package, name: &str) -> Option<String> {
 }
 
 fn metadata_view(package: &Package) -> Option<(&Tree, u32)> {
-    for entry in &package.entries {
-        if let Entry::Stream(stream) = entry
-            && let Some(object) = stream
-                .objects
-                .iter()
-                .find(|object| first_type(object) == Some(PACKAGE_METADATA))
-        {
-            return Some((&stream.tree, object.messages.first()?.first));
-        }
-    }
-    None
+    let (index, position) = metadata_at(package)?;
+    let Entry::Stream(stream) = &package.entries[index] else {
+        return None;
+    };
+    Some((
+        &stream.tree,
+        stream.objects[position].messages.first()?.first,
+    ))
 }
 
 /// Adds a component for a cloned single-object stream: a copy of the source
 /// object's component with the new identifier and locator, and without the
 /// per-object lists (the reconcile pass fills external references back in).
-fn add_component_clone(
-    package: &mut Package,
-    old_id: u64,
-    new_id: u64,
-) -> Result<(), PackageError> {
+fn add_component_clones(package: &mut Package, pairs: &[(u64, u64)]) -> Result<(), PackageError> {
+    if pairs.is_empty() {
+        return Ok(());
+    }
     let (stream, metadata_first) =
         metadata_message(package).ok_or_else(|| malformed("PackageMetadata is missing"))?;
     let tree = &mut stream.tree;
-    let mut source = None;
+    // Every component by identifier, read once; new ones follow the last.
+    let mut sources: HashMap<u64, (u32, u32)> = HashMap::new();
     let mut last_component = None;
     for (index, field) in tree.chain(metadata_first) {
         if tree.field(field).map(|f| f.name) != Some("components") {
@@ -7045,72 +7170,82 @@ fn add_component_clone(
         }
         last_component = Some(index);
         if let Node::Message(component) = field.value
-            && field_value(tree, component, "identifier") == Some(Node::Uint(old_id))
+            && let Some(Node::Uint(id)) = field_value(tree, component, "identifier")
         {
-            source = Some((index, component));
+            sources.insert(id, (index, component));
         }
     }
-    let (source_entry, component) =
-        source.ok_or_else(|| malformed("component to clone is missing"))?;
-    let last_component = last_component.expect("a component");
-    let identity = CloneMap {
-        ids: HashMap::new(),
-        families: HashMap::new(),
-        owners: HashMap::new(),
-    };
-    let copied = copy_within(tree, component, &identity)?;
-    // Rebuild without the per-object lists, with the new identity.
-    let component_ref = child_message(message_ref("TSP.PackageMetadata")?, "components")?;
-    let preferred = str_field(tree, copied, "preferred_locator")
-        .unwrap_or("")
-        .to_string();
-    let base = preferred
-        .split('-')
-        .next()
-        .unwrap_or(&preferred)
-        .to_string();
-    let kept: Vec<TreeEntry> = tree.chain(copied).map(|(_, entry)| *entry).collect();
-    let mut chain = Chain::new();
-    for entry in kept {
-        let name = tree.field(&entry).map(|f| f.name);
-        match name {
-            Some(
-                "external_references" | "object_uuid_map_entries" | "data_references" | "locator",
-            ) => continue,
-            Some("identifier") => {
-                push_field(
-                    tree,
-                    &mut chain,
-                    component_ref,
-                    "identifier",
-                    Node::Uint(new_id),
-                )?;
-                let span = tree
-                    .push_bytes(format!("{base}-{new_id}").as_bytes())
-                    .map_err(tree_error)?;
-                push_field(tree, &mut chain, component_ref, "locator", Node::Str(span))?;
-            }
-            _ => {
-                let mut copy = entry;
-                copy.next = NONE;
-                tree.push(&mut chain, copy).map_err(tree_error)?;
+    let mut last_component = last_component.ok_or_else(|| malformed("no components"))?;
+    for &(old_id, new_id) in pairs {
+        let &(source_entry, component) = sources
+            .get(&old_id)
+            .ok_or_else(|| malformed("component to clone is missing"))?;
+        let identity = CloneMap {
+            ids: HashMap::new(),
+            families: HashMap::new(),
+            owners: HashMap::new(),
+        };
+        let copied = copy_within(tree, component, &identity)?;
+        // Rebuild without the per-object lists, with the new identity.
+        let component_ref = child_message(message_ref("TSP.PackageMetadata")?, "components")?;
+        let preferred = str_field(tree, copied, "preferred_locator")
+            .unwrap_or("")
+            .to_string();
+        let base = preferred
+            .split('-')
+            .next()
+            .unwrap_or(&preferred)
+            .to_string();
+        let kept: Vec<TreeEntry> = tree.chain(copied).map(|(_, entry)| *entry).collect();
+        let mut chain = Chain::new();
+        for entry in kept {
+            let name = tree.field(&entry).map(|f| f.name);
+            match name {
+                Some(
+                    "external_references"
+                    | "object_uuid_map_entries"
+                    | "data_references"
+                    | "locator",
+                ) => continue,
+                Some("identifier") => {
+                    push_field(
+                        tree,
+                        &mut chain,
+                        component_ref,
+                        "identifier",
+                        Node::Uint(new_id),
+                    )?;
+                    let span = tree
+                        .push_bytes(format!("{base}-{new_id}").as_bytes())
+                        .map_err(tree_error)?;
+                    push_field(tree, &mut chain, component_ref, "locator", Node::Str(span))?;
+                }
+                _ => {
+                    let mut copy = entry;
+                    copy.next = NONE;
+                    tree.push(&mut chain, copy).map_err(tree_error)?;
+                }
             }
         }
+        let mut holder = tree.entries[source_entry as usize];
+        holder.value = Node::Message(chain.first);
+        holder.next = tree.entries[last_component as usize].next;
+        let mut scratch = Chain::new();
+        let new_index = tree.push(&mut scratch, holder).map_err(tree_error)?;
+        tree.entries[new_index as usize].next = holder.next;
+        tree.entries[last_component as usize].next = new_index;
+        last_component = new_index;
     }
-    let mut holder = tree.entries[source_entry as usize];
-    holder.value = Node::Message(chain.first);
-    holder.next = tree.entries[last_component as usize].next;
-    let mut scratch = Chain::new();
-    let new_index = tree.push(&mut scratch, holder).map_err(tree_error)?;
-    tree.entries[new_index as usize].next = holder.next;
-    tree.entries[last_component as usize].next = new_index;
     Ok(())
 }
 
 /// For every `object_uuid_map_entries` entry naming a cloned object, adds an
 /// entry for the clone with a remapped (or, outside the table's family, fresh)
 /// UUID, in the same component.
-fn add_uuid_map_clones(package: &mut Package, map: &CloneMap) -> Result<(), PackageError> {
+fn add_uuid_map_clones(package: &mut Package, maps: &[CloneMap]) -> Result<(), PackageError> {
+    let Some(probe) = maps.first() else {
+        return Ok(());
+    };
     let (stream, metadata_first) =
         metadata_message(package).ok_or_else(|| malformed("PackageMetadata is missing"))?;
     let tree = &mut stream.tree;
@@ -7134,30 +7269,36 @@ fn add_uuid_map_clones(package: &mut Package, map: &CloneMap) -> Result<(), Pack
             let Some(Node::Uint(id)) = field_value(tree, first, "identifier") else {
                 continue;
             };
-            let Some(&new_id) = map.ids.get(&id) else {
+            if !probe.ids.contains_key(&id) {
                 continue;
-            };
-            let copied = copy_within(tree, first, map)?;
-            set_field_uint(tree, copied, "identifier", new_id);
-            // A UUID outside the table's family must still be unique.
-            if let Some(uuid) = message_field(tree, copied, "uuid") {
-                let unchanged = chain_uuids(tree, uuid).iter().any(|at| match at {
-                    UuidAt::Pair(_, bytes) => map.uuid(*bytes).is_none(),
-                    _ => false,
-                });
-                if unchanged {
-                    let (lower, upper) = object_uuid(new_id ^ 0xC10E);
-                    set_field_uint(tree, uuid, "lower", lower);
-                    set_field_uint(tree, uuid, "upper", upper);
-                }
             }
-            let mut copy = entry;
-            copy.value = Node::Message(copied);
-            copy.next = tree.entries[index as usize].next;
-            let mut scratch = Chain::new();
-            let new_index = tree.push(&mut scratch, copy).map_err(tree_error)?;
-            tree.entries[new_index as usize].next = copy.next;
-            tree.entries[index as usize].next = new_index;
+            // One entry per clone, each after the one before.
+            let mut after = index;
+            for map in maps {
+                let new_id = map.id(id);
+                let copied = copy_within(tree, first, map)?;
+                set_field_uint(tree, copied, "identifier", new_id);
+                // A UUID outside the table's family must still be unique.
+                if let Some(uuid) = message_field(tree, copied, "uuid") {
+                    let unchanged = chain_uuids(tree, uuid).iter().any(|at| match at {
+                        UuidAt::Pair(_, bytes) => map.uuid(*bytes).is_none(),
+                        _ => false,
+                    });
+                    if unchanged {
+                        let (lower, upper) = object_uuid(new_id ^ 0xC10E);
+                        set_field_uint(tree, uuid, "lower", lower);
+                        set_field_uint(tree, uuid, "upper", upper);
+                    }
+                }
+                let mut copy = entry;
+                copy.value = Node::Message(copied);
+                copy.next = tree.entries[after as usize].next;
+                let mut scratch = Chain::new();
+                let new_index = tree.push(&mut scratch, copy).map_err(tree_error)?;
+                tree.entries[new_index as usize].next = copy.next;
+                tree.entries[after as usize].next = new_index;
+                after = new_index;
+            }
         }
     }
     Ok(())
@@ -7220,10 +7361,7 @@ fn write_merges(
 ) -> Result<(), PackageError> {
     let stream = stream_containing(package, table.model_id)?;
     let tree = &mut stream.tree;
-    let model_first = stream
-        .objects
-        .iter()
-        .find(|object| object.identifier == table.model_id)
+    let model_first = find_object(&stream.objects, table.model_id)
         .map(|object| object.messages[0].first)
         .ok_or_else(|| malformed("table model is missing"))?;
 
@@ -7242,22 +7380,11 @@ fn write_merges(
         })
         .ok_or_else(|| malformed("merge owner has no id"))?;
     let owner_of = |tree: &Tree, uuid: [u8; 16]| -> Option<(u64, u64)> {
-        stream_objects_by_type(&stream.objects, FORMULA_OWNER_DEPENDENCIES)
-            .into_iter()
-            .find_map(|(id, first)| {
-                let uid = message_field(tree, first, "formula_owner_uid")?;
-                let matches = chain_uuids(tree, uid).iter().any(|at| match at {
-                    UuidAt::Pair(_, bytes) => *bytes == uuid,
-                    _ => false,
-                });
-                if !matches {
-                    return None;
-                }
-                match field_value(tree, first, "internal_formula_owner_id")? {
-                    Node::Uint(internal) => Some((id, internal)),
-                    _ => None,
-                }
-            })
+        let (id, first) = formula_owner(&stream.objects, tree, uuid)?;
+        match field_value(tree, first, "internal_formula_owner_id")? {
+            Node::Uint(internal) => Some((id, internal)),
+            _ => None,
+        }
     };
     let (_, table_owner) =
         owner_of(tree, table_uuid).ok_or_else(|| malformed("table owner is not registered"))?;
@@ -7425,10 +7552,7 @@ fn write_merges(
     // 2. The dependency records, in the owner's dependency object and the
     // engine's owner info (which also flags each cell as a formula).
     let deps_ref = message_ref("TSCE.FormulaOwnerDependenciesArchive")?;
-    let deps_first = stream
-        .objects
-        .iter()
-        .find(|object| object.identifier == merge_deps)
+    let deps_first = find_object(&stream.objects, merge_deps)
         .map(|object| (object.messages[0].first, object.info))
         .ok_or_else(|| malformed("merge owner dependencies are missing"))?;
     let cells = build_merge_cells(tree, deps_ref, merges.len(), false)?;
@@ -7836,12 +7960,45 @@ fn replace_message_field(
     Ok(())
 }
 
-fn stream_objects_by_type(objects: &[Object], kind: u32) -> Vec<(u64, u32)> {
-    objects
-        .iter()
-        .filter(|object| first_type(object) == Some(kind))
-        .map(|object| (object.identifier, object.messages[0].first))
-        .collect()
+/// The formula owner registered under `uuid` (its `formula_owner_uid`, as a
+/// lower/upper pair): its object identifier and message chain. Each table
+/// looks its owners up, so a document with thousands of tables keeps an index
+/// of them, checked on every use and rebuilt on a miss.
+fn formula_owner(objects: &[Object], tree: &Tree, uuid: [u8; 16]) -> Option<(u64, u32)> {
+    let owner_uid = |object: &Object| -> Option<[u8; 16]> {
+        let message = object.messages.first()?;
+        if message.message_type != FORMULA_OWNER_DEPENDENCIES {
+            return None;
+        }
+        let uid = message_field(tree, message.first, "formula_owner_uid")?;
+        chain_uuids(tree, uid).into_iter().find_map(|at| match at {
+            UuidAt::Pair(_, bytes) => Some(bytes),
+            _ => None,
+        })
+    };
+    let found = |position: usize| {
+        let object = objects.get(position)?;
+        (owner_uid(object)? == uuid).then(|| (object.identifier, object.messages[0].first))
+    };
+    let cached = FORMULA_OWNERS.with(|owners| owners.borrow().get(&uuid).copied());
+    if let Some(hit) = cached.and_then(found) {
+        return Some(hit);
+    }
+    let mut owners = HashMap::new();
+    for (position, object) in objects.iter().enumerate() {
+        if let Some(uid) = owner_uid(object) {
+            owners.entry(uid).or_insert(position);
+        }
+    }
+    let position = owners.get(&uuid).copied();
+    FORMULA_OWNERS.with(|cache| *cache.borrow_mut() = owners);
+    position.and_then(found)
+}
+
+thread_local! {
+    /// Where each formula owner sits in its stream, by UUID, as last learned.
+    static FORMULA_OWNERS: std::cell::RefCell<HashMap<[u8; 16], usize>> =
+        std::cell::RefCell::new(HashMap::new());
 }
 
 /// Sets the table owner's `total_range_for_table` and `body_range_for_table`
@@ -7854,10 +8011,7 @@ fn set_owner_table_ranges(
     mark: &TableMark,
 ) -> Result<(), PackageError> {
     let stream = stream_containing(package, table.model_id)?;
-    let model_first = stream
-        .objects
-        .iter()
-        .find(|object| object.identifier == table.model_id)
+    let model_first = find_object(&stream.objects, table.model_id)
         .map(|object| object.messages[0].first)
         .ok_or_else(|| malformed("table model is missing"))?;
     let Some(table_uuid) = str_field(&stream.tree, model_first, "table_id")
@@ -7865,15 +8019,7 @@ fn set_owner_table_ranges(
     else {
         return Ok(());
     };
-    let owner = stream_objects_by_type(&stream.objects, FORMULA_OWNER_DEPENDENCIES)
-        .into_iter()
-        .find(|(_, first)| {
-            message_field(&stream.tree, *first, "formula_owner_uid").is_some_and(|uid| {
-                chain_uuids(&stream.tree, uid)
-                    .iter()
-                    .any(|at| matches!(at, UuidAt::Pair(_, bytes) if *bytes == table_uuid))
-            })
-        });
+    let owner = formula_owner(&stream.objects, &stream.tree, table_uuid);
     let Some((_, owner_first)) = owner else {
         return Ok(());
     };
@@ -8048,10 +8194,7 @@ fn write_page_areas(
             &attachments,
             paras,
         )?;
-        let object = stream
-            .objects
-            .iter_mut()
-            .find(|object| object.identifier == storage_id)
+        let object = find_object_mut(&mut stream.objects, storage_id)
             .ok_or_else(|| malformed("header storage is missing"))?;
         object.messages[0].first = message;
         let info = object.info;
@@ -8061,10 +8204,7 @@ fn write_page_areas(
     let first_used = areas.iter().any(|area| area.variant == PageVariant::First);
     let even_used = areas.iter().any(|area| area.variant == PageVariant::Even);
     let stream = document_stream(package)?;
-    let first = stream
-        .objects
-        .iter()
-        .find(|object| object.identifier == section_id)
+    let first = find_object(&stream.objects, section_id)
         .map(|object| object.messages[0].first)
         .ok_or_else(|| malformed("section is missing"))?;
     for (name, value) in [
@@ -8532,10 +8672,7 @@ fn register_in_stylesheet(
     let sheet_ref = message_ref("TSS.StylesheetArchive")?;
     let map_ref = child_message(sheet_ref, "parent_to_children_style_map")?;
     let stream = stream_containing(package, stylesheet)?;
-    let (first, info) = stream
-        .objects
-        .iter()
-        .find(|object| object.identifier == stylesheet)
+    let (first, info) = find_object(&stream.objects, stylesheet)
         .map(|object| (object.messages[0].first, object.info))
         .ok_or_else(|| malformed("stylesheet is missing"))?;
     let tree = &mut stream.tree;
@@ -8610,11 +8747,7 @@ fn register_in_stylesheet(
     }
     let refs: Vec<u64> = pairs.iter().map(|(_, child)| *child).collect();
     add_object_references(tree, info, &refs)?;
-    if let Some(object) = stream
-        .objects
-        .iter_mut()
-        .find(|object| object.identifier == stylesheet)
-    {
+    if let Some(object) = find_object_mut(&mut stream.objects, stylesheet) {
         object.messages[0].first = chain.first;
     }
     Ok(())
@@ -9389,10 +9522,7 @@ fn set_list_refcount(
     refcount: u64,
 ) -> Result<(), PackageError> {
     let stream = stream_containing(package, list_id)?;
-    let first = stream
-        .objects
-        .iter()
-        .find(|object| object.identifier == list_id)
+    let first = find_object(&stream.objects, list_id)
         .map(|object| object.messages[0].first)
         .ok_or_else(|| malformed("data list is missing"))?;
     let entries: Vec<u32> = stream
@@ -10483,10 +10613,7 @@ fn place_floating(package: &mut Package, placed: &[(u32, u64)]) -> Result<(), Pa
     let group = child_message(floating, "page_groups")?;
     let entry = child_message(group, "drawables")?;
     let tree = &mut stream.tree;
-    let (floating_first, floating_info) = stream
-        .objects
-        .iter()
-        .find(|object| object.identifier == floating_id)
+    let (floating_first, floating_info) = find_object(&stream.objects, floating_id)
         .map(|object| (object.messages[0].first, object.info))
         .ok_or_else(|| malformed("floating drawables missing"))?;
     let mut pages: Vec<u32> = placed.iter().map(|(page, _)| *page).collect();
@@ -10541,11 +10668,7 @@ fn place_floating(package: &mut Package, placed: &[(u32, u64)]) -> Result<(), Pa
     }
     let shape_ids: Vec<u64> = placed.iter().map(|(_, id)| *id).collect();
     add_object_references(tree, floating_info, &shape_ids)?;
-    if let Some(object) = stream
-        .objects
-        .iter_mut()
-        .find(|object| object.identifier == floating_id)
-    {
+    if let Some(object) = find_object_mut(&mut stream.objects, floating_id) {
         object.messages[0].first = chain.first;
     }
     append_to_zorder(package, &shape_ids)
@@ -10681,10 +10804,7 @@ fn anchor_attachment(
 /// in-text attachment goes, and so does its text parent.
 fn float_image(package: &mut Package, attach_id: u64, x: f32, y: f32) -> Result<u64, PackageError> {
     let stream = document_stream(package)?;
-    let image_id = stream
-        .objects
-        .iter()
-        .find(|object| object.identifier == attach_id)
+    let image_id = find_object(&stream.objects, attach_id)
         .and_then(
             |object| match field_value(&stream.tree, object.messages[0].first, "drawable") {
                 Some(Node::Reference(id)) => Some(id),
@@ -10695,10 +10815,7 @@ fn float_image(package: &mut Package, attach_id: u64, x: f32, y: f32) -> Result<
     stream
         .objects
         .retain(|object| object.identifier != attach_id);
-    let (first, info) = stream
-        .objects
-        .iter()
-        .find(|object| object.identifier == image_id)
+    let (first, info) = find_object(&stream.objects, image_id)
         .map(|object| (object.messages[0].first, object.info))
         .ok_or_else(|| malformed("floating image is missing"))?;
     let tree = &mut stream.tree;
@@ -10866,10 +10983,7 @@ fn add_template_drawables(
         return Ok(());
     };
     let stream = stream_containing(package, template_id)?;
-    let (first, info) = stream
-        .objects
-        .iter()
-        .find(|object| object.identifier == template_id)
+    let (first, info) = find_object(&stream.objects, template_id)
         .map(|object| (object.messages[0].first, object.info))
         .ok_or_else(|| malformed("section template is missing"))?;
     for id in drawables {
@@ -11090,10 +11204,7 @@ fn column_entries(
     let base = {
         let stream = document_stream(package)?;
         let body_id = body_storage_identifier(stream)?;
-        let first = stream
-            .objects
-            .iter()
-            .find(|object| object.identifier == body_id)
+        let first = find_object(&stream.objects, body_id)
             .and_then(|object| object.messages.first())
             .map(|message| message.first);
         first.and_then(|first| {
