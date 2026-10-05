@@ -886,7 +886,7 @@ impl Reader<'_> {
                     ..
                 } if in_body => {
                     let table = self.read_table(&mut reader);
-                    blocks.push(Block::Table(table));
+                    blocks.push(Block::Table(Box::new(table)));
                 }
                 XmlEvent::Start {
                     name: "w:sectPr",
@@ -1085,7 +1085,7 @@ impl Reader<'_> {
                     ..
                 } => {
                     let table = self.read_table(reader);
-                    blocks.push(Block::Table(table));
+                    blocks.push(Block::Table(Box::new(table)));
                 }
                 XmlEvent::Start {
                     name: "w:sdtPr", ..
@@ -2248,7 +2248,7 @@ impl Reader<'_> {
                     }
                     "w:tbl" if !self_closing => {
                         let table = self.read_table(reader);
-                        cell.blocks.push(Block::Table(table));
+                        cell.blocks.push(Block::Table(Box::new(table)));
                     }
                     "w:sdtPr" if !self_closing => skip_element(reader, name),
                     "mc:Fallback" if !self_closing => skip_element(reader, name),
@@ -2963,7 +2963,7 @@ impl Reader<'_> {
                 ..Paragraph::default()
             }));
         }
-        blocks.push(Block::Table(table));
+        blocks.push(Block::Table(Box::new(table)));
         blocks
     }
 

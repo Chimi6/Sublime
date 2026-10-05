@@ -243,7 +243,7 @@ fn tables(document: &Document) -> Vec<&sublime::document::Table> {
         .blocks
         .iter()
         .filter_map(|block| match block {
-            Block::Table(table) => Some(table),
+            Block::Table(table) => Some(&**table),
             Block::Paragraph(_) => None,
         })
         .collect()

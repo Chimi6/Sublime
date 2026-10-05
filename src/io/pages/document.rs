@@ -914,7 +914,7 @@ impl Reader<'_> {
                     width,
                     height,
                     content: FloatingContent::TextBox {
-                        blocks: vec![Block::Table(table)],
+                        blocks: vec![Block::Table(Box::new(table))],
                         fill: None,
                         line: None,
                         geometry: Default::default(),
@@ -1502,7 +1502,13 @@ impl Reader<'_> {
             }
             // A table takes its place from the paragraph holding it: that
             // paragraph's alignment and left indent, as Pages lays it.
-            let holder = self.document.effective_paragraph(&paragraph);
+            // (Resolved only when the paragraph holds a table: it walks the
+            // style chain.)
+            let holder = if self.pending_blocks.is_empty() {
+                Default::default()
+            } else {
+                self.document.effective_paragraph(&paragraph)
+            };
             for mut table in self.pending_blocks.drain(..) {
                 if let Block::Table(table) = &mut table {
                     table.alignment = table.alignment.or(holder.alignment.filter(|alignment| {
@@ -2067,7 +2073,7 @@ impl Reader<'_> {
         let view = View::of(message);
         if let Some(model) = view.reference("tableModel") {
             let table = self.table(model)?;
-            self.pending_blocks.push(Block::Table(table));
+            self.pending_blocks.push(Block::Table(Box::new(table)));
             return None;
         }
         // An equation is an image object carrying its MathML source.
