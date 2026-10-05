@@ -59,6 +59,7 @@ pub fn emit_events<'a>(document: &'a Document, sink: &mut dyn EventSink<'a>) {
                 emitter.image(*media, None);
                 emitter.sink.event(Event::End(TagEnd::Paragraph));
             }
+            FloatingContent::Chart(chart) => emitter.chart(chart),
         }
         emitter.close_lists(0);
         emitter.close_quotes(0);
@@ -72,6 +73,37 @@ pub fn emit_events<'a>(document: &'a Document, sink: &mut dyn EventSink<'a>) {
         emitter.close_lists(0);
         emitter.close_quotes(0);
         emitter.sink.event(Event::End(TagEnd::FootnoteDefinition));
+    }
+    // Each comment's note: its author, then its text, then its thread's
+    // replies after it.
+    for (index, comment) in document.comments.iter().enumerate() {
+        if comment.reply_to.is_some() {
+            continue;
+        }
+        let sink = &mut emitter.sink;
+        sink.event(Event::Start(Tag::FootnoteDefinition(Cow::Owned(format!(
+            "c{}",
+            index + 1
+        )))));
+        sink.event(Event::Start(Tag::Paragraph));
+        let replies = document
+            .comments
+            .iter()
+            .filter(|reply| reply.reply_to == Some(index as crate::document::Id));
+        for (position, entry) in std::iter::once(comment).chain(replies).enumerate() {
+            if position > 0 {
+                sink.event(Event::Text(Cow::Borrowed(" — ")));
+            }
+            if !entry.author.is_empty() {
+                sink.event(Event::Start(Tag::Strong));
+                sink.event(Event::Text(Cow::Borrowed(entry.author.as_str())));
+                sink.event(Event::End(TagEnd::Strong));
+                sink.event(Event::Text(Cow::Borrowed(": ")));
+            }
+            sink.event(Event::Text(Cow::Owned(entry.text.replace('\n', " "))));
+        }
+        sink.event(Event::End(TagEnd::Paragraph));
+        sink.event(Event::End(TagEnd::FootnoteDefinition));
     }
 }
 
@@ -175,7 +207,7 @@ impl<'a> Emitter<'a, '_> {
         let has_content = paragraph.runs.iter().any(|run| {
             !matches!(
                 run.content,
-                Inline::PageBreak | Inline::PageNumber | Inline::PageCount
+                Inline::PageBreak | Inline::ColumnBreak | Inline::PageNumber | Inline::PageCount
             )
         });
         let kind = paragraph
@@ -315,7 +347,9 @@ impl<'a> Emitter<'a, '_> {
     fn code_block(&mut self, paragraph: &'a Paragraph) {
         let mut text = String::new();
         for run in &paragraph.runs {
-            if self.document.is_deleted(run) {
+            if self.document.is_deleted(run)
+                || self.document.effective_run(paragraph, run).hidden == Some(true)
+            {
                 continue;
             }
             match run.content {
@@ -351,7 +385,9 @@ impl<'a> Emitter<'a, '_> {
         let mut runs = std::mem::take(&mut self.run_scratch);
         runs.clear();
         for run in &paragraph.runs {
-            if self.document.is_deleted(run) {
+            if self.document.is_deleted(run)
+                || self.document.effective_run(paragraph, run).hidden == Some(true)
+            {
                 continue;
             }
             let mut effective = if own_formatting_only {
@@ -563,7 +599,19 @@ impl<'a> Emitter<'a, '_> {
             Inline::Math(span) => self.sink.event(Event::Code(Cow::Owned(mathml_text(
                 self.document.text(span),
             )))),
-            Inline::PageBreak | Inline::PageNumber | Inline::PageCount => {}
+            // A comment is a note of its own, referred to where its text
+            // ends (Markdown has no comments).
+            Inline::CommentEnd(id) => {
+                self.sink
+                    .event(Event::FootnoteReference(Cow::Owned(format!("c{}", id + 1))));
+            }
+            // Floating objects are written after the body.
+            Inline::PageBreak
+            | Inline::ColumnBreak
+            | Inline::PageNumber
+            | Inline::PageCount
+            | Inline::Anchor(_)
+            | Inline::CommentStart(_) => {}
         }
     }
 
@@ -613,6 +661,43 @@ impl<'a> Emitter<'a, '_> {
     /// A table as a Markdown table: the header rows (or the first row when
     /// there is none) as the head, merged cells as empty cells to keep the
     /// grid, each cell's paragraphs on one line.
+    /// A chart as the table of its data: a column per series, a row per
+    /// category.
+    fn chart(&mut self, chart: &super::Chart) {
+        let columns = chart.series.len() + 1;
+        let cell = |emitter: &mut Self, text: String| {
+            emitter.sink.event(Event::Start(Tag::TableCell));
+            if !text.is_empty() {
+                emitter.sink.event(Event::Text(Cow::Owned(text)));
+            }
+            emitter.sink.event(Event::End(TagEnd::TableCell));
+        };
+        self.sink
+            .event(Event::Start(Tag::Table(vec![Alignment::None; columns])));
+        self.sink.event(Event::Start(Tag::TableHead));
+        cell(self, String::new());
+        for series in &chart.series {
+            cell(self, series.name.clone());
+        }
+        self.sink.event(Event::End(TagEnd::TableHead));
+        for (index, category) in chart.categories.iter().enumerate() {
+            self.sink.event(Event::Start(Tag::TableRow));
+            cell(self, category.clone());
+            for series in &chart.series {
+                let value = series
+                    .values
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .map(|value| value.to_string())
+                    .unwrap_or_default();
+                cell(self, value);
+            }
+            self.sink.event(Event::End(TagEnd::TableRow));
+        }
+        self.sink.event(Event::End(TagEnd::Table));
+    }
+
     fn table(&mut self, table: &'a Table) {
         let Some(first) = table.rows.first() else {
             return;

@@ -243,7 +243,7 @@ fn tables(document: &Document) -> Vec<&sublime::document::Table> {
         .blocks
         .iter()
         .filter_map(|block| match block {
-            Block::Table(table) => Some(table),
+            Block::Table(table) => Some(&**table),
             Block::Paragraph(_) => None,
         })
         .collect()
@@ -276,7 +276,9 @@ fn tables_come_out_as_grids_with_merges() {
         .collect();
     assert_eq!(texts, ["Name", "Kind", "Amount"]);
     assert_eq!(cell_text(&document, &simple.rows[1].cells[2]), "42.50");
-    assert!(simple.rows[0].cells[0].background.is_some());
+    // The header cells' own style states no fill (as Pages draws them), over
+    // the table style's.
+    assert!(simple.rows[0].cells[0].background.is_none());
     let merged = tables[1];
     assert_eq!(merged.rows.len(), 4);
     let wide = &merged.rows[0].cells[0];
@@ -398,8 +400,28 @@ fn sections_split_at_section_and_layout_breaks() {
 #[test]
 fn floating_text_boxes_and_images_are_collected() {
     let document = read("native-objects");
-    assert_eq!(document.floating.len(), 3);
+    // Two grouped shapes, the lone shape, the line, and the chart.
+    assert_eq!(document.floating.len(), 5);
+    let chart = document
+        .floating
+        .iter()
+        .find_map(|floating| match &floating.content {
+            FloatingContent::Chart(chart) => Some(chart),
+            _ => None,
+        })
+        .expect("the chart");
+    assert_eq!(chart.categories, ["April", "May", "June", "July"]);
+    assert_eq!(chart.series[0].name, "Region 1");
+    assert_eq!(chart.series[1].values[3], Some(58.0));
     let lone = &document.floating[2];
+    assert!(matches!(
+        document.floating[3].content,
+        FloatingContent::TextBox {
+            geometry: sublime::document::ShapeGeometry::Line,
+            line: Some(_),
+            ..
+        }
+    ));
     assert_eq!(
         (lone.x, lone.y, lone.width, lone.height),
         (72.0, 260.0, 220.0, 90.0)
@@ -411,7 +433,7 @@ fn floating_text_boxes_and_images_are_collected() {
                 "A lone shape with text."
             );
         }
-        FloatingContent::Image(_) => panic!("a text box"),
+        _ => panic!("a text box"),
     }
     // Grouped shapes are placed relative to their group.
     assert_eq!(
@@ -419,11 +441,18 @@ fn floating_text_boxes_and_images_are_collected() {
         (220.0, 130.0)
     );
     let document = read("native-scripted");
-    assert_eq!(document.floating.len(), 2);
-    assert!(matches!(
-        document.floating[0].content,
-        FloatingContent::Image(_)
-    ));
+    // The picture, the text box, and the table placed on the page.
+    assert_eq!(document.floating.len(), 3);
+    assert!(document.floating.iter().any(|floating| matches!(
+        &floating.content,
+        FloatingContent::TextBox { blocks, .. } if matches!(blocks.first(), Some(Block::Table(_)))
+    )));
+    assert!(
+        document
+            .floating
+            .iter()
+            .any(|floating| matches!(floating.content, FloatingContent::Image(_)))
+    );
 }
 
 #[test]

@@ -106,7 +106,9 @@ fn links_footnotes_and_images() {
 #[test]
 fn text_boxes_follow_the_body_and_text_is_plain() {
     let markdown = markdown("native-objects");
-    assert!(markdown.ends_with("Group A\n\nGroup B\n\nA lone shape with text.\n"));
+    assert!(markdown.contains("Group A\n\nGroup B\n\nA lone shape with text.\n"));
+    // The chart keeps its data, as a table after the shapes above it.
+    assert!(markdown.ends_with("| July | 96 | 58 |\n"));
     let text = text("text-styles");
     assert!(text.starts_with(
         "Text Styles\n\nEvery character-level attribute Pages can carry\n\nHeading One\n"

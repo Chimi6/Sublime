@@ -209,7 +209,7 @@ fn tables_keep_their_grid_and_merges() {
         .iter()
         .flat_map(|section| section.blocks.iter())
         .filter_map(|block| match block {
-            Block::Table(table) => Some(table),
+            Block::Table(table) => Some(&**table),
             Block::Paragraph(_) => None,
         })
         .collect();
@@ -306,4 +306,395 @@ fn headings_come_from_outline_levels() {
     let document = apple_document("paragraphs");
     let markdown = markdown(&document);
     assert!(markdown.starts_with("# "), "{markdown}");
+}
+
+/// The comment range markers in a document's body, in order.
+fn comment_markers(document: &Document) -> Vec<(bool, u32)> {
+    document
+        .sections
+        .iter()
+        .flat_map(|section| section.blocks.iter())
+        .filter_map(|block| match block {
+            Block::Paragraph(paragraph) => Some(paragraph),
+            Block::Table(_) => None,
+        })
+        .flat_map(|paragraph| paragraph.runs.iter())
+        .filter_map(|run| match run.content {
+            Inline::CommentStart(id) => Some((true, id)),
+            Inline::CommentEnd(id) => Some((false, id)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Word comments keep their author, date, text, and range through our Word
+/// output.
+#[test]
+fn comments_round_trip_through_word() {
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let document = read_docx(&bytes).expect("Word package reads");
+    assert_eq!(document.comments.len(), 2);
+    assert_eq!(document.comments[0].author, "Reviewer");
+    assert_eq!(
+        document.comments[0].text,
+        "This is a comment on the word 'commented'."
+    );
+    assert_eq!(
+        document.comments[0].date.as_deref(),
+        Some("2026-09-23T12:00:00Z")
+    );
+    let markers = comment_markers(&document);
+    assert_eq!(markers, [(true, 0), (false, 0), (true, 1), (false, 1)]);
+
+    let written = write_docx(&document, Vec::new()).expect("writes");
+    let round = read_docx(&written).expect("our Word output reads");
+    assert_eq!(round.comments, document.comments);
+    assert_eq!(comment_markers(&round), markers);
+}
+
+/// The text each comment covers, in the order the comments start.
+fn commented_text(document: &Document) -> Vec<(u32, String)> {
+    let mut open: Vec<(u32, String)> = Vec::new();
+    let mut done = Vec::new();
+    for paragraph in document
+        .sections
+        .iter()
+        .flat_map(|section| section.blocks.iter())
+        .filter_map(|block| match block {
+            Block::Paragraph(paragraph) => Some(paragraph),
+            Block::Table(_) => None,
+        })
+    {
+        for run in &paragraph.runs {
+            match run.content {
+                Inline::CommentStart(id) => open.push((id, String::new())),
+                Inline::CommentEnd(id) => {
+                    if let Some(at) = open.iter().position(|(open, _)| *open == id) {
+                        done.push(open.remove(at));
+                    }
+                }
+                Inline::Text(span) => {
+                    for (_, text) in &mut open {
+                        text.push_str(document.text(span));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    done
+}
+
+/// Apple's Pages comments read back with their author, text, and range, and
+/// reach Word.
+#[test]
+fn pages_comments_read_with_their_ranges() {
+    let document = pages_document("notes");
+    assert_eq!(document.comments.len(), 2);
+    assert_eq!(document.comments[0].author, "Reviewer");
+    assert_eq!(
+        document.comments[1].text,
+        "A second comment on a whole sentence."
+    );
+    assert!(document.comments[0].date.is_some());
+    let covered = commented_text(&document);
+    assert_eq!(covered[0].1, "commented");
+    assert_eq!(covered[1].1, "This whole sentence carries a comment.");
+
+    let written = write_docx(&document, Vec::new()).expect("writes");
+    let round = read_docx(&written).expect("our Word output reads");
+    assert_eq!(round.comments.len(), 2);
+    assert_eq!(commented_text(&round), covered);
+}
+
+/// The text of each note in the order the body refers to them.
+fn referenced_notes(document: &Document) -> Vec<String> {
+    document
+        .sections
+        .iter()
+        .flat_map(|section| section.blocks.iter())
+        .filter_map(|block| match block {
+            Block::Paragraph(paragraph) => Some(paragraph),
+            Block::Table(_) => None,
+        })
+        .flat_map(|paragraph| paragraph.runs.iter())
+        .filter_map(|run| match run.content {
+            Inline::Footnote(note) => document.footnotes.get(note),
+            _ => None,
+        })
+        .map(|note| {
+            note.blocks
+                .iter()
+                .filter_map(|block| match block {
+                    Block::Paragraph(paragraph) => Some(document.paragraph_text(paragraph)),
+                    Block::Table(_) => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string()
+        })
+        .collect()
+}
+
+/// Footnotes and endnotes number apart in Word, so an endnote's reference
+/// finds the endnote, and all of them reach Pages as footnotes.
+#[test]
+fn notes_resolve_and_reach_pages() {
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let document = read_docx(&bytes).expect("Word package reads");
+    let notes = referenced_notes(&document);
+    assert_eq!(
+        notes,
+        [
+            "The first footnote.",
+            "The second footnote, with a link-free sentence.",
+            "The only endnote."
+        ]
+    );
+    let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
+    let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
+    let round = read_document(&package);
+    assert_eq!(referenced_notes(&round), notes);
+}
+
+/// Word comments reach Pages as highlights with their comment storage, and
+/// read back with the same text, author, and range.
+#[test]
+fn comments_reach_pages() {
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let document = read_docx(&bytes).expect("Word package reads");
+    let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
+    let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
+    let round = read_document(&package);
+    assert_eq!(round.comments.len(), 2);
+    for (ours, source) in round.comments.iter().zip(&document.comments) {
+        assert_eq!(ours.author, source.author);
+        assert_eq!(ours.text, source.text);
+        assert_eq!(ours.date, source.date);
+    }
+    assert_eq!(commented_text(&round), commented_text(&document));
+}
+
+/// Tracked insertions and deletions: (kind, author, text), in order.
+fn tracked(document: &Document) -> Vec<(RevisionKind, Option<String>, String)> {
+    let mut out: Vec<(RevisionKind, Option<String>, String)> = Vec::new();
+    for paragraph in document
+        .sections
+        .iter()
+        .flat_map(|section| section.blocks.iter())
+        .filter_map(|block| match block {
+            Block::Paragraph(paragraph) => Some(paragraph),
+            Block::Table(_) => None,
+        })
+    {
+        for run in &paragraph.runs {
+            let (Some(revision), Inline::Text(span)) = (document.revision(run), run.content) else {
+                continue;
+            };
+            let text = document.text(span);
+            match out.last_mut() {
+                Some((kind, author, words))
+                    if *kind == revision.kind && *author == revision.author =>
+                {
+                    words.push_str(text)
+                }
+                _ => out.push((revision.kind, revision.author.clone(), text.to_string())),
+            }
+        }
+    }
+    out
+}
+
+/// Word's tracked changes reach Pages as tracked changes, deleted text kept.
+#[test]
+fn tracked_changes_reach_pages() {
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let document = read_docx(&bytes).expect("Word package reads");
+    let changes = tracked(&document);
+    assert_eq!(changes.len(), 2, "{changes:?}");
+    let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
+    let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
+    let round = read_document(&package);
+    assert_eq!(tracked(&round), changes);
+}
+
+/// A page colour reaches Pages as the sections' background and Word as the
+/// document background it is told to show.
+#[test]
+fn page_color_reaches_both_formats() {
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let mut document = read_docx(&bytes).expect("Word package reads");
+    let yellow = sublime::document::Color {
+        red: 255,
+        green: 255,
+        blue: 204,
+    };
+    document.page_color = Some(yellow);
+    let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
+    let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
+    assert_eq!(read_document(&package).page_color, Some(yellow));
+    let word = write_docx(&document, Vec::new()).expect("writes Word");
+    assert_eq!(read_docx(&word).expect("reads").page_color, Some(yellow));
+}
+
+/// A drawing a header repeats on its pages comes back from our Word output
+/// in that header, not on one page of the body.
+#[test]
+fn header_drawings_stay_in_their_header() {
+    use sublime::document::{
+        FloatingContent, FloatingObject, PageKind, PagePart, Paragraph, TextWrap,
+    };
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let mut document = read_docx(&bytes).expect("Word package reads");
+    let part = PagePart {
+        footer: false,
+        pages: PageKind::Default,
+    };
+    document.sections[0].headers.default = Some(vec![Block::Paragraph(Paragraph::default())]);
+    document.floating.push(FloatingObject {
+        page: 0,
+        x: 36.0,
+        y: 20.0,
+        width: 100.0,
+        height: 40.0,
+        content: FloatingContent::TextBox {
+            blocks: Vec::new(),
+            fill: Some(sublime::document::Color {
+                red: 200,
+                green: 0,
+                blue: 0,
+            }),
+            line: None,
+            geometry: Default::default(),
+            flip: (false, false),
+            ends: (None, None),
+        },
+        follows_text: false,
+        wrap: TextWrap::None,
+        repeats: Some(part),
+        behind: false,
+    });
+    let written = write_docx(&document, Vec::new()).expect("writes");
+    let round = read_docx(&written).expect("reads");
+    let repeated: Vec<_> = round
+        .floating
+        .iter()
+        .filter(|object| object.repeats == Some(part))
+        .collect();
+    assert_eq!(repeated.len(), 1);
+    assert!((repeated[0].x - 36.0).abs() < 0.5 && (repeated[0].y - 20.0).abs() < 0.5);
+}
+
+/// A comment on text Pages keeps no comments in (a header here) is kept,
+/// on the body's first character, rather than lost.
+#[test]
+fn comments_outside_the_body_are_kept() {
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let mut document = read_docx(&bytes).expect("Word package reads");
+    // Move the paragraph holding the first comment into a header.
+    let blocks = &mut document.sections[0].blocks;
+    let at = blocks
+        .iter()
+        .position(|block| match block {
+            Block::Paragraph(paragraph) => paragraph
+                .runs
+                .iter()
+                .any(|run| run.content == Inline::CommentStart(0)),
+            Block::Table(_) => false,
+        })
+        .expect("a commented paragraph");
+    let moved = blocks.remove(at);
+    document.sections[0].headers.default = Some(vec![moved]);
+    let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
+    let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
+    let round = read_document(&package);
+    assert_eq!(round.comments.len(), 2);
+    assert!(
+        round
+            .comments
+            .iter()
+            .any(|comment| comment.text == document.comments[0].text)
+    );
+}
+
+/// A drawing behind the text stays behind it through Pages and Word.
+#[test]
+fn behind_text_drawings_stay_behind() {
+    use sublime::document::{FloatingContent, FloatingObject, TextWrap};
+    let bytes = std::fs::read(fixture("sources/notes.docx")).expect("source readable");
+    let mut document = read_docx(&bytes).expect("Word package reads");
+    for behind in [true, false] {
+        document.floating.push(FloatingObject {
+            page: 0,
+            x: 72.0 + if behind { 0.0 } else { 200.0 },
+            y: 72.0,
+            width: 150.0,
+            height: 60.0,
+            content: FloatingContent::TextBox {
+                blocks: Vec::new(),
+                fill: Some(sublime::document::Color {
+                    red: 230,
+                    green: 230,
+                    blue: 250,
+                }),
+                line: None,
+                geometry: Default::default(),
+                flip: (false, false),
+                ends: (None, None),
+            },
+            follows_text: false,
+            wrap: TextWrap::None,
+            repeats: None,
+            behind,
+        });
+    }
+    let flags = |document: &Document| {
+        let mut flags: Vec<bool> = document
+            .floating
+            .iter()
+            .map(|object| object.behind)
+            .collect();
+        flags.sort();
+        flags
+    };
+    let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
+    let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
+    assert_eq!(flags(&read_document(&package)), [false, true]);
+    let word = write_docx(&document, Vec::new()).expect("writes Word");
+    assert_eq!(flags(&read_docx(&word).expect("reads")), [false, true]);
+}
+
+/// A Word comment thread (a reply to a comment) reaches Pages as the
+/// comment's replies, and comes back to Word as the same thread.
+#[test]
+fn comment_threads_survive_both_ways() {
+    let bytes = std::fs::read(fixture("sources/revisions.docx")).expect("source readable");
+    let document = read_docx(&bytes).expect("Word package reads");
+    let thread = |document: &Document| {
+        document
+            .comments
+            .iter()
+            .map(|comment| {
+                (
+                    comment.author.clone(),
+                    comment.text.clone(),
+                    comment.reply_to,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        thread(&document)
+            .iter()
+            .map(|(_, _, parent)| *parent)
+            .collect::<Vec<_>>(),
+        [None, Some(0)]
+    );
+    let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
+    let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
+    let round = read_document(&package);
+    assert_eq!(thread(&round), thread(&document));
+    let word = write_docx(&round, Vec::new()).expect("writes Word");
+    assert_eq!(thread(&read_docx(&word).expect("reads")), thread(&document));
 }

@@ -40,6 +40,11 @@ pub struct Document {
     pub styles: StyleTable,
     pub sections: Vec<Section>,
     pub footnotes: Vec<Note>,
+    /// Reviewers' comments, each on the text between its
+    /// `Inline::CommentStart` and `Inline::CommentEnd` runs.
+    pub comments: Vec<Comment>,
+    /// The colour the pages are filled with, when not white.
+    pub page_color: Option<Color>,
     pub media: Vec<Media>,
     /// Objects placed on pages rather than in the text flow.
     pub floating: Vec<FloatingObject>,
@@ -56,6 +61,29 @@ pub struct Document {
     /// Direct run formatting, interned; `None` on a run means none.
     pub run_properties: Vec<RunProperties>,
     pub paragraph_properties: Vec<ParagraphProperties>,
+    /// Sets of tab stops paragraphs name by index.
+    pub tab_sets: Vec<Vec<TabStop>>,
+    /// Shape outlines floating shapes name by index.
+    pub paths: Vec<ShapePath>,
+}
+
+/// A tab stop: where it is, how text aligns to it, and what fills the gap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabStop {
+    /// From the left margin, in points.
+    pub position: f32,
+    pub alignment: TabAlignment,
+    /// The character repeated across the gap (a dot leader), if any.
+    pub leader: Option<char>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabAlignment {
+    Left,
+    Center,
+    Right,
+    /// On the decimal point.
+    Decimal,
 }
 
 /// A text box, shape with text, or image placed on a page.
@@ -69,15 +97,145 @@ pub struct FloatingObject {
     pub width: f32,
     pub height: f32,
     pub content: FloatingContent,
+    /// Moves with the text: anchored by an `Inline::Anchor` run, `y` then
+    /// measured from the top of the anchoring paragraph (`x` stays from the
+    /// page's left edge, and `page` is only an estimate).
+    pub follows_text: bool,
+    /// How the text flows around it.
+    pub wrap: TextWrap,
+    /// Drawn on every page a header or footer is on, from that header or
+    /// footer (its position then on each such page); `None` on one page.
+    pub repeats: Option<PagePart>,
+    /// Drawn behind the text rather than over it.
+    pub behind: bool,
+}
+
+/// A header or footer: which, and on which pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PagePart {
+    pub footer: bool,
+    pub pages: PageKind,
+}
+
+/// The pages a header or footer variant is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageKind {
+    /// Every page but those with a variant of their own.
+    Default,
+    First,
+    Even,
+}
+
+/// How text flows around a floating object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextWrap {
+    /// Beside it, on either side.
+    #[default]
+    Around,
+    /// Above and below it only.
+    TopAndBottom,
+    /// Not at all: it sits over (or under) the text.
+    None,
+    /// In the text line, like a character, at its anchor (which it moves
+    /// with); its position is unused.
+    Inline,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FloatingContent {
     Image(MediaId),
+    /// A chart: its data and how it is drawn.
+    Chart(Chart),
+    /// A drawn shape, with or without text (a text box is a rectangle).
     TextBox {
         blocks: Vec<Block>,
         fill: Option<Color>,
+        /// Its outline, when drawn.
+        line: Option<Border>,
+        geometry: ShapeGeometry,
+        /// Mirrored left-right, top-bottom.
+        flip: (bool, bool),
+        /// Marks at a line's start and end.
+        ends: (Option<LineEnd>, Option<LineEnd>),
     },
+}
+
+/// A chart's data: its series of values over shared categories.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Chart {
+    pub kind: ChartKind,
+    pub categories: Vec<String>,
+    pub series: Vec<ChartSeries>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartSeries {
+    pub name: String,
+    /// One per category; `None` where the series has no value.
+    pub values: Vec<Option<f64>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChartKind {
+    /// Vertical bars.
+    Column,
+    /// Horizontal bars.
+    Bar,
+    Line,
+    Area,
+    Pie,
+    Scatter,
+}
+
+/// A mark drawn at the end of a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LineEnd {
+    Arrow,
+    OpenArrow,
+    Diamond,
+    Circle,
+}
+
+/// A shape's outline, from Word's preset shapes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ShapeGeometry {
+    #[default]
+    Rectangle,
+    RoundedRectangle,
+    Ellipse,
+    Triangle,
+    RightTriangle,
+    Diamond,
+    Pentagon,
+    Hexagon,
+    Octagon,
+    Star,
+    RightArrow,
+    LeftArrow,
+    UpArrow,
+    DownArrow,
+    /// An open line from the top-left corner to the bottom-right.
+    Line,
+    /// Any other outline: an index into `Document::paths`.
+    Path(u32),
+}
+
+/// A shape's outline drawn in its own box (`width` x `height` points).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShapePath {
+    pub width: f32,
+    pub height: f32,
+    pub steps: Vec<PathStep>,
+}
+
+/// One step of an outline, in points within the shape's box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PathStep {
+    Move(f32, f32),
+    Line(f32, f32),
+    /// A cubic curve: two control points, then the end.
+    Curve([(f32, f32); 3]),
+    Close,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -85,6 +243,9 @@ pub struct StyleTable {
     pub paragraph: Vec<ParagraphStyle>,
     pub character: Vec<CharacterStyle>,
     pub list: Vec<ListStyle>,
+    /// The paragraph style a paragraph without one of its own takes (Word's
+    /// `w:default="1"` style, usually Normal), if the source names one.
+    pub default_paragraph: Option<StyleId>,
 }
 
 impl StyleTable {
@@ -138,6 +299,9 @@ pub struct NumberFormat {
     pub kind: NumberKind,
     /// Text around the number, with `%1` standing for it, e.g. `%1.`.
     pub pattern: String,
+    /// The number follows its parent levels' numbers (1.2.3), as a Word
+    /// multi-level list writes it.
+    pub tiered: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,10 +313,71 @@ pub enum NumberKind {
     UpperRoman,
 }
 
+impl NumberFormat {
+    /// The label for `number`, e.g. `3.` or `(c)`.
+    pub fn label(&self, number: u32) -> String {
+        self.pattern.replace("%1", &self.kind.format(number))
+    }
+}
+
+impl NumberKind {
+    /// `number` in this style: 4, d, D, iv, IV. Letters run a..z, then aa..zz
+    /// as Word counts them.
+    pub fn format(self, number: u32) -> String {
+        match self {
+            NumberKind::Decimal => number.to_string(),
+            NumberKind::LowerLetter | NumberKind::UpperLetter => {
+                let base = if self == NumberKind::LowerLetter {
+                    b'a'
+                } else {
+                    b'A'
+                };
+                let index = number.max(1) - 1;
+                let letter = (base + (index % 26) as u8) as char;
+                letter.to_string().repeat(index as usize / 26 + 1)
+            }
+            NumberKind::LowerRoman | NumberKind::UpperRoman => {
+                let mut rest = number.max(1);
+                let mut out = String::new();
+                for (value, digits) in [
+                    (1000, "m"),
+                    (900, "cm"),
+                    (500, "d"),
+                    (400, "cd"),
+                    (100, "c"),
+                    (90, "xc"),
+                    (50, "l"),
+                    (40, "xl"),
+                    (10, "x"),
+                    (9, "ix"),
+                    (5, "v"),
+                    (4, "iv"),
+                    (1, "i"),
+                ] {
+                    while rest >= value {
+                        out.push_str(digits);
+                        rest -= value;
+                    }
+                }
+                if self == NumberKind::UpperRoman {
+                    out.to_uppercase()
+                } else {
+                    out
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Section {
     pub page: PageSetup,
     pub columns: u16,
+    /// The space between equal columns, in points, when stated.
+    pub column_gap: Option<f32>,
+    /// Columns of their own widths: each one's width and the gap after it,
+    /// in points (empty when the columns are equal).
+    pub column_widths: Vec<(f32, f32)>,
     /// How the section begins relative to the previous one.
     pub start: SectionStart,
     pub headers: PageVariants,
@@ -196,6 +421,8 @@ pub struct PageSetup {
     /// the bottom edge.
     pub header_distance: f32,
     pub footer_distance: f32,
+    /// The number the section's pages start counting from, when it restarts.
+    pub page_number_start: Option<u32>,
 }
 
 impl Default for PageSetup {
@@ -210,6 +437,7 @@ impl Default for PageSetup {
             margin_right: 72.0,
             header_distance: 36.0,
             footer_distance: 36.0,
+            page_number_start: None,
         }
     }
 }
@@ -217,7 +445,9 @@ impl Default for PageSetup {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
     Paragraph(Paragraph),
-    Table(Table),
+    /// Boxed: a table carries far more than a paragraph, and every block
+    /// would otherwise be as large as one.
+    Table(Box<Table>),
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -228,6 +458,10 @@ pub struct Paragraph {
     /// Direct character formatting set on the whole paragraph, under
     /// each run's own (`Document::run_properties`).
     pub run_properties: Option<Id>,
+    /// The paragraph mark's own character formatting (Word's `pPr/rPr`),
+    /// over the paragraph's: it sizes the paragraph's end (an empty
+    /// paragraph's whole line) and does not apply to its text.
+    pub mark: Option<Id>,
     pub list: Option<ListItem>,
     pub runs: Vec<Run>,
 }
@@ -258,6 +492,25 @@ pub struct ParagraphProperties {
     pub widow_control: Option<bool>,
     pub outline_level: Option<u8>,
     pub background: Option<Color>,
+    /// No space between this paragraph and a neighbour of the same style
+    /// (Word's contextual spacing).
+    pub contextual_spacing: Option<bool>,
+    /// A rule or box around the paragraph.
+    pub border: Option<ParagraphBorder>,
+    /// Its tab stops, an index into `Document::tab_sets`.
+    pub tabs: Option<u32>,
+    /// Starts on a new page.
+    pub page_break_before: Option<bool>,
+}
+
+/// The lines around a paragraph: which sides, drawn with one line.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParagraphBorder {
+    pub top: bool,
+    pub bottom: bool,
+    pub left: bool,
+    pub right: bool,
+    pub line: Border,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,6 +546,10 @@ pub struct RunProperties {
     pub baseline: Option<Baseline>,
     pub caps: Option<Caps>,
     pub language: Option<Id>,
+    /// Text the source hides (Word's hidden text): kept, but not shown.
+    pub hidden: Option<bool>,
+    /// Raised (positive) or lowered text, in points.
+    pub shift: Option<f32>,
 }
 
 impl RunProperties {
@@ -305,7 +562,8 @@ impl RunProperties {
             };
         }
         take!(
-            font, size, bold, italic, underline, strike, color, highlight, baseline, caps, language
+            font, size, bold, italic, underline, strike, color, highlight, baseline, caps,
+            language, hidden, shift
         );
     }
 
@@ -334,7 +592,11 @@ impl ParagraphProperties {
             keep_lines_together,
             widow_control,
             outline_level,
-            background
+            background,
+            contextual_spacing,
+            border,
+            tabs,
+            page_break_before
         );
     }
 
@@ -355,7 +617,7 @@ pub enum Caps {
     Small,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Color {
     pub red: u8,
     pub green: u8,
@@ -404,6 +666,8 @@ pub enum Inline {
     Tab,
     /// A page break; usually the only content of its paragraph.
     PageBreak,
+    /// A column break: what follows starts the next column.
+    ColumnBreak,
     /// An equation, as MathML (a span of the text arena).
     Math(Span),
     Footnote(NoteId),
@@ -413,6 +677,13 @@ pub enum Inline {
     PageNumber,
     /// The number of pages, as a field.
     PageCount,
+    /// Where a floating object (`Document::floating`) that moves with the
+    /// text is anchored.
+    Anchor(Id),
+    /// Where the text a comment (`Document::comments`) is on begins.
+    CommentStart(Id),
+    /// Where it ends.
+    CommentEnd(Id),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -422,6 +693,9 @@ pub struct InlineImage {
     pub height: f32,
     pub description: Option<String>,
     pub placement: Placement,
+    /// The share of the picture cut from each edge (left, top, right,
+    /// bottom; 0.1 is a tenth), when it is cropped.
+    pub crop: Option<[f32; 4]>,
 }
 
 /// Where an image sits: in the text line, or floating beside it.
@@ -451,6 +725,20 @@ pub enum AnchorBase {
     Line,
 }
 
+/// A reviewer's comment.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Comment {
+    pub author: String,
+    pub initials: Option<String>,
+    /// When it was made, as ISO 8601 (`2026-09-23T12:00:00Z`).
+    pub date: Option<String>,
+    /// Its text, paragraphs separated by newlines.
+    pub text: String,
+    /// The comment this one replies to, in a thread; a reply shares its
+    /// parent's text range and has no markers of its own.
+    pub reply_to: Option<Id>,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Note {
     pub blocks: Vec<Block>,
@@ -469,6 +757,42 @@ pub struct Table {
     pub header_rows: u32,
     /// Column widths in points.
     pub columns: Vec<f32>,
+    /// The table's grid lines, when the source states them (`None` leaves a
+    /// writer's own default).
+    pub borders: Option<TableBorders>,
+    /// The space between a cell's edges and its text, when the source states it.
+    pub cell_margins: Option<CellMargins>,
+    /// Where the table sits across the text column, when stated.
+    pub alignment: Option<Alignment>,
+    /// Its indent from the left margin, in points, when stated.
+    pub indent: Option<f32>,
+}
+
+/// Cell padding in points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellMargins {
+    pub top: f32,
+    pub bottom: f32,
+    pub left: f32,
+    pub right: f32,
+}
+
+/// A table's outer edges and inner grid lines; `None` on a side is no line.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TableBorders {
+    pub top: Option<Border>,
+    pub bottom: Option<Border>,
+    pub left: Option<Border>,
+    pub right: Option<Border>,
+    pub inside_horizontal: Option<Border>,
+    pub inside_vertical: Option<Border>,
+}
+
+/// One drawn line: its width in points and colour (black when unset).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Border {
+    pub width: f32,
+    pub color: Option<Color>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -487,6 +811,31 @@ pub struct Cell {
     pub row_span: u32,
     pub background: Option<Color>,
     pub merge: Merge,
+    /// The cell's own edges, over the table's grid lines.
+    pub borders: CellBorders,
+    /// Where the cell's content sits between its top and bottom edges, when
+    /// the source says.
+    pub vertical_alignment: Option<VerticalAlignment>,
+    /// The cell's own margins (top, bottom, left, right) in points, over the
+    /// table's.
+    pub margins: [Option<f32>; 4],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VerticalAlignment {
+    Top,
+    Center,
+    Bottom,
+}
+
+/// A cell's edges as the source states them: `None` leaves the table's line,
+/// `Some(None)` removes it, `Some(Some(line))` draws that line.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CellBorders {
+    pub top: Option<Option<Border>>,
+    pub bottom: Option<Option<Border>>,
+    pub left: Option<Option<Border>>,
+    pub right: Option<Option<Border>>,
 }
 
 /// A cell's part in a merged region: the grid keeps every cell, and the
@@ -528,6 +877,22 @@ impl Document {
 
     pub fn string(&self, id: Id) -> &str {
         self.strings.get(id as usize).map_or("", String::as_str)
+    }
+
+    /// Keeps a set of tab stops, returning its index (an equal set is shared).
+    pub fn intern_tabs(&mut self, tabs: Vec<TabStop>) -> u32 {
+        if let Some(index) = self.tab_sets.iter().position(|set| *set == tabs) {
+            return index as u32;
+        }
+        self.tab_sets.push(tabs);
+        (self.tab_sets.len() - 1) as u32
+    }
+
+    /// A paragraph's tab stops by their index.
+    pub fn tab_set(&self, index: Option<u32>) -> &[TabStop] {
+        index
+            .and_then(|index| self.tab_sets.get(index as usize))
+            .map_or(&[], Vec::as_slice)
     }
 
     pub fn intern_link(&mut self, target: &str) -> Id {
@@ -600,6 +965,11 @@ impl Document {
         self.run_properties_at(paragraph.run_properties)
     }
 
+    /// A paragraph mark's own formatting (`Paragraph::mark`).
+    pub fn paragraph_mark_properties(&self, paragraph: &Paragraph) -> RunProperties {
+        self.run_properties_at(paragraph.mark)
+    }
+
     fn run_properties_at(&self, id: Option<Id>) -> RunProperties {
         id.and_then(|id| self.run_properties.get(id as usize))
             .copied()
@@ -667,7 +1037,7 @@ impl Document {
     /// A paragraph's effective paragraph formatting: its style's, then its
     /// own.
     pub fn effective_paragraph(&self, paragraph: &Paragraph) -> ParagraphProperties {
-        let mut properties = match paragraph.style {
+        let mut properties = match paragraph.style.or(self.styles.default_paragraph) {
             Some(style) => self.paragraph_style_properties(style),
             None => ParagraphProperties::default(),
         };
@@ -679,7 +1049,7 @@ impl Document {
     /// character formatting, then character style, then the run's own.
     #[inline(never)]
     pub fn effective_run(&self, paragraph: &Paragraph, run: &Run) -> RunProperties {
-        let mut properties = match paragraph.style {
+        let mut properties = match paragraph.style.or(self.styles.default_paragraph) {
             Some(style) => self.paragraph_style_run(style),
             None => RunProperties::default(),
         };
@@ -708,10 +1078,14 @@ impl Document {
                 Inline::Tab => text.push('\t'),
                 Inline::Math(span) => text.push_str(&mathml_text(self.text(span))),
                 Inline::PageBreak
+                | Inline::ColumnBreak
                 | Inline::Footnote(_)
                 | Inline::Image(_)
                 | Inline::PageNumber
-                | Inline::PageCount => {}
+                | Inline::PageCount
+                | Inline::Anchor(_)
+                | Inline::CommentStart(_)
+                | Inline::CommentEnd(_) => {}
             }
         }
         text
@@ -769,4 +1143,26 @@ fn intern(table: &mut Vec<String>, ids: &mut HashMap<String, usize>, text: &str)
     table.push(text.to_string());
     ids.insert(text.to_string(), id);
     id as Id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numbers_are_labelled_as_word_counts() {
+        let label = |kind, pattern: &str, number| {
+            NumberFormat {
+                kind,
+                pattern: pattern.to_string(),
+                tiered: false,
+            }
+            .label(number)
+        };
+        assert_eq!(label(NumberKind::Decimal, "%1.", 12), "12.");
+        assert_eq!(label(NumberKind::LowerLetter, "(%1)", 3), "(c)");
+        assert_eq!(label(NumberKind::UpperLetter, "%1)", 28), "BB)");
+        assert_eq!(label(NumberKind::LowerRoman, "%1.", 14), "xiv.");
+        assert_eq!(label(NumberKind::UpperRoman, "%1", 1994), "MCMXCIV");
+    }
 }

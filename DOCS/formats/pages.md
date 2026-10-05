@@ -32,9 +32,29 @@ the reader; `STATE.md` records what is being built now.
   level, inline formatting, links, images, tables, footnotes; page layout,
   headers, and footers have no Markdown form and are dropped; text boxes
   follow the body in page order.
-- Writing Pages from other formats: later, by rewriting a real Pages
-  document's storage objects rather than generating Apple's object graph
-  from nothing.
+- Writing Pages from other formats (`src/io/pages/writer.rs`): the writer
+  rewrites a template's body storage — a real Pages document as scaffolding
+  (`style_template.pages`, compiled in) rather than a graph generated from
+  nothing — and synthesises every style variation, table, drawable, and
+  annotation it needs, registered the way Pages registers its own. `docx`
+  -> `pages` (0.25.0) carries named and direct paragraph and character
+  formatting, lists (Pages list styles with Word's indents, labels, and
+  tiered numbering, in table cells too), any number of tables (merges,
+  per-edge borders, fills, cell margins, vertical alignment, placement),
+  sections (page setup, equal and unequal columns, column breaks, numbering
+  restarts, the page colour), headers and footers (first and even variants,
+  page-number fields and frames, repeated drawings), drawings inline,
+  paragraph-anchored, page-anchored, and behind the text with their wrap,
+  geometry, fills, outlines, and arrowheads, images, charts (as a table of
+  their data), comments with reply threads, footnotes and endnotes, and
+  tracked insertions and deletions. Every output is checked by opening it in
+  Pages: the 64-document Word corpus opens with no repair or upgrade logged.
+  `markdown`, `text`, `html` -> `pages` go through the same writer.
+- `pages` -> `docx` carries the same set back (charts as native Word charts,
+  comment threads through `commentsExtended.xml`, drawings on page templates
+  back to their header or footer). On 93 Pages files it matches the page
+  count of Pages' own rendering more often than Apple's Word export and
+  never keeps fewer of the words.
 
 On the largest fixture (733 KB, 87 KB of object streams, the rest images)
 the package reads to JSON in about 11 ms and rebuilds from JSON in 18 ms,
@@ -207,8 +227,64 @@ Established from the fixtures with `sublime inspect` (a `dev-tools` build).
   starts by overflow they land on the paragraph after the last explicit
   break.
 - Media Word cannot show as a picture (PDF, for instance) is left out of
-  the Word file; only solid text box fills are kept; comments and
-  highlights are not read.
+  the Word file; only solid text box fills are kept.
+
+## What's next (Word <-> Pages)
+
+Measured on 2026-10-03 against Apple's own import and export, through
+three-way renders (Pages' own PDF or LibreOffice as the reference, ours, and
+Apple's): both directions match or beat Apple. These are the known gaps, most
+useful first. The harness is `scripts/pages-check` (open in Pages, export a
+PDF, read Pages' log for `needs repair` and `modified during read`, compare
+three-way against LibreOffice and Apple; see its README); every change should
+be checked the same way.
+
+1. **Pages -> Word page counts where Apple's export is closer.** Six files
+   (`bug57031`, `table_alignment`, and four user documents) come out a page
+   off where Apple's Word export matches. Start from a page-by-page text
+   comparison of the three renders.
+2. **Comments outside the body text (Word -> Pages).** A comment on text in
+   a table cell is kept on the table's anchor character, and one in a header,
+   footer, or text box on the body's first character. Cell storages can
+   carry `table_overlapping_highlight` too; writing it there would place
+   them exactly.
+3. **Tracked formatting changes.** Word's `w:rPrChange` and `w:pPrChange`
+   ("made bold") are dropped both ways; the model has insertions and
+   deletions only. Pages records them as its own change kind; capture a
+   sample from Pages to learn the encoding.
+4. **Image cropping in Pages.** Word's `a:srcRect` crop reaches Word and the
+   model but Pages shows the whole picture (Apple's import drops cropped
+   pictures entirely). Pages crops with an image mask (`TSD.MaskArchive`);
+   no sample yet. One real document in the corpus uses it.
+5. **WMF and EMF pictures.** Pages and the browser cannot show them; a
+   picture with a PNG fallback uses the fallback, one without shows as a
+   placeholder. Needs a metafile renderer (zero dependencies). Six test
+   files, no user documents.
+6. **Page borders (`w:pgBorders`).** Not carried either way; Apple's import
+   drops them too. A rectangle on the page templates would draw them.
+7. **Charts into Pages as charts.** Word charts reach Pages as a table of
+   their data; Pages charts reach Word as native charts. A native Pages
+   chart (`TSCH.ChartDrawableArchive`) would close the loop.
+8. **Smaller approximations.** An inline group of several shapes floats
+   above and below its line (Pages has no inline groups here); a drawing
+   anchored to a paragraph inside a table cell is placed on its page
+   instead; arrowheads are always Pages' filled arrow; drawings Pages keeps
+   on page templates come back to Word as header or footer by the half of
+   the page they sit in.
+9. **Size budget.** The release binary budget (`size-budget`) was raised
+   from the macOS build's growth with headroom; tighten it to the Linux
+   figure CI reports.
+10. **More than about 2,180 tables (Word -> Pages).** Each table brings
+    about 30 single-object streams (data lists, tiles, header buckets), and
+    the ZIP writer stops at 65,535 entries, so a larger document fails to
+    write. Either ZIP64 (once Pages is shown to read it) or fewer streams
+    per table lifts it.
+11. **Memory per table (Word -> Pages).** A table costs about 250 KB while
+    the package is assembled, held as 32-byte tree entries against a few
+    bytes encoded (35 MB at 100 tables, 570 MB at 2,000). Encoding each
+    table's objects once its rewrite is done, and compacting what that
+    leaves, would bring it near the encoded size; so would a slimmer tree
+    entry, shared with the Pages reader.
 
 ## Sources
 

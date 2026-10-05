@@ -4,3 +4,6 @@
 # Fixture files carry exact bytes (BOM, CRLF, escapes) that tests depend on.
 # Never normalize line endings in them.
 tests/fixtures/** -text
+
+# The Pages template is a ZIP; never normalize it.
+src/io/pages/style_template.pages binary
