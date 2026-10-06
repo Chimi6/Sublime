@@ -3023,6 +3023,8 @@ impl Reader<'_> {
                 .map(|language| self.document.intern_string(language)),
             hidden: None,
             shift: view.float("baseline_shift").filter(|shift| *shift != 0.0),
+            letter_spacing: None,
+            width_scale: None,
         }
     }
 }

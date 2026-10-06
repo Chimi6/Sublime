@@ -1836,6 +1836,11 @@ impl Reader<'_> {
                                         Some("atLeast") => LineSpacing::Minimum(line / 20.0),
                                         _ => LineSpacing::Relative(line / 240.0),
                                     });
+                            } else if attribute(&attributes, "w:lineRule") == Some("auto") {
+                                // A rule without a value (as Google Docs
+                                // writes it) is single spacing, as
+                                // LibreOffice reads it.
+                                header.properties.line_spacing = Some(LineSpacing::Relative(1.0));
                             }
                         }
                         "w:keepNext" => header.properties.keep_with_next = Some(toggle(value)),
@@ -1965,6 +1970,14 @@ impl Reader<'_> {
                             };
                         }
                         "w:vanish" => read.properties.hidden = Some(toggle(value)),
+                        "w:spacing" => {
+                            read.properties.letter_spacing = value
+                                .and_then(|v| v.parse::<f32>().ok())
+                                .map(|twips| twips / 20.0);
+                        }
+                        "w:w" => {
+                            read.properties.width_scale = value.and_then(|v| v.parse::<f32>().ok());
+                        }
                         "w:position" => {
                             read.properties.shift = value
                                 .and_then(|v| v.parse::<f32>().ok())
@@ -3686,7 +3699,7 @@ fn symbol_text(code: Option<&str>) -> Option<String> {
 /// A bullet as its Unicode character: Word draws the common bullets from the
 /// Symbol and Wingdings fonts, whose private-use codes show as boxes in any
 /// other font.
-fn symbol_bullet(text: &str) -> String {
+pub(crate) fn symbol_bullet(text: &str) -> String {
     text.chars()
         .map(|character| match character as u32 {
             0xF0B7 => '\u{2022}',          // Symbol: bullet

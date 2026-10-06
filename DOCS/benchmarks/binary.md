@@ -30,6 +30,51 @@ a comparison. Startup is implemented in `bench/src/startup.rs`.
 
 ## Results
 
+### 2026-10-06, 0.26.0 with RTF
+
+The gnu size and the module are CI's measurements on the release branch;
+the musl size is the release build's; startup was measured on a Mac (its
+spawn floor is three times Linux's, so the margin reads smaller than on the
+bench machine).
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 3783920 | <= 3900000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 3892160 | recorded | n/a |
+| WebAssembly module (bytes) | 2055651 | <= 2250000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 838535 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.816 (spawn 1.925, floor 1.109) | < 1 | PASS |
+
+commit: e163544 (the `rtf` branch, versions bumped)
+machine: CI (ubuntu-latest) for the gnu binary and the module; Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max for startup
+
+From 0.25.0 the binary grew 235,632 bytes (+6.6%) and the module 132,618:
+the RTF lexer, reader, writer, and code-page tables, and the model's letter
+spacing and width scale.
+
+### 2026-10-05, 0.25.0 with Word <-> Apple Pages and documents to PDF
+
+Recorded after the release: the bench machine did not run at 0.25.0, so the
+gnu size and the module are CI's measurements on the release commit and the
+musl size the release asset's; startup was not measured.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 3548288 | <= 3600000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 3658688 | recorded | n/a |
+| WebAssembly module (bytes) | 1923033 | <= 2000000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 785040 | recorded | n/a |
+
+commit: 2dc879d (main at the release)
+machine: CI (ubuntu-latest) for the gnu binary and the module
+
+From 0.24.0 the binary grew 1,008,704 bytes (+40%): the Word <-> Pages
+writer and mappings (about 300 KB of code, an 83 KB template, the Pages
+schema the writer uses, and the readers' new mappings), documents to PDF
+(the composer, about 62 KB), and the font reader and subsetter. The module
+grew 652,751 bytes. Word <-> Pages is the largest single feature to date;
+`DOCS/formats/pages.md` (What's next) lists the slimming it can take.
+
 ### 2026-09-27, 0.24.0 with PDF text
 
 | Target | Ours | Reference | Result |

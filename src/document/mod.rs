@@ -550,6 +550,10 @@ pub struct RunProperties {
     pub hidden: Option<bool>,
     /// Raised (positive) or lowered text, in points.
     pub shift: Option<f32>,
+    /// Extra space between letters (negative to condense), in points.
+    pub letter_spacing: Option<f32>,
+    /// Letters stretched (over 100) or narrowed, in percent of their width.
+    pub width_scale: Option<f32>,
 }
 
 impl RunProperties {
@@ -562,8 +566,21 @@ impl RunProperties {
             };
         }
         take!(
-            font, size, bold, italic, underline, strike, color, highlight, baseline, caps,
-            language, hidden, shift
+            font,
+            size,
+            bold,
+            italic,
+            underline,
+            strike,
+            color,
+            highlight,
+            baseline,
+            caps,
+            language,
+            hidden,
+            shift,
+            letter_spacing,
+            width_scale
         );
     }
 

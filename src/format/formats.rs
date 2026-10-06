@@ -212,6 +212,14 @@ pub static DOCX: Format = Format {
     category: Category::Document,
 };
 
+pub static RTF: Format = Format {
+    id: "rtf",
+    display_name: "Rich Text Format",
+    extensions: &["rtf"],
+    magic: Some(b"{\\rtf"),
+    category: Category::Document,
+};
+
 pub static PAGES: Format = Format {
     id: "pages",
     display_name: "Apple Pages",
