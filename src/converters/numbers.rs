@@ -65,7 +65,7 @@ pub static NUMBERS_TO_XLSX: NumbersTo = NumbersTo {
     name: "numbers-to-xlsx",
     to: &formats::XLSX,
     target: Target::Xlsx,
-    note: "each table a worksheet (or the one --sheet picks); cells as Numbers shows them, as text; formatting, formulas, merges, charts, and pictures are dropped",
+    note: "each table a worksheet (or the one --sheet picks); numbers, dates, and booleans as cells of their type, everything else as text; formatting, formulas, merges, charts, and pictures are dropped",
 };
 
 impl Converter for NumbersTo {

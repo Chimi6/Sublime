@@ -10,7 +10,7 @@ use crate::io::csv::{CsvReader, Record};
 use crate::io::xlsx::XlsxWriter;
 
 const PROGRESS_INTERVAL: u64 = 4096;
-const FIDELITY_NOTE: &str = "cells that are plain decimals of up to fifteen digits become numbers, everything else stays text; one sheet named Sheet1";
+const FIDELITY_NOTE: &str = "plain decimals of up to fifteen digits become numbers, ISO 8601 dates, dates and times, and times become dates shown in the same form, TRUE and FALSE become booleans, everything else stays text; one sheet named Sheet1";
 
 pub struct CsvToXlsx {
     pub name: &'static str,

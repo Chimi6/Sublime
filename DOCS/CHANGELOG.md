@@ -6,6 +6,12 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Changed
+
+- The workbook writer types ISO 8601 dates, dates and times, and times as dates (shown in the same form: `yyyy-mm-dd`, `yyyy-mm-dd"T"hh:mm:ss`, `[hh]:mm:ss`) and `TRUE` and `FALSE` as booleans, under the rule it already kept for numbers: a cell is typed only when reading it back gives the same text. Dates and booleans from Excel and Numbers now reach Excel as dates and booleans instead of text, and CSV's ISO dates do too; locale dates, partial dates, and lowercase `true` stay text. About 4 KB of code; converting a CSV whose columns are half dates and booleans is 3 to 6% slower, others unchanged.
+- Numbers dates with a time read as `2024-08-08T14:35:09` (the Excel reader's form) instead of `2024-08-08 14:35`.
+- `DOCS/formats/xlsx.md` and `DOCS/STATE.md` no longer list one sheet per conversion as a limit (0.27.0 writes every sheet).
+
 ## [0.27.0] - 2026-10-06
 
 ### Added
