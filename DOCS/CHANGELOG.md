@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- `numbers -> xlsx` rows in the `numbers-csv` benchmark pair, against numbers-parser with openpyxl and LibreOffice: every line passes (165 to 169 MB/s of input plus uncompressed output on 200,000 rows at 130 to 146 MB, against 2.7 to 2.8 MB/s at 4.3 GB).
+
 ## [0.27.0] - 2026-10-06
 
 ### Added
