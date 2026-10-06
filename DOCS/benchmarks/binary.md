@@ -30,6 +30,28 @@ a comparison. Startup is implemented in `bench/src/startup.rs`.
 
 ## Results
 
+### 2026-10-06, 0.26.0 with RTF
+
+The gnu size and the module are CI's measurements on the release branch;
+the musl size is the release build's; startup was measured on a Mac (its
+spawn floor is three times Linux's, so the margin reads smaller than on the
+bench machine).
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 3783920 | <= 3900000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 3892160 | recorded | n/a |
+| WebAssembly module (bytes) | 2055651 | <= 2250000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 838535 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.816 (spawn 1.925, floor 1.109) | < 1 | PASS |
+
+commit: e163544 (the `rtf` branch, versions bumped)
+machine: CI (ubuntu-latest) for the gnu binary and the module; Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max for startup
+
+From 0.25.0 the binary grew 235,632 bytes (+6.6%) and the module 132,618:
+the RTF lexer, reader, writer, and code-page tables, and the model's letter
+spacing and width scale.
+
 ### 2026-10-05, 0.25.0 with Word <-> Apple Pages and documents to PDF
 
 Recorded after the release: the bench machine did not run at 0.25.0, so the
