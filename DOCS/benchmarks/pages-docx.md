@@ -1,6 +1,6 @@
-# Pages -> Word
+# Pages <-> Word
 
-**Latest** (2026-09-27, the lazy deflate and the faster bit writer: 207.1 MB/s on the styled shape (from 150.4) and 216.7 on prose (from 156.3); every goal PASSES)
+**Latest** (2026-10-06, 0.26.0: Word -> Pages recorded for the first time, at 66.8 MB/s of uncompressed input on the styled shape and 91.8 on prose, peaking at 39.6 and 51.1 MB; Pages -> Word at 142.8 and 160.3 MB/s on this machine; every goal PASSES)
 
 ## Purpose
 
@@ -81,6 +81,35 @@ in-process runs; inputs come from the `pages-json` pair's generator.
   work the Markdown, HTML, and text pairs do not.
 
 ## Results
+
+### 2026-10-06, 0.26.0: Word -> Pages added
+
+Word -> Pages (since 0.25.0) reads the Word files the Pages -> Word rows
+write, so both directions run on the same documents. Its throughput counts
+the Word input's uncompressed bytes, as the other Word-input pairs do.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> docx, styled (1.4 MB in + 6.0 MB out): throughput (MB/s of input plus uncompressed output) | 142.8 | goal: 50 | PASS |
+| pages -> docx, styled: throughput (MB/s of input) [extra] | 27.2 | recorded | n/a |
+| pages -> docx, styled: peak memory (MB) | 26.3 | goal: <= 64.0 | PASS |
+| pages -> docx, prose (1.5 MB in + 7.5 MB out): throughput (MB/s of input plus uncompressed output) | 160.3 | goal: 50 | PASS |
+| pages -> docx, prose: throughput (MB/s of input) [extra] | 26.9 | recorded | n/a |
+| pages -> docx, prose: peak memory (MB) | 33.8 | goal: <= 64.0 | PASS |
+| docx -> pages, styled (6.0 MB uncompressed): throughput (MB/s of uncompressed input) | 66.8 | goal: 50 | PASS |
+| docx -> pages, styled: throughput (MB/s of input) [extra] | 2.3 | recorded | n/a |
+| docx -> pages, styled: peak memory (MB) | 39.6 | goal: <= 64.0 | PASS |
+| docx -> pages, prose (7.5 MB uncompressed): throughput (MB/s of uncompressed input) | 91.8 | goal: 50 | PASS |
+| docx -> pages, prose: throughput (MB/s of input) [extra] | 2.7 | recorded | n/a |
+| docx -> pages, prose: peak memory (MB) | 51.1 | goal: <= 64.0 | PASS |
+
+commit: 2de5881 (the `rtf` branch)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Word -> Pages is the heavier direction: it assembles a whole Pages package
+in memory before writing it (`DOCS/formats/pages.md`, What's next), where
+every other path streams its output. Re-run on the Linux bench machine for
+the record beside the earlier blocks.
 
 ### 2026-09-27, the lazy deflate and the faster bit writer
 

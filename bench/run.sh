@@ -96,7 +96,9 @@ if [ "$pair" = binary ]; then
   fi
   printf 'a,b\n1,2\n' > "$data/tiny.csv"
   startup_ms="$("$bench" startup "$sublime" "$data/tiny.csv")"
-  floor_ms="$("$bench" spawn-baseline /bin/true)"
+  # `true` is /bin/true on Linux and /usr/bin/true on macOS.
+  true_bin=/bin/true; [ -x "$true_bin" ] || true_bin=/usr/bin/true
+  floor_ms="$("$bench" spawn-baseline "$true_bin")"
   above_floor="$(echo "$startup_ms - $floor_ms" | bc -l)"
   row "Startup above spawn floor (ms, 1 KB file)" "$(printf '%.3f' "$above_floor") (spawn $(printf '%.3f' "$startup_ms"), floor $(printf '%.3f' "$floor_ms"))" "< 1" "$(pass "$(echo "$above_floor < 1" | bc -l)")"
 else
