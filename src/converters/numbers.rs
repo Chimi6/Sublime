@@ -143,7 +143,7 @@ impl Converter for NumbersTo {
                     // Per table: a table's formats live while it is read,
                     // so their addresses are only unique within it.
                     let mut codes = ExcelCodes::new();
-                    workbook.rows(table.sheet, table.table, |cells| {
+                    workbook.rows(table.sheet, table.table, &mut |cells| {
                         let typed: Vec<(XlsxCell<'_>, Option<std::rc::Rc<str>>)> = cells
                             .iter()
                             .map(|cell| excel_cell(cell, &mut codes))
@@ -355,7 +355,7 @@ fn write_rows(
     output: &mut dyn Write,
 ) -> Result<(), ConvertError> {
     let mut writer = CsvWriter::with_delimiter(output, delimiter);
-    workbook.rows(table.sheet, table.table, |cells| {
+    workbook.rows(table.sheet, table.table, &mut |cells| {
         writer.write_record(cells.iter().map(|cell| cell.text.as_str()))
     })?;
     writer.flush()?;

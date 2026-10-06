@@ -38,6 +38,29 @@ pub enum Cell<'a> {
     Boolean(bool),
 }
 
+/// A cell as written: a number keeps the text it is written with.
+#[derive(Clone, Copy)]
+enum Value<'a> {
+    Empty,
+    Text(&'a str),
+    Number(&'a str),
+    Boolean(bool),
+}
+
+/// A serial or number as the shortest text that reads back to it, a whole
+/// one without a fraction.
+fn push_serial(out: &mut String, value: f64) {
+    if value.fract() == 0.0 && value.abs() < 1e15 {
+        if value < 0.0 {
+            out.push('-');
+        }
+        push_number(out, value.abs() as u64);
+    } else {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{value}");
+    }
+}
+
 /// The style of the first number format a typed cell names (after the
 /// default and the three date styles).
 const FIRST_CUSTOM_STYLE: usize = 4;
@@ -90,47 +113,74 @@ impl<W: Write> XlsxWriter<W> {
     }
 
     pub fn write_row<'a>(&mut self, cells: impl IntoIterator<Item = &'a str>) -> io::Result<()> {
-        self.row += 1;
-        let row = self.row;
-        self.part.push_str("<row r=\"");
-        push_number(&mut self.part, row);
-        self.part.push_str("\">");
+        self.open_row();
+        let mut serial = String::new();
         for (index, cell) in cells.into_iter().enumerate() {
-            self.reference.clear();
-            push_column(&mut self.reference, index);
-            push_number(&mut self.reference, row);
-            self.part.push_str("<c r=\"");
-            self.part.push_str(&self.reference);
-            if cell.is_empty() {
+            let (value, style) = if cell.is_empty() {
                 // Kept as a cell without a value, so a row read back has
                 // its width (trailing empty cells, an empty row).
-                self.part.push_str("\"/>");
+                (Value::Empty, None)
             } else if is_number_literal(cell) {
-                self.part.push_str("\"><v>");
-                self.part.push_str(cell);
-                self.part.push_str("</v></c>");
+                (Value::Number(cell), None)
             } else if cell == "TRUE" || cell == "FALSE" {
-                self.part.push_str("\" t=\"b\"><v>");
-                self.part.push(if cell == "TRUE" { '1' } else { '0' });
-                self.part.push_str("</v></c>");
-            } else if let Some((serial, style)) = iso_serial(cell) {
-                self.part.push_str("\" s=\"");
-                self.part.push(char::from(b'0' + style));
-                self.part.push_str("\"><v>");
-                if serial.fract() == 0.0 {
-                    push_number(&mut self.part, serial as u64);
-                } else {
-                    use std::fmt::Write as _;
-                    let _ = write!(self.part, "{serial}");
-                }
-                self.part.push_str("</v></c>");
+                (Value::Boolean(cell == "TRUE"), None)
+            } else if let Some((days, style)) = iso_serial(cell) {
+                serial.clear();
+                push_serial(&mut serial, days);
+                (Value::Number(&serial), Some(usize::from(style)))
             } else {
-                self.part
-                    .push_str("\" t=\"inlineStr\"><is><t xml:space=\"preserve\">");
-                escape_text(&mut self.part, cell);
-                self.part.push_str("</t></is></c>");
+                (Value::Text(cell), None)
+            };
+            self.push_cell(index, value, style);
+        }
+        self.close_row()
+    }
+
+    /// Writes one row of typed cells, each with the Excel number format
+    /// (`#,##0.00`, `yyyy-mm-dd`) it is shown in, if any. Numbers are
+    /// stored as numbers whatever their text; text is never read for a
+    /// type.
+    pub fn write_cells(&mut self, cells: &[(Cell<'_>, Option<&str>)]) -> io::Result<()> {
+        self.open_row();
+        let mut number = String::new();
+        for (index, (cell, format)) in cells.iter().enumerate() {
+            let style = format
+                .filter(|code| !matches!(cell, Cell::Text(_) | Cell::Empty) && !code.is_empty())
+                .map(|code| FIRST_CUSTOM_STYLE + self.format_index(code));
+            let value = match cell {
+                Cell::Empty => Value::Empty,
+                Cell::Text(text) => Value::Text(text),
+                Cell::Number(value) if value.is_finite() => {
+                    number.clear();
+                    push_serial(&mut number, *value);
+                    Value::Number(&number)
+                }
+                Cell::Number(_) => Value::Empty,
+                Cell::Boolean(value) => Value::Boolean(*value),
+            };
+            self.push_cell(index, value, style);
+        }
+        self.close_row()
+    }
+
+    fn format_index(&mut self, code: &str) -> usize {
+        match self.formats.iter().position(|known| known == code) {
+            Some(position) => position,
+            None => {
+                self.formats.push(code.to_string());
+                self.formats.len() - 1
             }
         }
+    }
+
+    fn open_row(&mut self) {
+        self.row += 1;
+        self.part.push_str("<row r=\"");
+        push_number(&mut self.part, self.row);
+        self.part.push_str("\">");
+    }
+
+    fn close_row(&mut self) -> io::Result<()> {
         self.part.push_str("</row>");
         if self.part.len() >= PART_SIZE {
             self.zip.write_part(self.part.as_bytes(), Level::Fast)?;
@@ -139,63 +189,38 @@ impl<W: Write> XlsxWriter<W> {
         Ok(())
     }
 
-    /// Writes one row of typed cells, each with the Excel number format
-    /// (`#,##0.00`, `yyyy-mm-dd`) it is shown in, if any. Numbers are
-    /// stored as numbers whatever their text; text is never read for a
-    /// type.
-    pub fn write_cells(&mut self, cells: &[(Cell<'_>, Option<&str>)]) -> io::Result<()> {
-        self.row += 1;
-        let row = self.row;
-        self.part.push_str("<row r=\"");
-        push_number(&mut self.part, row);
-        self.part.push_str("\">");
-        for (index, (cell, format)) in cells.iter().enumerate() {
-            self.reference.clear();
-            push_column(&mut self.reference, index);
-            push_number(&mut self.reference, row);
-            self.part.push_str("<c r=\"");
-            self.part.push_str(&self.reference);
+    /// One cell of the open row: its reference, style, type, and value.
+    fn push_cell(&mut self, index: usize, value: Value<'_>, style: Option<usize>) {
+        self.reference.clear();
+        push_column(&mut self.reference, index);
+        push_number(&mut self.reference, self.row);
+        self.part.push_str("<c r=\"");
+        self.part.push_str(&self.reference);
+        self.part.push('"');
+        if let Some(style) = style {
+            self.part.push_str(" s=\"");
+            push_number(&mut self.part, style as u64);
             self.part.push('"');
-            if let Some(code) = format
-                .filter(|code| !matches!(cell, Cell::Text(_) | Cell::Empty) && !code.is_empty())
-            {
-                let style = match self.formats.iter().position(|known| known == code) {
-                    Some(position) => position,
-                    None => {
-                        self.formats.push(code.to_string());
-                        self.formats.len() - 1
-                    }
-                };
-                self.part.push_str(" s=\"");
-                push_number(&mut self.part, (FIRST_CUSTOM_STYLE + style) as u64);
-                self.part.push('"');
+        }
+        match value {
+            Value::Empty => self.part.push_str("/>"),
+            Value::Number(text) => {
+                self.part.push_str("><v>");
+                self.part.push_str(text);
+                self.part.push_str("</v></c>");
             }
-            match cell {
-                Cell::Empty => self.part.push_str("/>"),
-                Cell::Text(text) => {
-                    self.part
-                        .push_str(" t=\"inlineStr\"><is><t xml:space=\"preserve\">");
-                    escape_text(&mut self.part, text);
-                    self.part.push_str("</t></is></c>");
-                }
-                Cell::Number(value) if value.is_finite() => {
-                    use std::fmt::Write as _;
-                    let _ = write!(self.part, "><v>{value}</v></c>");
-                }
-                Cell::Number(_) => self.part.push_str("/>"),
-                Cell::Boolean(value) => {
-                    self.part.push_str(" t=\"b\"><v>");
-                    self.part.push(if *value { '1' } else { '0' });
-                    self.part.push_str("</v></c>");
-                }
+            Value::Boolean(value) => {
+                self.part.push_str(" t=\"b\"><v>");
+                self.part.push(if value { '1' } else { '0' });
+                self.part.push_str("</v></c>");
+            }
+            Value::Text(text) => {
+                self.part
+                    .push_str(" t=\"inlineStr\"><is><t xml:space=\"preserve\">");
+                escape_text(&mut self.part, text);
+                self.part.push_str("</t></is></c>");
             }
         }
-        self.part.push_str("</row>");
-        if self.part.len() >= PART_SIZE {
-            self.zip.write_part(self.part.as_bytes(), Level::Fast)?;
-            self.part.clear();
-        }
-        Ok(())
     }
 
     /// Closes the last worksheet, writes the parts that list the sheets,
