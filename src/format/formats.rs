@@ -228,6 +228,14 @@ pub static PAGES: Format = Format {
     category: Category::Document,
 };
 
+pub static NUMBERS: Format = Format {
+    id: "numbers",
+    display_name: "Apple Numbers",
+    extensions: &["numbers"],
+    magic: None,
+    category: Category::Data,
+};
+
 /// A Pages package as JSON (see `io::pages::json`). No extension of its
 /// own; select it with `--to` or `--from`.
 pub static PAGES_JSON: Format = Format {
