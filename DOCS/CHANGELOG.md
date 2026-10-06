@@ -6,6 +6,16 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- Workbooks whole. A many-part input (a workbook's sheets, a document's tables) into a format that holds one table writes a file per part, in a folder named after the output (`book.xlsx` -> `book.csv` writes `book/Sales.csv` and `book/Costs.csv`; one sheet is still one file), and into a format that holds several stays one file: `xlsx-to-json` (an object of arrays by sheet name; one sheet stays an array), `xlsx-to-markdown` (a table under a heading per sheet, so a workbook reaches Word, Pages, HTML, RTF, and PDF whole), `markdown-to-xlsx` (a sheet per table, so documents become workbooks), `json-to-xlsx` and `json-to-markdown` (an object of arrays as a sheet or table per member), and `markdown-tables-to-json` (a document's tables as one JSON). JSON whose root is an object of arrays converts to CSV and TSV as a file per member. Standard output takes the first part and reports the rest as a loss; the WebAssembly module returns several parts as one ZIP.
+- `Converter::splits` and `convert_parts`, `Parts` and `MemoryParts`, `Format::holds_one_part`, and `planner::execute_parts`: the library side of many-part outputs; the `parts_written` event reports the folder and its files (JSON log: `{"event":"parts_written","directory":...,"files":[...]}`).
+
+### Changed
+
+- `xlsx -> csv` and `xlsx -> tsv` write every sheet (each its own file), not only the first; `--sheet` still picks one. `markdown -> csv` and `-> tsv` (and every document through them) write every table, not only the first.
+- The workbook writer writes empty cells as cells without a value, so trailing empty cells and empty rows survive a round trip.
+
 ## [0.26.0] - 2026-10-06
 
 ### Added

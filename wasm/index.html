@@ -67,7 +67,8 @@
     const outcome = sublime.convert(input, from, to.value);
     result.innerHTML = "";
     if (outcome.status === "converted" || outcome.status === "converted-with-loss") {
-      const extension = byId[to.value].extensions[0];
+      // Several parts (a workbook's sheets as CSVs) arrive as one ZIP.
+      const extension = outcome.parts > 1 ? "zip" : byId[to.value].extensions[0];
       const name = file.files[0].name.replace(/\.[^.]+$/, "") + "." + extension;
       const url = URL.createObjectURL(new Blob([outcome.bytes]));
       const link = document.createElement("a");

@@ -6,7 +6,7 @@ use std::io::Write;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-use crate::converter::{ConvertError, Converter, Input};
+use crate::converter::{ConvertError, Converter, Input, MemoryParts, Parts};
 use crate::event::{Context, Event};
 use crate::planner::Plan;
 #[cfg(not(target_arch = "wasm32"))]
@@ -68,6 +68,96 @@ pub fn execute_in_memory(
         let mut source: &[u8] = &buffer;
         run_hop(*last, Input::Stream(&mut source), output, context)
     }
+}
+
+/// Runs a plan into `parts`: when the plan ends in a format that holds one
+/// part (CSV, an image) and a hop can split its input (a workbook into
+/// sheets, a PDF into pages), each part gets its own output, the hops after
+/// the split running once per part. Otherwise the whole result is one part.
+pub fn execute_parts(
+    plan: &Plan,
+    input: Input<'_>,
+    parts: &mut dyn Parts,
+    context: &mut Context<'_>,
+) -> Result<(), ConvertError> {
+    let target_splits = plan
+        .hops
+        .last()
+        .is_some_and(|last| last.to().holds_one_part());
+    let split_at = plan
+        .hops
+        .iter()
+        .position(|hop| hop.splits())
+        .filter(|_| target_splits);
+    let Some(split_at) = split_at else {
+        let output = parts.part("")?;
+        return execute(plan, input, output, context);
+    };
+    let (before, rest) = plan.hops.split_at(split_at);
+    let Some((splitter, after)) = rest.split_first() else {
+        return Err(ConvertError::Unsupported(
+            "plan has no conversion steps".to_string(),
+        ));
+    };
+    if before.is_empty() {
+        return split_and_finish(*splitter, after, input, parts, context);
+    }
+    // The hops before the split make one input for it.
+    let head = Plan {
+        hops: before.to_vec(),
+    };
+    let mut prepared = Vec::new();
+    execute(&head, input, &mut prepared, context)?;
+    let mut source: &[u8] = &prepared;
+    split_and_finish(*splitter, after, Input::Stream(&mut source), parts, context)
+}
+
+/// Runs the splitting hop, then the hops after it once per part.
+fn split_and_finish(
+    splitter: &'static dyn Converter,
+    after: &[&'static dyn Converter],
+    input: Input<'_>,
+    parts: &mut dyn Parts,
+    context: &mut Context<'_>,
+) -> Result<(), ConvertError> {
+    if after.is_empty() {
+        // The split writes the final parts directly, streaming.
+        return run_hop_parts(splitter, input, parts, context);
+    }
+    let mut split = MemoryParts::default();
+    run_hop_parts(splitter, input, &mut split, context)?;
+    let tail = Plan {
+        hops: after.to_vec(),
+    };
+    for (name, bytes) in split.parts {
+        let output = parts.part(&name)?;
+        let mut source: &[u8] = &bytes;
+        execute(&tail, Input::Stream(&mut source), output, context)?;
+    }
+    Ok(())
+}
+
+fn run_hop_parts(
+    converter: &'static dyn Converter,
+    input: Input<'_>,
+    parts: &mut dyn Parts,
+    context: &mut Context<'_>,
+) -> Result<(), ConvertError> {
+    context.emit(Event::StepStarted {
+        converter: converter.name(),
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    let started = Instant::now();
+    let result = converter.convert_parts(input, parts, context);
+    #[cfg(not(target_arch = "wasm32"))]
+    let elapsed = started.elapsed();
+    #[cfg(target_arch = "wasm32")]
+    let elapsed = std::time::Duration::ZERO;
+    context.emit(Event::StepFinished {
+        converter: converter.name(),
+        elapsed,
+    });
+    result
 }
 
 pub(super) fn run_hop(

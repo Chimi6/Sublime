@@ -184,6 +184,74 @@ impl<W: Write> EventSink<'_> for TableRows<W> {
     }
 }
 
+/// A document's tables, every one, each named after the heading before
+/// it (`Table N` when none is): what a workbook makes a sheet of each.
+#[derive(Debug, Default)]
+pub struct DocumentTables {
+    pub tables: Vec<(String, Vec<Vec<String>>)>,
+    heading: Option<String>,
+    in_heading: bool,
+    depth: u32,
+    rows: Vec<Vec<String>>,
+    row: Vec<String>,
+    cell: String,
+}
+
+impl DocumentTables {
+    pub fn new() -> DocumentTables {
+        DocumentTables::default()
+    }
+}
+
+impl EventSink<'_> for DocumentTables {
+    fn transient(&mut self, event: Event<'_>) {
+        self.event(event);
+    }
+
+    fn event(&mut self, event: Event<'_>) {
+        match event {
+            Event::Start(Tag::Heading(_)) if self.depth == 0 => {
+                self.in_heading = true;
+                self.heading = Some(String::new());
+            }
+            Event::End(TagEnd::Heading(_)) if self.depth == 0 => self.in_heading = false,
+            Event::Start(Tag::Table(_)) => {
+                if self.depth == 0 {
+                    self.rows.clear();
+                }
+                self.depth += 1;
+            }
+            Event::End(TagEnd::Table) => {
+                self.depth = self.depth.saturating_sub(1);
+                if self.depth == 0 {
+                    let number = self.tables.len() + 1;
+                    let name = self
+                        .heading
+                        .take()
+                        .map(|heading| heading.trim().to_string())
+                        .filter(|heading| !heading.is_empty())
+                        .unwrap_or_else(|| format!("Table {number}"));
+                    self.tables.push((name, std::mem::take(&mut self.rows)));
+                }
+            }
+            Event::Text(text) | Event::Code(text) if self.in_heading => {
+                if let Some(heading) = &mut self.heading {
+                    heading.push_str(&text);
+                }
+            }
+            _ if self.depth != 1 => {}
+            Event::Start(Tag::TableCell) => self.cell.clear(),
+            Event::End(TagEnd::TableCell) => self.row.push(std::mem::take(&mut self.cell)),
+            Event::End(TagEnd::TableHead) | Event::End(TagEnd::TableRow) => {
+                self.rows.push(std::mem::take(&mut self.row));
+            }
+            Event::Text(text) | Event::Code(text) => self.cell.push_str(&text),
+            Event::SoftBreak | Event::HardBreak => self.cell.push(' '),
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

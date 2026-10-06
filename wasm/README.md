@@ -31,7 +31,11 @@ The API (`sublime.js`):
 - `sublime.convert(bytes, from, to)` returns `{ status, bytes, message }`.
   `status` is `converted`, `converted-with-loss` (the message says what
   was dropped), `failed` (the message is the error), `no-path`, or
-  `unknown-format`. `bytes` is a `Uint8Array` you own.
+  `unknown-format`. `bytes` is a `Uint8Array` you own. `parts` is how
+  many files the result holds: a workbook's sheets (or a document's
+  tables) into a one-table format such as CSV give one file per part,
+  returned together as a ZIP (`parts` above 1), named as the command line
+  names them (`Sales.csv`, `Costs.csv`).
 - `sublime.formats()`: `[{ id, name, extensions, category }]`.
 - `sublime.paths()`: `[{ from, to, fidelity }]`.
 - `sublime.formatFor(fileName)`: a format id from the extension, or null.

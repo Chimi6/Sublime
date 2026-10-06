@@ -1,5 +1,6 @@
-//! Writes a one-sheet workbook, streaming the rows into the worksheet
-//! part as they come. Cells whose text is a plain decimal of at most
+//! Writes a workbook of one or more sheets, streaming the rows into each
+//! worksheet part as they come; the workbook part, which lists the sheets,
+//! is written at the end. Cells whose text is a plain decimal of at most
 //! fifteen significant digits become numbers (what Excel makes of them);
 //! everything else is an inline string, so no shared string table is held.
 
@@ -18,40 +19,53 @@ pub struct XlsxWriter<W: Write> {
     part: String,
     row: u64,
     reference: String,
+    /// Every sheet's title, in order; the last is the one being written.
+    sheets: Vec<String>,
 }
 
 impl<W: Write> XlsxWriter<W> {
-    /// Writes the fixed parts and opens the worksheet for rows.
+    /// Writes the fixed parts and opens the first worksheet for rows.
     pub fn new(sink: W, sheet_name: &str) -> io::Result<XlsxWriter<W>> {
         let mut zip = ZipWriter::new(sink);
-        zip.add_deflated("[Content_Types].xml", CONTENT_TYPES.as_bytes())?;
         zip.add_deflated("_rels/.rels", PACKAGE_RELS.as_bytes())?;
-        let mut workbook = String::new();
-        workbook.push_str(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<workbook xmlns=\"",
-        );
-        workbook.push_str(MAIN_NAMESPACE);
-        workbook.push_str("\" xmlns:r=\"");
-        workbook.push_str(OFFICE_REL);
-        workbook.push_str("\"><sheets><sheet name=\"");
-        crate::io::xml::escape_attribute(&mut workbook, &sheet_title(sheet_name));
-        workbook.push_str("\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>");
-        zip.add_deflated("xl/workbook.xml", workbook.as_bytes())?;
-        zip.add_deflated("xl/_rels/workbook.xml.rels", WORKBOOK_RELS.as_bytes())?;
         zip.add_deflated("xl/styles.xml", STYLES.as_bytes())?;
-        zip.begin_deflated("xl/worksheets/sheet1.xml")?;
-        let mut part = String::with_capacity(PART_SIZE + 4096);
-        part.push_str(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<worksheet xmlns=\"",
-        );
-        part.push_str(MAIN_NAMESPACE);
-        part.push_str("\"><sheetData>");
-        Ok(XlsxWriter {
+        let mut writer = XlsxWriter {
             zip,
-            part,
+            part: String::with_capacity(PART_SIZE + 4096),
             row: 0,
             reference: String::new(),
-        })
+            sheets: Vec::new(),
+        };
+        writer.open_sheet(sheet_name)?;
+        Ok(writer)
+    }
+
+    /// Closes the sheet being written and opens the next, named `name`.
+    pub fn next_sheet(&mut self, name: &str) -> io::Result<()> {
+        self.close_sheet()?;
+        self.open_sheet(name)
+    }
+
+    fn open_sheet(&mut self, name: &str) -> io::Result<()> {
+        let title = unique_title(&sheet_title(name), &self.sheets);
+        self.sheets.push(title);
+        let path = format!("xl/worksheets/sheet{}.xml", self.sheets.len());
+        self.zip.begin_deflated(&path)?;
+        self.part.clear();
+        self.part.push_str(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<worksheet xmlns=\"",
+        );
+        self.part.push_str(MAIN_NAMESPACE);
+        self.part.push_str("\"><sheetData>");
+        self.row = 0;
+        Ok(())
+    }
+
+    fn close_sheet(&mut self) -> io::Result<()> {
+        self.part.push_str("</sheetData></worksheet>");
+        self.zip.write_part(self.part.as_bytes(), Level::Fast)?;
+        self.part.clear();
+        self.zip.end_deflated()
     }
 
     pub fn write_row<'a>(&mut self, cells: impl IntoIterator<Item = &'a str>) -> io::Result<()> {
@@ -61,15 +75,16 @@ impl<W: Write> XlsxWriter<W> {
         push_number(&mut self.part, row);
         self.part.push_str("\">");
         for (index, cell) in cells.into_iter().enumerate() {
-            if cell.is_empty() {
-                continue;
-            }
             self.reference.clear();
             push_column(&mut self.reference, index);
             push_number(&mut self.reference, row);
             self.part.push_str("<c r=\"");
             self.part.push_str(&self.reference);
-            if is_number_literal(cell) {
+            if cell.is_empty() {
+                // Kept as a cell without a value, so a row read back has
+                // its width (trailing empty cells, an empty row).
+                self.part.push_str("\"/>");
+            } else if is_number_literal(cell) {
                 self.part.push_str("\"><v>");
                 self.part.push_str(cell);
                 self.part.push_str("</v></c>");
@@ -88,11 +103,50 @@ impl<W: Write> XlsxWriter<W> {
         Ok(())
     }
 
-    /// Closes the worksheet and the package; returns the sink.
+    /// Closes the last worksheet, writes the parts that list the sheets,
+    /// and closes the package; returns the sink.
     pub fn finish(mut self) -> io::Result<W> {
-        self.part.push_str("</sheetData></worksheet>");
-        self.zip.write_part(self.part.as_bytes(), Level::Fast)?;
-        self.zip.end_deflated()?;
+        self.close_sheet()?;
+        let count = self.sheets.len();
+        let mut types = String::from(CONTENT_TYPES_HEAD);
+        for index in 1..=count {
+            types.push_str("<Override PartName=\"/xl/worksheets/sheet");
+            push_number(&mut types, index as u64);
+            types.push_str(".xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>");
+        }
+        types.push_str("</Types>");
+        self.zip
+            .add_deflated("[Content_Types].xml", types.as_bytes())?;
+        let mut workbook = String::new();
+        workbook.push_str(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<workbook xmlns=\"",
+        );
+        workbook.push_str(MAIN_NAMESPACE);
+        workbook.push_str("\" xmlns:r=\"");
+        workbook.push_str(OFFICE_REL);
+        workbook.push_str("\"><sheets>");
+        let mut rels = String::from(WORKBOOK_RELS_HEAD);
+        for (index, title) in self.sheets.iter().enumerate() {
+            let number = index as u64 + 1;
+            workbook.push_str("<sheet name=\"");
+            crate::io::xml::escape_attribute(&mut workbook, title);
+            workbook.push_str("\" sheetId=\"");
+            push_number(&mut workbook, number);
+            workbook.push_str("\" r:id=\"rId");
+            push_number(&mut workbook, number);
+            workbook.push_str("\"/>");
+            rels.push_str("<Relationship Id=\"rId");
+            push_number(&mut rels, number);
+            rels.push_str("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet");
+            push_number(&mut rels, number);
+            rels.push_str(".xml\"/>");
+        }
+        workbook.push_str("</sheets></workbook>");
+        rels.push_str("<Relationship Id=\"rIdStyles\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>");
+        self.zip
+            .add_deflated("xl/workbook.xml", workbook.as_bytes())?;
+        self.zip
+            .add_deflated("xl/_rels/workbook.xml.rels", rels.as_bytes())?;
         self.zip.finish()
     }
 }
@@ -115,6 +169,24 @@ fn sheet_title(name: &str) -> String {
     } else {
         cleaned
     }
+}
+
+/// `title`, or `title (2)` and on when an earlier sheet has it (Excel
+/// compares sheet names without case), kept within 31 characters.
+fn unique_title(title: &str, taken: &[String]) -> String {
+    let mut candidate = title.to_string();
+    let mut number = 2;
+    while taken
+        .iter()
+        .any(|taken| taken.to_lowercase() == candidate.to_lowercase())
+    {
+        let suffix = format!(" ({number})");
+        let room = 31usize.saturating_sub(suffix.chars().count());
+        let base: String = title.chars().take(room).collect();
+        candidate = format!("{base}{suffix}");
+        number += 1;
+    }
+    candidate
 }
 
 fn push_number(out: &mut String, number: u64) {
@@ -184,11 +256,11 @@ pub fn is_number_literal(text: &str) -> bool {
     at == bytes.len() && significant <= 15 && text.parse::<f64>().is_ok_and(f64::is_finite)
 }
 
-const CONTENT_TYPES: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/><Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/></Types>";
+const CONTENT_TYPES_HEAD: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>";
 
 const PACKAGE_RELS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>";
 
-const WORKBOOK_RELS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/><Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>";
+const WORKBOOK_RELS_HEAD: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">";
 
 const STYLES: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts><fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill></fills><borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs><cellXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/></cellXfs><cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles></styleSheet>";
 

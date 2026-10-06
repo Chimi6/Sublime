@@ -48,7 +48,7 @@ use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 76] = [
+static CONVERTERS: [&dyn Converter; 82] = [
     &csv_to_json::CSV_TO_JSON,
     &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
@@ -119,6 +119,12 @@ static CONVERTERS: [&dyn Converter; 76] = [
     &rows::JsonToJsonl,
     &xlsx_to_csv::XLSX_TO_CSV,
     &xlsx_to_csv::XLSX_TO_TSV,
+    &xlsx_to_csv::XLSX_TO_JSON,
+    &xlsx_to_csv::XLSX_TO_MARKDOWN,
+    &rows_document::MARKDOWN_TO_XLSX,
+    &json_to_csv::JSON_TO_XLSX,
+    &rows_document::MARKDOWN_TABLES_TO_JSON,
+    &rows_document::JSON_TO_MARKDOWN,
     &csv_to_xlsx::CSV_TO_XLSX,
     &csv_to_xlsx::TSV_TO_XLSX,
     &rows_document::CSV_TO_MARKDOWN,

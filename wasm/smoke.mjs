@@ -44,6 +44,15 @@ check(sublime.convert(csv, "csv", "nope").status === "unknown-format", "unknown 
 const table = sublime.convert(csv, "csv", "pages");
 check(table.status.startsWith("converted") && table.bytes[0] === 0x50 && table.bytes[1] === 0x4b, `csv -> pages: ${table.status} ${table.message}`);
 
+// A document's tables into a one-table format come back as a ZIP of CSVs;
+// into a workbook, as one workbook.
+const tables = new TextEncoder().encode("# A\n\n| x |\n|---|\n| 1 |\n\n# B\n\n| y |\n|---|\n| 2 |\n");
+const split = sublime.convert(tables, "markdown", "csv");
+const zipped = new TextDecoder().decode(split.bytes);
+check(split.parts === 2 && split.bytes[0] === 0x50 && split.bytes[1] === 0x4b && zipped.includes("A.csv") && zipped.includes("B.csv"), `markdown -> csv with two tables is a ZIP: ${split.status} ${split.message}`);
+const sheets = sublime.convert(tables, "markdown", "json");
+check(new TextDecoder().decode(sheets.bytes) === '{"A":[{"x":"1"}],"B":[{"y":"2"}]}', "markdown -> json keeps both tables");
+
 console.log(`sublime.wasm: ${readFileSync(wasmPath).length} bytes; pages -> docx on text-styles.pages in ${elapsed.toFixed(1)} ms`);
 if (failures.length) {
   console.error("smoke test failed:\n  " + failures.join("\n  "));

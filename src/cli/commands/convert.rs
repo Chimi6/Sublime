@@ -190,11 +190,49 @@ fn convert_to_stdout(
     context: &mut Context<'_>,
 ) -> Result<(), CliError> {
     let mut writer = BufWriter::new(stdout);
-    planner::execute(plan, input, &mut writer, context)?;
+    let mut parts = StdoutParts {
+        writer: &mut writer,
+        names: Vec::new(),
+        rest: io::sink(),
+    };
+    planner::execute_parts(plan, input, &mut parts, context)?;
+    let names = parts.names;
+    if names.len() > 1
+        && let Some(last) = plan.hops.last()
+    {
+        context.loss(
+            last.name(),
+            crate::converter::Location::default(),
+            format!(
+                "stdout holds one part: wrote '{}' and left out {} more ({}); give an output file to write each, or pick one with --sheet or --page",
+                names[0],
+                names.len() - 1,
+                names[1..].join(", ")
+            ),
+        );
+    }
     writer.flush().map_err(|error| CliError::Io {
         action: "writing stdout".to_string(),
         error,
     })
+}
+
+/// Standard output holds one part: the first is written, the rest counted.
+struct StdoutParts<'w> {
+    writer: &'w mut dyn Write,
+    names: Vec<String>,
+    rest: io::Sink,
+}
+
+impl crate::converter::Parts for StdoutParts<'_> {
+    fn part(&mut self, name: &str) -> io::Result<&mut dyn Write> {
+        self.names.push(name.to_string());
+        if self.names.len() == 1 {
+            Ok(&mut *self.writer)
+        } else {
+            Ok(&mut self.rest)
+        }
+    }
 }
 
 fn convert_to_file(
