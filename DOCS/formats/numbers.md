@@ -80,8 +80,8 @@ match exactly, and 131,713 of 132,206 non-empty cells (99.6%). The rest:
   document's preview shows the empty row we keep;
 - one rich text cell whose trailing line break we drop.
 
-Speed and memory are the `numbers-csv` benchmark pair
-(`DOCS/benchmarks/numbers-csv.md`): 37 MB/s on 200,000-row documents at
+Speed and memory are the `numbers-csv` and `numbers-xlsx` benchmark pairs
+(`DOCS/benchmarks/numbers-csv.md`, `numbers-xlsx.md`); into CSV: 37 MB/s on 200,000-row documents at
 125 to 145 MB, against numbers-parser's 0.5 MB/s at over 4 GB, and on a
 real 65,000-row document 68 MB/s at 54 MB, against numbers-parser's 2.4 at
 353 MB and LibreOffice's 0.9 at 1.4 GB.
