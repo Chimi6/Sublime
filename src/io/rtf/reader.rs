@@ -3142,7 +3142,7 @@ fn run_key(props: &RunProperties) -> RunKey {
     };
     let flag = |value: Option<bool>| value.map_or(2, u32::from);
     [
-        props.font.map_or(u32::MAX, |id| id),
+        props.font.unwrap_or(u32::MAX),
         props.size.map_or(u32::MAX, f32::to_bits),
         flag(props.bold),
         flag(props.italic),
@@ -3152,7 +3152,7 @@ fn run_key(props: &RunProperties) -> RunKey {
         color(props.highlight),
         props.baseline.map_or(0, |baseline| baseline as u32 + 1),
         props.caps.map_or(0, |caps| caps as u32 + 1),
-        props.language.map_or(u32::MAX, |id| id),
+        props.language.unwrap_or(u32::MAX),
         flag(props.hidden),
         props.shift.map_or(u32::MAX, f32::to_bits),
         props.letter_spacing.map_or(u32::MAX, f32::to_bits),

@@ -18,7 +18,7 @@ section under a version heading.
 - Word output's bullets are in the symbol fonts Word uses (Symbol, Wingdings); a bullet in no font was drawn in a fallback font whose taller lines lengthened every list.
 - Word output makes the document's default paragraph style Word's default (`Normal`), so paragraphs that name no style keep its formatting.
 - Word input reads a line-spacing rule without a value (`w:lineRule="auto"` alone, as Google Docs writes it) as single spacing, as LibreOffice does.
-- The WebAssembly size budget is raised 2.00 -> 2.25 MB for RTF (the reader and writer, about 130 KB of the module).
+- The binary size budget is raised 3.60 -> 3.90 MB and the WebAssembly budget 2.00 -> 2.25 MB for RTF (the reader and writer: about 180 KB of the binary, 130 KB of the module; the Linux binary measures 3.78 MB).
 
 ## [0.25.0] - 2026-10-05
 
