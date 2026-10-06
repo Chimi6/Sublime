@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-06
+
 ### Added
 
 - Workbooks whole. A many-part input (a workbook's sheets, a document's tables) into a format that holds one table writes a file per part, in a folder named after the output (`book.xlsx` -> `book.csv` writes `book/Sales.csv` and `book/Costs.csv`; one sheet is still one file), and into a format that holds several stays one file: `xlsx-to-json` (an object of arrays by sheet name; one sheet stays an array), `xlsx-to-markdown` (a table under a heading per sheet, so a workbook reaches Word, Pages, HTML, RTF, and PDF whole), `markdown-to-xlsx` (a sheet per table, so documents become workbooks), `json-to-xlsx` and `json-to-markdown` (an object of arrays as a sheet or table per member), and `markdown-tables-to-json` (a document's tables as one JSON). JSON whose root is an object of arrays converts to CSV and TSV as a file per member. Standard output takes the first part and reports the rest as a loss; the WebAssembly module returns several parts as one ZIP.
