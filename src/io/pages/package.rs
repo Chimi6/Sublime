@@ -116,13 +116,28 @@ pub enum Scope {
     /// the text. A typical document uses seventy of its six hundred
     /// objects; the rest are presets and are left undecoded.
     Document,
+    /// What a workbook reader needs: every object but the skipped types
+    /// and the tables' row headers (sizes, which a cell's text does not
+    /// need).
+    Workbook,
 }
 
-/// Object types the document walk starts from.
-const ROOT_TYPES: [u32; 3] = [10000, 11006, 4000];
+/// Object types the document walk starts from: the Pages document, the
+/// package metadata, the calculation engine, and the Numbers document
+/// (`TN.DocumentArchive`, a type Pages does not use).
+const ROOT_TYPES: [u32; 4] = [10000, 11006, 4000, 1];
 /// Object types whose references are not followed: hubs that list every
 /// style, theme preset, or view state in the package.
 const HUB_TYPES: [u32; 7] = [401, 10001, 210, 10133, 10131, 10147, 213];
+/// Object types no reader looks at, left undecoded: the formula engine's
+/// cell records, reference and name tracking, the tables' row and column
+/// identity maps, header-name caches, filters, and categories. A large
+/// spreadsheet's engine is mostly these.
+/// `TST.HeaderStorageBucket`: a table's row or column sizes.
+const ROW_HEADERS: u32 = 6006;
+const SKIPPED_TYPES: [u32; 11] = [
+    4003, 4004, 4009, 6220, 6267, 6316, 6317, 6365, 6366, 6373, 6383,
+];
 
 impl Package {
     pub fn read(bytes: &[u8]) -> Result<Package, PackageError> {
@@ -131,6 +146,9 @@ impl Package {
 
     pub fn read_scope(bytes: &[u8], scope: Scope) -> Result<Package, PackageError> {
         let archive = ZipArchive::parse(bytes)?;
+        if let Some(package) = Package::read_bundle(&archive, scope)? {
+            return Ok(package);
+        }
         // Every entry is read first; the reachable set needs all streams'
         // object headers before any stream is decoded.
         let mut raw: Vec<(String, Vec<u8>, bool)> = Vec::new();
@@ -140,7 +158,10 @@ impl Package {
             }
             let mut data = Vec::new();
             archive.read(entry, &mut data)?;
-            let is_stream = entry.name.ends_with(".iwa");
+            // A stream Apple compressed with LZFSE (`bvxn`, the operation
+            // log of a shared document) is kept as its bytes: nothing the
+            // readers use is in it, and it is written back as it was.
+            let is_stream = entry.name.ends_with(".iwa") && !data.starts_with(b"bvx");
             if is_stream {
                 let decompressed = decompress_stream(&data).map_err(|error| PackageError::Iwa {
                     stream: entry.name.clone(),
@@ -166,10 +187,11 @@ impl Package {
         let reachable = match scope {
             Scope::Everything => None,
             Scope::Document => Some(reachable_objects(&parsed)),
+            Scope::Workbook => Some(workbook_objects(&parsed)),
         };
         let deferred = match scope {
             Scope::Everything => Vec::new(),
-            Scope::Document => deferred_fields(),
+            Scope::Document | Scope::Workbook => deferred_fields(),
         };
         let mut entries = Vec::with_capacity(raw.len());
         for ((name, bytes, _), objects) in raw.iter().zip(parsed) {
@@ -191,6 +213,45 @@ impl Package {
             }
         }
         Ok(Package { entries })
+    }
+
+    /// A package saved as a folder and then zipped (`Name.pages/Index.zip`
+    /// beside `Name.pages/Data/...`): the objects are in the inner
+    /// `Index.zip`. The outer files join the package under the names they
+    /// have inside the folder.
+    fn read_bundle(
+        archive: &ZipArchive<'_>,
+        scope: Scope,
+    ) -> Result<Option<Package>, PackageError> {
+        let entries = archive.entries();
+        if entries.iter().any(|entry| entry.name.ends_with(".iwa")) {
+            return Ok(None);
+        }
+        let Some(index) = entries
+            .iter()
+            .find(|entry| entry.name == "Index.zip" || entry.name.ends_with("/Index.zip"))
+        else {
+            return Ok(None);
+        };
+        let prefix = &index.name[..index.name.len() - "Index.zip".len()];
+        let mut inner = Vec::new();
+        archive.read(index, &mut inner)?;
+        let mut package = Package::read_scope(&inner, scope)?;
+        for entry in entries {
+            if entry.is_directory() || entry.name == index.name {
+                continue;
+            }
+            let Some(name) = entry.name.strip_prefix(prefix) else {
+                continue;
+            };
+            let mut bytes = Vec::new();
+            archive.read(entry, &mut bytes)?;
+            package.entries.push(Entry::File {
+                name: name.to_string(),
+                bytes,
+            });
+        }
+        Ok(Some(package))
     }
 
     /// Writes the package as a ZIP with stored entries, as Pages does;
@@ -258,6 +319,10 @@ fn reachable_objects(streams: &[Option<Vec<IwaObject<'_>>>]) -> HashMap<u64, usi
             continue;
         }
         let object = objects[*position];
+        if SKIPPED_TYPES.contains(&object.message_type().unwrap_or(0)) {
+            reachable.remove(&identifier);
+            continue;
+        }
         if HUB_TYPES.contains(&object.message_type().unwrap_or(0)) {
             continue;
         }
@@ -266,6 +331,23 @@ fn reachable_objects(streams: &[Option<Vec<IwaObject<'_>>>]) -> HashMap<u64, usi
         }
     }
     reachable
+}
+
+/// Every object but the skipped types and the row headers. Not a walk
+/// from the root: older Numbers files leave references out of their
+/// object headers, so a walk misses tables' cells.
+fn workbook_objects(streams: &[Option<Vec<IwaObject<'_>>>]) -> HashMap<u64, usize> {
+    streams
+        .iter()
+        .flatten()
+        .flatten()
+        .enumerate()
+        .filter(|(_, object)| {
+            let message_type = object.message_type().unwrap_or(0);
+            !SKIPPED_TYPES.contains(&message_type) && message_type != ROW_HEADERS
+        })
+        .map(|(position, object)| (object.identifier, position))
+        .collect()
 }
 
 /// Decodes one `.iwa` entry.
@@ -306,6 +388,11 @@ fn deferred_fields() -> Vec<(u16, u32)> {
     .iter()
     .filter_map(|name| storage.slot_named(name))
     .map(|(_, field)| (storage.index(), field.number))
+    // A table's layout cache, which no reader opens.
+    .chain(SCHEMA.message("TST.TableInfoArchive").and_then(|info| {
+        info.slot_named("layout_engine")
+            .map(|(_, field)| (info.index(), field.number))
+    }))
     .collect()
 }
 

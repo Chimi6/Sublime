@@ -35,10 +35,10 @@ pub fn is_batch(args: &ConvertArgs) -> bool {
         || args.out_dir.is_some()
         || args.recursive
         || args.dry_run
-        || args
-            .inputs
-            .iter()
-            .any(|input| has_glob(input) || Path::new(input).is_dir())
+        || args.inputs.iter().any(|input| {
+            let path = Path::new(input);
+            has_glob(input) || (path.is_dir() && !super::is_package_folder(path))
+        })
 }
 
 pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliError> {
@@ -75,7 +75,7 @@ pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliE
     let mut files: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
     for input in &args.inputs {
         let path = Path::new(input);
-        if path.is_dir() {
+        if path.is_dir() && !super::is_package_folder(path) {
             collect_directory(path, args.recursive, &mut files)?;
         } else if !path.exists() && has_glob(input) {
             let matches = expand_glob(input)?;
@@ -296,7 +296,7 @@ fn convert_one(
     options: &ConvertOptions,
     sink: &mut CollectingSink,
 ) -> Result<bool, CliError> {
-    let mut file = File::open(&job.input).map_err(|error| CliError::Io {
+    let mut file = super::open_input(&job.input).map_err(|error| CliError::Io {
         action: format!("opening '{}'", job.input.display()),
         error,
     })?;
@@ -519,7 +519,7 @@ fn collect_directory(
             .collect();
         names.sort();
         for path in names {
-            if path.is_dir() {
+            if path.is_dir() && !super::is_package_folder(&path) {
                 if recursive {
                     pending.push(path);
                 }
