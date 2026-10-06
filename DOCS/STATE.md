@@ -43,6 +43,8 @@ describes.
 
 ## Next
 
+- 2026-10-06: Pages tables at scale (`DOCS/benchmarks/pages-xlsx.md`): a Pages document of 100,000 table rows peaks at 2.2 GB in the reader (1.7 GB of it the package decode, about fifty tree fields a cell), against the 64 MB goal. Take the Numbers reader's levers to the Pages reader: tile rows and data lists deferred as bytes, unused objects skipped, streams decoded and freed in turn, tables streamed to the writer. Also: the Pages writer's `Metadata.iwa` is 16.7 MB on 500 tables (check against what Pages writes), it writes no ZIP64 (about 2,000 tables a package), and a table over 256 rows goes into one tile (check Pages accepts it, or split into 256-row tiles as Pages does).
+
 The document category's one-way streets are closed (0.8.0 to 0.10.0) and the data category's planned set is in (0.11.0 to 0.16.0). What follows, in order:
 
 - 2026-09-28, PDF first (a flagship: complete both ways before 1.0). Shipped: images <-> PDF (0.23), PDF to text, Markdown, HTML, and Word (0.24), and documents to PDF with system fonts (0.25). In order:

@@ -3554,10 +3554,15 @@ impl<'p> WorkbookReader<'p> {
             let Some(tile) = reader.graph.object(tile) else {
                 continue;
             };
-            let height = tile_size.min(table.rows - base);
+            // Numbers fills a tile with at most `tile_size` rows; other
+            // writers (Sublime's Pages writer among them) put a whole table
+            // in one tile, so the block spans the rows the tile holds.
+            let infos = tile_rows(View::of(tile));
+            let held = infos.iter().map(|info| info.index + 1).max().unwrap_or(0);
+            let height = tile_size.max(held).min(table.rows - base);
             block.clear();
             block.resize(height, empty.clone());
-            for info in tile_rows(View::of(tile)) {
+            for info in infos {
                 if let Some(cells) = block.get_mut(info.index) {
                     reader.tile_row_text(&info, cells, &lists);
                 }
