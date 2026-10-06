@@ -35,10 +35,10 @@ pub fn is_batch(args: &ConvertArgs) -> bool {
         || args.out_dir.is_some()
         || args.recursive
         || args.dry_run
-        || args
-            .inputs
-            .iter()
-            .any(|input| has_glob(input) || Path::new(input).is_dir())
+        || args.inputs.iter().any(|input| {
+            let path = Path::new(input);
+            has_glob(input) || (path.is_dir() && !super::is_package_folder(path))
+        })
 }
 
 pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliError> {
@@ -75,7 +75,7 @@ pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliE
     let mut files: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
     for input in &args.inputs {
         let path = Path::new(input);
-        if path.is_dir() {
+        if path.is_dir() && !super::is_package_folder(path) {
             collect_directory(path, args.recursive, &mut files)?;
         } else if !path.exists() && has_glob(input) {
             let matches = expand_glob(input)?;
@@ -296,7 +296,7 @@ fn convert_one(
     options: &ConvertOptions,
     sink: &mut CollectingSink,
 ) -> Result<bool, CliError> {
-    let mut file = File::open(&job.input).map_err(|error| CliError::Io {
+    let mut file = super::open_input(&job.input).map_err(|error| CliError::Io {
         action: format!("opening '{}'", job.input.display()),
         error,
     })?;
@@ -332,34 +332,138 @@ pub fn write_via_part(
     output: &Path,
     context: &mut Context<'_>,
 ) -> Result<(), CliError> {
-    let mut part = output.as_os_str().to_owned();
-    part.push(".part");
-    let part = PathBuf::from(part);
-    let file = File::create(&part).map_err(|error| CliError::Io {
-        action: format!("creating '{}'", part.display()),
-        error,
-    })?;
-    let mut writer = BufWriter::new(file);
-    let executed = planner::execute(plan, input, &mut writer, context);
-    let flushed = match executed {
-        Ok(()) => writer.flush().map_err(|error| CliError::Io {
-            action: format!("writing '{}'", part.display()),
-            error,
-        }),
-        Err(error) => Err(CliError::Convert(error)),
-    };
-    drop(writer);
-    if let Err(error) = flushed {
-        let _ = fs::remove_file(&part);
-        return Err(error);
-    }
-    fs::rename(&part, output).map_err(|error| {
-        let _ = fs::remove_file(&part);
-        CliError::Io {
-            action: format!("moving '{}' into place", part.display()),
-            error,
+    let mut parts = FileParts::new(output);
+    let executed = planner::execute_parts(plan, input, &mut parts, context);
+    match executed {
+        Ok(()) => parts.finish(context),
+        Err(error) => {
+            parts.discard();
+            Err(CliError::Convert(error))
         }
-    })
+    }
+}
+
+/// Output files written as `.part` files and moved into place at the end:
+/// one part becomes `output` itself; several go into a folder named after
+/// it (`book.csv` -> `book/Sales.csv`, `book/Costs.csv`).
+struct FileParts {
+    output: PathBuf,
+    written: Vec<(String, PathBuf)>,
+    current: Option<BufWriter<File>>,
+}
+
+impl FileParts {
+    fn new(output: &Path) -> FileParts {
+        FileParts {
+            output: output.to_path_buf(),
+            written: Vec::new(),
+            current: None,
+        }
+    }
+
+    fn temporary(&self, index: usize) -> PathBuf {
+        let mut name = self.output.as_os_str().to_owned();
+        if index == 0 {
+            name.push(".part");
+        } else {
+            name.push(format!(".{index}.part"));
+        }
+        PathBuf::from(name)
+    }
+
+    fn close_current(&mut self) -> Result<(), CliError> {
+        if let Some(mut writer) = self.current.take() {
+            writer.flush().map_err(|error| CliError::Io {
+                action: format!("writing '{}'", self.output.display()),
+                error,
+            })?;
+        }
+        Ok(())
+    }
+
+    fn discard(&mut self) {
+        self.current = None;
+        for (_, temporary) in &self.written {
+            let _ = fs::remove_file(temporary);
+        }
+    }
+
+    fn finish(mut self, context: &mut Context<'_>) -> Result<(), CliError> {
+        if let Err(error) = self.close_current() {
+            self.discard();
+            return Err(error);
+        }
+        let result = self.move_into_place(context);
+        if result.is_err() {
+            self.discard();
+        }
+        result
+    }
+
+    fn move_into_place(&mut self, context: &mut Context<'_>) -> Result<(), CliError> {
+        let rename = |from: &Path, to: &Path| {
+            fs::rename(from, to).map_err(|error| CliError::Io {
+                action: format!("moving '{}' into place", from.display()),
+                error,
+            })
+        };
+        match self.written.len() {
+            0 => {
+                // Nothing was written: the output is an empty file.
+                File::create(&self.output).map_err(|error| CliError::Io {
+                    action: format!("creating '{}'", self.output.display()),
+                    error,
+                })?;
+                Ok(())
+            }
+            1 => rename(&self.written[0].1, &self.output),
+            _ => {
+                let directory = self.output.with_extension("");
+                let extension = self
+                    .output
+                    .extension()
+                    .map(|extension| extension.to_string_lossy().into_owned());
+                fs::create_dir_all(&directory).map_err(|error| CliError::Io {
+                    action: format!("creating '{}'", directory.display()),
+                    error,
+                })?;
+                let mut names: Vec<String> = Vec::new();
+                for (index, (name, temporary)) in self.written.iter().enumerate() {
+                    let stem = crate::converter::part_file_stem(name, index, &names);
+                    let file_name = match &extension {
+                        Some(extension) => format!("{stem}.{extension}"),
+                        None => stem.clone(),
+                    };
+                    rename(temporary, &directory.join(&file_name))?;
+                    names.push(stem);
+                }
+                let files = names
+                    .iter()
+                    .map(|stem| match &extension {
+                        Some(extension) => format!("{stem}.{extension}"),
+                        None => stem.clone(),
+                    })
+                    .collect();
+                context.emit(Event::PartsWritten {
+                    directory: directory.display().to_string(),
+                    files,
+                });
+                Ok(())
+            }
+        }
+    }
+}
+
+impl crate::converter::Parts for FileParts {
+    fn part(&mut self, name: &str) -> std::io::Result<&mut dyn Write> {
+        if let Some(mut writer) = self.current.take() {
+            writer.flush()?;
+        }
+        let temporary = self.temporary(self.written.len());
+        let file = File::create(&temporary)?;
+        self.written.push((name.to_string(), temporary));
+        Ok(self.current.insert(BufWriter::new(file)))
+    }
 }
 
 /// The output for `input`: its name with the target's extension, under
@@ -415,7 +519,7 @@ fn collect_directory(
             .collect();
         names.sort();
         for path in names {
-            if path.is_dir() {
+            if path.is_dir() && !super::is_package_folder(&path) {
                 if recursive {
                     pending.push(path);
                 }

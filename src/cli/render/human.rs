@@ -99,6 +99,16 @@ impl<W: Write> Sink for HumanRenderer<W> {
                     self.line(CYAN, "file:", &body);
                 }
             }
+            Event::PartsWritten { directory, files } => {
+                if self.at_least(Verbosity::Normal) {
+                    let body = format!(
+                        "{} files in {directory}/: {}",
+                        files.len(),
+                        files.join(", ")
+                    );
+                    self.line(CYAN, "wrote:", &body);
+                }
+            }
             Event::FileFailed { input, message } => {
                 let body = format!("{input}: {message}");
                 self.line(RED, "failed:", &body);

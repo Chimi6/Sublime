@@ -165,6 +165,41 @@ fn write_object<W: Write>(
     Ok(())
 }
 
+/// Tables (each as CSV) as one JSON file: one table as the array
+/// `csv-to-json` makes of it, several as an object of those arrays keyed by
+/// their names (the shape `xlsx-to-json` writes and `json-to-xlsx` reads).
+pub fn tables_to_json(
+    tables: &[(String, Vec<u8>)],
+    output: &mut dyn Write,
+    context: &mut Context<'_>,
+) -> Result<(), ConvertError> {
+    let mut arrays: Vec<Vec<u8>> = Vec::with_capacity(tables.len());
+    for (_, csv) in tables {
+        let mut json = Vec::new();
+        let mut source: &[u8] = csv;
+        CSV_TO_JSON.convert(Input::Stream(&mut source), &mut json, context)?;
+        arrays.push(json);
+    }
+    if let [only] = arrays.as_slice() {
+        output.write_all(only)?;
+        return Ok(());
+    }
+    let mut names: Vec<String> = Vec::new();
+    let mut writer = crate::io::json::JsonWriter::new(&mut *output);
+    writer.begin_object()?;
+    for (index, ((name, _), json)) in tables.iter().zip(&arrays).enumerate() {
+        // Keys stay unique: a repeated name is numbered.
+        let key = crate::converter::part_file_stem(name, index, &names);
+        writer.key(&key)?;
+        names.push(key);
+        let text = String::from_utf8_lossy(json);
+        writer.raw(text.trim_end())?;
+    }
+    writer.end_object()?;
+    writer.flush()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

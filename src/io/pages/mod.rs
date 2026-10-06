@@ -10,7 +10,7 @@ pub mod schema;
 pub mod types;
 pub mod writer;
 
-pub use document::read_document;
+pub use document::{WorkbookReader, WorkbookSheet, WorkbookTable, read_document};
 pub use package::{Entry, Object, ObjectMessage, Package, PackageError, Scope, Stream};
 pub use types::type_name;
 pub use writer::{write as write_package, write_to as write_package_to};

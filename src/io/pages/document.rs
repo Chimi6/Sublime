@@ -80,6 +80,12 @@ impl<'p> Graph<'p> {
         })
     }
 
+    fn object_type(&self, identifier: u64) -> Option<u32> {
+        let location = self.index.get(&identifier)?;
+        let object = &self.streams[location.stream].objects[location.object];
+        Some(object.messages.first()?.message_type)
+    }
+
     fn objects_of_type(&self, message_type: u32) -> Vec<(u64, Message<'p>)> {
         let mut found = Vec::new();
         for stream in &self.streams {
@@ -125,6 +131,18 @@ impl<'p> View<'p> {
                     .is_some_and(|field| field.name == name)
             })
             .map(|(_, entry)| entry.value)
+    }
+
+    /// The encoded bytes of field `number` where the schema does not
+    /// describe the message (the Numbers archives).
+    fn raw_bytes(&self, number: u32) -> impl Iterator<Item = &'p [u8]> + '_ {
+        let tree = self.tree;
+        tree.chain(self.first)
+            .filter(move |(_, entry)| entry.number == number)
+            .filter_map(move |(_, entry)| match entry.value {
+                Node::RawBytes(span) => Some(tree.bytes(span)),
+                _ => None,
+            })
     }
 
     fn node(&self, name: &str) -> Option<Node> {
@@ -177,6 +195,13 @@ impl<'p> View<'p> {
     }
 
     /// A nested message the package kept encoded (`Tree::deferred`).
+    fn deferred_all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'p [u8]> + 'a {
+        self.entries(name).filter_map(|node| match node {
+            Node::Deferred(span) => Some(self.tree.bytes(span)),
+            _ => None,
+        })
+    }
+
     fn deferred(&self, name: &str) -> Option<&'p [u8]> {
         match self.node(name)? {
             Node::Deferred(span) => Some(self.tree.bytes(span)),
@@ -523,35 +548,41 @@ struct Region {
 
 /// Reads the document the package holds.
 pub fn read_document(package: &Package) -> Document {
-    let mut reader = Reader {
-        package,
-        graph: Graph::new(package),
-        document: Document::default(),
-        paragraph_styles: HashMap::new(),
-        character_styles: HashMap::new(),
-        list_styles: HashMap::new(),
-        last_paragraph_style: None,
-        resolved_paragraph: HashMap::new(),
-        resolved_paragraphs: Vec::new(),
-        resolved_character: HashMap::new(),
-        resolved_characters: Vec::new(),
-        revision_ids: HashMap::new(),
-        boundary_scratch: Vec::new(),
-        storage_base: 0,
-        comment_marks: Vec::new(),
-        comment_marks_done: 0,
-        comment_ids: HashMap::new(),
-        floating_sources: Vec::new(),
-        cursors: Cursors::default(),
-        pending_blocks: Vec::new(),
-        following_blocks: Vec::new(),
-        media: HashMap::new(),
-        data_files: None,
-        merges: None,
-        single_header_footer: false,
-    };
+    let mut reader = Reader::new(package);
     reader.read();
     reader.document
+}
+
+impl<'p> Reader<'p> {
+    fn new(package: &'p Package) -> Reader<'p> {
+        Reader {
+            package,
+            graph: Graph::new(package),
+            document: Document::default(),
+            paragraph_styles: HashMap::new(),
+            character_styles: HashMap::new(),
+            list_styles: HashMap::new(),
+            last_paragraph_style: None,
+            resolved_paragraph: HashMap::new(),
+            resolved_paragraphs: Vec::new(),
+            resolved_character: HashMap::new(),
+            resolved_characters: Vec::new(),
+            revision_ids: HashMap::new(),
+            boundary_scratch: Vec::new(),
+            storage_base: 0,
+            comment_marks: Vec::new(),
+            comment_marks_done: 0,
+            comment_ids: HashMap::new(),
+            floating_sources: Vec::new(),
+            cursors: Cursors::default(),
+            pending_blocks: Vec::new(),
+            following_blocks: Vec::new(),
+            media: HashMap::new(),
+            data_files: None,
+            merges: None,
+            single_header_footer: false,
+        }
+    }
 }
 
 /// Type ids of the messages the reader looks for.
@@ -600,6 +631,28 @@ struct CellRecord {
     text_style: Option<u32>,
 }
 
+/// The text of a cell that holds a value: a string, a number, a boolean,
+/// a date, or a duration. Rich text is read from its own storage.
+fn record_text(record: &CellRecord, lists: &TableLists) -> Option<String> {
+    match record.kind {
+        3 => record.string.and_then(|id| lists.strings.get(&id)).cloned(),
+        2 | 10 => record
+            .decimal
+            .clone()
+            .or_else(|| record.double.map(format_number)),
+        6 => record.double.map(|value| {
+            if value != 0.0 {
+                "TRUE".to_string()
+            } else {
+                "FALSE".to_string()
+            }
+        }),
+        5 => record.seconds.map(format_date),
+        7 => record.double.map(format_duration),
+        _ => None,
+    }
+}
+
 /// Decodes one cell record (storage version 5).
 fn cell_record(bytes: &[u8]) -> Option<CellRecord> {
     if bytes.len() < 12 || bytes[0] != 5 {
@@ -642,6 +695,21 @@ fn decimal128_text(bytes: &[u8]) -> Option<String> {
         mantissa = mantissa * 256 + u128::from(*byte);
     }
     let digits = mantissa.to_string();
+    // Far from 1, the number in scientific notation, as a spreadsheet
+    // shows it, rather than hundreds of zeros: the leading digit's power
+    // of ten decides, at the bounds JavaScript prints plainly within.
+    let power = digits.len() as i32 - 1 + exponent;
+    if mantissa != 0 && !(-7..21).contains(&power) {
+        let significant = digits.trim_end_matches('0');
+        let (lead, rest) = significant.split_at(1);
+        let sign = if negative { "-" } else { "" };
+        let point = if rest.is_empty() { "" } else { "." };
+        let exponent_sign = if power < 0 { '-' } else { '+' };
+        return Some(format!(
+            "{sign}{lead}{point}{rest}E{exponent_sign}{}",
+            power.unsigned_abs()
+        ));
+    }
     let mut text = if exponent >= 0 {
         if mantissa == 0 {
             "0".to_string()
@@ -2428,21 +2496,7 @@ impl Reader<'_> {
                 }
                 return;
             }
-            3 => record.string.and_then(|id| lists.strings.get(&id)).cloned(),
-            2 | 10 => record
-                .decimal
-                .clone()
-                .or_else(|| record.double.map(format_number)),
-            6 => record.double.map(|value| {
-                if value != 0.0 {
-                    "TRUE".to_string()
-                } else {
-                    "FALSE".to_string()
-                }
-            }),
-            5 => record.seconds.map(format_date),
-            7 => record.double.map(format_duration),
-            _ => None,
+            _ => record_text(record, lists),
         };
         let Some(text) = text else {
             return;
@@ -3107,6 +3161,13 @@ fn page_setup(root: View<'_>) -> PageSetup {
 fn format_number(value: f64) -> String {
     if value.fract() == 0.0 && value.abs() < 1e15 {
         format!("{}", value as i64)
+    } else if value != 0.0 && !(1e-7..1e21).contains(&value.abs()) {
+        // Scientific notation far from 1, as `decimal128_text` writes it.
+        let text = format!("{value:E}");
+        match text.split_once('E') {
+            Some((mantissa, power)) if !power.starts_with('-') => format!("{mantissa}E+{power}"),
+            _ => text,
+        }
     } else {
         format!("{value}")
     }
@@ -3310,9 +3371,352 @@ fn iso_from_2001(seconds: f64) -> String {
     )
 }
 
+// ----- Numbers -----
+
+/// A Numbers sheet: its name and its tables, in order.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WorkbookSheet {
+    pub name: String,
+    pub tables: Vec<WorkbookTable>,
+}
+
+/// A Numbers table: its name and its size.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WorkbookTable {
+    pub name: String,
+    pub rows: usize,
+    pub columns: usize,
+    model: u64,
+}
+
+/// `TN.DocumentArchive` and `TN.SheetArchive`: Numbers' own types, which
+/// the Pages registry leaves out, so they are read by field number.
+const NUMBERS_DOCUMENT: u32 = 1;
+const NUMBERS_SHEET: u32 = 2;
+const TABLE_INFO: u32 = 6000;
+
+/// A Numbers document's sheets and tables, in the order the document
+/// lists them, with each table's cells read on request a tile at a time
+/// (a tile is 256 rows), so a table is never held whole. Cells come from
+/// the same records Pages tables are read from.
+pub struct WorkbookReader<'p> {
+    reader: Reader<'p>,
+    sheets: Vec<WorkbookSheet>,
+}
+
+impl<'p> WorkbookReader<'p> {
+    pub fn new(package: &'p Package) -> WorkbookReader<'p> {
+        let reader = Reader::new(package);
+        let mut sheets = Vec::new();
+        let root = reader
+            .graph
+            .objects_of_type(NUMBERS_DOCUMENT)
+            .into_iter()
+            .next()
+            .map(|(_, root)| root);
+        let sheet_ids: Vec<u64> = root
+            .map(|root| {
+                View::of(root)
+                    .raw_bytes(1)
+                    .filter_map(raw_reference)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for sheet_id in sheet_ids {
+            if reader.graph.object_type(sheet_id) != Some(NUMBERS_SHEET) {
+                continue;
+            }
+            let Some(sheet) = reader.graph.object(sheet_id) else {
+                continue;
+            };
+            let view = View::of(sheet);
+            let name = view
+                .raw_bytes(1)
+                .next()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                .unwrap_or_default();
+            let mut models = Vec::new();
+            for drawable in view.raw_bytes(2).filter_map(raw_reference) {
+                reader.collect_table_models(drawable, &mut models, 0);
+            }
+            let tables = models
+                .into_iter()
+                .filter_map(|model| {
+                    let view = View::of(reader.graph.object(model)?);
+                    Some(WorkbookTable {
+                        name: view.string("table_name").unwrap_or_default().to_string(),
+                        rows: view.integer("number_of_rows")?.clamp(0, 1 << 20) as usize,
+                        columns: view.integer("number_of_columns")?.clamp(0, 1 << 16) as usize,
+                        model,
+                    })
+                })
+                .collect();
+            sheets.push(WorkbookSheet { name, tables });
+        }
+        WorkbookReader { reader, sheets }
+    }
+
+    pub fn sheets(&self) -> &[WorkbookSheet] {
+        &self.sheets
+    }
+
+    /// Every row of a table on its full grid, in order: each cell as it
+    /// reads, empty rows and cells empty, merged-over cells empty.
+    pub fn rows<E>(
+        &mut self,
+        sheet: usize,
+        table: usize,
+        mut each: impl FnMut(&[String]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let Some(table) = self
+            .sheets
+            .get(sheet)
+            .and_then(|sheet| sheet.tables.get(table))
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let reader = &mut self.reader;
+        let Some(message) = reader.graph.object(table.model) else {
+            return Ok(());
+        };
+        let view = View::of(message);
+        let Some(store) = view.message("base_data_store") else {
+            return Ok(());
+        };
+        let lists = TableLists {
+            strings: reader.data_list_strings(store.reference("stringTable")),
+            rich_text: reader
+                .data_list_references(store.reference("rich_text_table"), "rich_text_payload"),
+            styles: HashMap::new(),
+        };
+        let merges: Vec<Region> = view
+            .message("merge_owner")
+            .and_then(|owner| owner.message("owner_id"))
+            .and_then(uuid)
+            .map(|owner| reader.merge_regions(owner))
+            .unwrap_or_default()
+            .into_iter()
+            // Regions past the table's edges are left alone, as
+            // `apply_merge` leaves them.
+            .filter(|region| {
+                region.rows > 0
+                    && region.columns > 0
+                    && region.row + region.rows <= table.rows
+                    && region.column + region.columns <= table.columns
+            })
+            .collect();
+        let mut tiles: Vec<(usize, u64)> = Vec::new();
+        let mut tile_size = 256;
+        if let Some(storage) = store.message("tiles") {
+            tile_size = storage.integer("tile_size").unwrap_or(256).max(1) as usize;
+            for tile in storage.messages("tiles") {
+                let base = tile.integer("tileid").unwrap_or(0).max(0) as usize * tile_size;
+                if let Some(id) = tile.reference("tile") {
+                    tiles.push((base, id));
+                }
+            }
+        }
+        tiles.sort_unstable();
+        let empty = vec![String::new(); table.columns];
+        let mut next = 0;
+        let mut block: Vec<Vec<String>> = Vec::new();
+        for (base, tile) in tiles {
+            if base < next || base >= table.rows {
+                continue;
+            }
+            while next < base {
+                each(&empty)?;
+                next += 1;
+            }
+            let Some(tile) = reader.graph.object(tile) else {
+                continue;
+            };
+            let height = tile_size.min(table.rows - base);
+            block.clear();
+            block.resize(height, empty.clone());
+            for info in tile_rows(View::of(tile)) {
+                if let Some(cells) = block.get_mut(info.index) {
+                    reader.tile_row_text(&info, cells, &lists);
+                }
+            }
+            for region in &merges {
+                for (offset, cells) in block.iter_mut().enumerate() {
+                    let row = base + offset;
+                    if row < region.row || row >= region.row + region.rows {
+                        continue;
+                    }
+                    for (column, cell) in cells
+                        .iter_mut()
+                        .enumerate()
+                        .skip(region.column)
+                        .take(region.columns)
+                    {
+                        if row != region.row || column != region.column {
+                            cell.clear();
+                        }
+                    }
+                }
+            }
+            for cells in &block {
+                each(cells)?;
+            }
+            next = base + height;
+        }
+        while next < table.rows {
+            each(&empty)?;
+            next += 1;
+        }
+        Ok(())
+    }
+}
+
+impl Reader<'_> {
+    /// One tile row's cells as text.
+    fn tile_row_text(&mut self, info: &TileRow<'_>, cells: &mut [String], lists: &TableLists) {
+        let (offsets, buffer, wide) = (info.offsets, info.buffer, info.wide);
+        for (column, cell) in cells.iter_mut().enumerate() {
+            let Some(pair) = offsets.get(column * 2..column * 2 + 2) else {
+                break;
+            };
+            let offset = u16::from_le_bytes([pair[0], pair[1]]);
+            if offset == u16::MAX {
+                continue;
+            }
+            let offset = usize::from(offset) * if wide { 4 } else { 1 };
+            let Some(record) = buffer.get(offset..).and_then(cell_record) else {
+                continue;
+            };
+            let text = if record.kind == 9 {
+                self.rich_cell_text(&record, lists)
+            } else {
+                record_text(&record, lists)
+            };
+            if let Some(text) = text {
+                *cell = text;
+            }
+        }
+    }
+
+    /// A rich text cell's paragraphs, one line each.
+    fn rich_cell_text(&mut self, record: &CellRecord, lists: &TableLists) -> Option<String> {
+        let storage = record
+            .rich_text
+            .and_then(|id| lists.rich_text.get(&id))
+            .and_then(|payload| self.graph.object(*payload))
+            .and_then(|payload| View::of(payload).reference("storage"))
+            .and_then(|storage| self.graph.object(storage))?;
+        let blocks = self.nested_blocks(View::of(storage));
+        Some(cell_text(&self.document, &blocks))
+    }
+
+    /// The table models a sheet's drawable holds: a table, or the tables
+    /// in a group.
+    fn collect_table_models(&self, drawable: u64, models: &mut Vec<u64>, depth: u32) {
+        let Some(message) = self.graph.object(drawable) else {
+            return;
+        };
+        let view = View::of(message);
+        if self.graph.object_type(drawable) == Some(TABLE_INFO) {
+            if let Some(model) = view.reference("tableModel") {
+                models.push(model);
+            }
+            return;
+        }
+        if depth < 8 {
+            for child in view.references("children") {
+                self.collect_table_models(child, models, depth + 1);
+            }
+        }
+    }
+}
+
+/// One row of a tile: its index in the tile and its cell records.
+struct TileRow<'p> {
+    index: usize,
+    offsets: &'p [u8],
+    buffer: &'p [u8],
+    wide: bool,
+}
+
+/// A tile's rows, decoded (`TST.TileRowInfo` messages) or, as a workbook
+/// reads them, kept as their bytes (`Scope::Workbook` defers them: a row
+/// is nine fields, and a large table has a million rows).
+fn tile_rows<'p>(tile: View<'p>) -> Vec<TileRow<'p>> {
+    let mut rows: Vec<TileRow<'p>> = tile
+        .messages("rowInfos")
+        .into_iter()
+        .filter_map(|info| {
+            Some(TileRow {
+                index: info.integer("tile_row_index").unwrap_or(0).max(0) as usize,
+                offsets: info.bytes("cell_offsets")?,
+                buffer: info.bytes("cell_storage_buffer")?,
+                wide: info.boolean("has_wide_offsets").unwrap_or(false),
+            })
+        })
+        .collect();
+    let Some(schema) = super::schema::SCHEMA.message("TST.TileRowInfo") else {
+        return rows;
+    };
+    let number = |name: &str| schema.slot_named(name).map(|(_, field)| field.number);
+    let (Some(index), Some(offsets), Some(buffer), Some(wide)) = (
+        number("tile_row_index"),
+        number("cell_offsets"),
+        number("cell_storage_buffer"),
+        number("has_wide_offsets"),
+    ) else {
+        return rows;
+    };
+    for bytes in tile.deferred_all("rowInfos") {
+        let mut row = TileRow {
+            index: 0,
+            offsets: &[],
+            buffer: &[],
+            wide: false,
+        };
+        for field in FieldReader::new(bytes).flatten() {
+            match field.value {
+                Value::Varint(value) if field.number == index => row.index = value as usize,
+                Value::Varint(value) if field.number == wide => row.wide = value != 0,
+                Value::Bytes(value) if field.number == offsets => row.offsets = value,
+                Value::Bytes(value) if field.number == buffer => row.buffer = value,
+                _ => {}
+            }
+        }
+        rows.push(row);
+    }
+    rows
+}
+
+/// A cell's paragraphs as text, one line each.
+fn cell_text(document: &Document, blocks: &[Block]) -> String {
+    let mut text = String::new();
+    for block in blocks {
+        let Block::Paragraph(paragraph) = block else {
+            continue;
+        };
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&document.paragraph_text(paragraph));
+    }
+    text
+}
+
+/// The identifier in an encoded `TSP.Reference`.
+fn raw_reference(bytes: &[u8]) -> Option<u64> {
+    FieldReader::new(bytes).find_map(|field| match field {
+        Ok(field) if field.number == 1 => match field.value {
+            Value::Varint(identifier) => Some(identifier),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
 #[cfg(test)]
 mod decimal_tests {
-    use super::decimal128_text;
+    use super::{decimal128_text, format_number};
 
     fn encode(mantissa: u128, exponent: i32, negative: bool) -> Vec<u8> {
         let mut bytes = mantissa.to_le_bytes().to_vec();
@@ -3337,5 +3741,24 @@ mod decimal_tests {
             decimal128_text(&encode(12, 2, false)).as_deref(),
             Some("1200")
         );
+        assert_eq!(
+            decimal128_text(&encode(1234, -303, false)).as_deref(),
+            Some("1.234E-300")
+        );
+        assert_eq!(
+            decimal128_text(&encode(5, 30, true)).as_deref(),
+            Some("-5E+30")
+        );
+        assert_eq!(
+            decimal128_text(&encode(1, -7, false)).as_deref(),
+            Some("0.0000001")
+        );
+    }
+
+    #[test]
+    fn doubles_far_from_one_are_scientific() {
+        assert_eq!(format_number(1.234e-300), "1.234E-300");
+        assert_eq!(format_number(2.5e25), "2.5E+25");
+        assert_eq!(format_number(0.125), "0.125");
     }
 }

@@ -52,6 +52,12 @@ pub enum Event {
         input: String,
         message: String,
     },
+    /// One input became several files (a workbook's sheets as CSVs, a PDF's
+    /// pages as images), written into `directory`.
+    PartsWritten {
+        directory: String,
+        files: Vec<String>,
+    },
     /// The batch is over; on a dry run nothing was written and
     /// `converted` counts what would have been.
     BatchFinished {

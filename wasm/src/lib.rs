@@ -31,6 +31,8 @@ use sublime::registry;
 
 thread_local! {
     static OUTPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// How many files the last result holds (more than one: a ZIP of them).
+    static PARTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static MESSAGE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -96,6 +98,7 @@ pub unsafe extern "C" fn convert(
 fn run(from: &[u8], to: &[u8], input: &[u8]) -> u32 {
     set_message("");
     OUTPUT.with(|output| output.borrow_mut().clear());
+    PARTS.with(|parts| parts.set(0));
     let known = registry::all_formats();
     let (Ok(from), Ok(to)) = (std::str::from_utf8(from), std::str::from_utf8(to)) else {
         set_message("format ids must be UTF-8");
@@ -134,17 +137,36 @@ fn run(from: &[u8], to: &[u8], input: &[u8]) -> u32 {
     let mut sink = NullSink;
     let mut context = Context::new(&mut sink, &options);
     let mut source: &[u8] = input;
-    let mut result = Vec::new();
-    let outcome = planner::execute(
+    let mut parts = sublime::converter::MemoryParts::default();
+    let outcome = planner::execute_parts(
         &plan,
         sublime::converter::Input::Stream(&mut source),
-        &mut result,
+        &mut parts,
         &mut context,
     );
     if let Err(error) = outcome {
         set_message(&error.to_string());
         return FAILED;
     }
+    // Several parts (a workbook's sheets as CSVs) come back as one ZIP.
+    let count = parts.parts.len().max(1);
+    PARTS.with(|cell| cell.set(count));
+    let result = if parts.parts.len() > 1 {
+        let extension = to.extensions.first().copied().unwrap_or(to.id);
+        match parts.zip(extension) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                set_message(&error.to_string());
+                return FAILED;
+            }
+        }
+    } else {
+        parts
+            .parts
+            .pop()
+            .map(|(_, bytes)| bytes)
+            .unwrap_or_default()
+    };
     OUTPUT.with(|output| *output.borrow_mut() = result);
     let notes = plan.loss_descriptions();
     if notes.is_empty() {
@@ -153,6 +175,13 @@ fn run(from: &[u8], to: &[u8], input: &[u8]) -> u32 {
         set_message(&notes.join("; "));
         CONVERTED_WITH_LOSS
     }
+}
+
+/// How many files the last result holds: 1, or more when the input's parts
+/// (a workbook's sheets into CSV) came back as a ZIP of a file each.
+#[unsafe(no_mangle)]
+pub extern "C" fn output_parts() -> usize {
+    PARTS.with(|parts| parts.get())
 }
 
 #[unsafe(no_mangle)]
