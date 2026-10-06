@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Changed
+
+- Numbers -> Excel is its own benchmark pair, `numbers-xlsx` (`DOCS/benchmarks/numbers-xlsx.md`), split out of `numbers-csv` and rerun at 0.27.1 with typed dates and booleans: every line passes (144 to 146 MB/s of input plus uncompressed output at 127 to 147 MB, against numbers-parser with openpyxl's 2.3 to 2.4 at 4.2 GB).
+
 ## [0.27.1] - 2026-10-06
 
 ### Added
