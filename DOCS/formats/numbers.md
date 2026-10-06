@@ -29,7 +29,7 @@ names worksheets when it exports to Excel.
 | CSV, TSV, JSON Lines | a folder named after the output, a file per table; one table is one file |
 | JSON | one object of arrays keyed by table name; one table stays the plain array |
 | Markdown and the documents through it | a table under a heading of its name per table |
-| Excel | a worksheet per table |
+| Excel | a worksheet per table; numbers, dates, and booleans as cells of their type |
 | standard output | the first table, the rest reported as a loss |
 
 `--sheet` picks a sheet (its every table), a table by its name, or a table
@@ -38,7 +38,9 @@ by its number from 1.
 ## Cells
 
 A cell is written as its stored value, as Excel cells are: numbers in full
-(far from 1, in scientific notation: `1.234E-300`), dates in ISO 8601,
+(far from 1, in scientific notation: `1.234E-300`), dates in ISO 8601
+(`2024-08-08`, or `2024-08-08T14:35:09` with a time, the Excel reader's
+forms, so the workbook writer makes them dates again),
 booleans as `TRUE` and `FALSE`, durations as Numbers' units (`1w 3d 2h`),
 rich text as its lines. Number formats (currency, percentages, thousands
 separators, custom date formats) are not applied. A table keeps its full

@@ -185,7 +185,7 @@ pub struct MarkdownToXlsx;
 
 pub static MARKDOWN_TO_XLSX: MarkdownToXlsx = MarkdownToXlsx;
 
-const MARKDOWN_TO_XLSX_NOTE: &str = "each of the document's tables a sheet, named after the heading before it, inline formatting flattened to text and decimals as numbers; everything else in the document is dropped";
+const MARKDOWN_TO_XLSX_NOTE: &str = "each of the document's tables a sheet, named after the heading before it, inline formatting flattened to text, decimals as numbers, ISO dates as dates, and TRUE and FALSE as booleans; everything else in the document is dropped";
 
 impl Converter for MarkdownToXlsx {
     fn name(&self) -> &'static str {
