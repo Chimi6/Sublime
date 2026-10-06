@@ -1,7 +1,7 @@
 """score.py <dir> [-v]: compares our CSVs (<dir>/ours/<name>/) with
 numbers-parser's values (<dir>/ref/<name>.json), cell by cell. Numbers
-compare as numbers; a date compares as its day, and its time to the minute
-when it has one. Prints the files that match exactly and the share of
+compare as numbers; a date compares as its day, and as its day and time
+(`YYYY-MM-DDTHH:MM:SS`) when it has a time. Prints the files that match exactly and the share of
 non-empty cells that match; -v lists each file's first differences."""
 import csv
 import glob
@@ -29,10 +29,10 @@ def same(want, got):
     a, b = number(want), number(got)
     if a is not None and b is not None:
         return a == b or abs(a - b) <= 1e-9 * max(abs(a), abs(b))
-    date = re.match(r"(\d{4}-\d\d-\d\d) (\d\d:\d\d)", want)
+    date = re.match(r"(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)", want)
     if date:
-        midnight = want[11:19] == "00:00:00"
-        return got == (date.group(1) if midnight else f"{date.group(1)} {date.group(2)}")
+        midnight = date.group(2) == "00:00:00"
+        return got == (date.group(1) if midnight else f"{date.group(1)}T{date.group(2)}")
     return False
 
 

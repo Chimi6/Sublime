@@ -200,7 +200,7 @@ fn object_members<R: Read>(source: R) -> Result<Vec<(String, Vec<u8>)>, ConvertE
     Ok(members)
 }
 
-const JSON_TO_XLSX_NOTE: &str = "an array of objects as one sheet, an object of such arrays as a sheet per member; keys become the header row, nested values JSON text, decimals numbers, and objects with differing key sets get empty cells for missing keys";
+const JSON_TO_XLSX_NOTE: &str = "an array of objects as one sheet, an object of such arrays as a sheet per member; keys become the header row, nested values JSON text, decimals numbers, ISO date strings dates (JSON true and false stay text: a workbook boolean reads back as TRUE), and objects with differing key sets get empty cells for missing keys";
 
 /// JSON -> workbook: an array of objects is a sheet; an object of arrays (a
 /// workbook as `xlsx-to-json` writes one) is a sheet per member.
