@@ -5,7 +5,7 @@
 //! format list, with conditions that pick another format by value.
 //!
 //! The rules follow numbers-parser's reading of the format (MIT,
-//! https://github.com/masaccio/numbers-parser), checked against Numbers'
+//! <https://github.com/masaccio/numbers-parser>), checked against Numbers'
 //! own CSV export (`scripts/numbers-check`).
 
 /// One format, as the archive states it.

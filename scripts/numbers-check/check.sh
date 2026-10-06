@@ -23,7 +23,15 @@ for f in "$SC/numbers-parser/tests/data"/*.numbers; do
         export d to POSIX file \"$SC/app/$n\" as CSV
         close d saving no
       end tell
-    end timeout" >/dev/null 2>&1 || { rm -f "$SC/names/$n.json"; continue; }
+    end timeout" >/dev/null 2>&1 || {
+      # A document Numbers will not open leaves a dialog and its window:
+      # dismiss and close them so the next export is not blocked.
+      osascript -e 'tell application "System Events" to tell process "Numbers" to click button 1 of window 1' >/dev/null 2>&1
+      osascript -e 'with timeout of 30 seconds
+        tell application "Numbers" to close every document saving no
+      end timeout' >/dev/null 2>&1
+      rm -f "$SC/names/$n.json"; continue
+    }
   fi
   rm -rf "$SC/ours/$n" "$SC/xl/$n"; mkdir -p "$SC/ours/$n" "$SC/xl/$n"
   "$B" -q convert "$f" "$SC/ours/$n/out.csv" 2>/dev/null

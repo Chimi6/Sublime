@@ -42,6 +42,7 @@ use crate::converters::text_to_docx::TextToDocx;
 use crate::converters::text_to_html::TextToHtml;
 use crate::converters::text_to_markdown::TextToMarkdown;
 use crate::converters::text_to_pages::TextToPages;
+use crate::converters::to_numbers;
 use crate::converters::to_pdf;
 use crate::converters::toml_to_json::TomlToJson;
 use crate::converters::xlsx_to_csv;
@@ -49,7 +50,7 @@ use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 87] = [
+static CONVERTERS: [&dyn Converter; 92] = [
     &csv_to_json::CSV_TO_JSON,
     &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
@@ -127,6 +128,11 @@ static CONVERTERS: [&dyn Converter; 87] = [
     &numbers::NUMBERS_TO_JSON,
     &numbers::NUMBERS_TO_MARKDOWN,
     &numbers::NUMBERS_TO_XLSX,
+    &to_numbers::CSV_TO_NUMBERS,
+    &to_numbers::TSV_TO_NUMBERS,
+    &to_numbers::XLSX_TO_NUMBERS,
+    &to_numbers::JSON_TO_NUMBERS,
+    &to_numbers::MARKDOWN_TO_NUMBERS,
     &rows_document::MARKDOWN_TO_XLSX,
     &json_to_csv::JSON_TO_XLSX,
     &rows_document::MARKDOWN_TABLES_TO_JSON,
