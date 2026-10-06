@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- `numbers -> xlsx` rows in the `numbers-csv` benchmark pair, against numbers-parser with openpyxl and LibreOffice: every line passes (165 to 169 MB/s of input plus uncompressed output on 200,000 rows at 130 to 146 MB, against 2.7 to 2.8 MB/s at 4.3 GB).
+
 ### Changed
 
 - The workbook writer types ISO 8601 dates, dates and times, and times as dates (shown in the same form: `yyyy-mm-dd`, `yyyy-mm-dd"T"hh:mm:ss`, `[hh]:mm:ss`) and `TRUE` and `FALSE` as booleans, under the rule it already kept for numbers: a cell is typed only when reading it back gives the same text. Dates and booleans from Excel and Numbers now reach Excel as dates and booleans instead of text, and CSV's ISO dates do too; locale dates, partial dates, and lowercase `true` stay text. About 4 KB of code; converting a CSV whose columns are half dates and booleans is 3 to 6% slower, others unchanged.
