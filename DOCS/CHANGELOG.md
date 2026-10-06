@@ -6,9 +6,16 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.27.1] - 2026-10-06
+
 ### Added
 
+- Benchmark pair `pages-xlsx` (`DOCS/benchmarks/pages-xlsx.md`): Pages documents of tables into workbooks against the Pages goals. Every line fails (14 and 17 MB/s against 50; 2,231 and 736 MB against 64): the Pages reader decodes about fifty protobuf fields a table cell into its generic tree, which the text-only Pages pairs never measured. Recorded as found; the fix is next.
 - `numbers -> xlsx` rows in the `numbers-csv` benchmark pair, against numbers-parser with openpyxl and LibreOffice: every line passes (165 to 169 MB/s of input plus uncompressed output on 200,000 rows at 130 to 146 MB, against 2.7 to 2.8 MB/s at 4.3 GB).
+
+### Fixed
+
+- The Numbers reader reads a tile holding more than 256 rows whole; it kept only a tile's first 256 rows, which only a writer other than Numbers produces (Sublime's Pages writer puts a whole table in one tile).
 
 ### Changed
 
