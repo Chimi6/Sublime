@@ -6,9 +6,12 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-06
+
 ### Added
 
 - Rich Text Format both ways (`src/io/rtf`): RTF reads into the document model and the model writes RTF, so RTF reaches and is reached from Word, Pages, Markdown, HTML, and text (and PDF, out). Fonts and code pages (13 single-byte pages and Unicode escapes), styles, character and paragraph formatting, Word's and the older `\pn` lists, tables with merges, borders, shading, and nesting, sections with page setup and columns, headers and footers, links and page fields, footnotes, comments with replies, tracked changes, pictures with their alt text, text boxes and custom shape outlines, and the page colour. On 88 Word documents: Word -> RTF matches the reference's page count on 81 (LibreOffice's own RTF 81, Apple's `textutil` 65); RTF -> Word on 84 of LibreOffice's RTF (Apple 57) and 80 of macOS's (Apple 75).
+- Benchmark pair `rtf-docx` against pandoc, both directions: every line passes, at 25 to 60 times pandoc's speed and a twentieth of its memory (`DOCS/benchmarks/rtf-docx.md`). The `pages-docx` pair records Word -> Pages for the first time, inside the shared goals (67 and 92 MB/s, 40 and 51 MB peak).
 - `scripts/rtf-check`: the RTF <-> Word check against LibreOffice, the macOS text system, and Apple's `textutil`, for macOS; not run in CI.
 - Letter spacing and character width scale in the document model, read and written in Word (`w:spacing`, `w:w`) and RTF (`\expndtw`, `\charscalex`).
 
