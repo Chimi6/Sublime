@@ -12,7 +12,7 @@ use crate::converter::{Converter, FidelityKind};
 use crate::event::Hop;
 use crate::format::Format;
 
-pub use execute::{execute, execute_in_memory};
+pub use execute::{execute, execute_in_memory, execute_parts};
 
 pub struct Plan {
     pub hops: Vec<&'static dyn Converter>,

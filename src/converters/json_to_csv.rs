@@ -4,7 +4,9 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, RewindableRead, Tier};
+use crate::converter::{
+    ConvertError, Converter, Fidelity, Input, MemoryParts, Parts, RewindableRead, Tier,
+};
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
@@ -106,6 +108,155 @@ impl Converter for JsonToCsv {
         let keys = collect_keys(&mut rewound, shape, context)?;
         rewound.rewind()?;
         write_rows(&mut rewound, shape, self.delimiter, &keys, output, context)
+    }
+
+    /// JSON (not JSON Lines) whose root is an object of arrays (a workbook
+    /// as `xlsx-to-json` writes one) splits into a part per member.
+    fn splits(&self) -> bool {
+        !self.lines
+    }
+
+    fn convert_parts(
+        &self,
+        input: Input<'_>,
+        parts: &mut dyn Parts,
+        context: &mut Context<'_>,
+    ) -> Result<(), ConvertError> {
+        let mut rewound = input.into_rewindable()?;
+        if first_byte(&mut rewound)? != Some(b'{') {
+            // An array (or anything else) goes the constant-memory way.
+            rewound.rewind()?;
+            let output = parts.part("")?;
+            return self.convert(Input::Rewindable(&mut rewound), output, context);
+        }
+        rewound.rewind()?;
+        for (name, member) in object_members(&mut rewound)? {
+            let output = parts.part(&name)?;
+            let mut source: &[u8] = &member;
+            self.convert(Input::Stream(&mut source), output, context)?;
+        }
+        Ok(())
+    }
+}
+
+/// The first byte that is not white space.
+fn first_byte(reader: &mut dyn RewindableRead) -> Result<Option<u8>, ConvertError> {
+    let mut byte = [0u8; 1];
+    loop {
+        if reader.read(&mut byte)? == 0 {
+            return Ok(None);
+        }
+        if !byte[0].is_ascii_whitespace() {
+            return Ok(Some(byte[0]));
+        }
+    }
+}
+
+/// An object's members as `(key, the member's JSON)`, each an array.
+fn object_members<R: Read>(source: R) -> Result<Vec<(String, Vec<u8>)>, ConvertError> {
+    let malformed = |tokens: &JsonTokenizer<R>, message: String| ConvertError::Malformed {
+        location: tokens.location(),
+        message,
+    };
+    let mut tokens = JsonTokenizer::new(source);
+    let mut members = Vec::new();
+    let first = tokens.next_token()?;
+    if first != Token::BeginObject {
+        return Err(malformed(&tokens, "expected an object".to_string()));
+    }
+    loop {
+        let token = tokens.next_token()?;
+        match token {
+            Token::EndObject => break,
+            Token::Comma => continue,
+            Token::String => {
+                let key = tokens.text().to_string();
+                tokens.expect(Token::Colon)?;
+                let value = tokens.next_token()?;
+                if value != Token::BeginArray {
+                    return Err(malformed(
+                        &tokens,
+                        format!(
+                            "'{key}' is not an array of objects; a JSON object converts to rows only when every member is one (a workbook's sheets)"
+                        ),
+                    ));
+                }
+                let mut bytes = Vec::new();
+                {
+                    let mut writer = JsonWriter::new(&mut bytes);
+                    crate::io::json::copy::copy_value(&mut tokens, value, &mut writer)?;
+                    writer.flush()?;
+                }
+                members.push((key, bytes));
+            }
+            other => {
+                return Err(malformed(
+                    &tokens,
+                    format!("expected a key, found {}", other.describe()),
+                ));
+            }
+        }
+    }
+    Ok(members)
+}
+
+const JSON_TO_XLSX_NOTE: &str = "an array of objects as one sheet, an object of such arrays as a sheet per member; keys become the header row, nested values JSON text, decimals numbers, and objects with differing key sets get empty cells for missing keys";
+
+/// JSON -> workbook: an array of objects is a sheet; an object of arrays (a
+/// workbook as `xlsx-to-json` writes one) is a sheet per member.
+pub struct JsonToXlsx;
+
+pub static JSON_TO_XLSX: JsonToXlsx = JsonToXlsx;
+
+impl Converter for JsonToXlsx {
+    fn name(&self) -> &'static str {
+        "json-to-xlsx"
+    }
+
+    fn from(&self) -> &'static Format {
+        &formats::JSON
+    }
+
+    fn to(&self) -> &'static Format {
+        &formats::XLSX
+    }
+
+    fn fidelity(&self) -> Fidelity {
+        Fidelity::Conditional(JSON_TO_XLSX_NOTE)
+    }
+
+    fn tier(&self) -> Tier {
+        Tier::Native
+    }
+
+    fn convert(
+        &self,
+        input: Input<'_>,
+        output: &mut dyn Write,
+        context: &mut Context<'_>,
+    ) -> Result<(), ConvertError> {
+        let mut sheets = MemoryParts::default();
+        JSON_TO_CSV.convert_parts(input, &mut sheets, context)?;
+        let first = sheets
+            .parts
+            .first()
+            .map(|(name, _)| name.as_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Sheet1");
+        let mut writer = crate::io::xlsx::XlsxWriter::new(&mut *output, first)?;
+        for (index, (name, csv)) in sheets.parts.iter().enumerate() {
+            if index > 0 {
+                writer.next_sheet(name)?;
+            }
+            let mut reader = crate::io::csv::CsvReader::new(csv.as_slice());
+            let mut record = crate::io::csv::Record::new();
+            while reader.read_record(&mut record)? {
+                writer.write_row(record.fields())?;
+            }
+        }
+        writer.finish()?;
+        output.flush()?;
+        Ok(())
     }
 }
 

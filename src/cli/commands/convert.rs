@@ -1,9 +1,9 @@
 //! `sublime convert`: detect formats, plan, execute, report.
 
-use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::Path;
 
+use super::InputSource;
 use crate::cli::args::ConvertArgs;
 use crate::cli::{CliError, ExitCode};
 use crate::converter::{ConvertOptions, Input};
@@ -77,12 +77,12 @@ pub fn run(
     }
 }
 
-fn open_input_file(args: &ConvertArgs, reads_stdin: bool) -> Result<Option<File>, CliError> {
+fn open_input_file(args: &ConvertArgs, reads_stdin: bool) -> Result<Option<InputSource>, CliError> {
     if reads_stdin {
         return Ok(None);
     }
     let input_name = args.inputs.first().cloned().unwrap_or_default();
-    match File::open(&input_name) {
+    match super::open_input(Path::new(&input_name)) {
         Ok(file) => Ok(Some(file)),
         Err(error) => Err(CliError::Io {
             action: format!("opening '{input_name}'"),
@@ -95,7 +95,7 @@ fn resolve_from(
     args: &ConvertArgs,
     known: &[&'static Format],
     reads_stdin: bool,
-    input_file: Option<&mut File>,
+    input_file: Option<&mut InputSource>,
 ) -> Result<&'static Format, CliError> {
     if let Some(id) = &args.from {
         let found = format::find_by_id(id, known)?;
@@ -127,7 +127,7 @@ fn resolve_from(
     }
 }
 
-fn rewind_file(file: &mut File, name: &str) -> Result<(), CliError> {
+fn rewind_file(file: &mut InputSource, name: &str) -> Result<(), CliError> {
     use crate::converter::RewindableRead;
     let rewound = RewindableRead::rewind(file);
     rewound.map_err(|error| CliError::Io {
@@ -190,11 +190,49 @@ fn convert_to_stdout(
     context: &mut Context<'_>,
 ) -> Result<(), CliError> {
     let mut writer = BufWriter::new(stdout);
-    planner::execute(plan, input, &mut writer, context)?;
+    let mut parts = StdoutParts {
+        writer: &mut writer,
+        names: Vec::new(),
+        rest: io::sink(),
+    };
+    planner::execute_parts(plan, input, &mut parts, context)?;
+    let names = parts.names;
+    if names.len() > 1
+        && let Some(last) = plan.hops.last()
+    {
+        context.loss(
+            last.name(),
+            crate::converter::Location::default(),
+            format!(
+                "stdout holds one part: wrote '{}' and left out {} more ({}); give an output file to write each, or pick one with --sheet or --page",
+                names[0],
+                names.len() - 1,
+                names[1..].join(", ")
+            ),
+        );
+    }
     writer.flush().map_err(|error| CliError::Io {
         action: "writing stdout".to_string(),
         error,
     })
+}
+
+/// Standard output holds one part: the first is written, the rest counted.
+struct StdoutParts<'w> {
+    writer: &'w mut dyn Write,
+    names: Vec<String>,
+    rest: io::Sink,
+}
+
+impl crate::converter::Parts for StdoutParts<'_> {
+    fn part(&mut self, name: &str) -> io::Result<&mut dyn Write> {
+        self.names.push(name.to_string());
+        if self.names.len() == 1 {
+            Ok(&mut *self.writer)
+        } else {
+            Ok(&mut self.rest)
+        }
+    }
 }
 
 fn convert_to_file(

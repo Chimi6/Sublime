@@ -65,6 +65,17 @@ fn write_event(writer: &mut JsonWriter<&mut Vec<u8>>, event: &Event) -> std::io:
             writer.key("output")?;
             writer.string(output)?;
         }
+        Event::PartsWritten { directory, files } => {
+            writer.string("parts_written")?;
+            writer.key("directory")?;
+            writer.string(directory)?;
+            writer.key("files")?;
+            writer.begin_array()?;
+            for file in files {
+                writer.string(file)?;
+            }
+            writer.end_array()?;
+        }
         Event::FileFailed { input, message } => {
             writer.string("file_failed")?;
             writer.key("input")?;
