@@ -10,7 +10,7 @@ use sublime::converters::numbers::{
 };
 use sublime::converters::xlsx_to_csv::XLSX_TO_CSV;
 use sublime::event::{Context, NullSink};
-use sublime::io::pages::{Package, read_workbook};
+use sublime::io::pages::{Package, Scope, WorkbookReader};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -54,15 +54,20 @@ fn parts(converter: &dyn Converter, bytes: &[u8], sheet: Option<&str>) -> Vec<(S
         .collect()
 }
 
+/// A table's name, rows, and columns.
+type TableShape<'a> = (&'a str, usize, usize);
+
 fn names(parts: &[(String, String)]) -> Vec<&str> {
     parts.iter().map(|(name, _)| name.as_str()).collect()
 }
 
 #[test]
 fn sheets_hold_their_tables_in_order() {
-    let package = Package::read(&fixture("sheets.numbers")).expect("package");
-    let sheets = read_workbook(&package);
-    let layout: Vec<(&str, Vec<&str>)> = sheets
+    let package =
+        Package::read_scope(&fixture("sheets.numbers"), Scope::Workbook).expect("package");
+    let mut workbook = WorkbookReader::new(&package);
+    let layout: Vec<(&str, Vec<TableShape<'_>>)> = workbook
+        .sheets()
         .iter()
         .map(|sheet| {
             (
@@ -70,7 +75,7 @@ fn sheets_hold_their_tables_in_order() {
                 sheet
                     .tables
                     .iter()
-                    .map(|table| table.name.as_str())
+                    .map(|table| (table.name.as_str(), table.rows, table.columns))
                     .collect(),
             )
         })
@@ -78,13 +83,23 @@ fn sheets_hold_their_tables_in_order() {
     assert_eq!(
         layout,
         vec![
-            ("ZZZ_Sheet_1", vec!["ZZZ_Table_1", "ZZZ_Table_2"]),
-            ("ZZZ_Sheet_2", vec!["XXX_Table_1"]),
+            (
+                "ZZZ_Sheet_1",
+                vec![("ZZZ_Table_1", 5, 3), ("ZZZ_Table_2", 4, 4)]
+            ),
+            ("ZZZ_Sheet_2", vec![("XXX_Table_1", 4, 6)]),
         ]
     );
-    let first = &sheets[0].tables[0].rows;
-    assert_eq!(first[0], vec!["", "YYY_COL_1", "YYY_COL_2"]);
-    assert_eq!(first[4], vec!["YYY_ROW_4", "YYY_4_1", "YYY_4_2"]);
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    workbook
+        .rows(0, 0, |cells| -> Result<(), ()> {
+            rows.push(cells.to_vec());
+            Ok(())
+        })
+        .expect("rows");
+    assert_eq!(rows.len(), 5);
+    assert_eq!(rows[0], vec!["", "YYY_COL_1", "YYY_COL_2"]);
+    assert_eq!(rows[4], vec!["YYY_ROW_4", "YYY_4_1", "YYY_4_2"]);
 }
 
 #[test]

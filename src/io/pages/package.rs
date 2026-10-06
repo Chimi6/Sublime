@@ -118,7 +118,9 @@ pub enum Scope {
     Document,
     /// What a workbook reader needs: every object but the skipped types
     /// and the tables' row headers (sizes, which a cell's text does not
-    /// need).
+    /// need), each stream decoded and freed in turn. Not a walk from the
+    /// root: older Numbers files leave references out of their object
+    /// headers, so a walk misses tables' cells.
     Workbook,
 }
 
@@ -157,6 +159,9 @@ impl Package {
         if let Some(package) = Package::read_bundle(&archive, scope)? {
             return Ok(package);
         }
+        if scope == Scope::Workbook {
+            return Package::read_workbook(&archive);
+        }
         // Every entry is read first; the reachable set needs all streams'
         // object headers before any stream is decoded.
         let mut raw: Vec<(String, Vec<u8>, bool)> = Vec::new();
@@ -193,9 +198,9 @@ impl Package {
             }
         }
         let reachable = match scope {
-            Scope::Everything => None,
+            // A workbook was read stream by stream above.
+            Scope::Everything | Scope::Workbook => None,
             Scope::Document => Some(reachable_objects(&parsed)),
-            Scope::Workbook => Some(workbook_objects(&parsed)),
         };
         let deferred = match scope {
             Scope::Everything => Vec::new(),
@@ -219,6 +224,60 @@ impl Package {
                     bytes: bytes.clone(),
                 }),
             }
+        }
+        Ok(Package { entries })
+    }
+
+    /// `Scope::Workbook`: each stream decompressed, decoded without the
+    /// skipped types and the row headers, and freed before the next, since
+    /// the workbook reads every other object and needs no walk.
+    fn read_workbook(archive: &ZipArchive<'_>) -> Result<Package, PackageError> {
+        let mut deferred = deferred_fields();
+        // A tile's rows, which the workbook reader parses itself.
+        if let Some(tile) = SCHEMA.message("TST.Tile")
+            && let Some((_, field)) = tile.slot_named("rowInfos")
+        {
+            deferred.push((tile.index(), field.number));
+        }
+        let mut entries = Vec::new();
+        for entry in archive.entries() {
+            if entry.is_directory() {
+                continue;
+            }
+            let mut data = Vec::new();
+            archive.read(entry, &mut data)?;
+            if !entry.name.ends_with(".iwa") || data.starts_with(b"bvx") {
+                entries.push(Entry::File {
+                    name: entry.name.clone(),
+                    bytes: data,
+                });
+                continue;
+            }
+            let bytes = decompress_stream(&data).map_err(|error| PackageError::Iwa {
+                stream: entry.name.clone(),
+                error,
+            })?;
+            drop(data);
+            let objects = parse_objects(&bytes).map_err(|error| PackageError::Iwa {
+                stream: entry.name.clone(),
+                error,
+            })?;
+            let skipped: Vec<u64> = objects
+                .iter()
+                .filter(|object| {
+                    let message_type = object.message_type().unwrap_or(0);
+                    SKIPPED_TYPES.contains(&message_type) || message_type == ROW_HEADERS
+                })
+                .map(|object| object.identifier)
+                .collect();
+            let keep = |identifier: u64| !skipped.contains(&identifier);
+            entries.push(Entry::Stream(decode_objects(
+                &entry.name,
+                &bytes,
+                objects,
+                keep,
+                &deferred,
+            )?));
         }
         Ok(Package { entries })
     }
@@ -339,23 +398,6 @@ fn reachable_objects(streams: &[Option<Vec<IwaObject<'_>>>]) -> HashMap<u64, usi
         }
     }
     reachable
-}
-
-/// Every object but the skipped types and the row headers. Not a walk
-/// from the root: older Numbers files leave references out of their
-/// object headers, so a walk misses tables' cells.
-fn workbook_objects(streams: &[Option<Vec<IwaObject<'_>>>]) -> HashMap<u64, usize> {
-    streams
-        .iter()
-        .flatten()
-        .flatten()
-        .enumerate()
-        .filter(|(_, object)| {
-            let message_type = object.message_type().unwrap_or(0);
-            !SKIPPED_TYPES.contains(&message_type) && message_type != ROW_HEADERS
-        })
-        .map(|(position, object)| (object.identifier, position))
-        .collect()
 }
 
 /// Decodes one `.iwa` entry.
