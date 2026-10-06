@@ -43,7 +43,6 @@ describes.
 
 ## Next
 
-- 2026-10-06: Pages tables at scale (`DOCS/benchmarks/pages-xlsx.md`): a Pages document of 100,000 table rows peaks at 2.2 GB in the reader (1.7 GB of it the package decode, about fifty tree fields a cell), against the 64 MB goal. Take the Numbers reader's levers to the Pages reader: tile rows and data lists deferred as bytes, unused objects skipped, streams decoded and freed in turn, tables streamed to the writer. Also: the Pages writer's `Metadata.iwa` is 16.7 MB on 500 tables (check against what Pages writes), it writes no ZIP64 (about 2,000 tables a package), and a table over 256 rows goes into one tile (check Pages accepts it, or split into 256-row tiles as Pages does).
 
 The document category's one-way streets are closed (0.8.0 to 0.10.0) and the data category's planned set is in (0.11.0 to 0.16.0). What follows, in order:
 
@@ -92,6 +91,7 @@ documents in `DOCS/benchmarks`; measured-best patterns and failed spikes
 live in `temp/patterns.md`. Size wins over speed where they trade (the
 WebP color cache stays).
 
+- 2026-10-06 (deferred by decision: Numbers display formats and the Numbers writer come first): Pages tables at scale (`DOCS/benchmarks/pages-xlsx.md`): a Pages document of 100,000 table rows peaks at 2.2 GB in the reader (1.7 GB of it the package decode, about fifty tree fields a cell), against the 64 MB goal. Take the Numbers reader's levers to the Pages reader: tile rows and data lists deferred as bytes, unused objects skipped, streams decoded and freed in turn, tables streamed to the writer. Also: the Pages writer's `Metadata.iwa` is 16.7 MB on 500 tables (check against what Pages writes), it writes no ZIP64 (about 2,000 tables a package), and a table over 256 rows goes into one tile (check Pages accepts it, or split into 256-row tiles as Pages does).
 - PNG decode at parity with the png crate: `png -> ppm` photo and `png -> pam` stock are ties (0.23.1 decision). A clear margin needs the inflater (fdeflate's structure is the reference) or the unfilter; the ties close when either moves.
 - WebP lossless photo encode (`webp-png`): 249 against image-webp's 428 MB/s, by design (the color cache and predictor search make real photos 8 to 37% smaller; image-webp does neither). Tried: byte-wise predictors, recorded first-pass decisions, locals in both passes, four candidates, select in blocks (slower), branchless bit writer (slower). Levers: predictor scoring is 53 ms of the photo's encode, half of it select; score and compute residuals per 16-row band as rows arrive (the image is re-read five times today); threads for scoring and residuals on the command line (not wasm).
 - WebP lossless size against libwebp's default effort (6% smaller than ours, thirty times the time): meta prefix codes per region, the cross-color transform, general LZ77 distances, the entropy predictor choice at the default effort if it gets cheaper.

@@ -4,6 +4,7 @@
 //! registry and, as they are mapped, the readers for its archives.
 
 pub mod document;
+pub mod format;
 pub mod json;
 pub mod package;
 pub mod schema;

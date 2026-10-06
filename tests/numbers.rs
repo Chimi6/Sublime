@@ -93,7 +93,7 @@ fn sheets_hold_their_tables_in_order() {
     let mut rows: Vec<Vec<String>> = Vec::new();
     workbook
         .rows(0, 0, |cells| -> Result<(), ()> {
-            rows.push(cells.to_vec());
+            rows.push(cells.iter().map(|cell| cell.text.clone()).collect());
             Ok(())
         })
         .expect("rows");
@@ -190,4 +190,54 @@ fn a_zipped_package_folder_reads() {
 fn an_older_document_without_object_references_reads() {
     let tables = parts(&NUMBERS_TO_CSV, &fixture("old.numbers"), None);
     assert_eq!(tables, vec![("Sheet 1".to_string(), "123\n".to_string())]);
+}
+
+/// Rows of CSV text, trailing empty cells and rows dropped.
+fn csv_rows(text: &[u8]) -> Vec<Vec<String>> {
+    let text = text.strip_prefix(b"\xef\xbb\xbf").unwrap_or(text);
+    let mut reader = sublime::io::csv::CsvReader::new(text);
+    let mut record = sublime::io::csv::Record::new();
+    let mut rows = Vec::new();
+    while reader.read_record(&mut record).expect("csv") {
+        let mut row: Vec<String> = record.fields().map(str::to_string).collect();
+        while row.last().is_some_and(String::is_empty) {
+            row.pop();
+        }
+        rows.push(row);
+    }
+    while rows.last().is_some_and(Vec::is_empty) {
+        rows.pop();
+    }
+    rows
+}
+
+/// Numbers' own CSV export of each document (`reference/`) is what our
+/// tables read as: dates, fractions, custom number formats with their
+/// padding, currencies, and percentages.
+#[test]
+fn cells_read_as_numbers_shows_them() {
+    let reference =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/numbers/reference");
+    let cases = [
+        (
+            "formats.numbers",
+            vec![
+                ("Dates", "formats/Dates-Dates.csv"),
+                ("Numbers", "formats/Numbers-Table 1.csv"),
+            ],
+        ),
+        ("currencies.numbers", vec![("Income", "currencies.csv")]),
+    ];
+    for (document, tables) in cases {
+        let ours = parts(&NUMBERS_TO_CSV, &fixture(document), None);
+        for (part, expected) in tables {
+            let (_, text) = ours.iter().find(|(name, _)| name == part).expect(part);
+            let expected = std::fs::read(reference.join(expected)).expect("reference");
+            assert_eq!(
+                csv_rows(text.as_bytes()),
+                csv_rows(&expected),
+                "{document} {part}"
+            );
+        }
+    }
 }
