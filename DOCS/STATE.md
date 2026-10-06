@@ -67,6 +67,7 @@ The document category's one-way streets are closed (0.8.0 to 0.10.0) and the dat
 
 - 2026-09-22: External tier plumbing and ffmpeg wrapping for media.
 - 2026-09-22: Type inference option for CSV -> JSON (opt-in, declared lossy).
+- 2026-10-06: Typed cells end to end (option B of the Excel typing review): readers that know a cell's type (Excel, Numbers, JSON) pass it through rows (text, number, date, boolean) instead of text, so the workbook writer types exactly rather than by form, a source text cell that looks like an ISO date stays text, and JSON can carry numbers and booleans. Deferred for the writer's read-back rule (option A, shipped), which covers every source, CSV included, for about 4 KB; B changes the rows interface of every spreadsheet converter (about 10 files) and the CSV-bytes paths (`tables_to_json`, `tables_to_markdown`). Take it up with the ODS reader, or when typed JSON output is wanted.
 - 2026-09-22: Pretty JSON output option.
 - 2026-09-22: Delimiter options for CSV on the command line (semicolon, pipe); TSV shipped as its own format on 2026-09-25.
 
@@ -120,7 +121,6 @@ WebP color cache stays).
   - Deflate and PNG filter levers moved to Optimization above (lazy matching and priced matches shipped 2026-09-27).
 - 2026-09-25: Excel leftovers:
   - The reader inflates the sheet part whole before parsing (415 MB peak on a 39 MB workbook whose sheet inflates to 326 MB); a windowed inflate feeding the XML reader would make it constant. The writer already streams.
-  - One sheet per run; a whole-workbook form (a JSON object of sheets, or one CSV per sheet) is not offered.
   - Number formats other than dates are dropped; merged cells read as their top-left value.
   - No Excel-made fixtures yet; the set is hand-built from the specification.
 - 2026-09-25: Value hub leftovers:

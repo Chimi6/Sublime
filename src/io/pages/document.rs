@@ -3207,6 +3207,28 @@ fn format_date(seconds: f64) -> String {
     text
 }
 
+/// A cell's date from seconds since 2001-01-01 as ISO 8601, `YYYY-MM-DD`
+/// or, with a time, `YYYY-MM-DDTHH:MM:SS`: the forms the Excel reader
+/// writes, for a workbook's cells.
+fn format_iso_datetime(seconds: f64) -> String {
+    let total = seconds.floor() as i64;
+    let of_day = total.rem_euclid(86_400);
+    let date = format_date(seconds);
+    let mut text = date.split(' ').next().unwrap_or_default().to_string();
+    if of_day != 0 {
+        let _ = std::fmt::Write::write_fmt(
+            &mut text,
+            format_args!(
+                "T{:02}:{:02}:{:02}",
+                of_day / 3600,
+                of_day % 3600 / 60,
+                of_day % 60
+            ),
+        );
+    }
+    text
+}
+
 /// Seconds since 2001-01-01 as an ISO 8601 UTC timestamp.
 fn format_timestamp(seconds: f64) -> String {
     let total = seconds.floor() as i64;
@@ -3587,10 +3609,12 @@ impl Reader<'_> {
             let Some(record) = buffer.get(offset..).and_then(cell_record) else {
                 continue;
             };
-            let text = if record.kind == 9 {
-                self.rich_cell_text(&record, lists)
-            } else {
-                record_text(&record, lists)
+            let text = match record.kind {
+                9 => self.rich_cell_text(&record, lists),
+                // Dates in the form the Excel reader writes, which the
+                // workbook writer types back into dates.
+                5 => record.seconds.map(format_iso_datetime),
+                _ => record_text(&record, lists),
             };
             if let Some(text) = text {
                 *cell = text;
@@ -3752,6 +3776,15 @@ mod decimal_tests {
         assert_eq!(
             decimal128_text(&encode(1, -7, false)).as_deref(),
             Some("0.0000001")
+        );
+    }
+
+    #[test]
+    fn workbook_dates_are_iso() {
+        assert_eq!(super::format_iso_datetime(0.0), "2001-01-01");
+        assert_eq!(
+            super::format_iso_datetime(86_400.0 + 52_509.0),
+            "2001-01-02T14:35:09"
         );
     }
 
