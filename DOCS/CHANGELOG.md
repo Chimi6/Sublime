@@ -17,6 +17,9 @@ section under a version heading.
 
 - `xlsx -> csv` and `xlsx -> tsv` write every sheet (each its own file), not only the first; `--sheet` still picks one. `markdown -> csv` and `-> tsv` (and every document through them) write every table, not only the first.
 - The workbook writer writes empty cells as cells without a value, so trailing empty cells and empty rows survive a round trip.
+- The binary size budget is raised 3.90 -> 4.10 MB for workbooks whole and Numbers (the new converters, the workbook walker, and package folders: about 130 KB of the Linux binary, which measures 3.91 MB); trimming the converters' shared code is a later pass.
+- The Pages writer writes tables wider than 255 columns (it panicked past Pages' default column slots) and rows whose cells pass 64 KiB (with wide offsets, as Numbers writes them, where the offsets overflowed).
+- A password-protected Pages or Numbers document is reported as such, instead of as an unreadable stream.
 - iWork numbers far from 1 are written in scientific notation (`1.234E-300`), not as hundreds of digits, in tables of Pages documents too.
 - The iWork package reader keeps LZFSE-compressed streams (`bvxn`, a shared document's operation log) as their bytes instead of failing on them, and the document scope skips the formula engine's cell records, reference and name tracking, and row and column identity maps, which no reader uses.
 
