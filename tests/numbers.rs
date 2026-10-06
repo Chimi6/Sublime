@@ -92,7 +92,7 @@ fn sheets_hold_their_tables_in_order() {
     );
     let mut rows: Vec<Vec<String>> = Vec::new();
     workbook
-        .rows(0, 0, |cells| -> Result<(), ()> {
+        .rows(0, 0, &mut |cells| {
             rows.push(cells.iter().map(|cell| cell.text.clone()).collect());
             Ok(())
         })

@@ -3601,12 +3601,12 @@ impl<'p> WorkbookReader<'p> {
 
     /// Every row of a table on its full grid, in order: each cell as it
     /// reads, empty rows and cells empty, merged-over cells empty.
-    pub fn rows<E>(
+    pub fn rows(
         &mut self,
         sheet: usize,
         table: usize,
-        mut each: impl FnMut(&[WorkbookCell]) -> Result<(), E>,
-    ) -> Result<(), E> {
+        each: &mut dyn FnMut(&[WorkbookCell]) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         let Some(table) = self
             .sheets
             .get(sheet)

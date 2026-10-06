@@ -119,75 +119,37 @@ impl XlsxToCsv {
 }
 
 const JSON_NOTE: &str = "one sheet as an array of objects keyed by its header row, several as an object of such arrays keyed by sheet name (or the one --sheet picks); every value as text: numbers as stored, dates as ISO 8601, booleans as TRUE and FALSE, formulas as their last value; formatting is dropped";
-
-/// Workbook -> JSON: one sheet as the array `csv-to-json` makes of it,
-/// several as an object of those arrays by sheet name, so a workbook is one
-/// JSON file however many sheets it has.
-pub struct XlsxToJson;
-
-pub static XLSX_TO_JSON: XlsxToJson = XlsxToJson;
-
-impl Converter for XlsxToJson {
-    fn name(&self) -> &'static str {
-        "xlsx-to-json"
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::XLSX
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::JSON
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(JSON_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
-    fn convert(
-        &self,
-        mut input: Input<'_>,
-        output: &mut dyn Write,
-        context: &mut Context<'_>,
-    ) -> Result<(), ConvertError> {
-        let mut bytes = Vec::new();
-        input.read_to_end(&mut bytes)?;
-        let workbook = Workbook::open(&bytes)?;
-        let names: Vec<String> = workbook
-            .sheet_names()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        let sheets: Vec<usize> = match context.options.sheet.as_deref() {
-            Some(selector) => vec![workbook.select(Some(selector))?],
-            None => (0..names.len()).collect(),
-        };
-        let mut tables: Vec<(String, Vec<u8>)> = Vec::new();
-        for sheet in sheets {
-            let mut csv = Vec::new();
-            XLSX_TO_CSV.write_sheet(&workbook, sheet, &mut csv, context)?;
-            tables.push((names[sheet].clone(), csv));
-        }
-        crate::converters::csv_to_json::tables_to_json(&tables, output, context)
-    }
-}
-
 const MARKDOWN_NOTE: &str = "each sheet a table under a heading of its name (one sheet, a table alone), the first row as the header; every value as text, rows padded or cut to the header's width, line breaks inside cells as spaces; formatting is dropped";
 
-/// Workbook -> Markdown: a sheet is a table, several sheets each a table
-/// under a heading of its name, so a workbook reaches every document
-/// format whole.
-pub struct XlsxToMarkdown;
+/// Workbook -> one document of every sheet: JSON (one sheet as the array
+/// `csv-to-json` makes of it, several as an object of those arrays by
+/// sheet name) or Markdown (a table under a heading per sheet, so a
+/// workbook reaches every document format whole).
+pub struct XlsxWhole {
+    name: &'static str,
+    to: &'static Format,
+    note: &'static str,
+    /// Writes the gathered sheets, each as CSV, as the target.
+    gather: fn(&[(String, Vec<u8>)], &mut dyn Write, &mut Context<'_>) -> Result<(), ConvertError>,
+}
 
-pub static XLSX_TO_MARKDOWN: XlsxToMarkdown = XlsxToMarkdown;
+pub static XLSX_TO_JSON: XlsxWhole = XlsxWhole {
+    name: "xlsx-to-json",
+    to: &formats::JSON,
+    note: JSON_NOTE,
+    gather: crate::converters::csv_to_json::tables_to_json,
+};
 
-impl Converter for XlsxToMarkdown {
+pub static XLSX_TO_MARKDOWN: XlsxWhole = XlsxWhole {
+    name: "xlsx-to-markdown",
+    to: &formats::MARKDOWN,
+    note: MARKDOWN_NOTE,
+    gather: crate::converters::rows_document::tables_to_markdown,
+};
+
+impl Converter for XlsxWhole {
     fn name(&self) -> &'static str {
-        "xlsx-to-markdown"
+        self.name
     }
 
     fn from(&self) -> &'static Format {
@@ -195,11 +157,11 @@ impl Converter for XlsxToMarkdown {
     }
 
     fn to(&self) -> &'static Format {
-        &formats::MARKDOWN
+        self.to
     }
 
     fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(MARKDOWN_NOTE)
+        Fidelity::Conditional(self.note)
     }
 
     fn tier(&self) -> Tier {
@@ -230,7 +192,7 @@ impl Converter for XlsxToMarkdown {
             XLSX_TO_CSV.write_sheet(&workbook, sheet, &mut csv, context)?;
             tables.push((names[sheet].clone(), csv));
         }
-        crate::converters::rows_document::tables_to_markdown(&tables, output, context)
+        (self.gather)(&tables, output, context)
     }
 }
 
