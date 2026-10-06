@@ -14,7 +14,10 @@ pub mod writer;
 pub use document::{WorkbookReader, WorkbookSheet, WorkbookTable, read_document};
 pub use package::{Entry, Object, ObjectMessage, Package, PackageError, Scope, Stream};
 pub use types::type_name;
-pub use writer::{write as write_package, write_to as write_package_to};
+pub use writer::{
+    NumbersSheet, NumbersTable, write as write_package, write_numbers_to,
+    write_to as write_package_to,
+};
 
 /// Schema of a message type, when the registry and the schema both know it.
 pub fn message_schema(message_type: u32) -> Option<crate::io::protobuf::schema::MessageRef> {

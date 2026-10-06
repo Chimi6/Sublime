@@ -700,7 +700,7 @@ fn cell_record(bytes: &[u8]) -> Option<CellRecord> {
 
 /// A cell's decimal128 number (as Pages stores it: a binary mantissa and a
 /// biased power of ten) as exact decimal text, e.g. `42.5` or `-3`.
-fn decimal128_text(bytes: &[u8]) -> Option<String> {
+pub(crate) fn decimal128_text(bytes: &[u8]) -> Option<String> {
     let bytes: [u8; 16] = bytes.try_into().ok()?;
     let negative = bytes[15] & 0x80 != 0;
     let exponent = ((i32::from(bytes[15] & 0x7F) << 7) | i32::from(bytes[14] >> 1)) - 0x1820;

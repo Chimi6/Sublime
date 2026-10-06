@@ -121,6 +121,10 @@ impl XlsxToCsv {
 const JSON_NOTE: &str = "one sheet as an array of objects keyed by its header row, several as an object of such arrays keyed by sheet name (or the one --sheet picks); every value as text: numbers as stored, dates as ISO 8601, booleans as TRUE and FALSE, formulas as their last value; formatting is dropped";
 const MARKDOWN_NOTE: &str = "each sheet a table under a heading of its name (one sheet, a table alone), the first row as the header; every value as text, rows padded or cut to the header's width, line breaks inside cells as spaces; formatting is dropped";
 
+/// Writes tables (each as CSV, by name) as one document.
+type Gather =
+    fn(&[(String, Vec<u8>)], &mut dyn Write, &mut Context<'_>) -> Result<(), ConvertError>;
+
 /// Workbook -> one document of every sheet: JSON (one sheet as the array
 /// `csv-to-json` makes of it, several as an object of those arrays by
 /// sheet name) or Markdown (a table under a heading per sheet, so a
@@ -130,7 +134,7 @@ pub struct XlsxWhole {
     to: &'static Format,
     note: &'static str,
     /// Writes the gathered sheets, each as CSV, as the target.
-    gather: fn(&[(String, Vec<u8>)], &mut dyn Write, &mut Context<'_>) -> Result<(), ConvertError>,
+    gather: Gather,
 }
 
 pub static XLSX_TO_JSON: XlsxWhole = XlsxWhole {
