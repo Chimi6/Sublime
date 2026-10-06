@@ -59,8 +59,10 @@ its first cell and leaves the rest empty.
 
 Only what a cell's text needs is decoded: the formula engine's cell
 records, reference tracking, name caches, row and column identity maps,
-row sizes, and the tables' layout caches are skipped (a spreadsheet of 65
-thousand rows peaks at 75 MB, against 156 MB decoding everything).
+row sizes, and the tables' layout caches are skipped. Each stream is
+decoded and freed in turn, tile rows are kept as their bytes, and a table
+is read a tile (256 rows) at a time straight to the writer, never held
+whole.
 
 ## Checked
 
@@ -76,8 +78,11 @@ match exactly, and 131,713 of 132,206 non-empty cells (99.6%). The rest:
   document's preview shows the empty row we keep;
 - one rich text cell whose trailing line break we drop.
 
-On the largest of them (4.3 MB, 65 thousand rows), `numbers -> csv` takes
-0.06 s at 75 MB peak; numbers-parser takes 1.65 s at 384 MB.
+Speed and memory are the `numbers-csv` benchmark pair
+(`DOCS/benchmarks/numbers-csv.md`): 37 MB/s on 200,000-row documents at
+125 to 145 MB, against numbers-parser's 0.5 MB/s at over 4 GB, and on a
+real 65,000-row document 68 MB/s at 54 MB, against numbers-parser's 2.4 at
+353 MB and LibreOffice's 0.9 at 1.4 GB.
 
 Fixtures (`tests/fixtures/numbers`, from numbers-parser's test data): two
 sheets with three tables, a zipped package folder with an LZFSE stream, and

@@ -195,6 +195,13 @@ impl<'p> View<'p> {
     }
 
     /// A nested message the package kept encoded (`Tree::deferred`).
+    fn deferred_all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'p [u8]> + 'a {
+        self.entries(name).filter_map(|node| match node {
+            Node::Deferred(span) => Some(self.tree.bytes(span)),
+            _ => None,
+        })
+    }
+
     fn deferred(&self, name: &str) -> Option<&'p [u8]> {
         match self.node(name)? {
             Node::Deferred(span) => Some(self.tree.bytes(span)),
@@ -3373,12 +3380,13 @@ pub struct WorkbookSheet {
     pub tables: Vec<WorkbookTable>,
 }
 
-/// A Numbers table as text: every cell as it reads, merged-over cells
-/// empty, on the table's full grid.
+/// A Numbers table: its name and its size.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkbookTable {
     pub name: String,
-    pub rows: Vec<Vec<String>>,
+    pub rows: usize,
+    pub columns: usize,
+    model: u64,
 }
 
 /// `TN.DocumentArchive` and `TN.SheetArchive`: Numbers' own types, which
@@ -3387,141 +3395,157 @@ const NUMBERS_DOCUMENT: u32 = 1;
 const NUMBERS_SHEET: u32 = 2;
 const TABLE_INFO: u32 = 6000;
 
-/// The sheets of a Numbers package and the tables on each, in the order
-/// the document lists them. Tables come out of the same reader Pages
-/// tables do; a cell's text is its paragraphs joined by line breaks.
-pub fn read_workbook(package: &Package) -> Vec<WorkbookSheet> {
-    let mut reader = Reader::new(package);
-    let Some((_, root)) = reader
-        .graph
-        .objects_of_type(NUMBERS_DOCUMENT)
-        .into_iter()
-        .next()
-    else {
-        return Vec::new();
-    };
-    let sheet_ids: Vec<u64> = View::of(root)
-        .raw_bytes(1)
-        .filter_map(raw_reference)
-        .collect();
-    let mut sheets = Vec::new();
-    for sheet_id in sheet_ids {
-        if reader.graph.object_type(sheet_id) != Some(NUMBERS_SHEET) {
-            continue;
-        }
-        let Some(sheet) = reader.graph.object(sheet_id) else {
-            continue;
-        };
-        let view = View::of(sheet);
-        let name = view
-            .raw_bytes(1)
-            .next()
-            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-            .unwrap_or_default();
-        let drawables: Vec<u64> = view.raw_bytes(2).filter_map(raw_reference).collect();
-        let mut models = Vec::new();
-        for drawable in drawables {
-            reader.collect_table_models(drawable, &mut models, 0);
-        }
-        let mut tables = Vec::new();
-        for model in models {
-            let name = reader
-                .graph
-                .object(model)
-                .and_then(|message| View::of(message).string("table_name"))
-                .unwrap_or_default()
-                .to_string();
-            let Some(rows) = reader.table_text(model) else {
-                continue;
-            };
-            tables.push(WorkbookTable { name, rows });
-        }
-        sheets.push(WorkbookSheet { name, tables });
-    }
-    sheets
+/// A Numbers document's sheets and tables, in the order the document
+/// lists them, with each table's cells read on request a tile at a time
+/// (a tile is 256 rows), so a table is never held whole. Cells come from
+/// the same records Pages tables are read from.
+pub struct WorkbookReader<'p> {
+    reader: Reader<'p>,
+    sheets: Vec<WorkbookSheet>,
 }
 
-impl Reader<'_> {
-    /// A table's cells as text on its full grid: the values `table` reads,
-    /// without the styles, fills, and paragraphs a document needs.
-    fn table_text(&mut self, model: u64) -> Option<Vec<Vec<String>>> {
-        let message = self.graph.object(model)?;
+impl<'p> WorkbookReader<'p> {
+    pub fn new(package: &'p Package) -> WorkbookReader<'p> {
+        let reader = Reader::new(package);
+        let mut sheets = Vec::new();
+        let root = reader
+            .graph
+            .objects_of_type(NUMBERS_DOCUMENT)
+            .into_iter()
+            .next()
+            .map(|(_, root)| root);
+        let sheet_ids: Vec<u64> = root
+            .map(|root| {
+                View::of(root)
+                    .raw_bytes(1)
+                    .filter_map(raw_reference)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for sheet_id in sheet_ids {
+            if reader.graph.object_type(sheet_id) != Some(NUMBERS_SHEET) {
+                continue;
+            }
+            let Some(sheet) = reader.graph.object(sheet_id) else {
+                continue;
+            };
+            let view = View::of(sheet);
+            let name = view
+                .raw_bytes(1)
+                .next()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                .unwrap_or_default();
+            let mut models = Vec::new();
+            for drawable in view.raw_bytes(2).filter_map(raw_reference) {
+                reader.collect_table_models(drawable, &mut models, 0);
+            }
+            let tables = models
+                .into_iter()
+                .filter_map(|model| {
+                    let view = View::of(reader.graph.object(model)?);
+                    Some(WorkbookTable {
+                        name: view.string("table_name").unwrap_or_default().to_string(),
+                        rows: view.integer("number_of_rows")?.clamp(0, 1 << 20) as usize,
+                        columns: view.integer("number_of_columns")?.clamp(0, 1 << 16) as usize,
+                        model,
+                    })
+                })
+                .collect();
+            sheets.push(WorkbookSheet { name, tables });
+        }
+        WorkbookReader { reader, sheets }
+    }
+
+    pub fn sheets(&self) -> &[WorkbookSheet] {
+        &self.sheets
+    }
+
+    /// Every row of a table on its full grid, in order: each cell as it
+    /// reads, empty rows and cells empty, merged-over cells empty.
+    pub fn rows<E>(
+        &mut self,
+        sheet: usize,
+        table: usize,
+        mut each: impl FnMut(&[String]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let Some(table) = self
+            .sheets
+            .get(sheet)
+            .and_then(|sheet| sheet.tables.get(table))
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let reader = &mut self.reader;
+        let Some(message) = reader.graph.object(table.model) else {
+            return Ok(());
+        };
         let view = View::of(message);
-        let row_count = view.integer("number_of_rows")?.clamp(0, 1 << 20) as usize;
-        let column_count = view.integer("number_of_columns")?.clamp(0, 1 << 16) as usize;
-        let store = view.message("base_data_store")?;
+        let Some(store) = view.message("base_data_store") else {
+            return Ok(());
+        };
         let lists = TableLists {
-            strings: self.data_list_strings(store.reference("stringTable")),
-            rich_text: self
+            strings: reader.data_list_strings(store.reference("stringTable")),
+            rich_text: reader
                 .data_list_references(store.reference("rich_text_table"), "rich_text_payload"),
             styles: HashMap::new(),
         };
-        let mut rows = vec![vec![String::new(); column_count]; row_count];
-        if let Some(tiles) = store.message("tiles") {
-            let tile_size = tiles.integer("tile_size").unwrap_or(256).max(1) as usize;
-            for tile in tiles.messages("tiles") {
-                let base = tile.integer("tileid").unwrap_or(0).max(0) as usize * tile_size;
-                let Some(tile) = tile.reference("tile").and_then(|id| self.graph.object(id)) else {
-                    continue;
-                };
-                for info in View::of(tile).messages("rowInfos") {
-                    let row = base + info.integer("tile_row_index").unwrap_or(0).max(0) as usize;
-                    let Some(cells) = rows.get_mut(row) else {
-                        continue;
-                    };
-                    let (Some(offsets), Some(buffer)) = (
-                        info.bytes("cell_offsets"),
-                        info.bytes("cell_storage_buffer"),
-                    ) else {
-                        continue;
-                    };
-                    let wide = info.boolean("has_wide_offsets").unwrap_or(false);
-                    for (column, cell) in cells.iter_mut().enumerate() {
-                        let Some(pair) = offsets.get(column * 2..column * 2 + 2) else {
-                            break;
-                        };
-                        let offset = u16::from_le_bytes([pair[0], pair[1]]);
-                        if offset == u16::MAX {
-                            continue;
-                        }
-                        let offset = usize::from(offset) * if wide { 4 } else { 1 };
-                        let Some(record) = buffer.get(offset..).and_then(cell_record) else {
-                            continue;
-                        };
-                        let text = if record.kind == 9 {
-                            self.rich_cell_text(&record, &lists)
-                        } else {
-                            record_text(&record, &lists)
-                        };
-                        if let Some(text) = text {
-                            *cell = text;
-                        }
-                    }
-                }
-            }
-        }
-        // Merged-over cells read as empty, as in a document's table.
-        if let Some(owner) = view
+        let merges: Vec<Region> = view
             .message("merge_owner")
             .and_then(|owner| owner.message("owner_id"))
             .and_then(uuid)
-        {
-            for region in self.merge_regions(owner) {
-                // Regions past the table's edges are left alone, as
-                // `apply_merge` leaves them.
-                if region.rows == 0
-                    || region.columns == 0
-                    || region.row + region.rows > row_count
-                    || region.column + region.columns > column_count
-                {
-                    continue;
+            .map(|owner| reader.merge_regions(owner))
+            .unwrap_or_default()
+            .into_iter()
+            // Regions past the table's edges are left alone, as
+            // `apply_merge` leaves them.
+            .filter(|region| {
+                region.rows > 0
+                    && region.columns > 0
+                    && region.row + region.rows <= table.rows
+                    && region.column + region.columns <= table.columns
+            })
+            .collect();
+        let mut tiles: Vec<(usize, u64)> = Vec::new();
+        let mut tile_size = 256;
+        if let Some(storage) = store.message("tiles") {
+            tile_size = storage.integer("tile_size").unwrap_or(256).max(1) as usize;
+            for tile in storage.messages("tiles") {
+                let base = tile.integer("tileid").unwrap_or(0).max(0) as usize * tile_size;
+                if let Some(id) = tile.reference("tile") {
+                    tiles.push((base, id));
                 }
-                for (row, cells) in rows
-                    .iter_mut()
-                    .enumerate()
-                    .skip(region.row)
-                    .take(region.rows)
-                {
+            }
+        }
+        tiles.sort_unstable();
+        let empty = vec![String::new(); table.columns];
+        let mut next = 0;
+        let mut block: Vec<Vec<String>> = Vec::new();
+        for (base, tile) in tiles {
+            if base < next || base >= table.rows {
+                continue;
+            }
+            while next < base {
+                each(&empty)?;
+                next += 1;
+            }
+            let Some(tile) = reader.graph.object(tile) else {
+                continue;
+            };
+            let height = tile_size.min(table.rows - base);
+            block.clear();
+            block.resize(height, empty.clone());
+            for info in tile_rows(View::of(tile)) {
+                if let Some(cells) = block.get_mut(info.index) {
+                    reader.tile_row_text(&info, cells, &lists);
+                }
+            }
+            for region in &merges {
+                for (offset, cells) in block.iter_mut().enumerate() {
+                    let row = base + offset;
+                    if row < region.row || row >= region.row + region.rows {
+                        continue;
+                    }
                     for (column, cell) in cells
                         .iter_mut()
                         .enumerate()
@@ -3534,8 +3558,44 @@ impl Reader<'_> {
                     }
                 }
             }
+            for cells in &block {
+                each(cells)?;
+            }
+            next = base + height;
         }
-        Some(rows)
+        while next < table.rows {
+            each(&empty)?;
+            next += 1;
+        }
+        Ok(())
+    }
+}
+
+impl Reader<'_> {
+    /// One tile row's cells as text.
+    fn tile_row_text(&mut self, info: &TileRow<'_>, cells: &mut [String], lists: &TableLists) {
+        let (offsets, buffer, wide) = (info.offsets, info.buffer, info.wide);
+        for (column, cell) in cells.iter_mut().enumerate() {
+            let Some(pair) = offsets.get(column * 2..column * 2 + 2) else {
+                break;
+            };
+            let offset = u16::from_le_bytes([pair[0], pair[1]]);
+            if offset == u16::MAX {
+                continue;
+            }
+            let offset = usize::from(offset) * if wide { 4 } else { 1 };
+            let Some(record) = buffer.get(offset..).and_then(cell_record) else {
+                continue;
+            };
+            let text = if record.kind == 9 {
+                self.rich_cell_text(&record, lists)
+            } else {
+                record_text(&record, lists)
+            };
+            if let Some(text) = text {
+                *cell = text;
+            }
+        }
     }
 
     /// A rich text cell's paragraphs, one line each.
@@ -3569,6 +3629,63 @@ impl Reader<'_> {
             }
         }
     }
+}
+
+/// One row of a tile: its index in the tile and its cell records.
+struct TileRow<'p> {
+    index: usize,
+    offsets: &'p [u8],
+    buffer: &'p [u8],
+    wide: bool,
+}
+
+/// A tile's rows, decoded (`TST.TileRowInfo` messages) or, as a workbook
+/// reads them, kept as their bytes (`Scope::Workbook` defers them: a row
+/// is nine fields, and a large table has a million rows).
+fn tile_rows<'p>(tile: View<'p>) -> Vec<TileRow<'p>> {
+    let mut rows: Vec<TileRow<'p>> = tile
+        .messages("rowInfos")
+        .into_iter()
+        .filter_map(|info| {
+            Some(TileRow {
+                index: info.integer("tile_row_index").unwrap_or(0).max(0) as usize,
+                offsets: info.bytes("cell_offsets")?,
+                buffer: info.bytes("cell_storage_buffer")?,
+                wide: info.boolean("has_wide_offsets").unwrap_or(false),
+            })
+        })
+        .collect();
+    let Some(schema) = super::schema::SCHEMA.message("TST.TileRowInfo") else {
+        return rows;
+    };
+    let number = |name: &str| schema.slot_named(name).map(|(_, field)| field.number);
+    let (Some(index), Some(offsets), Some(buffer), Some(wide)) = (
+        number("tile_row_index"),
+        number("cell_offsets"),
+        number("cell_storage_buffer"),
+        number("has_wide_offsets"),
+    ) else {
+        return rows;
+    };
+    for bytes in tile.deferred_all("rowInfos") {
+        let mut row = TileRow {
+            index: 0,
+            offsets: &[],
+            buffer: &[],
+            wide: false,
+        };
+        for field in FieldReader::new(bytes).flatten() {
+            match field.value {
+                Value::Varint(value) if field.number == index => row.index = value as usize,
+                Value::Varint(value) if field.number == wide => row.wide = value != 0,
+                Value::Bytes(value) if field.number == offsets => row.offsets = value,
+                Value::Bytes(value) if field.number == buffer => row.buffer = value,
+                _ => {}
+            }
+        }
+        rows.push(row);
+    }
+    rows
 }
 
 /// A cell's paragraphs as text, one line each.

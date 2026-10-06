@@ -14,7 +14,7 @@ use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
 use crate::io::csv::CsvWriter;
-use crate::io::pages::{Package, Scope, read_workbook};
+use crate::io::pages::{Package, Scope, WorkbookReader};
 
 #[derive(Clone, Copy)]
 enum Target {
@@ -91,11 +91,14 @@ impl Converter for NumbersTo {
 
     fn convert(
         &self,
-        input: Input<'_>,
+        mut input: Input<'_>,
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
-        let tables = read_tables(input, context)?;
+        let bytes = read_all(&mut input)?;
+        let package = Package::read_scope(&bytes, Scope::Workbook).map_err(package_error)?;
+        let mut workbook = WorkbookReader::new(&package);
+        let tables = pick_tables(&workbook, context)?;
         match self.target {
             Target::Rows(delimiter) => {
                 // One output holds one table: the first, the rest a loss.
@@ -106,37 +109,37 @@ impl Converter for NumbersTo {
                         format!(
                             "a {} file holds one table: wrote '{}' and left out {} more; pick one with --sheet",
                             self.to.display_name,
-                            tables[0].0,
+                            tables[0].name,
                             tables.len() - 1
                         ),
                     );
                 }
-                if let Some((_, rows)) = tables.first() {
-                    write_rows(rows, delimiter, output)?;
+                if let Some(table) = tables.first() {
+                    write_rows(&mut workbook, table, delimiter, output)?;
                 }
                 Ok(())
             }
             Target::Json => {
-                let csv = as_csv(&tables)?;
+                let csv = as_csv(&mut workbook, &tables)?;
                 crate::converters::csv_to_json::tables_to_json(&csv, output, context)
             }
             Target::Markdown => {
-                let csv = as_csv(&tables)?;
+                let csv = as_csv(&mut workbook, &tables)?;
                 crate::converters::rows_document::tables_to_markdown(&csv, output, context)
             }
             Target::Xlsx => {
                 if tables.is_empty() {
                     context.warning("the document has no table; the workbook has one empty sheet");
                 }
-                let first = tables.first().map_or("Sheet1", |(name, _)| name.as_str());
+                let first = tables.first().map_or("Sheet1", |table| table.name.as_str());
                 let mut writer = crate::io::xlsx::XlsxWriter::new(&mut *output, first)?;
-                for (index, (name, rows)) in tables.iter().enumerate() {
+                for (index, table) in tables.iter().enumerate() {
                     if index > 0 {
-                        writer.next_sheet(name)?;
+                        writer.next_sheet(&table.name)?;
                     }
-                    for row in rows {
-                        writer.write_row(row.iter().map(String::as_str))?;
-                    }
+                    workbook.rows(table.sheet, table.table, |cells| {
+                        writer.write_row(cells.iter().map(String::as_str))
+                    })?;
                 }
                 writer.finish()?;
                 output.flush()?;
@@ -151,7 +154,7 @@ impl Converter for NumbersTo {
 
     fn convert_parts(
         &self,
-        input: Input<'_>,
+        mut input: Input<'_>,
         parts: &mut dyn Parts,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
@@ -159,71 +162,78 @@ impl Converter for NumbersTo {
             let output = parts.part("")?;
             return self.convert(input, output, context);
         };
-        for (name, rows) in read_tables(input, context)? {
-            write_rows(&rows, delimiter, parts.part(&name)?)?;
+        let bytes = read_all(&mut input)?;
+        let package = Package::read_scope(&bytes, Scope::Workbook).map_err(package_error)?;
+        let mut workbook = WorkbookReader::new(&package);
+        for table in pick_tables(&workbook, context)? {
+            write_rows(&mut workbook, &table, delimiter, parts.part(&table.name)?)?;
         }
         Ok(())
     }
 }
 
-type NamedTable = (String, Vec<Vec<String>>);
+/// A table to write: where it is and the name its part takes.
+struct Picked {
+    sheet: usize,
+    table: usize,
+    name: String,
+}
+
+fn read_all(input: &mut Input<'_>) -> Result<Vec<u8>, ConvertError> {
+    let mut bytes = Vec::new();
+    input.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
 
 /// The document's tables, named, or the ones `--sheet` picks: a sheet's
 /// name (its every table), a table's part name, or a table's number from 1.
-fn read_tables(
-    mut input: Input<'_>,
+fn pick_tables(
+    workbook: &WorkbookReader<'_>,
     context: &mut Context<'_>,
-) -> Result<Vec<NamedTable>, ConvertError> {
-    let mut bytes = Vec::new();
-    input.read_to_end(&mut bytes)?;
-    let package = Package::read_scope(&bytes, Scope::Workbook).map_err(package_error)?;
-    let sheets = read_workbook(&package);
-    let mut tables: Vec<(String, String, Vec<Vec<String>>)> = Vec::new();
-    for sheet in sheets {
+) -> Result<Vec<Picked>, ConvertError> {
+    let mut tables: Vec<(&str, Picked)> = Vec::new();
+    for (sheet_index, sheet) in workbook.sheets().iter().enumerate() {
         let alone = sheet.tables.len() == 1;
-        for table in sheet.tables {
+        for (table_index, table) in sheet.tables.iter().enumerate() {
             let name = if alone || table.name.is_empty() {
                 sheet.name.clone()
             } else {
                 format!("{} - {}", sheet.name, table.name)
             };
-            tables.push((sheet.name.clone(), name, table.rows));
+            tables.push((
+                sheet.name.as_str(),
+                Picked {
+                    sheet: sheet_index,
+                    table: table_index,
+                    name,
+                },
+            ));
         }
     }
     if tables.is_empty() {
         context.warning("the document has no table");
     }
     let Some(selector) = context.options.sheet.as_deref() else {
-        return Ok(tables
-            .into_iter()
-            .map(|(_, name, rows)| (name, rows))
-            .collect());
+        return Ok(tables.into_iter().map(|(_, table)| table).collect());
     };
-    let picked: Vec<NamedTable> = if let Some(index) = selector
+    let picked: Vec<Picked> = if let Some(index) = selector
         .parse::<usize>()
         .ok()
         .filter(|number| (1..=tables.len()).contains(number))
     {
-        let (_, name, rows) = tables.swap_remove(index - 1);
-        vec![(name, rows)]
+        vec![tables.swap_remove(index - 1).1]
     } else {
-        let by_part: Vec<usize> = tables
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, name, _))| name == selector)
-            .map(|(index, _)| index)
-            .collect();
+        let by_part = tables.iter().any(|(_, table)| table.name == selector);
         tables
             .into_iter()
-            .enumerate()
-            .filter(|(index, (sheet, _, _))| {
-                if by_part.is_empty() {
-                    sheet == selector
+            .filter(|(sheet, table)| {
+                if by_part {
+                    table.name == selector
                 } else {
-                    by_part.contains(index)
+                    *sheet == selector
                 }
             })
-            .map(|(_, (_, name, rows))| (name, rows))
+            .map(|(_, table)| table)
             .collect()
     };
     if picked.is_empty() {
@@ -235,24 +245,30 @@ fn read_tables(
 }
 
 fn write_rows(
-    rows: &[Vec<String>],
+    workbook: &mut WorkbookReader<'_>,
+    table: &Picked,
     delimiter: u8,
     output: &mut dyn Write,
 ) -> Result<(), ConvertError> {
     let mut writer = CsvWriter::with_delimiter(output, delimiter);
-    for row in rows {
-        writer.write_record(row.iter().map(String::as_str))?;
-    }
+    workbook.rows(table.sheet, table.table, |cells| {
+        writer.write_record(cells.iter().map(String::as_str))
+    })?;
     writer.flush()?;
     Ok(())
 }
 
-fn as_csv(tables: &[NamedTable]) -> Result<Vec<(String, Vec<u8>)>, ConvertError> {
+/// Each table as CSV, for the targets that gather every table into one
+/// document.
+fn as_csv(
+    workbook: &mut WorkbookReader<'_>,
+    tables: &[Picked],
+) -> Result<Vec<(String, Vec<u8>)>, ConvertError> {
     let mut csv = Vec::with_capacity(tables.len());
-    for (name, rows) in tables {
+    for table in tables {
         let mut bytes = Vec::new();
-        write_rows(rows, b',', &mut bytes)?;
-        csv.push((name.clone(), bytes));
+        write_rows(workbook, table, b',', &mut bytes)?;
+        csv.push((table.name.clone(), bytes));
     }
     Ok(csv)
 }
