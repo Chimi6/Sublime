@@ -146,6 +146,14 @@ impl Package {
 
     pub fn read_scope(bytes: &[u8], scope: Scope) -> Result<Package, PackageError> {
         let archive = ZipArchive::parse(bytes)?;
+        // A password-protected document carries its hint (`.iwph`) and
+        // encrypts every stream.
+        if archive.entries().iter().any(|entry| entry.name == ".iwph") {
+            return Err(PackageError::Malformed {
+                stream: ".iwph".to_string(),
+                what: "the document is password-protected; remove the password in Pages or Numbers first",
+            });
+        }
         if let Some(package) = Package::read_bundle(&archive, scope)? {
             return Ok(package);
         }

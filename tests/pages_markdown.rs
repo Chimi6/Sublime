@@ -115,3 +115,48 @@ fn text_boxes_follow_the_body_and_text_is_plain() {
     ));
     assert!(text.contains("Plain, bold, italic, bold italic, underlined, struck through, red,"));
 }
+
+/// A table past Pages' 255 column slots, and one whose row of cells passes
+/// 64 KiB (5000 cells of 16 bytes, written with wide offsets), come back
+/// cell for cell.
+#[test]
+fn wide_tables_round_trip() {
+    for columns in [300usize, 5000] {
+        let header: Vec<String> = (0..columns).map(|column| format!("c{column}")).collect();
+        let body: Vec<String> = (0..columns).map(|column| format!("v{column}")).collect();
+        let separator = vec!["---"; columns];
+        let markdown = format!(
+            "| {} |\n| {} |\n| {} |\n",
+            header.join(" | "),
+            separator.join(" | "),
+            body.join(" | ")
+        );
+        let options = sublime::converter::ConvertOptions::default();
+        let mut sink = sublime::event::NullSink;
+        let mut context = sublime::event::Context::new(&mut sink, &options);
+        let mut pages = Vec::new();
+        let mut source: &[u8] = markdown.as_bytes();
+        sublime::converter::Converter::convert(
+            &sublime::converters::markdown_to_pages::MarkdownToPages,
+            sublime::converter::Input::Stream(&mut source),
+            &mut pages,
+            &mut context,
+        )
+        .expect("writes");
+        let mut back = Vec::new();
+        let mut source: &[u8] = &pages;
+        sublime::converter::Converter::convert(
+            &sublime::converters::pages_to_markdown::PagesToMarkdown,
+            sublime::converter::Input::Stream(&mut source),
+            &mut back,
+            &mut context,
+        )
+        .expect("reads");
+        let back = String::from_utf8(back).expect("utf-8");
+        assert!(back.contains("| c0 | c1 |"), "{columns}: {}", &back[..80]);
+        assert!(
+            back.contains(&format!("| v{} |", columns - 1)),
+            "{columns} columns: the last cell is lost"
+        );
+    }
+}

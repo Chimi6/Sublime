@@ -5641,16 +5641,17 @@ fn build_tile(
     )?;
     let covered = mark.covered();
     for row in 0..mark.rows {
-        // Pages allocates a fixed 255-slot column offset array per row (510
-        // bytes): the byte offset of each present column's record in the
-        // buffer, then 0xFFFF for every empty column.
-        let mut offsets = vec![0xFFu8; TILE_COLUMN_SLOTS * 2];
+        // Pages allocates a 255-slot column offset array per row (510
+        // bytes), and a slot per column in a wider table: the byte offset of
+        // each present column's record in the buffer, then 0xFFFF for every
+        // empty column.
+        let mut offsets = vec![0xFFu8; TILE_COLUMN_SLOTS.max(mark.columns) * 2];
+        let mut starts: Vec<usize> = Vec::with_capacity(mark.columns);
         let mut buffer: Vec<u8> = Vec::new();
         for column in 0..mark.columns {
             let cell = row * mark.columns + column;
             let key = cell as u32 + 1;
-            let slot = column * 2;
-            offsets[slot..slot + 2].copy_from_slice(&(buffer.len() as u16).to_le_bytes());
+            starts.push(buffer.len());
             let style = cell_styles.get(&cell).copied().unwrap_or(CELL_STYLE_KEY);
             if covered.contains(&cell) {
                 buffer.extend_from_slice(&covered_record_bytes());
@@ -5660,6 +5661,15 @@ fn build_tile(
                 buffer.extend_from_slice(&cell_record_bytes(key, rich.get(&cell).copied(), style));
             }
         }
+        // A row past 64 KiB counts its offsets in 4-byte words, as Numbers
+        // does (`has_wide_offsets`); every record is a whole number of words.
+        let wide = buffer.len() > usize::from(u16::MAX - 1);
+        for (column, start) in starts.iter().enumerate() {
+            let offset = if wide { start / 4 } else { *start };
+            let offset =
+                u16::try_from(offset).map_err(|_| malformed("a table row too large for Pages"))?;
+            offsets[column * 2..column * 2 + 2].copy_from_slice(&offset.to_le_bytes());
+        }
         let mut entry = Chain::new();
         push_field(
             tree,
@@ -5668,6 +5678,15 @@ fn build_tile(
             "tile_row_index",
             Node::Uint(row as u64),
         )?;
+        if wide {
+            push_field(
+                tree,
+                &mut entry,
+                row_info,
+                "has_wide_offsets",
+                Node::Bool(true),
+            )?;
+        }
         push_field(
             tree,
             &mut entry,

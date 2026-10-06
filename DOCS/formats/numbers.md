@@ -55,7 +55,7 @@ its first cell and leaves the rest empty.
   objects are read from the inner `Index.zip`.
 - Streams Apple compressed with LZFSE (`bvxn`, the operation log of a
   shared document) hold nothing the reader uses and are kept as bytes.
-- Encrypted (password-protected) documents are not read.
+- Password-protected documents are not read; the error says so.
 
 Only what a cell's text needs is decoded: the formula engine's cell
 records, reference tracking, name caches, row and column identity maps,
