@@ -36,6 +36,7 @@ use crate::converters::pdf_to_document;
 use crate::converters::pdf_to_text::PdfToText;
 use crate::converters::rows;
 use crate::converters::rows_document;
+use crate::converters::rtf;
 use crate::converters::text_to_docx::TextToDocx;
 use crate::converters::text_to_html::TextToHtml;
 use crate::converters::text_to_markdown::TextToMarkdown;
@@ -47,7 +48,7 @@ use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 65] = [
+static CONVERTERS: [&dyn Converter; 76] = [
     &csv_to_json::CSV_TO_JSON,
     &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
@@ -83,6 +84,17 @@ static CONVERTERS: [&dyn Converter; 65] = [
     &to_pdf::TEXT_TO_PDF,
     &to_pdf::DOCX_TO_PDF,
     &to_pdf::PAGES_TO_PDF,
+    &to_pdf::RTF_TO_PDF,
+    &rtf::RTF_TO_DOCX,
+    &rtf::RTF_TO_PAGES,
+    &rtf::RTF_TO_MARKDOWN,
+    &rtf::RTF_TO_HTML,
+    &rtf::RTF_TO_TEXT,
+    &rtf::DOCX_TO_RTF,
+    &rtf::PAGES_TO_RTF,
+    &rtf::MARKDOWN_TO_RTF,
+    &rtf::HTML_TO_RTF,
+    &rtf::TEXT_TO_RTF,
     &TomlToJson,
     &JsonToToml,
     &YamlToJson,
@@ -212,6 +224,7 @@ mod tests {
                 "png",
                 "ppm",
                 "qoi",
+                "rtf",
                 "text",
                 "tga",
                 "tiff",

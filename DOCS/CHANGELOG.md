@@ -6,6 +6,20 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- Rich Text Format both ways (`src/io/rtf`): RTF reads into the document model and the model writes RTF, so RTF reaches and is reached from Word, Pages, Markdown, HTML, and text (and PDF, out). Fonts and code pages (13 single-byte pages and Unicode escapes), styles, character and paragraph formatting, Word's and the older `\pn` lists, tables with merges, borders, shading, and nesting, sections with page setup and columns, headers and footers, links and page fields, footnotes, comments with replies, tracked changes, pictures with their alt text, text boxes and custom shape outlines, and the page colour. On 88 Word documents: Word -> RTF matches the reference's page count on 81 (LibreOffice's own RTF 81, Apple's `textutil` 65); RTF -> Word on 84 of LibreOffice's RTF (Apple 57) and 80 of macOS's (Apple 75).
+- `scripts/rtf-check`: the RTF <-> Word check against LibreOffice, the macOS text system, and Apple's `textutil`, for macOS; not run in CI.
+- Letter spacing and character width scale in the document model, read and written in Word (`w:spacing`, `w:w`) and RTF (`\expndtw`, `\charscalex`).
+
+### Changed
+
+- Word output always has `settings.xml` (with Word's current compatibility mode): LibreOffice lays out a package without it by older rules, with wider gaps between paragraphs, so pages ran long.
+- Word output's bullets are in the symbol fonts Word uses (Symbol, Wingdings); a bullet in no font was drawn in a fallback font whose taller lines lengthened every list.
+- Word output makes the document's default paragraph style Word's default (`Normal`), so paragraphs that name no style keep its formatting.
+- Word input reads a line-spacing rule without a value (`w:lineRule="auto"` alone, as Google Docs writes it) as single spacing, as LibreOffice does.
+- The WebAssembly size budget is raised 2.00 -> 2.25 MB for RTF (the reader and writer, about 130 KB of the module).
+
 ## [0.25.0] - 2026-10-05
 
 ### Added

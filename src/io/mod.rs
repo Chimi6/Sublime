@@ -19,6 +19,7 @@ pub mod pdf;
 pub mod png;
 pub mod protobuf;
 pub mod qoi;
+pub mod rtf;
 pub mod scan;
 pub mod snappy;
 pub mod text;
