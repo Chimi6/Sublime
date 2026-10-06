@@ -24,20 +24,38 @@ pub struct XlsxWriter<W: Write> {
     reference: String,
     /// Every sheet's title, in order; the last is the one being written.
     sheets: Vec<String>,
+    /// Number formats typed cells named, in order: style `FIRST_CUSTOM_STYLE + i`.
+    formats: Vec<String>,
 }
+
+/// A typed cell for `write_cells`: its value, which the writer stores as
+/// that type, not by reading its text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Cell<'a> {
+    Empty,
+    Text(&'a str),
+    Number(f64),
+    Boolean(bool),
+}
+
+/// The style of the first number format a typed cell names (after the
+/// default and the three date styles).
+const FIRST_CUSTOM_STYLE: usize = 4;
+/// Its number format id (164 to 166 are the date styles').
+const FIRST_CUSTOM_FORMAT: usize = 167;
 
 impl<W: Write> XlsxWriter<W> {
     /// Writes the fixed parts and opens the first worksheet for rows.
     pub fn new(sink: W, sheet_name: &str) -> io::Result<XlsxWriter<W>> {
         let mut zip = ZipWriter::new(sink);
         zip.add_deflated("_rels/.rels", PACKAGE_RELS.as_bytes())?;
-        zip.add_deflated("xl/styles.xml", STYLES.as_bytes())?;
         let mut writer = XlsxWriter {
             zip,
             part: String::with_capacity(PART_SIZE + 4096),
             row: 0,
             reference: String::new(),
             sheets: Vec::new(),
+            formats: Vec::new(),
         };
         writer.open_sheet(sheet_name)?;
         Ok(writer)
@@ -121,10 +139,71 @@ impl<W: Write> XlsxWriter<W> {
         Ok(())
     }
 
+    /// Writes one row of typed cells, each with the Excel number format
+    /// (`#,##0.00`, `yyyy-mm-dd`) it is shown in, if any. Numbers are
+    /// stored as numbers whatever their text; text is never read for a
+    /// type.
+    pub fn write_cells(&mut self, cells: &[(Cell<'_>, Option<&str>)]) -> io::Result<()> {
+        self.row += 1;
+        let row = self.row;
+        self.part.push_str("<row r=\"");
+        push_number(&mut self.part, row);
+        self.part.push_str("\">");
+        for (index, (cell, format)) in cells.iter().enumerate() {
+            self.reference.clear();
+            push_column(&mut self.reference, index);
+            push_number(&mut self.reference, row);
+            self.part.push_str("<c r=\"");
+            self.part.push_str(&self.reference);
+            self.part.push('"');
+            if let Some(code) = format
+                .filter(|code| !matches!(cell, Cell::Text(_) | Cell::Empty) && !code.is_empty())
+            {
+                let style = match self.formats.iter().position(|known| known == code) {
+                    Some(position) => position,
+                    None => {
+                        self.formats.push(code.to_string());
+                        self.formats.len() - 1
+                    }
+                };
+                self.part.push_str(" s=\"");
+                push_number(&mut self.part, (FIRST_CUSTOM_STYLE + style) as u64);
+                self.part.push('"');
+            }
+            match cell {
+                Cell::Empty => self.part.push_str("/>"),
+                Cell::Text(text) => {
+                    self.part
+                        .push_str(" t=\"inlineStr\"><is><t xml:space=\"preserve\">");
+                    escape_text(&mut self.part, text);
+                    self.part.push_str("</t></is></c>");
+                }
+                Cell::Number(value) if value.is_finite() => {
+                    use std::fmt::Write as _;
+                    let _ = write!(self.part, "><v>{value}</v></c>");
+                }
+                Cell::Number(_) => self.part.push_str("/>"),
+                Cell::Boolean(value) => {
+                    self.part.push_str(" t=\"b\"><v>");
+                    self.part.push(if *value { '1' } else { '0' });
+                    self.part.push_str("</v></c>");
+                }
+            }
+        }
+        self.part.push_str("</row>");
+        if self.part.len() >= PART_SIZE {
+            self.zip.write_part(self.part.as_bytes(), Level::Fast)?;
+            self.part.clear();
+        }
+        Ok(())
+    }
+
     /// Closes the last worksheet, writes the parts that list the sheets,
     /// and closes the package; returns the sink.
     pub fn finish(mut self) -> io::Result<W> {
         self.close_sheet()?;
+        let styles = styles_part(&self.formats);
+        self.zip.add_deflated("xl/styles.xml", styles.as_bytes())?;
         let count = self.sheets.len();
         let mut types = String::from(CONTENT_TYPES_HEAD);
         for index in 1..=count {
@@ -361,7 +440,44 @@ const PACKAGE_RELS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=
 
 const WORKBOOK_RELS_HEAD: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">";
 
-const STYLES: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><numFmts count=\"3\"><numFmt numFmtId=\"164\" formatCode=\"yyyy\\-mm\\-dd\"/><numFmt numFmtId=\"165\" formatCode=\"yyyy\\-mm\\-dd&quot;T&quot;hh:mm:ss\"/><numFmt numFmtId=\"166\" formatCode=\"[hh]:mm:ss\"/></numFmts><fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts><fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill></fills><borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs><cellXfs count=\"4\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/><xf numFmtId=\"164\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"1\"/><xf numFmtId=\"165\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"1\"/><xf numFmtId=\"166\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"1\"/></cellXfs><cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles></styleSheet>";
+/// `xl/styles.xml`: the default style, the three date styles
+/// (`iso_serial`), and a style for each number format typed cells named.
+fn styles_part(formats: &[String]) -> String {
+    let mut out = String::from(STYLES_HEAD);
+    out.push_str("<numFmts count=\"");
+    push_number(&mut out, 3 + formats.len() as u64);
+    out.push_str("\">");
+    out.push_str(DATE_FORMATS);
+    for (index, code) in formats.iter().enumerate() {
+        out.push_str("<numFmt numFmtId=\"");
+        push_number(&mut out, (FIRST_CUSTOM_FORMAT + index) as u64);
+        out.push_str("\" formatCode=\"");
+        crate::io::xml::escape_attribute(&mut out, code);
+        out.push_str("\"/>");
+    }
+    out.push_str("</numFmts>");
+    out.push_str(STYLES_MIDDLE);
+    out.push_str("<cellXfs count=\"");
+    push_number(&mut out, (FIRST_CUSTOM_STYLE + formats.len()) as u64);
+    out.push_str("\">");
+    out.push_str(BASE_XFS);
+    for index in 0..formats.len() {
+        out.push_str("<xf numFmtId=\"");
+        push_number(&mut out, (FIRST_CUSTOM_FORMAT + index) as u64);
+        out.push_str(
+            "\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"1\"/>",
+        );
+    }
+    out.push_str("</cellXfs>");
+    out.push_str(STYLES_TAIL);
+    out
+}
+
+const STYLES_HEAD: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">";
+const DATE_FORMATS: &str = "<numFmt numFmtId=\"164\" formatCode=\"yyyy\\-mm\\-dd\"/><numFmt numFmtId=\"165\" formatCode=\"yyyy\\-mm\\-dd&quot;T&quot;hh:mm:ss\"/><numFmt numFmtId=\"166\" formatCode=\"[hh]:mm:ss\"/>";
+const STYLES_MIDDLE: &str = "<fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts><fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill></fills><borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>";
+const BASE_XFS: &str = "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/><xf numFmtId=\"164\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"1\"/><xf numFmtId=\"165\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"1\"/><xf numFmtId=\"166\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"1\"/>";
+const STYLES_TAIL: &str = "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles></styleSheet>";
 
 #[cfg(test)]
 mod tests {

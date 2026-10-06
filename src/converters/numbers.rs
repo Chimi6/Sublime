@@ -14,7 +14,10 @@ use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
 use crate::io::csv::CsvWriter;
+use crate::io::pages::document::{CellFormat, CellValue, WorkbookCell};
+use crate::io::pages::format::{self as cell_format, Excel};
 use crate::io::pages::{Package, Scope, WorkbookReader};
+use crate::io::xlsx::XlsxCell;
 
 #[derive(Clone, Copy)]
 enum Target {
@@ -137,8 +140,19 @@ impl Converter for NumbersTo {
                     if index > 0 {
                         writer.next_sheet(&table.name)?;
                     }
+                    // Per table: a table's formats live while it is read,
+                    // so their addresses are only unique within it.
+                    let mut codes = ExcelCodes::new();
                     workbook.rows(table.sheet, table.table, |cells| {
-                        writer.write_row(cells.iter().map(String::as_str))
+                        let typed: Vec<(XlsxCell<'_>, Option<std::rc::Rc<str>>)> = cells
+                            .iter()
+                            .map(|cell| excel_cell(cell, &mut codes))
+                            .collect();
+                        let row: Vec<(XlsxCell<'_>, Option<&str>)> = typed
+                            .iter()
+                            .map(|(cell, code)| (*cell, code.as_deref()))
+                            .collect();
+                        writer.write_cells(&row)
                     })?;
                 }
                 writer.finish()?;
@@ -169,6 +183,96 @@ impl Converter for NumbersTo {
             write_rows(&mut workbook, &table, delimiter, parts.part(&table.name)?)?;
         }
         Ok(())
+    }
+}
+
+/// Each cell format's Excel form, worked out once per format.
+type ExcelCodes = std::collections::HashMap<*const CellFormat, (Excel, Option<std::rc::Rc<str>>)>;
+
+/// Days from Excel's day zero (1899-12-30) to 2001-01-01, Numbers' epoch.
+const EXCEL_DAYS_TO_2001: f64 = 36_892.0;
+
+/// A cell as Excel stores it: numbers, dates, durations, and booleans as
+/// values with the Excel format that shows them as Numbers does; what no
+/// Excel format shows the same, as Numbers' text.
+fn excel_cell<'a>(
+    cell: &'a WorkbookCell,
+    codes: &mut ExcelCodes,
+) -> (XlsxCell<'a>, Option<std::rc::Rc<str>>) {
+    let text = XlsxCell::Text(&cell.text);
+    let mut form = |format: &std::rc::Rc<CellFormat>, compute: &dyn Fn(&CellFormat) -> Excel| {
+        codes
+            .entry(std::rc::Rc::as_ptr(format))
+            .or_insert_with(|| {
+                let excel = compute(format);
+                let code = match &excel {
+                    Excel::Code(code) => Some(std::rc::Rc::from(code.as_str())),
+                    _ => None,
+                };
+                (excel, code)
+            })
+            .clone()
+    };
+    match cell.value {
+        CellValue::Empty => (XlsxCell::Empty, None),
+        CellValue::Text => (text, None),
+        CellValue::Boolean(value) => (XlsxCell::Boolean(value), None),
+        CellValue::Number(value) => match &cell.format {
+            None => (XlsxCell::Number(value), None),
+            Some(format) => match form(format, &|format| {
+                cell_format::excel(&format.format, format.custom.as_ref())
+            }) {
+                (Excel::General, _) => (XlsxCell::Number(value), None),
+                (Excel::Code(code), shared) => {
+                    // A code with the value's own decimals is per cell.
+                    let code = if code.contains(cell_format::AUTO_DECIMALS) {
+                        Some(std::rc::Rc::from(
+                            cell_format::excel_places(&code, value).as_str(),
+                        ))
+                    } else {
+                        shared
+                    };
+                    (XlsxCell::Number(value), code)
+                }
+                (Excel::Boolean, _) => (XlsxCell::Boolean(value != 0.0), None),
+                (Excel::Text, _) => (text, None),
+            },
+        },
+        CellValue::Date(seconds) => {
+            let serial = XlsxCell::Number(seconds / 86_400.0 + EXCEL_DAYS_TO_2001);
+            let code = cell.format.as_ref().and_then(|format| {
+                form(format, &|format| {
+                    let pattern = match &format.custom {
+                        Some(custom) => custom.format.custom_format_string.as_str(),
+                        None => format.format.date_time_format.as_str(),
+                    };
+                    cell_format::excel_date(pattern).map_or(Excel::General, Excel::Code)
+                })
+                .1
+            });
+            // A date Excel cannot show as Numbers does stays a date, shown
+            // in ISO 8601.
+            let code = code.or_else(|| {
+                Some(std::rc::Rc::from(if seconds.rem_euclid(86_400.0) == 0.0 {
+                    "yyyy-mm-dd"
+                } else {
+                    "yyyy-mm-dd hh:mm:ss"
+                }))
+            });
+            (serial, code)
+        }
+        CellValue::Duration(seconds) => {
+            let code = cell.format.as_ref().and_then(|format| {
+                form(format, &|format| {
+                    cell_format::excel_duration(&format.format).map_or(Excel::Text, Excel::Code)
+                })
+                .1
+            });
+            match code {
+                Some(code) => (XlsxCell::Number(seconds / 86_400.0), Some(code)),
+                None => (text, None),
+            }
+        }
     }
 }
 
@@ -252,7 +356,7 @@ fn write_rows(
 ) -> Result<(), ConvertError> {
     let mut writer = CsvWriter::with_delimiter(output, delimiter);
     workbook.rows(table.sheet, table.table, |cells| {
-        writer.write_record(cells.iter().map(String::as_str))
+        writer.write_record(cells.iter().map(|cell| cell.text.as_str()))
     })?;
     writer.flush()?;
     Ok(())
