@@ -36,6 +36,7 @@ pub mod pdf_to_document;
 pub mod pdf_to_text;
 pub mod rows;
 pub mod rows_document;
+pub mod rtf;
 pub mod text_to_docx;
 pub mod text_to_html;
 pub mod text_to_markdown;

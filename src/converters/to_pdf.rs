@@ -1,4 +1,4 @@
-//! Markdown, HTML, text, Word, and Pages -> PDF. Each reader's Markdown
+//! Markdown, HTML, text, Word, Pages, and RTF -> PDF. Each reader's Markdown
 //! event stream is set as pages by the composer (`io::pdf::compose`):
 //! Letter pages, one-inch margins, the base-14 Helvetica and Courier.
 
@@ -28,6 +28,7 @@ enum Source {
     Text,
     Docx,
     Pages,
+    Rtf,
 }
 
 pub struct ToPdf {
@@ -64,6 +65,12 @@ pub static PAGES_TO_PDF: ToPdf = ToPdf {
     name: "pages-to-pdf",
     from: &formats::PAGES,
     source: Source::Pages,
+};
+
+pub static RTF_TO_PDF: ToPdf = ToPdf {
+    name: "rtf-to-pdf",
+    from: &formats::RTF,
+    source: Source::Rtf,
 };
 
 impl Converter for ToPdf {
@@ -151,6 +158,12 @@ impl Converter for ToPdf {
                 let package =
                     Package::read_scope(&bytes, Scope::Document).map_err(package_error)?;
                 let model = read_document(&package);
+                emit_events(&model, &mut composer as &mut dyn EventSink<'_>);
+                let notes = composer.finish()?;
+                report(&notes, self.name, context);
+            }
+            Source::Rtf => {
+                let model = crate::converters::rtf::read_input(&mut input)?;
                 emit_events(&model, &mut composer as &mut dyn EventSink<'_>);
                 let notes = composer.finish()?;
                 report(&notes, self.name, context);

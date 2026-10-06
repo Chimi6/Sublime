@@ -285,6 +285,11 @@ be checked the same way.
     table's objects once its rewrite is done, and compacting what that
     leaves, would bring it near the encoded size; so would a slimmer tree
     entry, shared with the Pages reader.
+12. **Binary size.** Word <-> Pages is the largest feature in the binary
+    (0.25.0 grew it by about 1.0 MB with documents to PDF and fonts beside
+    it). A per-module measure of the binary would show what the writer, its
+    template, and the Pages schema each cost; the schema tables and the
+    template are the likeliest to compact.
 
 ## Sources
 

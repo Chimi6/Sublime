@@ -592,7 +592,7 @@ impl DocxWriter {
             let _ = write!(
                 properties,
                 "<w:pStyle w:val=\"{}\"/>",
-                style_id(&document.styles.paragraph[style].name)
+                paragraph_style_id(document, style)
             );
         }
         let numbering = paragraph.list.map(|item| {
@@ -1090,8 +1090,11 @@ impl DocxWriter {
     }
 
     /// Whether the document needs a settings part.
-    fn needs_settings(&self, document: &Document) -> bool {
-        self.even_pages || document.page_color.is_some()
+    /// Every package has settings, as Word's own do: LibreOffice lays out a
+    /// package without them by older rules (wider gaps between paragraphs),
+    /// so a page can run long.
+    fn needs_settings(&self, _document: &Document) -> bool {
+        true
     }
 
     fn relationship_for(&mut self, kind: RelationshipKind, target: &str) -> usize {
@@ -1385,15 +1388,24 @@ impl DocxWriter {
         xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
         let _ = write!(xml, "<w:styles {W}>");
         xml.push_str("<w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val=\"22\"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr/></w:pPrDefault></w:docDefaults>");
-        xml.push_str("<w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/></w:style>");
+        // The document's own default paragraph style, when it has one, is
+        // Word's default; otherwise an empty Normal is.
+        if styles.default_paragraph.is_none() {
+            xml.push_str("<w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/></w:style>");
+        }
         xml.push_str("<w:style w:type=\"character\" w:default=\"1\" w:styleId=\"DefaultParagraphFont\"><w:name w:val=\"Default Paragraph Font\"/></w:style>");
         xml.push_str("<w:style w:type=\"character\" w:styleId=\"Hyperlink\"><w:name w:val=\"Hyperlink\"/><w:rPr><w:color w:val=\"0563C1\"/><w:u w:val=\"single\"/></w:rPr></w:style>");
         xml.push_str("<w:style w:type=\"table\" w:styleId=\"TableGrid\"><w:name w:val=\"Table Grid\"/><w:tblPr><w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:left w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:right w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:color=\"000000\"/></w:tblBorders><w:tblCellMar><w:top w:w=\"80\" w:type=\"dxa\"/><w:left w:w=\"80\" w:type=\"dxa\"/><w:bottom w:w=\"80\" w:type=\"dxa\"/><w:right w:w=\"80\" w:type=\"dxa\"/></w:tblCellMar></w:tblPr></w:style>");
-        for style in &styles.paragraph {
+        for (index, style) in styles.paragraph.iter().enumerate() {
+            let default = if styles.default_paragraph == Some(index) {
+                " w:default=\"1\""
+            } else {
+                ""
+            };
             let _ = write!(
                 xml,
-                "<w:style w:type=\"paragraph\" w:styleId=\"{}\"><w:name w:val=\"",
-                style_id(&style.name)
+                "<w:style w:type=\"paragraph\"{default} w:styleId=\"{}\"><w:name w:val=\"",
+                paragraph_style_id(document, index)
             );
             escape_attribute(&mut xml, &style.name);
             xml.push_str("\"/>");
@@ -1401,7 +1413,7 @@ impl DocxWriter {
                 let _ = write!(
                     xml,
                     "<w:basedOn w:val=\"{}\"/>",
-                    style_id(&styles.paragraph[parent].name)
+                    paragraph_style_id(document, parent)
                 );
             }
             let mut paragraph = String::new();
@@ -1501,9 +1513,17 @@ impl DocxWriter {
                 "<w:abstractNum w:abstractNumId=\"{index}\"><w:multiLevelType w:val=\"hybridMultilevel\"/>"
             );
             for (level, definition) in style.levels.iter().enumerate().take(9) {
+                let mut font = None;
                 let (format, text) = match &definition.label {
                     ListLabel::None => ("none", String::new()),
-                    ListLabel::Text(marker) => ("bullet", marker.clone()),
+                    ListLabel::Text(marker) => {
+                        // Bullets in the symbol fonts Word itself uses: a
+                        // marker in no font is drawn in a fallback font,
+                        // whose taller lines lengthen every list item.
+                        let (symbol, marker) = word_bullet(marker);
+                        font = symbol;
+                        ("bullet", marker)
+                    }
                     ListLabel::Number(number) => (
                         match number.kind {
                             NumberKind::Decimal => "decimal",
@@ -1532,8 +1552,15 @@ impl DocxWriter {
                 escape_attribute(&mut xml, &text);
                 let _ = write!(
                     xml,
-                    "\"/><w:lvlJc w:val=\"left\"/><w:pPr><w:ind w:left=\"{left}\" w:hanging=\"{hanging}\"/></w:pPr></w:lvl>"
+                    "\"/><w:lvlJc w:val=\"left\"/><w:pPr><w:ind w:left=\"{left}\" w:hanging=\"{hanging}\"/></w:pPr>"
                 );
+                if let Some(font) = font {
+                    let _ = write!(
+                        xml,
+                        "<w:rPr><w:rFonts w:ascii=\"{font}\" w:hAnsi=\"{font}\" w:hint=\"default\"/></w:rPr>"
+                    );
+                }
+                xml.push_str("</w:lvl>");
             }
             xml.push_str("</w:abstractNum>");
         }
@@ -1601,7 +1628,7 @@ fn root_relationships() -> String {
 /// colour (Word draws it only when told to).
 fn settings_xml(even_pages: bool, page_color: bool) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:settings {W}>{}{}</w:settings>",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:settings {W}>{}{}<w:compat><w:compatSetting w:name=\"compatibilityMode\" w:uri=\"http://schemas.microsoft.com/office/word\" w:val=\"15\"/></w:compat></w:settings>",
         if page_color {
             "<w:displayBackgroundShape/>"
         } else {
@@ -1812,6 +1839,16 @@ fn run_properties_xml(document: &Document, properties: &RunProperties, out: &mut
     if let Some(color) = properties.color {
         let _ = write!(out, "<w:color w:val=\"{}\"/>", color.hex());
     }
+    if let Some(spacing) = properties.letter_spacing {
+        let _ = write!(
+            out,
+            "<w:spacing w:val=\"{}\"/>",
+            (spacing * 20.0).round() as i64
+        );
+    }
+    if let Some(scale) = properties.width_scale {
+        let _ = write!(out, "<w:w w:val=\"{}\"/>", scale.round() as i64);
+    }
     if let Some(shift) = properties.shift {
         let _ = write!(
             out,
@@ -1911,6 +1948,20 @@ fn font_family(postscript_name: &str) -> String {
 /// The style identifier: the name itself, as Pages exports it (Word
 /// accepts spaces), with only the characters an attribute cannot hold
 /// removed.
+/// A paragraph style's id: `Normal` for the document's default style, and
+/// never `Normal` for another (which would shadow the default).
+fn paragraph_style_id(document: &Document, index: usize) -> String {
+    if document.styles.default_paragraph == Some(index) {
+        return "Normal".to_string();
+    }
+    let id = style_id(&document.styles.paragraph[index].name);
+    if id == "Normal" {
+        format!("Normal{}", index + 1)
+    } else {
+        id
+    }
+}
+
 fn style_id(name: &str) -> String {
     let mut id: String = name
         .chars()
@@ -2099,6 +2150,16 @@ fn geometry_xml(document: &Document, geometry: crate::document::ShapeGeometry) -
         }
     };
     format!("<a:prstGeom prst=\"{preset}\"><a:avLst/></a:prstGeom>")
+}
+
+/// A bullet as Word writes it: the round bullet in Symbol and the square in
+/// Wingdings, at their private-use code points; others stay as they are.
+fn word_bullet(marker: &str) -> (Option<&'static str>, String) {
+    match marker.trim() {
+        "\u{2022}" | "\u{25CF}" => (Some("Symbol"), "\u{F0B7}".to_string()),
+        "\u{25AA}" | "\u{25A0}" => (Some("Wingdings"), "\u{F0A7}".to_string()),
+        _ => (None, marker.to_string()),
+    }
 }
 
 #[cfg(test)]

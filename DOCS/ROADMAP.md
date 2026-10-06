@@ -108,7 +108,7 @@ formats.
 | Apple Keynote | key | [ ] | B | L | Same keystone as Pages; to PPTX or a Markdown outline. |
 | Word | docx | [~] | S | L | ZIP plus XML (WordprocessingML). Written from the model (Pages -> Word, 0.6.0, Markdown -> Word, 0.9.0) and read into it (Word -> Markdown, HTML, text, 0.8.0); HTML and text into Word next through the same bridge. Notes in `formats/docx.md`. |
 | Word legacy | doc | [ ] | C | L | Word 97 binary over OLE2; text and basic formatting extraction only. |
-| Rich Text Format | rtf | [ ] | A | M | Text format with a documented grammar; RTF <-> Markdown/HTML/DOCX. Still emitted by many systems. |
+| Rich Text Format | rtf | [x] | A | M | Both ways, to and from every document format (`DOCS/formats/rtf.md`): Word-level fidelity, checked against LibreOffice, the macOS text system, and Apple's `textutil` (`scripts/rtf-check`). |
 | OpenDocument text | odt | [ ] | A | M | ZIP plus XML; close to DOCX in shape. |
 | PDF | pdf | [~] | S | XL | Images to PDF and a page's image back, merged, shipped 0.23.0; text out as plain text, Markdown, HTML, and Word shipped 0.24.0; documents in (PDF from Markdown, HTML, text, Word, and Pages, in the standard fonts with the machine's fonts embedded for other scripts) shipped 0.25.0 (`DOCS/formats/pdf.md`). A flagship, required both ways for 1.0: images in written PDFs and complex-script shaping remain. Two different jobs. Writing PDF from Markdown/HTML/DOCX (layout engine, fonts, images) is the most requested output of any converter. Reading PDF for text extraction is moderate; full PDF -> DOCX is a research project and stays lossy. |
 | EPUB | epub | [ ] | A | M | ZIP of XHTML plus manifest. Markdown/HTML/DOCX -> EPUB is a favorite of writers; EPUB -> Markdown. |
