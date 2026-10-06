@@ -7,6 +7,7 @@
 //   const result = sublime.convert(bytes, "pages", "docx");
 //   // result.status: "converted" | "converted-with-loss" | "failed" | "no-path" | "unknown-format"
 //   // result.bytes: Uint8Array, result.message: string
+//   // result.parts: files in the result; more than one means bytes is a ZIP of them
 //
 // The module keeps its output in its own memory until the next call, so
 // `result.bytes` is a copy the caller owns.
@@ -51,7 +52,9 @@ export class Sublime {
     }
     const status = STATUS[code] ?? "failed";
     const bytes = status === "converted" || status === "converted-with-loss" ? this.#output() : new Uint8Array(0);
-    return { status, bytes, message: this.#message() };
+    // More than one part: `bytes` is a ZIP holding a file per part.
+    const parts = status === "converted" || status === "converted-with-loss" ? this.exports.output_parts() : 0;
+    return { status, bytes, message: this.#message(), parts };
   }
 
   /** Every format: `[{id, name, extensions, category}]`. */

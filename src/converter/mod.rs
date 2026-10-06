@@ -279,6 +279,14 @@ pub struct ConvertOptions {
 
 /// One edge in the format graph. Implement this and add one line to
 /// `src/registry.rs`.
+/// Where a converter that splits its input (a workbook's sheets, a
+/// document's tables, a PDF's pages) writes each part.
+pub trait Parts {
+    /// Starts the part named `name` (a sheet's name, `Page 3`); what is
+    /// written to the returned writer until the next call is that part.
+    fn part(&mut self, name: &str) -> io::Result<&mut dyn Write>;
+}
+
 pub trait Converter: Sync {
     fn name(&self) -> &'static str;
     fn from(&self) -> &'static Format;
@@ -291,6 +299,83 @@ pub trait Converter: Sync {
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError>;
+
+    /// Whether `convert_parts` writes each part of a many-part input (every
+    /// sheet, table, or page) as its own output, where `convert` writes
+    /// only the first.
+    fn splits(&self) -> bool {
+        false
+    }
+
+    /// Writes the input's parts, each through `parts`. Converters that do
+    /// not split write one unnamed part.
+    fn convert_parts(
+        &self,
+        input: Input<'_>,
+        parts: &mut dyn Parts,
+        context: &mut Context<'_>,
+    ) -> Result<(), ConvertError> {
+        let output = parts.part("")?;
+        self.convert(input, output, context)
+    }
+}
+
+/// A part's file name: its name made safe for a file system, `Part N` when
+/// it has none, and numbered when an earlier part took it.
+pub fn part_file_stem(name: &str, index: usize, taken: &[String]) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|character| match character {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            character if character.is_control() => '_',
+            character => character,
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').to_string();
+    let base = if cleaned.is_empty() {
+        format!("Part {}", index + 1)
+    } else {
+        cleaned
+    };
+    let mut candidate = base.clone();
+    let mut number = 2;
+    while taken
+        .iter()
+        .any(|taken| taken.eq_ignore_ascii_case(&candidate))
+    {
+        candidate = format!("{base} ({number})");
+        number += 1;
+    }
+    candidate
+}
+
+/// Parts gathered in memory, in order, each with its name.
+#[derive(Debug, Default)]
+pub struct MemoryParts {
+    pub parts: Vec<(String, Vec<u8>)>,
+}
+
+impl MemoryParts {
+    /// The parts as one ZIP, each a file named after its part with
+    /// `extension`, as the command line names them.
+    pub fn zip(&self, extension: &str) -> io::Result<Vec<u8>> {
+        let mut zip = crate::io::zip::ZipWriter::new(Vec::new());
+        let mut names: Vec<String> = Vec::new();
+        for (index, (name, bytes)) in self.parts.iter().enumerate() {
+            let stem = part_file_stem(name, index, &names);
+            zip.add_deflated(&format!("{stem}.{extension}"), bytes)?;
+            names.push(stem);
+        }
+        zip.finish()
+    }
+}
+
+impl Parts for MemoryParts {
+    fn part(&mut self, name: &str) -> io::Result<&mut dyn Write> {
+        self.parts.push((name.to_string(), Vec::new()));
+        let last = self.parts.len() - 1;
+        Ok(&mut self.parts[last].1)
+    }
 }
 
 #[cfg(test)]

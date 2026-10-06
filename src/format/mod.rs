@@ -41,6 +41,15 @@ pub struct Format {
     pub category: Category,
 }
 
+impl Format {
+    /// Whether a file of this format holds one table or picture only (CSV,
+    /// TSV, JSON Lines, an image), so a many-part input (a workbook's sheets,
+    /// a document's tables, a PDF's pages) becomes one file per part.
+    pub fn holds_one_part(&self) -> bool {
+        matches!(self.id, "csv" | "tsv" | "jsonl") || self.category == Category::Image
+    }
+}
+
 impl PartialEq for Format {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id

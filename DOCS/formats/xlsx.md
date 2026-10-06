@@ -1,29 +1,64 @@
 # Excel workbook (xlsx)
 
-Office Open XML SpreadsheetML: a ZIP of XML parts. Sublime reads one
+Office Open XML SpreadsheetML: a ZIP of XML parts. Sublime reads every
 sheet of a workbook into rows (`src/io/xlsx/reader.rs`) and writes rows
-into a one-sheet workbook (`src/io/xlsx/writer.rs`), since 0.16.0, so a
-workbook reaches CSV, TSV, JSON, and JSON Lines through the row
-converters and comes back from CSV and TSV. This is the living map of
-what the reader and writer handle, tied to the tests that prove it.
+into a workbook of one or more sheets (`src/io/xlsx/writer.rs`), so a
+workbook reaches CSV, TSV, JSON, JSON Lines, and every document format,
+whole. This is the living map of what the reader and writer handle, tied
+to the tests that prove it.
+
+## Workbooks whole
+
+A workbook is several tables. Where the target holds one table, each sheet
+becomes its own file; where it holds several, the workbook stays one file:
+
+| Target | A workbook of several sheets becomes |
+|---|---|
+| CSV, TSV, JSON Lines | a folder named after the output, a file per sheet (`book.csv` -> `book/Sales.csv`, `book/Costs.csv`); one sheet is one file, as before |
+| JSON (and YAML, TOML, XML through it) | one object of arrays keyed by sheet name; one sheet stays the plain array |
+| Markdown, HTML, Word, Pages, RTF, PDF | one document, each sheet a table under a heading of its name |
+| standard output | the first sheet, the rest reported as a loss |
+| the WebAssembly module | a ZIP of the files the command line would write |
+
+The other way, a workbook is built whole: a document's tables become a
+sheet each, named after the heading before each (`markdown-to-xlsx`, and
+Word, Pages, HTML, and PDF through it), and a JSON object of arrays a
+sheet per member (`json-to-xlsx`). The same split serves documents: a
+document's tables into CSV are a folder of CSVs, and into JSON one object
+of arrays (`markdown-tables-to-json`).
+
+`--sheet <name|number>` still picks one sheet (one file) or names the
+sheet a single table is written to (`Sheet1` when absent).
+
+How it works: a converter that can split (`Converter::splits`) writes each
+part through `Converter::convert_parts`; the planner splits only when the
+plan ends in a format that holds one part (`Format::holds_one_part`) and
+runs the hops after the split once per part (`planner::execute_parts`);
+the command line moves the parts into place, and the module zips them.
 
 ## Status
 
-- `xlsx -> csv`, `xlsx -> tsv`: shipped, conditional (one sheet;
-  numbers as stored, dates as ISO 8601, booleans as `TRUE` and `FALSE`,
-  formulas as their last value; formatting dropped). JSON and JSON Lines
-  reach through them.
+- `xlsx -> csv`, `xlsx -> tsv`: shipped, conditional (a file per sheet,
+  or the one `--sheet` picks; numbers as stored, dates as ISO 8601,
+  booleans as `TRUE` and `FALSE`, formulas as their last value;
+  formatting dropped). JSON Lines reaches through them.
+- `xlsx -> json`, `xlsx -> markdown`: shipped, conditional (every sheet
+  in one file, as above).
 - `csv -> xlsx`, `tsv -> xlsx`: shipped, conditional (plain decimals of
   up to fifteen digits become numbers, everything else text; one sheet).
-- `--sheet <name|number>` picks the sheet read (the first when absent)
-  or names the sheet written (`Sheet1` when absent).
+- `markdown -> xlsx`, `json -> xlsx`: shipped (a sheet per table or per
+  member). Empty cells are written as cells without a value, so a row
+  read back keeps its width.
 
-Oracles (`tests/xlsx_rows.rs`, fixtures in `tests/fixtures/xlsx` built
-by hand from the specification): every workbook's first sheet reads to
-the CSV beside it byte for byte; a sheet chosen by name or number reads
-to its own CSV and a missing sheet is refused with the sheet list; every
-CSV fixture survives CSV to workbook to CSV; the written workbook
-carries the sheet name it was given. The fixtures cover shared strings
+Oracles (`tests/xlsx_rows.rs`, `tests/workbooks.rs`, fixtures in
+`tests/fixtures/xlsx` built by hand from the specification): every
+workbook's first sheet reads to the CSV beside it byte for byte; a sheet
+chosen by name or number reads to its own CSV and a missing sheet is
+refused with the sheet list; every sheet of a two-sheet workbook reads to
+its own CSV; a workbook survives JSON and back; a document's three tables
+make three named sheets and three CSVs; every CSV fixture survives CSV to
+workbook to CSV; the written workbook carries the sheet name it was
+given. The fixtures cover shared strings
 (plain, rich text runs, phonetic runs skipped, preserved whitespace,
 entities), inline strings, numbers as stored (`1E-05`), dates and
 datetimes by built-in and custom number formats, times, booleans,
