@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-06
+
 ### Added
 
 - Writing Apple Numbers: `csv-to-numbers`, `tsv-to-numbers`, `xlsx-to-numbers` (a sheet per worksheet), `json-to-numbers` (a sheet per table), and `markdown-to-numbers` (a document's tables as tables of one sheet, named after their headings; Word, Pages, HTML, RTF, and PDF through it). Cells are typed by their text under the workbook writer's read-back rule (numbers as decimal128, ISO dates as dates shown as written, `TRUE` and `FALSE` as booleans). Built from a blank document Numbers saved, its table and sheet cloned for more; checked in Numbers itself (`scripts/numbers-check/write.sh`): 78 of 79 rewritten test documents open with no repair, upgrade, or assertion and export what we read, none crash.
@@ -27,6 +29,7 @@ section under a version heading.
 
 - Tables written to Pages (and Numbers) past 256 rows are stored in tiles of 256 rows, listed in the row tile tree, as Numbers and Pages store them; they were one tile.
 - The embedded Pages and Numbers templates are deflated (58 KB smaller binary).
+- The binary size budget is raised 4.10 -> 4.30 MB and the WebAssembly budget 2.25 -> 2.40 MB for Numbers display formats and the Numbers writer (about 120 KB of the binary after the trims; the Linux binary measures 4.10 MB, the module 2.24 MB).
 - Excel to JSON and Excel to Markdown share one converter, the Excel writer one cell writer, and the Numbers reader one non-generic row reader (13 KB smaller).
 - The workbook writer types ISO 8601 dates, dates and times, and times as dates (shown in the same form: `yyyy-mm-dd`, `yyyy-mm-dd"T"hh:mm:ss`, `[hh]:mm:ss`) and `TRUE` and `FALSE` as booleans, under the rule it already kept for numbers: a cell is typed only when reading it back gives the same text. Dates and booleans from Excel and Numbers now reach Excel as dates and booleans instead of text, and CSV's ISO dates do too; locale dates, partial dates, and lowercase `true` stay text. About 4 KB of code; converting a CSV whose columns are half dates and booleans is 3 to 6% slower, others unchanged.
 - Numbers dates with a time read as `2024-08-08T14:35:09` (the Excel reader's form) instead of `2024-08-08 14:35`.
