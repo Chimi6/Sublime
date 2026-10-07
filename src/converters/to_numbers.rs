@@ -162,7 +162,7 @@ impl Converter for ToNumbers {
                 }]
             }
         };
-        write_numbers_to(&sheets, output).map_err(package_error)?;
+        write_numbers_to(sheets, output).map_err(package_error)?;
         output.flush()?;
         Ok(())
     }
