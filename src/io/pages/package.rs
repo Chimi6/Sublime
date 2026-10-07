@@ -4,7 +4,7 @@
 //! exact bytes of the streams they came from (the ZIP and Snappy layers
 //! are rebuilt, so those bytes differ, their contents do not).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use super::schema::SCHEMA;
@@ -141,6 +141,68 @@ const SKIPPED_TYPES: [u32; 11] = [
     4003, 4004, 4009, 6220, 6267, 6316, 6317, 6365, 6366, 6373, 6383,
 ];
 
+/// `TST.TableModelArchive`, `TST.TableInfoArchive`, `TST.PivotOwnerArchive`,
+/// `TST.SummaryModelArchive`, and `TST.ColumnRowUIDMapArchive`.
+const TABLE_MODEL: u32 = 6001;
+const TABLE_INFO: u32 = 6000;
+const PIVOT_OWNER: u32 = 6370;
+const SUMMARY_MODEL: u32 = 6316;
+const UID_MAP: u32 = 6267;
+
+/// The objects of skipped types a pivot table's view needs, among a
+/// stream's objects (Numbers keeps a table's model, info, and maps in one
+/// stream): the uid maps of its info, model, and summary model, and the
+/// summary model, which holds the grand totals. Found by the references
+/// each object's header lists.
+fn pivot_views(objects: &[crate::io::iwa::IwaObject<'_>]) -> HashSet<u64> {
+    let types: HashMap<u64, u32> = objects
+        .iter()
+        .map(|object| (object.identifier, object.message_type().unwrap_or(0)))
+        .collect();
+    let of_type =
+        |id: &u64, wanted: &[u32]| types.get(id).is_some_and(|kind| wanted.contains(kind));
+    let references = |object: &crate::io::iwa::IwaObject<'_>| -> Vec<u64> {
+        object
+            .messages
+            .iter()
+            .flat_map(|message| message.object_references.iter().copied())
+            .collect()
+    };
+    let models: HashSet<u64> = objects
+        .iter()
+        .filter(|object| object.message_type() == Some(TABLE_MODEL))
+        .filter(|object| {
+            references(object)
+                .iter()
+                .any(|id| of_type(id, &[PIVOT_OWNER]))
+        })
+        .map(|object| object.identifier)
+        .collect();
+    let mut keep = HashSet::new();
+    if models.is_empty() {
+        return keep;
+    }
+    for object in objects {
+        let refs = references(object);
+        let pivot = models.contains(&object.identifier)
+            || (object.message_type() == Some(TABLE_INFO)
+                && refs.iter().any(|id| models.contains(id)));
+        if pivot {
+            keep.extend(
+                refs.into_iter()
+                    .filter(|id| of_type(id, &[UID_MAP, SUMMARY_MODEL])),
+            );
+        }
+    }
+    for object in objects {
+        if keep.contains(&object.identifier) && object.message_type() == Some(SUMMARY_MODEL) {
+            let refs = references(object);
+            keep.extend(refs.into_iter().filter(|id| of_type(id, &[UID_MAP])));
+        }
+    }
+    keep
+}
+
 impl Package {
     pub fn read(bytes: &[u8]) -> Result<Package, PackageError> {
         Package::read_scope(bytes, Scope::Everything)
@@ -262,11 +324,13 @@ impl Package {
                 stream: entry.name.clone(),
                 error,
             })?;
+            let pivots = pivot_views(&objects);
             let skipped: Vec<u64> = objects
                 .iter()
                 .filter(|object| {
                     let message_type = object.message_type().unwrap_or(0);
-                    SKIPPED_TYPES.contains(&message_type) || message_type == ROW_HEADERS
+                    (SKIPPED_TYPES.contains(&message_type) || message_type == ROW_HEADERS)
+                        && !pivots.contains(&object.identifier)
                 })
                 .map(|object| object.identifier)
                 .collect();
