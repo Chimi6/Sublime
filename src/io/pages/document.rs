@@ -635,6 +635,9 @@ struct CellRecord {
     /// A formula's result whose date format is Numbers' automatic one (the
     /// record's explicit-format mask, byte 6, leaves out dates: 0x08).
     automatic_date: bool,
+    /// The format kind the cell shows (`0x1000`): 1 a number, 2 a
+    /// currency, 3 a date, 5 text.
+    shown_kind: Option<u32>,
     /// Keys into the table's format table, by kind.
     number_format: Option<u32>,
     currency_format: Option<u32>,
@@ -691,6 +694,7 @@ fn cell_record(bytes: &[u8]) -> Option<CellRecord> {
             0x10 => record.rich_text = Some(u32::from_le_bytes(field.try_into().ok()?)),
             0x20 => record.cell_style = Some(u32::from_le_bytes(field.try_into().ok()?)),
             0x40 => record.text_style = Some(u32::from_le_bytes(field.try_into().ok()?)),
+            0x1000 => record.shown_kind = Some(u32::from_le_bytes(field.try_into().ok()?)),
             0x2000 => record.number_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
             0x4000 => record.currency_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
             0x8000 => record.date_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
@@ -3557,6 +3561,46 @@ struct TableLayout {
     rows: Vec<(Option<usize>, Option<usize>)>,
     /// Per view column, likewise.
     columns: Vec<(Option<usize>, Option<usize>)>,
+    /// Per view row, the category it heads, when it is a category's row
+    /// (a group of a categorised table, no stored row of its own).
+    groups: Vec<Option<Group>>,
+    /// Per category level, the stored column it groups by.
+    group_columns: Vec<Option<usize>>,
+}
+
+/// A categorised table's categories, by their uid.
+type GroupsByUid = HashMap<(u64, u64), Group>;
+
+/// A category of a categorised table: its level (0 the outermost) and the
+/// value its rows share.
+#[derive(Debug, Clone, PartialEq)]
+struct Group {
+    level: usize,
+    value: GroupValue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum GroupValue {
+    Text(String),
+    Number(f64, Format),
+    /// Seconds since 2001 and the pattern the grouping shows (`yyyy`,
+    /// `LLLL yyyy`, `yyyy-QQQ`, `EEEE`).
+    Date(f64, String),
+    Boolean(bool),
+}
+
+impl Group {
+    /// The category's label, as Numbers shows it: a boolean grouping is
+    /// named by its column (`Is “Edible”`, `Not “Edible”`).
+    fn label(&self, column: &str) -> String {
+        match &self.value {
+            GroupValue::Text(text) => text.clone(),
+            GroupValue::Number(value, format) => cell_format::number(*value, None, format, None),
+            GroupValue::Date(seconds, pattern) => cell_format::date(*seconds, pattern, false),
+            GroupValue::Boolean(true) => format!("Is \u{201c}{column}\u{201d}"),
+            GroupValue::Boolean(false) => format!("Not \u{201c}{column}\u{201d}"),
+        }
+    }
 }
 
 /// A `TST.ColumnRowUIDMapArchive`: each uid's index, and the uids in
@@ -3605,6 +3649,8 @@ impl UidMap {
 const NUMBERS_DOCUMENT: u32 = 1;
 const NUMBERS_SHEET: u32 = 2;
 const TABLE_INFO: u32 = 6000;
+/// `TST.GroupByArchive`: a table's categories.
+const GROUP_BY: u32 = 6373;
 
 /// A Numbers document's sheets and tables, in the order the document
 /// lists them, with each table's cells read on request a tile at a time
@@ -3835,8 +3881,23 @@ impl<'p> WorkbookReader<'p> {
                 .filter(|cell| !matches!(cell.value, CellValue::Empty) || !cell.text.is_empty())
                 .cloned()
         };
+        // A category's label goes in the view's own column (one with no
+        // stored column), where Numbers shows it; a boolean grouping is
+        // named by its column's header.
+        let label_column = layout
+            .columns
+            .iter()
+            .position(|(base_column, summary_column)| {
+                base_column.is_none() && summary_column.is_none()
+            })
+            .or_else(|| {
+                layout
+                    .columns
+                    .iter()
+                    .position(|(base_column, _)| base_column.is_none())
+            });
         let mut row = Vec::with_capacity(layout.columns.len());
-        for &(base_row, summary_row) in &layout.rows {
+        for (index, &(base_row, summary_row)) in layout.rows.iter().enumerate() {
             row.clear();
             for &(base_column, summary_column) in &layout.columns {
                 row.push(
@@ -3844,6 +3905,24 @@ impl<'p> WorkbookReader<'p> {
                         .or_else(|| at(&base, base_row, base_column))
                         .unwrap_or_default(),
                 );
+            }
+            if let (Some(group), Some(column)) = (
+                layout.groups.get(index).and_then(Option::as_ref),
+                label_column,
+            ) {
+                let header = layout
+                    .group_columns
+                    .get(group.level)
+                    .copied()
+                    .flatten()
+                    .and_then(|column| base.first()?.get(column))
+                    .map(|cell| cell.text.as_str())
+                    .unwrap_or_default();
+                row[column] = WorkbookCell {
+                    text: group.label(header),
+                    value: CellValue::Text,
+                    format: None,
+                };
             }
             each(&row)?;
         }
@@ -4013,7 +4092,14 @@ impl Reader<'_> {
             .and_then(|payload| View::of(payload).reference("storage"))
             .and_then(|storage| self.graph.object(storage))?;
         let blocks = self.nested_blocks(View::of(storage));
-        Some(cell_text(&self.document, &blocks))
+        let mut text = cell_text(&self.document, &blocks);
+        // A cell's text that ends in a line break keeps it, as Numbers
+        // shows it: the paragraphs leave the empty last one out.
+        let raw = View::of(storage).strings("text").concat();
+        if raw.ends_with(['\n', '\u{2029}']) && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        Some(text)
     }
 
     /// The table models a sheet's drawable holds: a table, or the tables
@@ -4045,7 +4131,6 @@ impl Reader<'_> {
         model: View<'_>,
         base: (usize, usize),
     ) -> Option<TableLayout> {
-        model.reference("pivot_owner")?;
         let info = View::of(self.graph.object(info)?);
         let map = |id: Option<u64>| Some(UidMap::of(View::of(self.graph.object(id?)?)));
         let shown = map(info.reference("view_column_row_uids"))?;
@@ -4075,14 +4160,115 @@ impl Reader<'_> {
         if rows.is_empty() || columns.is_empty() {
             return None;
         }
+        // A categorised table's categories: the rows its view adds, each
+        // headed by its group's value.
+        let (nodes, group_by_columns) = self.groups(info);
+        let groups = shown
+            .rows
+            .iter()
+            .zip(&rows)
+            .map(|(uid, (stored_row, _))| match stored_row {
+                Some(_) => None,
+                None => nodes.get(uid).cloned(),
+            })
+            .collect();
+        let group_columns = group_by_columns
+            .iter()
+            .map(|uid| stored.column_index.get(uid).copied())
+            .collect();
         Some(TableLayout {
             base,
             summary,
             summary_size: (summed.rows.len(), summed.columns.len()),
             rows,
             columns,
+            groups,
+            group_columns,
         })
     }
+
+    /// A table's categories by their uid (`TST.GroupByArchive`, by the
+    /// table info's `group_by_uuid`), and the columns it groups by, by
+    /// level. Empty when the table is not categorised.
+    fn groups(&self, info: View<'_>) -> (GroupsByUid, Vec<(u64, u64)>) {
+        let mut nodes = HashMap::new();
+        let Some(wanted) = info.message("group_by_uuid").and_then(uid_of) else {
+            return (nodes, Vec::new());
+        };
+        let Some(group_by) = self
+            .graph
+            .objects_of_type(GROUP_BY)
+            .into_iter()
+            .map(|(_, message)| View::of(message))
+            .find(|view| view.message("group_by_uid").and_then(uid_of) == Some(wanted))
+        else {
+            return (nodes, Vec::new());
+        };
+        if group_by.boolean("is_enabled") != Some(true) {
+            return (nodes, Vec::new());
+        }
+        let columns = group_by
+            .messages("group_column")
+            .into_iter()
+            .filter_map(|column| column.message("column_uid").and_then(uid_of))
+            .collect();
+        let root = group_by.message("group_node_root").or_else(|| {
+            group_by
+                .reference("group_node_root_ref")
+                .and_then(|id| self.graph.object(id))
+                .map(View::of)
+        });
+        if let Some(root) = root {
+            self.collect_groups(root, 0, &mut nodes);
+        }
+        (nodes, columns)
+    }
+
+    /// A group node's children, and theirs, by uid with their level.
+    fn collect_groups(&self, node: View<'_>, level: usize, nodes: &mut HashMap<(u64, u64), Group>) {
+        if level > 16 {
+            return;
+        }
+        let mut children = node.messages("child");
+        if children.is_empty() {
+            children = node
+                .references("child_ref")
+                .into_iter()
+                .filter_map(|id| self.graph.object(id))
+                .map(View::of)
+                .collect();
+        }
+        for child in children {
+            if let (Some(uid), Some(value)) = (
+                child.message("group_uid").and_then(uid_of),
+                child.message("group_cell_value").and_then(group_value),
+            ) {
+                nodes.insert(uid, Group { level, value });
+            }
+            self.collect_groups(child, level + 1, nodes);
+        }
+    }
+}
+
+/// A group's value (`TSCE.CellValueArchive`): text, a number under its
+/// format, a date under the grouping's pattern, or a boolean.
+fn group_value(value: View<'_>) -> Option<GroupValue> {
+    if let Some(text) = value.message("string_value") {
+        return Some(GroupValue::Text(text.string("value")?.to_string()));
+    }
+    if let Some(number) = value.message("number_value") {
+        let format = number.message("format").map(format_of).unwrap_or_default();
+        return Some(GroupValue::Number(number.double("value")?, format));
+    }
+    if let Some(date) = value.message("date_value") {
+        let pattern = date
+            .message("format")
+            .and_then(|format| format.string("date_time_format"))
+            .unwrap_or("yyyy-MM-dd");
+        return Some(GroupValue::Date(date.double("value")?, pattern.to_string()));
+    }
+    let boolean = value.message("boolean_value")?;
+    Some(GroupValue::Boolean(boolean.boolean("value")?))
 }
 
 /// A cell as Numbers shows it: the duration, date, text, currency,
@@ -4174,7 +4360,13 @@ fn shown_cell(record: &CellRecord, lists: &TableLists) -> Option<WorkbookCell> {
         }
         2 | 10 => {
             let value = number?;
-            let named = format(record.currency_format).or_else(|| format(record.number_format));
+            // The format kind the cell shows (`0x1000`: 1 a number, 2 a
+            // currency) picks between the two it may name.
+            let (first, second) = match record.shown_kind {
+                Some(1) => (record.number_format, record.currency_format),
+                _ => (record.currency_format, record.number_format),
+            };
+            let named = format(first).or_else(|| format(second));
             let text = match named.as_deref() {
                 Some(named) => cell_format::number(
                     value,
