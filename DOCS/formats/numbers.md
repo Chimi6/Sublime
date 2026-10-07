@@ -66,9 +66,20 @@ kept: day of year and week fields (a date in ISO 8601), base formats and
 custom formats with conditions (text), the zeros Numbers adds from unused
 decimals, and accounting style's tab.
 
+A pivot table reads as Numbers shows it. Its model stores the body in the
+order the groups were made; the table's view (`view_column_row_uids` on
+`TST.TableInfoArchive`) orders every row and column by uid, and the
+summary model (`TST.SummaryModelArchive`, its own `data_store` and uid
+map) holds the grand total row and column. Each shown cell is the
+summary's at that row and column if it has one, else the stored cell. The
+workbook read keeps these maps and the summary model for pivot tables
+alone (found by the references in the objects' headers), and reads a
+pivot's two grids whole.
+
 Not shown as Numbers does: a categorised table is written as its rows (its
-data), not grouped under category rows as Numbers' view and export show it;
-a pivot table's computed cells are not read; formulas are their last value
+data), not grouped under category rows with its hidden columns left out, as
+Numbers' view and export show it (built from its group-by tree, not a view
+map); formulas are their last value
 (Numbers recalculates some, `NOW()` and locale functions, when it opens a
 document).
 
@@ -158,10 +169,10 @@ LibreOffice), on numbers-parser's test documents
 (<https://github.com/masaccio/numbers-parser>, MIT):
 
 - `check.sh` exports each document to CSV with Numbers and compares every
-  cell we read. As text: 70 of 79 documents exact, 130,018 of 131,593
+  cell we read. As text: 72 of 79 documents exact, 130,044 of 131,593
   non-empty cells (98.8%). Through Excel (our workbook shown by
-  LibreOffice): 63 to 64 of 79 exact, 98.7% of cells. The rest are the
-  categorised and pivot views, formulas Numbers recalculates on opening,
+  LibreOffice): 65 of 79 exact, 98.7% of cells. The rest are the
+  categorised view, formulas Numbers recalculates on opening,
   and, through Excel, what Excel formats cannot express (above).
 - `write.sh` rewrites each document through our writer (Numbers, Excel,
   Numbers), opens it in Numbers, and reads Numbers' log and export: all 79
@@ -181,5 +192,5 @@ Speed and memory are the `numbers-csv` and `numbers-xlsx` benchmark pairs
 Fixtures (`tests/fixtures/numbers`, from numbers-parser's test data): two
 sheets with three tables, a zipped package folder with an LZFSE stream, an
 older document whose object headers leave references out, and two
-documents of formats with Numbers' own CSV export of each
-(`reference/`) as the expected text.
+documents of formats and a pivot table with Numbers' own CSV export of
+each (`reference/`) as the expected text.
