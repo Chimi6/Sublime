@@ -1,0 +1,79 @@
+,Description,Edible,Date Seen,Category,Count
+Transport,,,,,
+Not “Edible”,,,,,
+5,,,,,
+2013,,,,,
+,Airplane,FALSE,26 Jul 2013,Transport,5
+2012,,,,,
+,Bus,FALSE,3 Dec 2012,Transport,5
+2011,,,,,
+,Helicopter,FALSE,8 Jun 2011,Transport,5
+2015,,,,,
+,Van,FALSE,5 Jun 2015,Transport,5
+40,,,,,
+2011,,,,,
+,Bicycle,FALSE,21 Mar 2011,Transport,40
+30,,,,,
+2015,,,,,
+,Car,FALSE,10 Jan 2015,Transport,30
+2010,,,,,
+,Motorcycle,FALSE,17 Dec 2010,Transport,30
+10,,,,,
+2013,,,,,
+,Scooter,FALSE,6 May 2013,Transport,10
+2011,,,,,
+,Train,FALSE,30 Jan 2011,Transport,10
+20,,,,,
+2012,,,,,
+,Truck,FALSE,9 Mar 2012,Transport,20
+Fruit,,,,,
+Is “Edible”,,,,,
+40,,,,,
+2012,,,,,
+,Apple,TRUE,15 Apr 2012,Fruit,40
+,Orange,TRUE,5 Oct 2012,Fruit,40
+2010,,,,,
+,Banana,TRUE,5 Nov 2010,Fruit,40
+,Watermelon,TRUE,27 Jun 2010,Fruit,40
+2015,,,,,
+,Peach,TRUE,28 Feb 2015,Fruit,40
+2011,,,,,
+,Pineapple,TRUE,23 Oct 2011,Fruit,40
+120,,,,,
+2010,,,,,
+,Grape,TRUE,22 Sep 2010,Fruit,120
+2014,,,,,
+,Strawberry,TRUE,16 Aug 2014,Fruit,120
+30,,,,,
+2012,,,,,
+,Kiwi,TRUE,13 Jul 2012,Fruit,30
+2013,,,,,
+,Mango,TRUE,1 Feb 2013,Fruit,30
+Animal,,,,,
+Not “Edible”,,,,,
+10,,,,,
+2014,,,,,
+,Bear,FALSE,19 Sep 2014,Animal,10
+,Lion,FALSE,30 Nov 2014,Animal,10
+2013,,,,,
+,Elephant,FALSE,11 Nov 2013,Animal,10
+20,,,,,
+2011,,,,,
+,Cat,FALSE,29 Aug 2011,Animal,20
+2014,,,,,
+,Dog,FALSE,4 Mar 2014,Animal,20
+30,,,,,
+2014,,,,,
+,Parrot,FALSE,9 May 2014,Animal,30
+Is “Edible”,,,,,
+10,,,,,
+2010,,,,,
+,Deer,TRUE,18 May 2010,Animal,10
+30,,,,,
+2015,,,,,
+,Horse,TRUE,25 Apr 2015,Animal,30
+2013,,,,,
+,Zebra,TRUE,14 Oct 2013,Animal,30
+120,,,,,
+2010,,,,,
+,Rabbit,TRUE,14 Feb 2010,Animal,120

@@ -8,12 +8,16 @@ section under a version heading.
 
 ### Added
 
+- Numbers categorised tables read as Numbers shows them: a row per category above its rows, labelled with the group's text, number, date (by year, quarter, week, month, day, or weekday), or `Is “Column”` / `Not “Column”`, nested categories in turn, and hidden columns left out. Every categorised table of numbers-parser's test documents matches Numbers' own export.
+
 - Numbers to Excel keeps merged cells, and Numbers and Pages tables read merges from every place Numbers keeps them (the merge owner's formulas, the calculation engine's dependencies, and an older document's merge region map): every merged range numbers-parser reads in its 11 test documents that have them, from 2 before.
 
 - Numbers pivot tables read as Numbers shows them: rows and columns in the view's order, with the grand total row and column from the table's summary (72 of 79 test documents exact against Numbers' export, from 70; through Excel 65, from 63).
 - Excel to Numbers keeps each cell's number format where Numbers has the same (decimals with separators and red or parenthesised negatives, currency by symbol or locale, percent, scientific, fractions, and date and time patterns) and the sheet's merged cells; formats Numbers' built-in ones cannot say (padding, optional decimals, scaling, elapsed time) leave the value unformatted. The Excel reader gives each cell's format code and the sheet's merges (`Workbook::read_sheet`), and the Numbers reader a table's merges (`WorkbookReader::merges`).
 
 ### Changed
+
+- Numbers cells: a cell naming both a number and a currency format shows the one its record says it shows (a percentage was shown as currency), and a rich text cell that ends in a line break keeps it. Against Numbers' own export of 79 test documents: 75 exact, 99.9% of cells (from 72 and 98.8%); through Excel 67, 99.8%.
 
 - The Numbers writer's large tables take about half the memory and a sixth less space: every row in wide offsets with Numbers' placeholder in its legacy fields (as Numbers writes its own large tables) instead of a second copy of its records, repeated records run together in one tree entry, and source rows held in one text buffer. 300,000 rows of four columns peak at about 175 MB (from 350) in a 19.8 MB document (from 23); 1,000,000 rows at about 500 MB (from 900), 2.1 s (from 2.8), 70 MB (from 81), and open in Numbers with an export identical to the source. A table past Numbers' 1,000,000 rows or 1,000 columns is written with a warning.
 

@@ -218,27 +218,45 @@ fn csv_rows(text: &[u8]) -> Vec<Vec<String>> {
 fn cells_read_as_numbers_shows_them() {
     let reference =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/numbers/reference");
+    let pair = |part: &str, file: &str| (part.to_string(), file.to_string());
+    let categories = [
+        "Categories",
+        "Nested Categories",
+        "Date Year-Quarter",
+        "Maximal Nesting",
+        "Number Categories",
+        "Date Weekday",
+    ]
+    .iter()
+    .map(|table| {
+        pair(
+            &format!("Categories - {table}"),
+            &format!("categories/Categories-{table}.csv"),
+        )
+    })
+    .collect();
     let cases = [
         (
             "formats.numbers",
             vec![
-                ("Dates", "formats/Dates-Dates.csv"),
-                ("Numbers", "formats/Numbers-Table 1.csv"),
+                pair("Dates", "formats/Dates-Dates.csv"),
+                pair("Numbers", "formats/Numbers-Table 1.csv"),
             ],
         ),
-        ("currencies.numbers", vec![("Income", "currencies.csv")]),
+        ("currencies.numbers", vec![pair("Income", "currencies.csv")]),
         (
             "pivot.numbers",
             vec![
-                ("Sheet 1 - Source", "pivot/Sheet 1-Source.csv"),
-                ("Sheet 1 - Pivot", "pivot/Sheet 1-Pivot.csv"),
+                pair("Sheet 1 - Source", "pivot/Sheet 1-Source.csv"),
+                pair("Sheet 1 - Pivot", "pivot/Sheet 1-Pivot.csv"),
             ],
         ),
+        ("categories.numbers", categories),
     ];
     for (document, tables) in cases {
         let ours = parts(&NUMBERS_TO_CSV, &fixture(document), None);
         for (part, expected) in tables {
-            let (_, text) = ours.iter().find(|(name, _)| name == part).expect(part);
+            let (_, text) = ours.iter().find(|(name, _)| *name == part).expect(&part);
             let expected = std::fs::read(reference.join(expected)).expect("reference");
             assert_eq!(
                 csv_rows(text.as_bytes()),
