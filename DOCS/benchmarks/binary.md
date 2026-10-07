@@ -30,6 +30,29 @@ a comparison. Startup is implemented in `bench/src/startup.rs`.
 
 ## Results
 
+### 2026-10-06, 0.28.0 with Numbers display formats and the Numbers writer
+
+The gnu size and the module are CI's measurements on the release commit;
+the musl size is the release asset's; startup was measured on a Mac, the
+median of three runs (one read 1.35 ms over a loaded spawn floor).
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 4098928 | <= 4300000 (size-budget, what CI checks) | PASS |
+| Binary size, musl static (bytes, the release asset) | 4207552 | recorded | n/a |
+| WebAssembly module (bytes) | 2240593 | <= 2400000 (wasm/size-budget, what CI checks) | PASS |
+| WebAssembly module, gzipped (bytes, what a browser downloads) | 947536 | recorded | n/a |
+| Startup above spawn floor (ms, 1 KB file) | 0.826 (spawn 1.960, floor 1.134) | < 1 | PASS |
+
+commit: f24e759 (the release merge, v0.28.0)
+machine: CI (ubuntu-latest) for the gnu binary and the module; Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max for startup
+
+From 0.27.1 the binary grew 169,936 bytes (+4.3%) and the module 102,548:
+Numbers' display formats, typed Excel cells, and the Numbers writer with
+its template (50 KB deflated), less 58 KB from deflating both templates and
+13 KB of merged converter code. The budgets were raised to 4.30 and 2.40
+MB.
+
 ### 2026-10-06, 0.27.0 with workbooks whole and Apple Numbers
 
 The gnu size and the module are CI's measurements on the release commit;
