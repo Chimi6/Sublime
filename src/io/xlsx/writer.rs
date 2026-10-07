@@ -26,6 +26,8 @@ pub struct XlsxWriter<W: Write> {
     sheets: Vec<String>,
     /// Number formats typed cells named, in order: style `FIRST_CUSTOM_STYLE + i`.
     formats: Vec<String>,
+    /// The sheet's merged ranges as (row, column, rows, columns) from 0.
+    merges: Vec<(usize, usize, usize, usize)>,
 }
 
 /// A typed cell for `write_cells`: its value, which the writer stores as
@@ -79,6 +81,7 @@ impl<W: Write> XlsxWriter<W> {
             reference: String::new(),
             sheets: Vec::new(),
             formats: Vec::new(),
+            merges: Vec::new(),
         };
         writer.open_sheet(sheet_name)?;
         Ok(writer)
@@ -105,8 +108,32 @@ impl<W: Write> XlsxWriter<W> {
         Ok(())
     }
 
+    /// Merges a range of the sheet being written: `rows` by `columns`
+    /// cells from (`row`, `column`), from 0. Written when the sheet closes.
+    pub fn merge(&mut self, row: usize, column: usize, rows: usize, columns: usize) {
+        if rows > 0 && columns > 0 && (rows > 1 || columns > 1) {
+            self.merges.push((row, column, rows, columns));
+        }
+    }
+
     fn close_sheet(&mut self) -> io::Result<()> {
-        self.part.push_str("</sheetData></worksheet>");
+        self.part.push_str("</sheetData>");
+        if !self.merges.is_empty() {
+            self.part.push_str("<mergeCells count=\"");
+            push_number(&mut self.part, self.merges.len() as u64);
+            self.part.push_str("\">");
+            for (row, column, rows, columns) in std::mem::take(&mut self.merges) {
+                self.part.push_str("<mergeCell ref=\"");
+                push_column(&mut self.part, column);
+                push_number(&mut self.part, row as u64 + 1);
+                self.part.push(':');
+                push_column(&mut self.part, column + columns - 1);
+                push_number(&mut self.part, (row + rows) as u64);
+                self.part.push_str("\"/>");
+            }
+            self.part.push_str("</mergeCells>");
+        }
+        self.part.push_str("</worksheet>");
         self.zip.write_part(self.part.as_bytes(), Level::Fast)?;
         self.part.clear();
         self.zip.end_deflated()

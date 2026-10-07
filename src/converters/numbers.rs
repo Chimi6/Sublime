@@ -68,7 +68,7 @@ pub static NUMBERS_TO_XLSX: NumbersTo = NumbersTo {
     name: "numbers-to-xlsx",
     to: &formats::XLSX,
     target: Target::Xlsx,
-    note: "each table a worksheet (or the one --sheet picks); numbers, dates, and booleans as cells of their type, everything else as text; formatting, formulas, merges, charts, and pictures are dropped",
+    note: "each table a worksheet (or the one --sheet picks); numbers, dates, and booleans as cells of their type, everything else as text; merged cells kept; formatting, formulas, charts, and pictures are dropped",
 };
 
 impl Converter for NumbersTo {
@@ -143,6 +143,9 @@ impl Converter for NumbersTo {
                     // Per table: a table's formats live while it is read,
                     // so their addresses are only unique within it.
                     let mut codes = ExcelCodes::new();
+                    for (row, column, rows, columns) in workbook.merges(table.sheet, table.table) {
+                        writer.merge(row, column, rows, columns);
+                    }
                     workbook.rows(table.sheet, table.table, &mut |cells| {
                         let typed: Vec<(XlsxCell<'_>, Option<std::rc::Rc<str>>)> = cells
                             .iter()

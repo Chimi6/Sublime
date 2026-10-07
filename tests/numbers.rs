@@ -379,3 +379,38 @@ fn a_long_table_reads_back_whole() {
     let tables = parts(&NUMBERS_TO_CSV, &numbers, None);
     assert_eq!(tables[0].1, csv);
 }
+
+/// A Numbers table's merged cells (its merge owner's ranges) stay merged
+/// in Excel.
+#[test]
+fn merged_cells_carry_into_excel() {
+    let workbook = convert(&NUMBERS_TO_XLSX, &fixture("formats.numbers"));
+    let workbook = sublime::io::xlsx::Workbook::open(&workbook).expect("workbook");
+    let sheet = workbook.select(Some("Numbers")).expect("sheet");
+    let mut merges = workbook
+        .read_sheet(
+            sheet,
+            &mut |_, _| -> Result<(), sublime::io::xlsx::XlsxError> { Ok(()) },
+        )
+        .expect("reads");
+    merges.sort_unstable();
+    // A2:A37, A38:A45, A50:A69, A70:A85, A86:A89, A90:A102, A103:A105,
+    // A106:A113 (numbers-parser's ranges).
+    let starts: Vec<(usize, usize)> = merges
+        .iter()
+        .map(|&(row, _, rows, _)| (row, rows))
+        .collect();
+    assert_eq!(
+        starts,
+        vec![
+            (1, 36),
+            (37, 8),
+            (49, 20),
+            (69, 16),
+            (85, 4),
+            (89, 13),
+            (102, 3),
+            (105, 8)
+        ]
+    );
+}
