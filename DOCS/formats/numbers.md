@@ -100,10 +100,18 @@ the header row; the table has Numbers' default style, no header column, and
 default column widths. Formats, merges, and styling are not written yet.
 
 The table layout follows Numbers': a tile per 256 rows, listed in the row
-tile tree; no record for an empty cell and no row record for an empty row;
-a table past 255 columns in wide offsets, its tiles marked
-`should_use_wide_rows`, its legacy fields holding Numbers' placeholder.
-The same tiles serve the Pages writer's tables.
+tile tree with the next row strip id after them; no record for an empty
+cell and no row record for an empty row; a row's offset array a slot per
+column; a table past 255 columns in wide offsets, its tiles marked
+`should_use_wide_rows`, its legacy fields holding Numbers' placeholder; a
+table past 65,535 rows without the multiple-choice list Numbers drops at
+that size. The same tiles serve the Pages writer's tables.
+
+A large table's repeated records (tile rows, strings, row headers, row
+identifiers) are encoded as they are built rather than kept field by field,
+and its cells are kept as text or a typed value only: 300,000 rows of four
+columns write in 0.6 s at about 350 MB peak (933 MB before), to a 23 MB
+document.
 
 ## Packages
 
@@ -137,11 +145,9 @@ LibreOffice), on numbers-parser's test documents
   macOS's narrow space before AM and PM in one document's built-in time
   format, and, through Excel, what Excel formats cannot express (above).
 - `write.sh` rewrites each document through our writer (Numbers, Excel,
-  Numbers), opens it in Numbers, and reads Numbers' log and export: 78 of
-  79 open with no repair, upgrade, or assertion and export what our reader
-  reads; no crashes. The other, a table of 65,553 rows, opens with its data
-  intact but Numbers upgrades its model on loading: tables past 65,535 rows
-  are not yet laid out as Numbers lays them out.
+  Numbers), opens it in Numbers, and reads Numbers' log and export: all 79
+  open with no repair, upgrade, or assertion and export what our reader
+  reads; no crashes. So do tables of 65,534, 65,537, and 300,000 rows.
 
 Speed and memory are the `numbers-csv` and `numbers-xlsx` benchmark pairs
 (`DOCS/benchmarks/numbers-csv.md`, `numbers-xlsx.md`).
