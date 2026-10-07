@@ -630,6 +630,9 @@ struct CellRecord {
     rich_text: Option<u32>,
     cell_style: Option<u32>,
     text_style: Option<u32>,
+    /// A formula's result whose date format is Numbers' automatic one (the
+    /// record's explicit-format mask, byte 6, leaves out dates: 0x08).
+    automatic_date: bool,
     /// Keys into the table's format table, by kind.
     number_format: Option<u32>,
     currency_format: Option<u32>,
@@ -669,6 +672,7 @@ fn cell_record(bytes: &[u8]) -> Option<CellRecord> {
     let flags = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
     let mut record = CellRecord {
         kind: bytes[1],
+        automatic_date: flags & 0x200 != 0 && bytes[6] & 0x08 == 0,
         ..CellRecord::default()
     };
     let mut offset = 12usize;
@@ -3599,6 +3603,36 @@ impl<'p> WorkbookReader<'p> {
         &self.sheets
     }
 
+    /// A table's merged ranges as (row, column, rows, columns) from 0,
+    /// from the calculation engine: none when the package was read without
+    /// it (`Scope::Workbook` skips it).
+    pub fn merges(&mut self, sheet: usize, table: usize) -> Vec<(usize, usize, usize, usize)> {
+        let Some(model) = self
+            .sheets
+            .get(sheet)
+            .and_then(|sheet| sheet.tables.get(table))
+            .map(|table| table.model)
+        else {
+            return Vec::new();
+        };
+        let owner = self
+            .reader
+            .graph
+            .object(model)
+            .and_then(|message| View::of(message).message("merge_owner"))
+            .and_then(|owner| owner.message("owner_id"))
+            .and_then(uuid);
+        match owner {
+            Some(owner) => self
+                .reader
+                .merge_regions(owner)
+                .into_iter()
+                .map(|region| (region.row, region.column, region.rows, region.columns))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     /// Every row of a table on its full grid, in order: each cell as it
     /// reads, empty rows and cells empty, merged-over cells empty.
     pub fn rows(
@@ -3830,7 +3864,9 @@ fn shown_cell(record: &CellRecord, lists: &TableLists) -> Option<WorkbookCell> {
                 _ => named.format.date_time_format.as_str(),
             });
             let text = match pattern {
-                Some(pattern) if !pattern.is_empty() => cell_format::date(seconds, pattern),
+                Some(pattern) if !pattern.is_empty() => {
+                    cell_format::date(seconds, pattern, record.automatic_date)
+                }
                 // No pattern: the Excel reader's form, which the workbook
                 // writer types back into a date.
                 _ => format_iso_datetime(seconds),

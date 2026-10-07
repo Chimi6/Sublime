@@ -6,8 +6,13 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- Excel to Numbers keeps each cell's number format where Numbers has the same (decimals with separators and red or parenthesised negatives, currency by symbol or locale, percent, scientific, fractions, and date and time patterns) and the sheet's merged cells; formats Numbers' built-in ones cannot say (padding, optional decimals, scaling, elapsed time) leave the value unformatted. The Excel reader gives each cell's format code and the sheet's merges (`Workbook::read_sheet`), and the Numbers reader a table's merges (`WorkbookReader::merges`).
+
 ### Changed
 
+- Numbers cells: the narrow no-break space before AM and PM is for a formula's result under Numbers' automatic format only, as Numbers shows it; a time format the cell chose keeps its space (70 of 79 test documents exact against Numbers' export, from 69).
 - The Numbers writer lays out tables past 65,535 rows as Numbers does (no multiple-choice list, the row tile tree, the next row strip id): all 79 rewritten test documents now open in Numbers with no repair or upgrade, and so does a 300,000-row table.
 - The Numbers writer holds a table's cells compactly, encodes large tables' repeated records as it builds them, and sizes each row's offset array to the table: 300,000 rows of four columns write at about 350 MB peak instead of 933, in 0.6 s instead of 0.8, to a document of 23 MB instead of 39.
 

@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 mod numbers;
 pub use numbers::{NumbersSheet, NumbersTable, write_numbers_to};
 
+use super::format as cell_format;
 use super::package::{Entry, Object, ObjectMessage, Package, PackageError, Stream};
 use super::schema::SCHEMA;
 use crate::document::{
@@ -1491,13 +1492,9 @@ fn reuse_table(
             build_data_strings(tree, &mark.data)
         })?;
     }
-    if mark
-        .data
-        .iter()
-        .any(|cell| matches!(cell, DataCell::Value(Typed::Date(..))))
-    {
+    if !mark.formats.is_empty() {
         rewrite_object(package, table.format_id, |tree| {
-            build_date_formats(tree, &mark.data)
+            build_formats(tree, &mark.data, &mark.formats)
         })?;
     }
     let rows = mark.rows as u64;
@@ -3757,21 +3754,31 @@ struct TableMark {
     /// Row-major cells of a table written as data (a Numbers sheet), whose
     /// `cells` are then empty: empty for a document's table.
     data: Vec<DataCell>,
+    /// The formats a data table's typed cells name, by key from 1.
+    formats: Vec<cell_format::Format>,
 }
 
-/// The date formats a data table's format list holds, by key from 1.
-const DATA_DATE_FORMATS: [&str; 2] = ["yyyy-MM-dd", "yyyy-MM-dd'T'HH:mm:ss"];
+/// The date formats a data table's dates are shown in when nothing else
+/// names one: the text they were written from.
+pub(super) const DATA_DATE_FORMATS: [&str; 2] = ["yyyy-MM-dd", "yyyy-MM-dd'T'HH:mm:ss"];
 
-/// A data table's format list: the date formats its date cells name, each
-/// counted by the cells naming it.
-fn build_date_formats(tree: &mut Tree, data: &[DataCell]) -> Result<u32, PackageError> {
+/// A data table's format list: each format by its key (its index from 1),
+/// counted by the cells naming it, with the fields Numbers writes for its
+/// kind. A format no cell names is left out.
+fn build_formats(
+    tree: &mut Tree,
+    data: &[DataCell],
+    formats: &[cell_format::Format],
+) -> Result<u32, PackageError> {
     let data_list = message_ref("TST.TableDataList")?;
     let entry_ref = message_ref("TST.TableDataList.ListEntry")?;
     let format_ref = message_ref("TSK.FormatStructArchive")?;
-    let mut counts = [0u64; 2];
+    let mut counts = vec![0u64; formats.len()];
     for cell in data {
-        if let DataCell::Value(Typed::Date(_, time)) = cell {
-            counts[usize::from(*time)] += 1;
+        if let DataCell::Value(value) = cell {
+            if let Some(count) = value.format_key().and_then(|key| counts.get_mut(key - 1)) {
+                *count += 1;
+            }
         }
     }
     let mut chain = Chain::new();
@@ -3781,28 +3788,79 @@ fn build_date_formats(tree: &mut Tree, data: &[DataCell]) -> Result<u32, Package
         &mut chain,
         data_list,
         "nextListID",
-        Node::Uint(DATA_DATE_FORMATS.len() as u64 + 1),
+        Node::Uint(formats.len() as u64 + 1),
     )?;
-    for (index, pattern) in DATA_DATE_FORMATS.iter().enumerate() {
+    for (index, format) in formats.iter().enumerate() {
         if counts[index] == 0 {
             continue;
         }
-        let mut format = Chain::new();
-        push_field(
-            tree,
-            &mut format,
-            format_ref,
-            "format_type",
-            Node::Uint(261),
-        )?;
-        let span = tree.push_bytes(pattern.as_bytes()).map_err(tree_error)?;
-        push_field(
-            tree,
-            &mut format,
-            format_ref,
-            "date_time_format",
-            Node::Str(span),
-        )?;
+        let mut message = Chain::new();
+        let uint = |tree: &mut Tree, message: &mut Chain, name: &str, value: u64| {
+            push_field(tree, message, format_ref, name, Node::Uint(value))
+        };
+        uint(tree, &mut message, "format_type", u64::from(format.kind))?;
+        match format.kind {
+            cell_format::DATE => {
+                let span = tree
+                    .push_bytes(format.date_time_format.as_bytes())
+                    .map_err(tree_error)?;
+                push_field(
+                    tree,
+                    &mut message,
+                    format_ref,
+                    "date_time_format",
+                    Node::Str(span),
+                )?;
+            }
+            cell_format::FRACTION => uint(
+                tree,
+                &mut message,
+                "fraction_accuracy",
+                u64::from(format.fraction_accuracy),
+            )?,
+            _ => {
+                uint(
+                    tree,
+                    &mut message,
+                    "decimal_places",
+                    u64::from(format.decimal_places),
+                )?;
+                if format.kind == cell_format::CURRENCY {
+                    let span = tree
+                        .push_bytes(format.currency_code.as_bytes())
+                        .map_err(tree_error)?;
+                    push_field(
+                        tree,
+                        &mut message,
+                        format_ref,
+                        "currency_code",
+                        Node::Str(span),
+                    )?;
+                }
+                uint(
+                    tree,
+                    &mut message,
+                    "negative_style",
+                    u64::from(format.negative_style),
+                )?;
+                push_field(
+                    tree,
+                    &mut message,
+                    format_ref,
+                    "show_thousands_separator",
+                    Node::Bool(format.show_thousands_separator),
+                )?;
+                if format.kind == cell_format::CURRENCY {
+                    push_field(
+                        tree,
+                        &mut message,
+                        format_ref,
+                        "use_accounting_style",
+                        Node::Bool(format.use_accounting_style),
+                    )?;
+                }
+            }
+        }
         let mut entry = Chain::new();
         push_field(
             tree,
@@ -3823,7 +3881,7 @@ fn build_date_formats(tree: &mut Tree, data: &[DataCell]) -> Result<u32, Package
             &mut entry,
             entry_ref,
             "format",
-            Node::Message(format.first),
+            Node::Message(message.first),
         )?;
         push_field(
             tree,
@@ -3844,36 +3902,74 @@ enum DataCell {
     Value(Typed),
 }
 
-/// A data cell's value, written as a typed record rather than text.
+/// A data cell's value, written as a typed record rather than text. A
+/// number's and a date's format is its key in the table's format list
+/// (`TableMark::formats`, from 1); a number's 0 is none.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Typed {
     /// A decimal128 number, as Numbers stores numbers.
-    Number([u8; 16]),
-    /// Seconds since 2001-01-01, and whether it has a time: shown as
-    /// `yyyy-MM-dd` or `yyyy-MM-dd'T'HH:mm:ss` (`DATA_DATE_FORMATS`), the
-    /// text it was written from.
-    Date(f64, bool),
+    Number([u8; 16], u16),
+    /// Seconds since 2001-01-01.
+    Date(f64, u16),
     Boolean(bool),
 }
 
 impl Typed {
-    /// The cell's storage record (version 5): kind, flags, and value.
-    fn record(self) -> Vec<u8> {
+    /// The key of the format the value names, if any.
+    fn format_key(self) -> Option<usize> {
+        match self {
+            Typed::Number(_, key) | Typed::Date(_, key) if key > 0 => Some(usize::from(key)),
+            _ => None,
+        }
+    }
+
+    /// The cell's storage record (version 5): kind, flags, and value. A
+    /// formatted value carries the format kind it shows (0x1000: 1 a
+    /// number, 2 a currency, 3 a date) and its format's key (0x2000,
+    /// 0x4000, 0x8000), in flag order.
+    fn record(self, formats: &[cell_format::Format]) -> Vec<u8> {
+        let selected = |key: u16, selector: u32| {
+            let mut value = selector.to_le_bytes().to_vec();
+            value.extend_from_slice(&u32::from(key).to_le_bytes());
+            value
+        };
+        // Byte 6 marks the format kinds the cell chose rather than took
+        // from Numbers' automatic format (0x01 number, 0x02 currency, 0x08
+        // date): a written format is chosen.
+        let mut chosen = 0u8;
         let (kind, flag, value): (u8, u32, Vec<u8>) = match self {
-            Typed::Number(decimal) => (2, 0x1, decimal.to_vec()),
-            Typed::Date(seconds, time) => {
-                // Seconds, the format kind the cell shows (0x1000: 3 is a
-                // date), and the date format's key (0x8000), in flag order.
+            Typed::Number(decimal, 0) => (2, 0x1, decimal.to_vec()),
+            Typed::Number(decimal, key) => {
+                let currency = formats
+                    .get(usize::from(key) - 1)
+                    .is_some_and(|format| format.kind == cell_format::CURRENCY);
+                let mut value = decimal.to_vec();
+                if currency {
+                    value.extend(selected(key, 2));
+                    chosen = 0x02;
+                    (10, 0x1 | 0x1000 | 0x4000, value)
+                } else {
+                    value.extend(selected(key, 1));
+                    chosen = 0x01;
+                    (2, 0x1 | 0x1000 | 0x2000, value)
+                }
+            }
+            Typed::Date(seconds, key) => {
                 let mut value = seconds.to_le_bytes().to_vec();
-                value.extend_from_slice(&3u32.to_le_bytes());
-                value.extend_from_slice(&(1 + u32::from(time)).to_le_bytes());
-                (5, 0x4 | 0x1000 | 0x8000, value)
+                if key == 0 {
+                    (5, 0x4, value)
+                } else {
+                    value.extend(selected(key, 3));
+                    chosen = 0x08;
+                    (5, 0x4 | 0x1000 | 0x8000, value)
+                }
             }
             Typed::Boolean(value) => (6, 0x2, f64::from(u8::from(value)).to_le_bytes().to_vec()),
         };
         let mut bytes = vec![0u8; 12];
         bytes[0] = 5;
         bytes[1] = kind;
+        bytes[6] = chosen;
         bytes[8..12].copy_from_slice(&flag.to_le_bytes());
         bytes.extend_from_slice(&value);
         bytes
@@ -4284,6 +4380,7 @@ impl Walk {
             borders: table.borders,
             cell_borders,
             data: Vec::new(),
+            formats: Vec::new(),
         });
         self.mark(Format::default());
         self.link_mark(None);
@@ -6138,7 +6235,7 @@ fn build_tile(
                     }
                     DataCell::Value(value) => {
                         starts.push(Some(buffer.len()));
-                        buffer.extend_from_slice(&value.record());
+                        buffer.extend_from_slice(&value.record(&mark.formats));
                     }
                 }
                 continue;
