@@ -40,7 +40,7 @@ pub struct NumbersSheet {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NumbersTable {
     pub name: String,
-    pub rows: Vec<Vec<String>>,
+    pub rows: NumbersRows,
     /// Number and date formats the cells name.
     pub formats: Vec<cell_format::Format>,
     /// Per row, each cell's format: its index in `formats` from 1, or 0
@@ -49,6 +49,80 @@ pub struct NumbersTable {
     pub cell_formats: Vec<Vec<u16>>,
     /// Merged ranges as (row, column, rows, columns) from 0.
     pub merges: Vec<(usize, usize, usize, usize)>,
+}
+
+/// Rows of cell text, held compactly: every cell's text in one buffer and
+/// where each cell and each row ends. A large table is millions of cells,
+/// and a `String` each would cost some forty bytes before its text.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NumbersRows {
+    text: String,
+    cell_ends: Vec<usize>,
+    row_ends: Vec<usize>,
+}
+
+impl NumbersRows {
+    pub fn new() -> NumbersRows {
+        NumbersRows::default()
+    }
+
+    /// Appends a row of cells.
+    pub fn push_row<'a>(&mut self, cells: impl IntoIterator<Item = &'a str>) {
+        for cell in cells {
+            self.text.push_str(cell);
+            self.cell_ends.push(self.text.len());
+        }
+        self.row_ends.push(self.cell_ends.len());
+    }
+
+    pub fn len(&self) -> usize {
+        self.row_ends.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.row_ends.is_empty()
+    }
+
+    /// The cells of row `index`, empty past the last row.
+    pub fn row(&self, index: usize) -> impl Iterator<Item = &str> + '_ {
+        let cells = match index {
+            0 => 0..self.row_ends.first().copied().unwrap_or(0),
+            _ => match (self.row_ends.get(index - 1), self.row_ends.get(index)) {
+                (Some(&start), Some(&end)) => start..end,
+                _ => 0..0,
+            },
+        };
+        cells.map(move |cell| {
+            let start = if cell == 0 { 0 } else { self.cell_ends[cell - 1] };
+            &self.text[start..self.cell_ends[cell]]
+        })
+    }
+
+    /// The most cells a row has.
+    pub fn width(&self) -> usize {
+        let mut start = 0;
+        let mut widest = 0;
+        for &end in &self.row_ends {
+            widest = widest.max(end - start);
+            start = end;
+        }
+        widest
+    }
+
+    /// Every cell's text, in order (the output identity's digest).
+    fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+impl From<Vec<Vec<String>>> for NumbersRows {
+    fn from(rows: Vec<Vec<String>>) -> NumbersRows {
+        let mut compact = NumbersRows::new();
+        for row in &rows {
+            compact.push_row(row.iter().map(String::as_str));
+        }
+        compact
+    }
 }
 
 /// Writes `sheets` as a Numbers package into `sink`.
@@ -60,8 +134,7 @@ pub fn write_numbers_to(
     let digest = sheets
         .iter()
         .flat_map(|sheet| sheet.tables.iter())
-        .flat_map(|table| table.rows.iter().flatten())
-        .flat_map(|cell| cell.bytes())
+        .flat_map(|table| table.rows.text().bytes())
         .fold(0xCBF2_9CE4_8422_2325_u64, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01B3)
         });
@@ -173,12 +246,12 @@ pub fn write_numbers_to(
 /// A table's cells as a data table mark: typed where the text reads back
 /// as a number, a date, or a boolean; the first row the header.
 fn data_mark(package: &Package, template: &TemplateTable, table: &mut NumbersTable) -> TableMark {
-    let mut source = std::mem::take(&mut table.rows);
+    let source = std::mem::take(&mut table.rows);
     let mut named = std::mem::take(&mut table.formats);
     let cell_formats = std::mem::take(&mut table.cell_formats);
     let merges = std::mem::take(&mut table.merges);
     let rows = source.len().max(1);
-    let columns = source.iter().map(Vec::len).max().unwrap_or(0).max(1);
+    let columns = source.width().max(1);
     let width = object_message(package, template.model_id)
         .and_then(
             |(tree, first)| match field_value(tree, first, "default_column_width") {
@@ -211,12 +284,9 @@ fn data_mark(package: &Package, template: &TemplateTable, table: &mut NumbersTab
     // written in (`DATA_DATE_FORMATS`), added to the list when used.
     let mut iso_keys = [0u16; 2];
     for row in 0..rows {
+        let mut cells = source.row(row);
         for column in 0..columns {
-            let text = source
-                .get_mut(row)
-                .and_then(|cells| cells.get_mut(column))
-                .map(std::mem::take)
-                .unwrap_or_default();
+            let text = cells.next().unwrap_or("");
             if covered.contains(&(row, column)) {
                 data.push(DataCell::Empty);
                 continue;
@@ -231,7 +301,7 @@ fn data_mark(package: &Package, template: &TemplateTable, table: &mut NumbersTab
                 .flatten()
                 .map(|format| format.kind);
             let is_date = kind == Some(cell_format::DATE);
-            let value = typed_value(&text, kind).map(|value| match value {
+            let value = typed_value(text, kind).map(|value| match value {
                 Typed::Number(decimal, _) if kind.is_some() && !is_date => {
                     Typed::Number(decimal, key)
                 }
@@ -253,12 +323,8 @@ fn data_mark(package: &Package, template: &TemplateTable, table: &mut NumbersTab
             data.push(match value {
                 Some(value) => DataCell::Value(value),
                 None if text.is_empty() => DataCell::Empty,
-                None => DataCell::Text(text),
+                None => DataCell::Text(text.to_string()),
             });
-        }
-        // Each source row goes as it is read.
-        if let Some(cells) = source.get_mut(row) {
-            *cells = Vec::new();
         }
     }
     TableMark {

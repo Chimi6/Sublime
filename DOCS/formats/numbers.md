@@ -133,16 +133,23 @@ them; the cells they cover are left empty.
 The table layout follows Numbers': a tile per 256 rows, listed in the row
 tile tree with the next row strip id after them; no record for an empty
 cell and no row record for an empty row; a row's offset array a slot per
-column; a table past 255 columns in wide offsets, its tiles marked
-`should_use_wide_rows`, its legacy fields holding Numbers' placeholder; a
+column; every row in wide offsets (4-byte units, `has_wide_offsets`), its
+tile marked `should_use_wide_rows` and its legacy (pre-BNC) fields holding
+Numbers' placeholder, as Numbers writes its own large tables (a narrow
+row would need a copy of its records there, which Numbers checks); a
 table past 65,535 rows without the multiple-choice list Numbers drops at
-that size. The same tiles serve the Pages writer's tables.
+that size. The same tiles serve the Pages writer's tables (narrow, with
+their copy).
 
-A large table's repeated records (tile rows, strings, row headers, row
-identifiers) are encoded as they are built rather than kept field by field,
-and its cells are kept as text or a typed value only: 300,000 rows of four
-columns write in 0.6 s at about 350 MB peak (933 MB before), to a 23 MB
-document.
+Memory: the source rows are held compactly (every cell's text in one
+buffer, `NumbersRows`), a large table's repeated records (tile rows,
+strings, row headers, row identifiers) are encoded as they are built and
+run together into one tree entry each (an entry written verbatim), and the
+tiles' bytes are sized once. 300,000 rows of four columns write in 0.6 s at
+about 175 MB peak (350 MB before, 933 MB before that) to a 19.8 MB
+document; 1,000,000 rows in 2.1 s at about 500 MB (900 MB before) to 70 MB.
+Numbers opens tables of up to 1,000,000 rows and 1,000 columns; a larger
+table is written with a warning.
 
 ## Packages
 
@@ -177,7 +184,9 @@ LibreOffice), on numbers-parser's test documents
 - `write.sh` rewrites each document through our writer (Numbers, Excel,
   Numbers), opens it in Numbers, and reads Numbers' log and export: all 79
   open with no repair, upgrade, or assertion and export what our reader
-  reads; no crashes. So do tables of 65,534, 65,537, and 300,000 rows.
+  reads; no crashes. So do tables of 65,534, 65,537, 300,000, 600,000,
+  and 1,000,000 rows, Numbers' export of each the source exactly (the
+  largest opens in about three minutes).
 - Formats and merges from Excel: each test document through our workbook
   and back (Numbers, Excel, Numbers) opens in Numbers cleanly, and
   Numbers' export of it matches LibreOffice's view of the workbook in 67
