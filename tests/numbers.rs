@@ -92,8 +92,8 @@ fn sheets_hold_their_tables_in_order() {
     );
     let mut rows: Vec<Vec<String>> = Vec::new();
     workbook
-        .rows(0, 0, |cells| -> Result<(), ()> {
-            rows.push(cells.to_vec());
+        .rows(0, 0, &mut |cells| {
+            rows.push(cells.iter().map(|cell| cell.text.clone()).collect());
             Ok(())
         })
         .expect("rows");
@@ -190,4 +190,138 @@ fn a_zipped_package_folder_reads() {
 fn an_older_document_without_object_references_reads() {
     let tables = parts(&NUMBERS_TO_CSV, &fixture("old.numbers"), None);
     assert_eq!(tables, vec![("Sheet 1".to_string(), "123\n".to_string())]);
+}
+
+/// Rows of CSV text, trailing empty cells and rows dropped.
+fn csv_rows(text: &[u8]) -> Vec<Vec<String>> {
+    let text = text.strip_prefix(b"\xef\xbb\xbf").unwrap_or(text);
+    let mut reader = sublime::io::csv::CsvReader::new(text);
+    let mut record = sublime::io::csv::Record::new();
+    let mut rows = Vec::new();
+    while reader.read_record(&mut record).expect("csv") {
+        let mut row: Vec<String> = record.fields().map(str::to_string).collect();
+        while row.last().is_some_and(String::is_empty) {
+            row.pop();
+        }
+        rows.push(row);
+    }
+    while rows.last().is_some_and(Vec::is_empty) {
+        rows.pop();
+    }
+    rows
+}
+
+/// Numbers' own CSV export of each document (`reference/`) is what our
+/// tables read as: dates, fractions, custom number formats with their
+/// padding, currencies, and percentages.
+#[test]
+fn cells_read_as_numbers_shows_them() {
+    let reference =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/numbers/reference");
+    let cases = [
+        (
+            "formats.numbers",
+            vec![
+                ("Dates", "formats/Dates-Dates.csv"),
+                ("Numbers", "formats/Numbers-Table 1.csv"),
+            ],
+        ),
+        ("currencies.numbers", vec![("Income", "currencies.csv")]),
+    ];
+    for (document, tables) in cases {
+        let ours = parts(&NUMBERS_TO_CSV, &fixture(document), None);
+        for (part, expected) in tables {
+            let (_, text) = ours.iter().find(|(name, _)| name == part).expect(part);
+            let expected = std::fs::read(reference.join(expected)).expect("reference");
+            assert_eq!(
+                csv_rows(text.as_bytes()),
+                csv_rows(&expected),
+                "{document} {part}"
+            );
+        }
+    }
+}
+
+fn write_with(converter: &dyn Converter, bytes: &[u8]) -> Vec<u8> {
+    let options = options(None);
+    let mut sink = NullSink;
+    let mut context = Context::new(&mut sink, &options);
+    let mut output = Vec::new();
+    let mut source: &[u8] = bytes;
+    converter
+        .convert(Input::Stream(&mut source), &mut output, &mut context)
+        .expect("writes");
+    output
+}
+
+/// Rows written to Numbers read back as the same text: numbers, dates,
+/// dates with times, and booleans typed, the rest text.
+#[test]
+fn rows_written_to_numbers_read_back_the_same() {
+    let csv = "name,amount,when,active,note\nAlpha,12.5,2024-08-08,TRUE,first\nBeta,-3,2024-08-09T14:35:09,FALSE,\nGamma,1e3,,TRUE,0.000123\n";
+    let numbers = write_with(
+        &sublime::converters::to_numbers::CSV_TO_NUMBERS,
+        csv.as_bytes(),
+    );
+    let tables = parts(&NUMBERS_TO_CSV, &numbers, None);
+    assert_eq!(names(&tables), vec!["Sheet 1"]);
+    assert_eq!(tables[0].1, csv);
+}
+
+#[test]
+fn a_workbook_becomes_a_sheet_per_worksheet() {
+    let workbook = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/xlsx/types.xlsx"),
+    )
+    .expect("fixture");
+    let numbers = write_with(&sublime::converters::to_numbers::XLSX_TO_NUMBERS, &workbook);
+    let ours = parts(&NUMBERS_TO_CSV, &numbers, None);
+    let sheets = parts(&XLSX_TO_CSV, &workbook, None);
+    assert_eq!(names(&ours), vec!["Data", "Other sheet"]);
+    // A Numbers table is a full grid: a short row reads back padded.
+    for ((_, ours), (_, sheet)) in ours.iter().zip(&sheets) {
+        assert_eq!(csv_rows(ours.as_bytes()), csv_rows(sheet.as_bytes()));
+    }
+}
+
+#[test]
+fn a_documents_tables_become_tables_of_one_sheet() {
+    let markdown = "# Sales\n\n| region | total |\n|---|---|\n| North | 10 |\n\n## Costs\n\n| item | cost |\n|---|---|\n| Rent | 5.5 |\n";
+    let numbers = write_with(
+        &sublime::converters::to_numbers::MARKDOWN_TO_NUMBERS,
+        markdown.as_bytes(),
+    );
+    let package = Package::read_scope(&numbers, Scope::Workbook).expect("package");
+    let workbook = WorkbookReader::new(&package);
+    let layout: Vec<(&str, Vec<&str>)> = workbook
+        .sheets()
+        .iter()
+        .map(|sheet| {
+            (
+                sheet.name.as_str(),
+                sheet
+                    .tables
+                    .iter()
+                    .map(|table| table.name.as_str())
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(layout, vec![("Sheet 1", vec!["Sales", "Costs"])]);
+}
+
+/// A table past 256 rows is written in tiles of 256, as Numbers stores
+/// one, and reads back whole.
+#[test]
+fn a_long_table_reads_back_whole() {
+    let mut csv = String::from("id,label\n");
+    for row in 0..600 {
+        csv.push_str(&format!("{row},row {row}\n"));
+    }
+    let numbers = write_with(
+        &sublime::converters::to_numbers::CSV_TO_NUMBERS,
+        csv.as_bytes(),
+    );
+    let tables = parts(&NUMBERS_TO_CSV, &numbers, None);
+    assert_eq!(tables[0].1, csv);
 }

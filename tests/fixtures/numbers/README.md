@@ -11,3 +11,7 @@ them small; the documents are otherwise unchanged.
   compressed.
 - `old.numbers` (`issue-17.numbers`): an older document whose object
   headers leave references out, so a walk from the root misses its cells.
+- `formats.numbers` (`test-custom-formats.numbers`) and `currencies.numbers`
+  (`test-8.numbers`): dates, fractions, custom number formats, currencies,
+  and percentages; `reference/` holds Numbers' own CSV export of each (made
+  by Numbers 12.0 on macOS), the text our reader must produce.

@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use super::format::{self as cell_format, CustomFormat, Format};
 use super::package::{Entry, Package, Stream};
 use crate::document::{
     Alignment, Anchor, AnchorBase, Baseline, Block, Caps, Cell, CharacterStyle, Color, Document,
@@ -629,6 +630,13 @@ struct CellRecord {
     rich_text: Option<u32>,
     cell_style: Option<u32>,
     text_style: Option<u32>,
+    /// Keys into the table's format table, by kind.
+    number_format: Option<u32>,
+    currency_format: Option<u32>,
+    date_format: Option<u32>,
+    duration_format: Option<u32>,
+    text_format: Option<u32>,
+    bool_format: Option<u32>,
 }
 
 /// The text of a cell that holds a value: a string, a number, a boolean,
@@ -677,6 +685,12 @@ fn cell_record(bytes: &[u8]) -> Option<CellRecord> {
             0x10 => record.rich_text = Some(u32::from_le_bytes(field.try_into().ok()?)),
             0x20 => record.cell_style = Some(u32::from_le_bytes(field.try_into().ok()?)),
             0x40 => record.text_style = Some(u32::from_le_bytes(field.try_into().ok()?)),
+            0x2000 => record.number_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
+            0x4000 => record.currency_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
+            0x8000 => record.date_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
+            0x10000 => record.duration_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
+            0x20000 => record.text_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
+            0x40000 => record.bool_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
             _ => {}
         }
         offset += size;
@@ -686,7 +700,7 @@ fn cell_record(bytes: &[u8]) -> Option<CellRecord> {
 
 /// A cell's decimal128 number (as Pages stores it: a binary mantissa and a
 /// biased power of ten) as exact decimal text, e.g. `42.5` or `-3`.
-fn decimal128_text(bytes: &[u8]) -> Option<String> {
+pub(crate) fn decimal128_text(bytes: &[u8]) -> Option<String> {
     let bytes: [u8; 16] = bytes.try_into().ok()?;
     let negative = bytes[15] & 0x80 != 0;
     let exponent = ((i32::from(bytes[15] & 0x7F) << 7) | i32::from(bytes[14] >> 1)) - 0x1820;
@@ -740,6 +754,9 @@ struct TableLists {
     rich_text: HashMap<u32, u64>,
     /// Style id -> the style object (a cell style or a paragraph style).
     styles: HashMap<u32, u64>,
+    /// Format id -> the format (read for workbooks, which show cells as
+    /// Numbers does), with the custom format it stands for.
+    formats: HashMap<u32, std::rc::Rc<CellFormat>>,
 }
 
 impl Reader<'_> {
@@ -2341,6 +2358,7 @@ impl Reader<'_> {
             rich_text: self
                 .data_list_references(store.reference("rich_text_table"), "rich_text_payload"),
             styles: self.data_list_references(store.reference("styleTable"), "reference"),
+            formats: HashMap::new(),
         };
         let header_text_style = view.reference("header_row_text_style");
         let body_text_style = view.reference("body_text_style");
@@ -2637,6 +2655,28 @@ impl Reader<'_> {
             }
         }
         references
+    }
+
+    /// A format table's formats by key.
+    fn data_list_formats(
+        &self,
+        list: Option<u64>,
+        customs: &HashMap<(u64, u64), CustomFormat>,
+    ) -> HashMap<u32, std::rc::Rc<CellFormat>> {
+        let mut formats = HashMap::new();
+        let Some(message) = list.and_then(|id| self.graph.object(id)) else {
+            return formats;
+        };
+        for entry in View::of(message).messages("entries") {
+            if let Some(key) = entry.integer("key")
+                && let Some(format) = entry.message("format")
+            {
+                let format = format_of(format);
+                let custom = format.custom_uid.and_then(|uid| customs.get(&uid)).cloned();
+                formats.insert(key as u32, std::rc::Rc::new(CellFormat { format, custom }));
+            }
+        }
+        formats
     }
 
     /// The merged regions a merge owner records, from the calculation
@@ -3424,7 +3464,43 @@ const TABLE_INFO: u32 = 6000;
 pub struct WorkbookReader<'p> {
     reader: Reader<'p>,
     sheets: Vec<WorkbookSheet>,
+    /// The document's custom formats by their list uuid.
+    customs: HashMap<(u64, u64), CustomFormat>,
 }
+
+/// A cell's format: the format the cell names and, when that stands for a
+/// custom format, the custom format.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CellFormat {
+    pub format: Format,
+    pub custom: Option<CustomFormat>,
+}
+
+/// A cell's value by type.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum CellValue {
+    #[default]
+    Empty,
+    Text,
+    Number(f64),
+    Boolean(bool),
+    /// Seconds since 2001-01-01.
+    Date(f64),
+    /// Seconds.
+    Duration(f64),
+}
+
+/// A workbook cell: its text as Numbers shows it, its value, and the
+/// format the text came from.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WorkbookCell {
+    pub text: String,
+    pub value: CellValue,
+    pub format: Option<std::rc::Rc<CellFormat>>,
+}
+
+/// `TSK.CustomFormatListArchive`: the document's custom formats.
+const CUSTOM_FORMAT_LIST: u32 = 222;
 
 impl<'p> WorkbookReader<'p> {
     pub fn new(package: &'p Package) -> WorkbookReader<'p> {
@@ -3475,7 +3551,48 @@ impl<'p> WorkbookReader<'p> {
                 .collect();
             sheets.push(WorkbookSheet { name, tables });
         }
-        WorkbookReader { reader, sheets }
+        let mut customs = HashMap::new();
+        for (_, list) in reader.graph.objects_of_type(CUSTOM_FORMAT_LIST) {
+            let list = View::of(list);
+            for (uid, custom) in list
+                .messages("uuids")
+                .into_iter()
+                .zip(list.messages("custom_formats"))
+            {
+                let Some(uid) = uid_of(uid) else {
+                    continue;
+                };
+                let Some(default) = custom.message("default_format") else {
+                    continue;
+                };
+                let conditions = custom
+                    .messages("conditions")
+                    .into_iter()
+                    .filter_map(|condition| {
+                        Some(cell_format::Condition {
+                            kind: condition.integer("condition_type").unwrap_or(-1) as u32,
+                            value: condition
+                                .double("condition_value_dbl")
+                                .or_else(|| condition.float("condition_value").map(f64::from))
+                                .unwrap_or(0.0),
+                            format: format_of(condition.message("condition_format")?),
+                        })
+                    })
+                    .collect();
+                customs.insert(
+                    uid,
+                    CustomFormat {
+                        format: format_of(default),
+                        conditions,
+                    },
+                );
+            }
+        }
+        WorkbookReader {
+            reader,
+            sheets,
+            customs,
+        }
     }
 
     pub fn sheets(&self) -> &[WorkbookSheet] {
@@ -3484,12 +3601,12 @@ impl<'p> WorkbookReader<'p> {
 
     /// Every row of a table on its full grid, in order: each cell as it
     /// reads, empty rows and cells empty, merged-over cells empty.
-    pub fn rows<E>(
+    pub fn rows(
         &mut self,
         sheet: usize,
         table: usize,
-        mut each: impl FnMut(&[String]) -> Result<(), E>,
-    ) -> Result<(), E> {
+        each: &mut dyn FnMut(&[WorkbookCell]) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         let Some(table) = self
             .sheets
             .get(sheet)
@@ -3511,6 +3628,7 @@ impl<'p> WorkbookReader<'p> {
             rich_text: reader
                 .data_list_references(store.reference("rich_text_table"), "rich_text_payload"),
             styles: HashMap::new(),
+            formats: reader.data_list_formats(store.reference("format_table"), &self.customs),
         };
         let merges: Vec<Region> = view
             .message("merge_owner")
@@ -3540,9 +3658,9 @@ impl<'p> WorkbookReader<'p> {
             }
         }
         tiles.sort_unstable();
-        let empty = vec![String::new(); table.columns];
+        let empty = vec![WorkbookCell::default(); table.columns];
         let mut next = 0;
-        let mut block: Vec<Vec<String>> = Vec::new();
+        let mut block: Vec<Vec<WorkbookCell>> = Vec::new();
         for (base, tile) in tiles {
             if base < next || base >= table.rows {
                 continue;
@@ -3564,7 +3682,7 @@ impl<'p> WorkbookReader<'p> {
             block.resize(height, empty.clone());
             for info in infos {
                 if let Some(cells) = block.get_mut(info.index) {
-                    reader.tile_row_text(&info, cells, &lists);
+                    reader.tile_row_cells(&info, cells, &lists);
                 }
             }
             for region in &merges {
@@ -3580,7 +3698,7 @@ impl<'p> WorkbookReader<'p> {
                         .take(region.columns)
                     {
                         if row != region.row || column != region.column {
-                            cell.clear();
+                            *cell = WorkbookCell::default();
                         }
                     }
                 }
@@ -3599,8 +3717,14 @@ impl<'p> WorkbookReader<'p> {
 }
 
 impl Reader<'_> {
-    /// One tile row's cells as text.
-    fn tile_row_text(&mut self, info: &TileRow<'_>, cells: &mut [String], lists: &TableLists) {
+    /// One tile row's cells: their text as Numbers shows it, their values,
+    /// and their formats.
+    fn tile_row_cells(
+        &mut self,
+        info: &TileRow<'_>,
+        cells: &mut [WorkbookCell],
+        lists: &TableLists,
+    ) {
         let (offsets, buffer, wide) = (info.offsets, info.buffer, info.wide);
         for (column, cell) in cells.iter_mut().enumerate() {
             let Some(pair) = offsets.get(column * 2..column * 2 + 2) else {
@@ -3614,15 +3738,18 @@ impl Reader<'_> {
             let Some(record) = buffer.get(offset..).and_then(cell_record) else {
                 continue;
             };
-            let text = match record.kind {
-                9 => self.rich_cell_text(&record, lists),
-                // Dates in the form the Excel reader writes, which the
-                // workbook writer types back into dates.
-                5 => record.seconds.map(format_iso_datetime),
-                _ => record_text(&record, lists),
-            };
-            if let Some(text) = text {
-                *cell = text;
+            if record.kind == 9 {
+                if let Some(text) = self.rich_cell_text(&record, lists) {
+                    *cell = WorkbookCell {
+                        text,
+                        value: CellValue::Text,
+                        format: None,
+                    };
+                }
+                continue;
+            }
+            if let Some(shown) = shown_cell(&record, lists) {
+                *cell = shown;
             }
         }
     }
@@ -3658,6 +3785,158 @@ impl Reader<'_> {
             }
         }
     }
+}
+
+/// A cell as Numbers shows it: the duration, date, text, currency,
+/// boolean, or number format the cell names, in that order, applied to its
+/// value; a cell without one as its plain value.
+fn shown_cell(record: &CellRecord, lists: &TableLists) -> Option<WorkbookCell> {
+    let format = |id: Option<u32>| id.and_then(|id| lists.formats.get(&id)).cloned();
+    let number = record
+        .decimal
+        .as_deref()
+        .and_then(|text| text.parse::<f64>().ok())
+        .or(record.double);
+    match record.kind {
+        // Text, under a custom text format when it names one.
+        3 => {
+            let text = record
+                .string
+                .and_then(|id| lists.strings.get(&id))
+                .cloned()?;
+            let named = format(record.text_format);
+            let text = match named.as_deref() {
+                Some(CellFormat {
+                    custom: Some(custom),
+                    ..
+                }) if custom.format.kind == cell_format::CUSTOM_TEXT => {
+                    cell_format::custom_text(&text, custom)
+                }
+                _ => text,
+            };
+            Some(WorkbookCell {
+                text,
+                value: CellValue::Text,
+                format: named,
+            })
+        }
+        5 => {
+            let seconds = record.seconds?;
+            let named = format(record.date_format);
+            let pattern = named.as_deref().map(|named| match &named.custom {
+                Some(custom) if custom.format.kind == cell_format::CUSTOM_DATE => {
+                    custom.format.custom_format_string.as_str()
+                }
+                _ => named.format.date_time_format.as_str(),
+            });
+            let text = match pattern {
+                Some(pattern) if !pattern.is_empty() => cell_format::date(seconds, pattern),
+                // No pattern: the Excel reader's form, which the workbook
+                // writer types back into a date.
+                _ => format_iso_datetime(seconds),
+            };
+            Some(WorkbookCell {
+                text,
+                value: CellValue::Date(seconds),
+                format: named,
+            })
+        }
+        7 => {
+            let seconds = record.double?;
+            let named = format(record.duration_format);
+            let text = match named.as_deref() {
+                Some(named) => cell_format::duration(seconds, &named.format),
+                None => format_duration(seconds),
+            };
+            Some(WorkbookCell {
+                text,
+                value: CellValue::Duration(seconds),
+                format: named,
+            })
+        }
+        6 => {
+            let value = record.double? != 0.0;
+            let named = format(record.bool_format).or_else(|| format(record.number_format));
+            let text = match named.as_deref() {
+                Some(named) => cell_format::number(
+                    f64::from(u8::from(value)),
+                    None,
+                    &named.format,
+                    named.custom.as_ref(),
+                ),
+                None => (if value { "TRUE" } else { "FALSE" }).to_string(),
+            };
+            Some(WorkbookCell {
+                text,
+                value: CellValue::Boolean(value),
+                format: named,
+            })
+        }
+        2 | 10 => {
+            let value = number?;
+            let named = format(record.currency_format).or_else(|| format(record.number_format));
+            let text = match named.as_deref() {
+                Some(named) => cell_format::number(
+                    value,
+                    record.decimal.as_deref(),
+                    &named.format,
+                    named.custom.as_ref(),
+                ),
+                // Fifteen significant digits, as Numbers shows a number.
+                None => cell_format::plain(value, record.decimal.as_deref()),
+            };
+            Some(WorkbookCell {
+                text,
+                value: CellValue::Number(value),
+                format: named,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// A `TSK.FormatStructArchive`.
+fn format_of(view: View<'_>) -> Format {
+    let unsigned = |name: &str| view.integer(name).unwrap_or(0).max(0) as u32;
+    let flag = |name: &str| view.boolean(name).unwrap_or(false);
+    Format {
+        kind: unsigned("format_type"),
+        decimal_places: unsigned("decimal_places"),
+        currency_code: view.string("currency_code").unwrap_or_default().to_string(),
+        negative_style: unsigned("negative_style"),
+        show_thousands_separator: flag("show_thousands_separator"),
+        use_accounting_style: flag("use_accounting_style"),
+        duration_style: unsigned("duration_style"),
+        base: unsigned("base"),
+        base_places: unsigned("base_places"),
+        base_use_minus_sign: flag("base_use_minus_sign"),
+        fraction_accuracy: view.integer("fraction_accuracy").unwrap_or(0) as u32,
+        date_time_format: view
+            .string("date_time_format")
+            .unwrap_or_default()
+            .to_string(),
+        duration_unit_largest: unsigned("duration_unit_largest"),
+        duration_unit_smallest: unsigned("duration_unit_smallest"),
+        use_automatic_duration_units: flag("use_automatic_duration_units"),
+        custom_uid: view.message("custom_uid").and_then(uid_of),
+        custom_format_string: view
+            .string("custom_format_string")
+            .unwrap_or_default()
+            .to_string(),
+        scale_factor: view.double("scale_factor").unwrap_or(1.0),
+        requires_fraction_replacement: flag("requires_fraction_replacement"),
+        num_nonspace_integer_digits: unsigned("num_nonspace_integer_digits"),
+        num_nonspace_decimal_digits: unsigned("num_nonspace_decimal_digits"),
+        is_complex: flag("is_complex"),
+        contains_integer_token: flag("contains_integer_token"),
+        min_integer_width: unsigned("min_integer_width"),
+        decimal_width: unsigned("decimal_width"),
+    }
+}
+
+/// A `TSP.UUID` as its two words.
+fn uid_of(view: View<'_>) -> Option<(u64, u64)> {
+    Some((view.integer("lower")? as u64, view.integer("upper")? as u64))
 }
 
 /// One row of a tile: its index in the tile and its cell records.
