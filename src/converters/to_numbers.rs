@@ -172,7 +172,7 @@ impl Converter for ToNumbers {
         };
         for table in sheets.iter().flat_map(|sheet| &sheet.tables) {
             if table.rows.len() > NUMBERS_MAX_ROWS || table.rows.width() > NUMBERS_MAX_COLUMNS {
-                context.warning(&format!(
+                context.warning(format!(
                     "table '{}' is {} rows by {} columns, past the 1,000,000 rows and 1,000 columns Numbers opens",
                     table.name,
                     table.rows.len(),
