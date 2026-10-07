@@ -93,7 +93,11 @@ impl NumbersRows {
             },
         };
         cells.map(move |cell| {
-            let start = if cell == 0 { 0 } else { self.cell_ends[cell - 1] };
+            let start = if cell == 0 {
+                0
+            } else {
+                self.cell_ends[cell - 1]
+            };
             &self.text[start..self.cell_ends[cell]]
         })
     }
