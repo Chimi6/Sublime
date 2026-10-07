@@ -1,6 +1,6 @@
 [package]
 name = "sublime"
-version = "0.27.1"
+version = "0.28.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Universal efficient file conversion"

@@ -7,6 +7,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+mod numbers;
+pub use numbers::{NumbersSheet, NumbersTable, write_numbers_to};
+
 use super::package::{Entry, Object, ObjectMessage, Package, PackageError, Stream};
 use super::schema::SCHEMA;
 use crate::document::{
@@ -1169,6 +1172,12 @@ fn collect_template_tables(package: &Package) -> Vec<TemplateTable> {
 /// Follows a drawable attachment to the table objects a rewrite needs.
 fn traverse_template_table(package: &Package, attach_id: u64) -> Option<TemplateTable> {
     let info_id = object_reference(package, attach_id, "drawable")?;
+    template_table(package, attach_id, info_id)
+}
+
+/// The table objects a rewrite needs, from its table info. A Numbers table
+/// has no attachment: its `attach_id` is its info.
+fn template_table(package: &Package, attach_id: u64, info_id: u64) -> Option<TemplateTable> {
     let model_id = object_reference(package, info_id, "tableModel")?;
     let (tree, model_first) = object_message(package, model_id)?;
     let store = message_field(tree, model_first, "base_data_store")?;
@@ -1431,15 +1440,56 @@ fn reuse_table(
     }
 
     let styled = cell_styles.is_some();
+    // A tile holds at most 256 rows, as Numbers and Pages store tables: the
+    // template's tile takes the first, new tiles beside it the rest.
+    let first_rows = 0..mark.rows.min(TILE_ROWS);
     rewrite_object(package, table.tile_id, |tree| {
-        build_tile(tree, mark, &rich, &cell_style_keys, styled)
+        build_tile(tree, mark, first_rows, &rich, &cell_style_keys, styled)
     })?;
+    if mark.rows > TILE_ROWS {
+        let mut tiles = vec![(0u64, table.tile_id)];
+        let stream = stream_containing(package, table.tile_id)?;
+        for (index, start) in (TILE_ROWS..mark.rows).step_by(TILE_ROWS).enumerate() {
+            let id = *next_id;
+            *next_id += 1;
+            let range = start..(start + TILE_ROWS).min(mark.rows);
+            let first = build_tile(
+                &mut stream.tree,
+                mark,
+                range,
+                &rich,
+                &cell_style_keys,
+                styled,
+            )?;
+            let info = build_archive_info(&mut stream.tree, id, TILE)?;
+            stream.objects.push(Object {
+                identifier: id,
+                info,
+                messages: vec![ObjectMessage {
+                    message_type: TILE,
+                    first,
+                }],
+            });
+            tiles.push((index as u64 + 1, id));
+        }
+        set_model_tiles(package, table.model_id, &tiles)?;
+    }
     // When cells are rich their text lives in their own storages, so the string
     // table stays empty (as Pages writes it); otherwise plain cells use it.
     let string_cells: &[CellContent] = if styled { &[] } else { &mark.cells };
     rewrite_object(package, table.string_id, |tree| {
-        build_string_list(tree, string_cells)
+        build_string_list(tree, string_cells, &mark.typed)
     })?;
+    if mark
+        .typed
+        .iter()
+        .flatten()
+        .any(|value| matches!(value, Typed::Date(..)))
+    {
+        rewrite_object(package, table.format_id, |tree| {
+            build_date_formats(tree, &mark.typed)
+        })?;
+    }
     let rows = mark.rows as u64;
     rewrite_object(package, table.col_bucket_id, |tree| {
         build_header_bucket(tree, &mark.widths, rows)
@@ -3671,6 +3721,122 @@ struct TableMark {
     borders: Option<crate::document::TableBorders>,
     /// Row-major cells' own edges, over the table's lines.
     cell_borders: Vec<crate::document::CellBorders>,
+    /// Row-major typed values, for a table written as data (a Numbers
+    /// sheet): empty for a document's table, whose cells are all text.
+    typed: Vec<Option<Typed>>,
+}
+
+/// The date formats a data table's format list holds, by key from 1.
+const DATA_DATE_FORMATS: [&str; 2] = ["yyyy-MM-dd", "yyyy-MM-dd'T'HH:mm:ss"];
+
+/// A data table's format list: the date formats its date cells name, each
+/// counted by the cells naming it.
+fn build_date_formats(tree: &mut Tree, typed: &[Option<Typed>]) -> Result<u32, PackageError> {
+    let data_list = message_ref("TST.TableDataList")?;
+    let entry_ref = message_ref("TST.TableDataList.ListEntry")?;
+    let format_ref = message_ref("TSK.FormatStructArchive")?;
+    let mut counts = [0u64; 2];
+    for value in typed.iter().flatten() {
+        if let Typed::Date(_, time) = value {
+            counts[usize::from(*time)] += 1;
+        }
+    }
+    let mut chain = Chain::new();
+    push_field(tree, &mut chain, data_list, "listType", Node::Uint(2))?;
+    push_field(
+        tree,
+        &mut chain,
+        data_list,
+        "nextListID",
+        Node::Uint(DATA_DATE_FORMATS.len() as u64 + 1),
+    )?;
+    for (index, pattern) in DATA_DATE_FORMATS.iter().enumerate() {
+        if counts[index] == 0 {
+            continue;
+        }
+        let mut format = Chain::new();
+        push_field(
+            tree,
+            &mut format,
+            format_ref,
+            "format_type",
+            Node::Uint(261),
+        )?;
+        let span = tree.push_bytes(pattern.as_bytes()).map_err(tree_error)?;
+        push_field(
+            tree,
+            &mut format,
+            format_ref,
+            "date_time_format",
+            Node::Str(span),
+        )?;
+        let mut entry = Chain::new();
+        push_field(
+            tree,
+            &mut entry,
+            entry_ref,
+            "key",
+            Node::Uint(index as u64 + 1),
+        )?;
+        push_field(
+            tree,
+            &mut entry,
+            entry_ref,
+            "refcount",
+            Node::Uint(counts[index]),
+        )?;
+        push_field(
+            tree,
+            &mut entry,
+            entry_ref,
+            "format",
+            Node::Message(format.first),
+        )?;
+        push_field(
+            tree,
+            &mut chain,
+            data_list,
+            "entries",
+            Node::Message(entry.first),
+        )?;
+    }
+    Ok(chain.first)
+}
+
+/// A data cell's value, written as a typed record rather than text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Typed {
+    /// A decimal128 number, as Numbers stores numbers.
+    Number([u8; 16]),
+    /// Seconds since 2001-01-01, and whether it has a time: shown as
+    /// `yyyy-MM-dd` or `yyyy-MM-dd'T'HH:mm:ss` (`DATA_DATE_FORMATS`), the
+    /// text it was written from.
+    Date(f64, bool),
+    Boolean(bool),
+}
+
+impl Typed {
+    /// The cell's storage record (version 5): kind, flags, and value.
+    fn record(self) -> Vec<u8> {
+        let (kind, flag, value): (u8, u32, Vec<u8>) = match self {
+            Typed::Number(decimal) => (2, 0x1, decimal.to_vec()),
+            Typed::Date(seconds, time) => {
+                // Seconds, the format kind the cell shows (0x1000: 3 is a
+                // date), and the date format's key (0x8000), in flag order.
+                let mut value = seconds.to_le_bytes().to_vec();
+                value.extend_from_slice(&3u32.to_le_bytes());
+                value.extend_from_slice(&(1 + u32::from(time)).to_le_bytes());
+                (5, 0x4 | 0x1000 | 0x8000, value)
+            }
+            Typed::Boolean(value) => (6, 0x2, f64::from(u8::from(value)).to_le_bytes().to_vec()),
+        };
+        let mut bytes = vec![0u8; 12];
+        bytes[0] = 5;
+        bytes[1] = kind;
+        bytes[8..12].copy_from_slice(&flag.to_le_bytes());
+        bytes.extend_from_slice(&value);
+        bytes
+    }
 }
 
 impl TableMark {
@@ -4076,6 +4242,7 @@ impl Walk {
             paddings,
             borders: table.borders,
             cell_borders,
+            typed: Vec::new(),
         });
         self.mark(Format::default());
         self.link_mark(None);
@@ -5005,7 +5172,11 @@ const DEFAULT_ROW_HEIGHT: f32 = 20.0;
 
 /// A `stringTable` data list (listType 1): one entry per cell, keyed by cell
 /// index + 1, holding the cell's text.
-fn build_string_list(tree: &mut Tree, cells: &[CellContent]) -> Result<u32, PackageError> {
+fn build_string_list(
+    tree: &mut Tree,
+    cells: &[CellContent],
+    typed: &[Option<Typed>],
+) -> Result<u32, PackageError> {
     let data_list = message_ref("TST.TableDataList")?;
     let entry_ref = message_ref("TST.TableDataList.ListEntry")?;
     let mut chain = Chain::new();
@@ -5018,6 +5189,10 @@ fn build_string_list(tree: &mut Tree, cells: &[CellContent]) -> Result<u32, Pack
         Node::Uint(cells.len() as u64 + 1),
     )?;
     for (index, cell) in cells.iter().enumerate() {
+        // A data table's typed and empty cells name no string.
+        if !typed.is_empty() && (typed[index].is_some() || cell.is_empty()) {
+            continue;
+        }
         let mut entry = Chain::new();
         push_field(
             tree,
@@ -5607,17 +5782,145 @@ fn build_header_bucket(
     Ok(chain.first)
 }
 
+/// Rows a tile holds.
+const TILE_ROWS: usize = 256;
+/// What Numbers writes in a wide row's legacy (pre-BNC) fields: U+1F920.
+const LEGACY_PLACEHOLDER: &[u8] = &[0xF0, 0x9F, 0xA4, 0xA0];
+/// `TST.Tile`.
+const TILE: u32 = 6002;
+
+/// Lists a table's tiles in its data store (`tiles.tiles`, by tile id).
+fn set_model_tiles(
+    package: &mut Package,
+    model_id: u64,
+    tiles: &[(u64, u64)],
+) -> Result<(), PackageError> {
+    let storage = message_ref("TST.TileStorage")?;
+    let entry = message_ref("TST.TileStorage.Tile")?;
+    let stream = stream_containing(package, model_id)?;
+    let (model_first, info) = find_object(&stream.objects, model_id)
+        .map(|object| (object.messages[0].first, object.info))
+        .ok_or_else(|| malformed("table model is missing"))?;
+    let store = message_field(&stream.tree, model_first, "base_data_store")
+        .ok_or_else(|| malformed("table model has no data store"))?;
+    let index = field_entry(&stream.tree, store, "tiles")
+        .ok_or_else(|| malformed("data store has no tiles"))?;
+    let Node::Message(old) = stream.tree.entries[index as usize].value else {
+        return Err(malformed("data store tiles are not a message"));
+    };
+    let kept: Vec<(u32, Node)> = stream
+        .tree
+        .chain(old)
+        .filter(|(_, field)| stream.tree.field(field).map(|f| f.name) != Some("tiles"))
+        .map(|(_, field)| (field.number, field.value))
+        .collect();
+    let mut chain = Chain::new();
+    for (number, value) in kept {
+        let slot = storage
+            .slot(number)
+            .ok_or_else(|| malformed("tile storage field without a slot"))?;
+        let field = storage
+            .field_at(slot)
+            .ok_or_else(|| malformed("tile storage slot out of range"))?;
+        stream
+            .tree
+            .push_known(&mut chain, storage, slot, field, number, value)
+            .map_err(tree_error)?;
+    }
+    for (tile_id, id) in tiles {
+        let mut one = Chain::new();
+        push_field(
+            &mut stream.tree,
+            &mut one,
+            entry,
+            "tileid",
+            Node::Uint(*tile_id),
+        )?;
+        push_field(
+            &mut stream.tree,
+            &mut one,
+            entry,
+            "tile",
+            Node::Reference(*id),
+        )?;
+        push_field(
+            &mut stream.tree,
+            &mut chain,
+            storage,
+            "tiles",
+            Node::Message(one.first),
+        )?;
+    }
+    stream.tree.entries[index as usize].value = Node::Message(chain.first);
+    // The row tile tree: each tile's first row, to its tile id.
+    let tree_ref = message_ref("TST.TableRBTree")?;
+    let node_ref = message_ref("TST.TableRBTree.Node")?;
+    let mut nodes = Chain::new();
+    for (tile_id, _) in tiles {
+        let mut node = Chain::new();
+        push_field(
+            &mut stream.tree,
+            &mut node,
+            node_ref,
+            "key",
+            Node::Uint(tile_id * TILE_ROWS as u64),
+        )?;
+        push_field(
+            &mut stream.tree,
+            &mut node,
+            node_ref,
+            "value",
+            Node::Uint(*tile_id),
+        )?;
+        push_field(
+            &mut stream.tree,
+            &mut nodes,
+            tree_ref,
+            "nodes",
+            Node::Message(node.first),
+        )?;
+    }
+    match field_entry(&stream.tree, store, "rowTileTree") {
+        Some(tree_index) => {
+            stream.tree.entries[tree_index as usize].value = Node::Message(nodes.first)
+        }
+        None => return Err(malformed("data store has no row tile tree")),
+    }
+    // The next row strip id follows the tiles, as Numbers saves it.
+    if let Some(strip) = field_entry(&stream.tree, store, "nextRowStripID") {
+        stream.tree.entries[strip as usize].value = Node::Uint(tiles.len() as u64);
+    }
+    let references: Vec<u64> = tiles.iter().map(|(_, id)| *id).collect();
+    add_object_references(&mut stream.tree, info, &references)
+}
+
 /// A tile: one `TileRowInfo` per row, each with a packed cell buffer where
 /// every cell is a plain-text record pointing at its stringTable key.
 fn build_tile(
     tree: &mut Tree,
     mark: &TableMark,
+    rows: std::ops::Range<usize>,
     rich: &HashMap<usize, u32>,
     cell_styles: &HashMap<usize, u32>,
     styled: bool,
 ) -> Result<u32, PackageError> {
     let tile = message_ref("TST.Tile")?;
     let row_info = message_ref("TST.TileRowInfo")?;
+    // A data table, as Numbers writes one, has no record for an empty cell
+    // and no row info for a row without cells; `numrows` counts the rows
+    // the tile holds.
+    let data = !mark.typed.is_empty();
+    let has_cells = |row: usize| {
+        (0..mark.columns).any(|column| {
+            let cell = row * mark.columns + column;
+            mark.typed[cell].is_some() || !mark.cells[cell].is_empty()
+        })
+    };
+    let present = if data {
+        rows.clone().filter(|row| has_cells(*row)).count()
+    } else {
+        rows.len()
+    };
     let mut chain = Chain::new();
     // Pages leaves these pre-BNC geometry fields at 0 in a BNC-saved tile; the
     // real geometry comes from the model dimensions and the row infos below.
@@ -5629,7 +5932,7 @@ fn build_tile(
         &mut chain,
         tile,
         "numrows",
-        Node::Uint(mark.rows as u64),
+        Node::Uint(present as u64),
     )?;
     push_field(tree, &mut chain, tile, "storage_version", Node::Uint(5))?;
     push_field(
@@ -5639,21 +5942,53 @@ fn build_tile(
         "last_saved_in_BNC",
         Node::Bool(true),
     )?;
+    // A tile of a table past 255 columns says its rows are wide, as Numbers
+    // saves one.
+    if data && mark.columns > TILE_COLUMN_SLOTS {
+        push_field(
+            tree,
+            &mut chain,
+            tile,
+            "should_use_wide_rows",
+            Node::Bool(true),
+        )?;
+    }
     let covered = mark.covered();
-    for row in 0..mark.rows {
+    let base = rows.start;
+    for row in rows {
+        if data && !has_cells(row) {
+            continue;
+        }
         // Pages allocates a 255-slot column offset array per row (510
         // bytes), and a slot per column in a wider table: the byte offset of
         // each present column's record in the buffer, then 0xFFFF for every
         // empty column.
-        let mut offsets = vec![0xFFu8; TILE_COLUMN_SLOTS.max(mark.columns) * 2];
-        let mut starts: Vec<usize> = Vec::with_capacity(mark.columns);
+        // A table past 255 columns (Numbers reads one only as wide offsets,
+        // with a slot per column and no legacy buffer) is laid out as
+        // Numbers lays it out; a narrower one as Pages does.
+        let past_slots = data && mark.columns > TILE_COLUMN_SLOTS;
+        let slots = if past_slots {
+            mark.columns
+        } else {
+            TILE_COLUMN_SLOTS.max(mark.columns)
+        };
+        let mut offsets = vec![0xFFu8; slots * 2];
+        let mut starts: Vec<Option<usize>> = Vec::with_capacity(mark.columns);
         let mut buffer: Vec<u8> = Vec::new();
         for column in 0..mark.columns {
             let cell = row * mark.columns + column;
             let key = cell as u32 + 1;
-            starts.push(buffer.len());
+            // A data table writes no record for an empty cell (0xFFFF), as
+            // Numbers does, and a typed record for a typed one.
+            if data && mark.typed[cell].is_none() && mark.cells[cell].is_empty() {
+                starts.push(None);
+                continue;
+            }
+            starts.push(Some(buffer.len()));
             let style = cell_styles.get(&cell).copied().unwrap_or(CELL_STYLE_KEY);
-            if covered.contains(&cell) {
+            if let Some(Some(value)) = mark.typed.get(cell) {
+                buffer.extend_from_slice(&value.record());
+            } else if covered.contains(&cell) {
                 buffer.extend_from_slice(&covered_record_bytes());
             } else if styled && !rich.contains_key(&cell) {
                 buffer.extend_from_slice(&empty_record_bytes(style));
@@ -5663,8 +5998,11 @@ fn build_tile(
         }
         // A row past 64 KiB counts its offsets in 4-byte words, as Numbers
         // does (`has_wide_offsets`); every record is a whole number of words.
-        let wide = buffer.len() > usize::from(u16::MAX - 1);
+        let wide = past_slots || buffer.len() > usize::from(u16::MAX - 1);
         for (column, start) in starts.iter().enumerate() {
+            let Some(start) = start else {
+                continue;
+            };
             let offset = if wide { start / 4 } else { *start };
             let offset =
                 u16::try_from(offset).map_err(|_| malformed("a table row too large for Pages"))?;
@@ -5676,7 +6014,7 @@ fn build_tile(
             &mut entry,
             row_info,
             "tile_row_index",
-            Node::Uint(row as u64),
+            Node::Uint((row - base) as u64),
         )?;
         if wide {
             push_field(
@@ -5692,25 +6030,43 @@ fn build_tile(
             &mut entry,
             row_info,
             "cell_count",
-            Node::Uint(mark.columns as u64),
+            // The records the row holds: a data row skips empty cells.
+            Node::Uint(starts.iter().flatten().count() as u64),
         )?;
         // Pages needs both the legacy (pre-BNC) and current buffers; the same
-        // storage-version-5 bytes serve for each.
+        // storage-version-5 bytes serve for each. A data table's legacy
+        // fields hold numbers-parser's placeholder instead: Numbers parses a
+        // wide table's legacy buffer as the old layout, and the new bytes
+        // there crash it.
+        // Numbers ends a wide row's array at its last present column.
+        if past_slots {
+            let last = starts
+                .iter()
+                .rposition(Option::is_some)
+                .map_or(0, |column| column + 1);
+            offsets.truncate(last * 2);
+        }
         let buffer_span = tree.push_bytes(&buffer).map_err(tree_error)?;
+        let offsets_span = tree.push_bytes(&offsets).map_err(tree_error)?;
+        let (legacy_buffer, legacy_offsets) = if past_slots {
+            let placeholder = tree.push_bytes(LEGACY_PLACEHOLDER).map_err(tree_error)?;
+            (placeholder, placeholder)
+        } else {
+            (buffer_span, offsets_span)
+        };
         push_field(
             tree,
             &mut entry,
             row_info,
             "cell_storage_buffer_pre_bnc",
-            Node::Bytes(buffer_span),
+            Node::Bytes(legacy_buffer),
         )?;
-        let offsets_span = tree.push_bytes(&offsets).map_err(tree_error)?;
         push_field(
             tree,
             &mut entry,
             row_info,
             "cell_offsets_pre_bnc",
-            Node::Bytes(offsets_span),
+            Node::Bytes(legacy_offsets),
         )?;
         push_field(tree, &mut entry, row_info, "storage_version", Node::Uint(5))?;
         push_field(
@@ -7276,7 +7632,9 @@ fn clone_template_tables(
         .map(|object| object.identifier)
         .collect();
     extend_cluster(package, &location, &mut cluster, owner_objects);
-    cluster.push(proto.attach_id);
+    if proto.attach_id != proto.info_id {
+        cluster.push(proto.attach_id);
+    }
     // The shared engine objects a clone is registered in: the engine
     // archive and the owner-dependency and 6366 objects outside the cluster.
     let shared: Vec<(u32, u32)> = engine
