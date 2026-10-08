@@ -18,3 +18,7 @@ them small; the documents are otherwise unchanged.
 - `pivot.numbers` (`test-pivot.numbers`): a pivot table of a source table,
   rows and columns sorted by group with grand totals; `reference/pivot/`
   holds Numbers' CSV export of both tables.
+- `categories.numbers` (`test-categories.numbers`): categorised tables,
+  grouped by text, number, boolean, and dates (year, quarter, week,
+  month, day, weekday), nested to five levels, some columns hidden;
+  `reference/categories/` holds Numbers' CSV export of six of them.
