@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Changed
+
+- The Pages and Numbers readers hold large tables in less memory: a Pages document's streams are read twice instead of held decompressed together, tables' data lists and rows are kept as bytes until read, and a row's legacy copy of its cells is skipped. A Pages document of 100,000 table rows to Excel peaks at 1.8 GB instead of 2.2 (Numbers to CSV: 43 MB instead of 53 on numbers-parser's largest test document).
+
 ## [0.29.0] - 2026-10-08
 
 ### Added

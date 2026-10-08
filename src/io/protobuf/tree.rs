@@ -167,6 +167,10 @@ pub struct Tree {
     /// decode to `Node::Deferred` instead of entries: the hot repeated
     /// tables a reader parses itself, at a tenth of the memory.
     pub deferred: Vec<(u16, u32)>,
+    /// Fields, as (message index, field number), left out of a deferred
+    /// message's bytes: what its reader never opens (a tile row's legacy
+    /// copy of its cells).
+    pub stripped: Vec<(u16, u32)>,
 }
 
 /// Where a chain being built starts and currently ends.
@@ -198,7 +202,43 @@ impl Tree {
             entries: Vec::new(),
             text: Vec::new(),
             deferred: Vec::new(),
+            stripped: Vec::new(),
         }
+    }
+
+    /// A message's bytes without its stripped fields (`stripped`); a
+    /// message that does not parse, or holds a group, is kept whole.
+    fn without_stripped(&self, message: u16, bytes: &[u8]) -> Vec<u8> {
+        let mut kept = Vec::with_capacity(bytes.len());
+        for field in FieldReader::new(bytes) {
+            let Ok(field) = field else {
+                return bytes.to_vec();
+            };
+            if self.stripped.contains(&(message, field.number)) {
+                continue;
+            }
+            match field.value {
+                Value::Varint(value) => {
+                    write_tag(&mut kept, field.number, 0);
+                    write_varint(&mut kept, value);
+                }
+                Value::Fixed64(value) => {
+                    write_tag(&mut kept, field.number, 1);
+                    kept.extend_from_slice(&value.to_le_bytes());
+                }
+                Value::Bytes(value) => {
+                    write_tag(&mut kept, field.number, 2);
+                    write_varint(&mut kept, value.len() as u64);
+                    kept.extend_from_slice(value);
+                }
+                Value::Fixed32(value) => {
+                    write_tag(&mut kept, field.number, 5);
+                    kept.extend_from_slice(&value.to_le_bytes());
+                }
+                Value::Group(_) => return bytes.to_vec(),
+            }
+        }
+        kept
     }
 
     pub fn clear(&mut self) {
@@ -356,10 +396,15 @@ impl Tree {
                 Some(identifier) => Node::Reference(identifier),
                 None => Node::RawBytes(self.push_bytes(bytes)?),
             },
-            (Kind::Message(_), Value::Bytes(bytes))
+            (Kind::Message(nested_index), Value::Bytes(bytes))
                 if !self.deferred.is_empty() && self.deferred.contains(&(index, number)) =>
             {
-                Node::Deferred(self.push_bytes(bytes)?)
+                if self.stripped.iter().any(|(message, _)| *message == nested_index) {
+                    let kept = self.without_stripped(nested_index, bytes);
+                    Node::Deferred(self.push_bytes(&kept)?)
+                } else {
+                    Node::Deferred(self.push_bytes(bytes)?)
+                }
             }
             (Kind::Message(nested_index), Value::Bytes(bytes)) => {
                 // Push the entry first so the nested chain follows it; on a
