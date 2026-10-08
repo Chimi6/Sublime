@@ -8,7 +8,11 @@ section under a version heading.
 
 ### Added
 
-- HEIC read, natively: an HEVC still-picture decoder and HEIF parser written here, bit-exact with libheif on Apple's and x265's files (grids, odd sizes, 10-bit, 4:4:4, alpha), to every image format and PDF. Crop, rotation, mirroring, and alpha are applied, and the colour profile and Exif carried into PNG and JPEG. Chroma is interpolated rather than repeated, closer to the original than libheif or `sips`; grid tiles decode in parallel (Apple's 6016-pixel wallpaper to JPEG in 1.0 s against libheif's 1.3). Notes in `DOCS/formats/heic.md`.
+- HEIC read, natively: an HEVC still-picture decoder and HEIF parser written here, bit-exact with libheif on Apple's and x265's files (grids, odd sizes, 10-bit, 4:4:4, alpha), to every image format and PDF. Crop, rotation, mirroring, and alpha are applied, and the colour profile and Exif carried into PNG and JPEG. Chroma is interpolated rather than repeated, closer to the original than libheif or `sips`; grid tiles decode in parallel (Apple's 6016-pixel wallpaper to JPEG in 0.3 s against libheif's 1.4). Notes in `DOCS/formats/heic.md`.
+
+- HEIC decoding beats libheif everywhere it is measured (`DOCS/benchmarks/heic-png.md`): to PNG 3.7 to 27 times faster, to JPEG 1.3 to 5 times, at 36 to 81% of its memory; grids stream by bands of tiles, and JPEG output takes the picture's own YCbCr. Bit-exact with libheif on 41 reference files; where three multi-slice streams differ, libde265 is wrong and Apple's decoder agrees with ours.
+
+- 16-bit images stay 16-bit: 10-bit HEIC, 16-bit PNG and TIFF, and Netpbm over 8 bits go to PNG, TIFF, and Netpbm at 16 bits (16-bit PNG to PAM and back is identical) instead of losing their low byte.
 
 - JPEGs come out upright: the Exif orientation is applied (all eight, as Quick Look shows them), in PDF by the drawing so the JPEG stays embedded unchanged, and the ICC profile and Exif are carried into PNG and JPEG output.
 

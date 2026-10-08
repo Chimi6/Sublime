@@ -4,6 +4,7 @@
 //! adaptive offset per CTB.
 
 use super::decode::{Decoder, Unit};
+use super::sample::{Sample, with_samples};
 
 const BETA: [i32; 52] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
@@ -52,17 +53,21 @@ fn slice_start(decoder: &Decoder, ctb: usize) -> usize {
 }
 
 pub fn deblock(decoder: &mut Decoder) {
+    // The planes come out of the decoder so the edge decisions can read
+    // it while the samples change.
+    let mut planes = std::mem::take(&mut decoder.planes);
     for vertical in [true, false] {
-        deblock_luma(decoder, vertical);
+        with_samples!(&mut planes[0], plane => deblock_luma(decoder, plane, vertical));
         if decoder.chroma != 0 {
-            for component in 1..3 {
-                deblock_chroma(decoder, component, vertical);
+            for (component, plane) in planes.iter_mut().enumerate().skip(1) {
+                with_samples!(plane, plane => deblock_chroma(decoder, plane, component, vertical));
             }
         }
     }
+    decoder.planes = planes;
 }
 
-fn deblock_luma(decoder: &mut Decoder, vertical: bool) {
+fn deblock_luma<T: Sample>(decoder: &Decoder, plane: &mut [T], vertical: bool) {
     let (width, height) = (decoder.width, decoder.height);
     let stride = decoder.strides[0];
     let bit_depth = decoder.sps.bit_depth_luma;
@@ -102,7 +107,6 @@ fn deblock_luma(decoder: &mut Decoder, vertical: bool) {
             let beta = BETA[(qp + q_slice.beta_offset).clamp(0, 51) as usize] * scale;
             let tc =
                 TC[(qp + 2 * (STRENGTH - 1) + q_slice.tc_offset).clamp(0, 53) as usize] * scale;
-            let plane = &mut decoder.planes[0];
             // Sample k across the edge (p side negative) on line `line`.
             let at = |line: usize, k: isize| -> usize {
                 if vertical {
@@ -112,8 +116,8 @@ fn deblock_luma(decoder: &mut Decoder, vertical: bool) {
                 }
             };
             let lines = 4.min(inner - segment);
-            let get = |plane: &[u16], line: usize, k: isize| i32::from(plane[at(line, k)]);
-            let line_d = |plane: &[u16], line: usize| -> (i32, i32) {
+            let get = |plane: &[T], line: usize, k: isize| plane[at(line, k)].value();
+            let line_d = |plane: &[T], line: usize| -> (i32, i32) {
                 let dp =
                     (get(plane, line, -3) - 2 * get(plane, line, -2) + get(plane, line, -1)).abs();
                 let dq =
@@ -127,7 +131,7 @@ fn deblock_luma(decoder: &mut Decoder, vertical: bool) {
             if d >= beta {
                 continue;
             }
-            let strong_line = |plane: &[u16], line: usize, dpq: i32| -> bool {
+            let strong_line = |plane: &[T], line: usize, dpq: i32| -> bool {
                 2 * dpq < (beta >> 2)
                     && (get(plane, line, -4) - get(plane, line, -1)).abs()
                         + (get(plane, line, 0) - get(plane, line, 3)).abs()
@@ -154,8 +158,8 @@ fn deblock_luma(decoder: &mut Decoder, vertical: bool) {
                     get(plane, line, 2),
                     get(plane, line, 3),
                 ];
-                let set = |plane: &mut [u16], k: isize, value: i32| {
-                    plane[at(line, k)] = value.clamp(0, max) as u16;
+                let set = |plane: &mut [T], k: isize, value: i32| {
+                    plane[at(line, k)] = T::of(value.clamp(0, max));
                 };
                 if strong {
                     if !keep_p {
@@ -226,7 +230,7 @@ fn deblock_luma(decoder: &mut Decoder, vertical: bool) {
     }
 }
 
-fn deblock_chroma(decoder: &mut Decoder, component: usize, vertical: bool) {
+fn deblock_chroma<T: Sample>(decoder: &Decoder, plane: &mut [T], component: usize, vertical: bool) {
     let (sub_x, sub_y) = (decoder.sub_x, decoder.sub_y);
     let width = decoder.width >> sub_x;
     let height = decoder.height >> sub_y;
@@ -277,7 +281,6 @@ fn deblock_chroma(decoder: &mut Decoder, component: usize, vertical: bool) {
             if tc == 0 {
                 continue;
             }
-            let plane = &mut decoder.planes[component];
             let at = |k: isize| -> usize {
                 if vertical {
                     line * stride + (edge as isize + k) as usize
@@ -285,14 +288,14 @@ fn deblock_chroma(decoder: &mut Decoder, component: usize, vertical: bool) {
                     (edge as isize + k) as usize * stride + line
                 }
             };
-            let (p0, p1) = (i32::from(plane[at(-1)]), i32::from(plane[at(-2)]));
-            let (q0, q1) = (i32::from(plane[at(0)]), i32::from(plane[at(1)]));
+            let (p0, p1) = (plane[at(-1)].value(), plane[at(-2)].value());
+            let (q0, q1) = (plane[at(0)].value(), plane[at(1)].value());
             let delta = ((((q0 - p0) << 2) + p1 - q1 + 4) >> 3).clamp(-tc, tc);
             if !p_unit.unfiltered {
-                plane[at(-1)] = (p0 + delta).clamp(0, max) as u16;
+                plane[at(-1)] = T::of((p0 + delta).clamp(0, max));
             }
             if !q_unit.unfiltered {
-                plane[at(0)] = (q0 - delta).clamp(0, max) as u16;
+                plane[at(0)] = T::of((q0 - delta).clamp(0, max));
             }
         }
     }
@@ -307,99 +310,225 @@ pub fn sample_adaptive_offset(decoder: &mut Decoder) {
     {
         return;
     }
-    let components = if decoder.chroma == 0 { 1 } else { 3 };
-    for component in 0..components {
-        let source = decoder.planes[component].clone();
-        let (shift_x, shift_y) = if component == 0 {
-            (0, 0)
-        } else {
-            (decoder.sub_x, decoder.sub_y)
+    let mut planes = std::mem::take(&mut decoder.planes);
+    let rules = SaoRules::of(decoder);
+    for (component, plane) in planes.iter_mut().enumerate() {
+        with_samples!(plane, plane => sao_plane(decoder, &rules, plane, component));
+    }
+    decoder.planes = planes;
+}
+
+/// What a picture's slices, tiles, and blocks let the offsets do.
+struct SaoRules {
+    /// Every edge offset may read across every CTB boundary: one slice
+    /// (or every slice filtering across), one tile (or filtering across).
+    open: bool,
+    /// Some samples are left unfiltered (PCM or transquant bypass).
+    unfiltered: bool,
+}
+
+impl SaoRules {
+    fn of(decoder: &Decoder) -> SaoRules {
+        let independent = decoder
+            .slices
+            .iter()
+            .filter(|slice| !slice.dependent)
+            .count();
+        let slices_open = independent <= 1
+            || decoder
+                .slices
+                .iter()
+                .all(|slice| slice.loop_filter_across_slices);
+        let tiles_open =
+            decoder.pps.loop_filter_across_tiles || decoder.tile_of.iter().all(|&tile| tile == 0);
+        SaoRules {
+            open: slices_open && tiles_open,
+            unfiltered: decoder.units.iter().any(|unit| unit.unfiltered),
+        }
+    }
+}
+
+/// The offsets of one component, a CTB row at a time: a window holds the
+/// band's deblocked lines with one above (kept from before the band above
+/// changed it) and one below, and the plane takes the results.
+fn sao_plane<T: Sample>(decoder: &Decoder, rules: &SaoRules, plane: &mut [T], component: usize) {
+    let (shift_x, shift_y) = if component == 0 {
+        (0, 0)
+    } else {
+        (decoder.sub_x, decoder.sub_y)
+    };
+    let width = decoder.width >> shift_x;
+    let height = decoder.height >> shift_y;
+    let stride = decoder.strides[component];
+    let bit_depth = if component == 0 {
+        decoder.sps.bit_depth_luma
+    } else {
+        decoder.sps.bit_depth_chroma
+    };
+    let max = (1i32 << bit_depth) - 1;
+    let ctb = 1usize << decoder.ctb_log2;
+    let band_height = ctb >> shift_y;
+    let mut window: Vec<T> = vec![T::default(); (band_height + 2) * stride];
+    let mut above: Vec<T> = vec![T::default(); stride];
+    for ctb_y in 0..decoder.height_ctbs {
+        let band_top = ctb_y * band_height;
+        let band_bottom = (band_top + band_height).min(height);
+        // Window line k holds picture line band_top - 1 + k.
+        if band_top > 0 {
+            window[..stride].copy_from_slice(&above);
+        }
+        let below = (band_bottom + 1).min(height);
+        window[stride..(1 + below - band_top) * stride]
+            .copy_from_slice(&plane[band_top * stride..below * stride]);
+        above.copy_from_slice(&window[(band_bottom - band_top) * stride..][..stride]);
+        let line = |y: usize| -> &[T] {
+            let k = y + 1 - band_top;
+            &window[k * stride..(k + 1) * stride]
         };
-        let width = decoder.width >> shift_x;
-        let height = decoder.height >> shift_y;
-        let stride = decoder.strides[component];
-        let bit_depth = if component == 0 {
-            decoder.sps.bit_depth_luma
-        } else {
-            decoder.sps.bit_depth_chroma
-        };
-        let max = (1i32 << bit_depth) - 1;
-        let ctb = 1usize << decoder.ctb_log2;
-        for ctb_y in 0..decoder.height_ctbs {
-            for ctb_x in 0..decoder.width_ctbs {
-                let rs = ctb_y * decoder.width_ctbs + ctb_x;
-                let slice = &decoder.slices[decoder.slice_of[rs]];
-                let enabled = if component == 0 {
-                    slice.sao_luma
-                } else {
-                    slice.sao_chroma
-                };
-                let params = decoder.sao[rs][component];
-                if !enabled || params.kind == 0 {
-                    continue;
-                }
-                let x0 = (ctb_x * ctb) >> shift_x;
-                let y0 = (ctb_y * ctb) >> shift_y;
-                let x1 = (((ctb_x + 1) * ctb) >> shift_x).min(width);
-                let y1 = (((ctb_y + 1) * ctb) >> shift_y).min(height);
-                let mut band_table = [0usize; 32];
+        for ctb_x in 0..decoder.width_ctbs {
+            let rs = ctb_y * decoder.width_ctbs + ctb_x;
+            let slice = &decoder.slices[decoder.slice_of[rs]];
+            let enabled = if component == 0 {
+                slice.sao_luma
+            } else {
+                slice.sao_chroma
+            };
+            let params = decoder.sao[rs][component];
+            if !enabled || params.kind == 0 {
+                continue;
+            }
+            let x0 = (ctb_x * ctb) >> shift_x;
+            let x1 = (((ctb_x + 1) * ctb) >> shift_x).min(width);
+            if params.kind == 1 {
+                let mut table = [0i32; 32];
                 for k in 0..4 {
-                    band_table[(k + usize::from(params.band)) & 31] = k + 1;
+                    table[(k + usize::from(params.band)) & 31] = params.offsets[k + 1];
                 }
-                let (dx, dy): ([isize; 2], [isize; 2]) = match params.class {
-                    0 => ([-1, 1], [0, 0]),
-                    1 => ([0, 0], [-1, 1]),
-                    2 => ([-1, 1], [-1, 1]),
-                    _ => ([1, -1], [-1, 1]),
-                };
-                for y in y0..y1 {
-                    for x in x0..x1 {
-                        let luma = (x << shift_x, y << shift_y);
-                        if decoder.unit(luma.0, luma.1).unfiltered {
-                            continue;
-                        }
-                        let value = i32::from(source[y * stride + x]);
-                        let offset = if params.kind == 1 {
-                            params.offsets[band_table[(value >> (bit_depth - 5)) as usize]]
-                        } else {
-                            let mut signs = 0;
-                            let mut skip = false;
-                            for k in 0..2 {
-                                let nx = x as isize + dx[k];
-                                let ny = y as isize + dy[k];
-                                if nx < 0 || ny < 0 || nx as usize >= width || ny as usize >= height
-                                {
-                                    skip = true;
-                                    break;
-                                }
-                                let neighbour_luma =
-                                    ((nx as usize) << shift_x, (ny as usize) << shift_y);
-                                if !sao_crosses(decoder, luma, neighbour_luma) {
-                                    skip = true;
-                                    break;
-                                }
-                                let neighbour =
-                                    i32::from(source[ny as usize * stride + nx as usize]);
-                                signs += (value - neighbour).signum();
-                            }
-                            if skip {
-                                continue;
-                            }
-                            let index = match 2 + signs {
-                                0 => 1,
-                                1 => 2,
-                                2 => 0,
-                                other => other as usize,
-                            };
-                            params.offsets[index]
-                        };
-                        if offset != 0 {
-                            decoder.planes[component][y * stride + x] =
-                                (value + offset).clamp(0, max) as u16;
-                        }
+                let shift = bit_depth - 5;
+                for y in band_top..band_bottom {
+                    let source = &line(y)[x0..x1];
+                    let target = &mut plane[y * stride + x0..y * stride + x1];
+                    for (out, &value) in target.iter_mut().zip(source) {
+                        let value = value.value();
+                        *out = T::of((value + table[(value >> shift) as usize]).clamp(0, max));
+                    }
+                    if rules.unfiltered {
+                        restore_unfiltered(
+                            decoder, plane, source, y, x0, x1, shift_x, shift_y, stride,
+                        );
                     }
                 }
+                continue;
             }
+            // Edge offsets: neighbours a and b along the class's direction.
+            let (dx, dy): ([isize; 2], [isize; 2]) = match params.class {
+                0 => ([-1, 1], [0, 0]),
+                1 => ([0, 0], [-1, 1]),
+                2 => ([-1, 1], [-1, 1]),
+                _ => ([1, -1], [-1, 1]),
+            };
+            // edgeIdx from 2 + the signs' sum, then the offset it selects.
+            let offsets = params.offsets;
+            let pick = [offsets[1], offsets[2], offsets[0], offsets[3], offsets[4]];
+            // Columns whose neighbours are inside the picture.
+            let left = if dx[0] != 0 { x0.max(1) } else { x0 };
+            let right = if dx[0] != 0 { x1.min(width - 1) } else { x1 };
+            for y in band_top..band_bottom {
+                if dy[0] != 0 && (y == 0 || y + 1 >= height) {
+                    continue;
+                }
+                let rows = [(y as isize + dy[0]) as usize, (y as isize + dy[1]) as usize];
+                // Inside the CTB every neighbour is readable; at its edges
+                // the slice and tile rules decide, sample by sample.
+                let checked = !rules.open;
+                let edge_row = checked && (y == band_top || y + 1 == band_bottom);
+                let (inner_left, inner_right) = if checked {
+                    ((x0 + 1).max(left), (x1 - 1).min(right))
+                } else {
+                    (left, right)
+                };
+                let target = &mut plane[y * stride..(y + 1) * stride];
+                if !edge_row && inner_left < inner_right {
+                    let current = &line(y)[inner_left..inner_right];
+                    let a = &line(rows[0])[(inner_left as isize + dx[0]) as usize..];
+                    let b = &line(rows[1])[(inner_left as isize + dx[1]) as usize..];
+                    for (((out, &value), &a), &b) in target[inner_left..inner_right]
+                        .iter_mut()
+                        .zip(current)
+                        .zip(a)
+                        .zip(b)
+                    {
+                        let value = value.value();
+                        let index = 2 + (value - a.value()).signum() + (value - b.value()).signum();
+                        *out = T::of((value + pick[index as usize]).clamp(0, max));
+                    }
+                }
+                if checked {
+                    // The CTB's border samples, each with its own checks.
+                    let columns: Vec<usize> = if edge_row {
+                        (left..right).collect()
+                    } else {
+                        [x0, x1 - 1]
+                            .into_iter()
+                            .filter(|&x| x >= left && x < right)
+                            .collect()
+                    };
+                    for x in columns {
+                        let luma = (x << shift_x, y << shift_y);
+                        let mut readable = true;
+                        for k in 0..2 {
+                            let neighbour = (
+                                ((x as isize + dx[k]) as usize) << shift_x,
+                                rows[k] << shift_y,
+                            );
+                            readable &= sao_crosses(decoder, luma, neighbour);
+                        }
+                        if !readable {
+                            target[x] = line(y)[x];
+                            continue;
+                        }
+                        let value = line(y)[x].value();
+                        let a = line(rows[0])[(x as isize + dx[0]) as usize].value();
+                        let b = line(rows[1])[(x as isize + dx[1]) as usize].value();
+                        let index = 2 + (value - a).signum() + (value - b).signum();
+                        target[x] = T::of((value + pick[index as usize]).clamp(0, max));
+                    }
+                }
+                if rules.unfiltered {
+                    restore_unfiltered(
+                        decoder,
+                        plane,
+                        &line(y)[x0..x1],
+                        y,
+                        x0,
+                        x1,
+                        shift_x,
+                        shift_y,
+                        stride,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Puts back the deblocked samples of PCM and bypass blocks the loop
+/// filters leave alone.
+#[allow(clippy::too_many_arguments)]
+fn restore_unfiltered<T: Sample>(
+    decoder: &Decoder,
+    plane: &mut [T],
+    source: &[T],
+    y: usize,
+    x0: usize,
+    x1: usize,
+    shift_x: u32,
+    shift_y: u32,
+    stride: usize,
+) {
+    for x in x0..x1 {
+        if decoder.unit(x << shift_x, y << shift_y).unfiltered {
+            plane[y * stride + x] = source[x - x0];
         }
     }
 }

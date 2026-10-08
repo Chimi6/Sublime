@@ -14,9 +14,13 @@ in software may need a licence where those patents hold.
 - `heic -> png`, `heic -> jpeg`, `heic -> webp`, `heic -> bmp`, and every
   other image format, and `heic -> pdf`: shipped, conditional (the
   primary image, cropped, turned, and mirrored as the file says, with
-  its alpha; 10-bit samples become 8-bit; the ICC profile and Exif are
-  carried into PNG and JPEG, the Exif's orientation set to 1 since the
-  pixels come out upright, and dropped with a warning elsewhere).
+  its alpha; 10-bit samples go to PNG, TIFF, and Netpbm at 16 bits and
+  elsewhere at 8; the ICC profile and Exif are carried into PNG and JPEG,
+  the Exif's orientation set to 1 since the pixels come out upright, and
+  dropped with a warning elsewhere).
+- JPEG output takes the picture's own YCbCr when it is JFIF's (8-bit
+  4:2:0, BT.601, full range, as phones write it, not turned): no
+  conversion to RGB and back, no second chroma subsampling.
 - Extensions `heic`, `heif`, `hif`; a file branded `heic` is known by
   its first bytes too. Pictures in documents set into a PDF read HEIC
   by its brand.
@@ -28,10 +32,21 @@ with x265 4.1): every picture decodes to the same samples as libheif
 (checksums of each plane), including Apple's grids, odd sizes with a
 clean aperture, 10-bit, 4:4:4, and alpha; quarter turns and both
 mirrors move the pixels as libheif does; the profile and Exif reach
-the PNG; cut files are refused. Outside the suite: bit-exact planes
-with libheif on 14 files from both encoders and on 9 of Apple's 6016
-by 6016 wallpapers (36 tiles each), and 16,000 damaged files (cut,
-bit flips, byte changes) refused without a panic since the last fix.
+the PNG; a grid streamed by bands equals its whole canvas; 10-bit goes
+on at 16 bits; a JPEG sink gets the picture's own planes; cut files are
+refused. Outside the suite, checked against libheif by hand: planes
+bit-exact with libheif on 14 files from both encoders, 9 of Apple's 6016
+by 6016 wallpapers, the 5 benchmark inputs, and 13 x265 variants
+(small CTUs, transform skip, lossless blocks, no sign hiding, no SAO or
+deblocking, constrained intra, deep transform trees); 18,000 damaged
+files refused without a panic.
+
+Three multi-slice x265 streams with filtering across slices off are not
+bit-exact with libheif, and libheif is the one that is wrong: libde265
+looks up a chroma CTB's slice at chroma coordinates read as luma
+(`sao.cc`, `get_SliceHeader(xC, yC)`), so on a CTB's border it skips
+offsets the standard applies. Apple's decoder agrees with ours there
+(mean error 0.5 against libde265's 1.1 at those samples).
 
 ## What the reader does
 
@@ -52,26 +67,29 @@ original than either: 0.1 to 1.4 dB of PSNR over libheif's default (the
 least on the hard-edged pattern), and 1.0 to 3.3 dB over `sips`. libheif's own bilinear option scores 40 dB where its
 default scores 50, so it is not used as a reference.
 
-Grid tiles decode on as many threads as the machine has, each handed to
-the canvas as it finishes. The canvas holds 8-bit samples as bytes.
-Rows are converted one at a time. A turned image is converted whole,
-then read down its columns.
+Grid tiles decode on as many threads as the machine has (one in
+WebAssembly), each worker reusing its decoding buffers and placing its
+tile itself. A grid whose rows come out top to bottom streams: each row
+of tiles is converted and handed on once it and the row below are in,
+from a band buffer whose margins hold the rows the chroma interpolation
+reads across its edges, and the band's buffer is reused. Otherwise the
+canvas is assembled, 8-bit samples as bytes, and a turned image is read
+down its columns a strip of 64 at a time.
+
+Conversion is exact to 0.5 of a step: at 8 bits 0.23% of samples sit one
+off float rounding, all on exact halves; at 16 bits 3 samples in half a
+million.
 
 ## Measured
 
-Apple's Sonoma wallpaper (6016 by 6016, 36 tiles, 20 MB) to JPEG on
-an M-series Mac with 10 cores: 0.94 to 1.15 s and 200 MB, against
-libheif's `heif-dec` at 1.34 s and 126 MB (4.5 s of CPU each). To PNG,
-`heif-dec` takes 28 s. `sips` takes 0.17 s on the hardware decoder.
-
-A 1600 by 1200 x265 picture at quality 90 (614 KB, one picture, no
-tiles): 150 ms to decode and convert, against about 125 ms for libheif to
-decode alone. The single-picture decoder is CABAC-bound: residual
-coding and the arithmetic decoder are two thirds of the time.
+`DOCS/benchmarks/heic-png.md` has the pair: every line passes against
+libheif's `heif-dec`, PNG output 3.7 to 27 times faster and JPEG output
+1.3 to 5 times faster at 36 to 81% of its memory. Apple's `sips`, on the
+hardware decoder, leads on single-picture JPEG speed and on JPEG memory.
 
 ## Known deviations
 
-- Samples deeper than 8 bits are reduced to 8; the image hub is 8-bit.
+- Samples deeper than 8 bits reach 8-bit formats (JPEG, WebP, BMP) at 8.
 - `imir` follows libheif: axis 0 flips top to bottom, 1 left to right.
   Apple's ImageIO ignores `imir` (its own files never use it).
 - Cross-component prediction is implemented from the standard but no
@@ -81,10 +99,9 @@ coding and the arithmetic decoder are two thirds of the time.
   pictures in a collection) are reported as dropped. XMP is dropped.
 - WebP, TIFF, and the other formats drop the profile and Exif with a
   warning; their writers do not carry metadata yet.
-- One picture without tiles decodes on one thread; wavefront rows
-  could run in parallel.
-- A whole grid is held while it is converted; a grid whose rows are not
-  turned could stream by tile rows.
+- One picture without tiles decodes on one thread, and is held whole
+  until its loop filters have run; wavefront rows could decode in
+  parallel and rows could go on as the filters finish them.
 - Not read: AVIF (`av01`), JPEG items, overlays (`iovl`), image
   sequences, and derived `iden` items; the stream's inter frames (a
   HEIF holds intra pictures).

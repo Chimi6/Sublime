@@ -61,7 +61,10 @@ Annex K, which let the encoder stream; the accurate integer FDCT
 (`jfdctint`) with quantization by reciprocal multiply; libjpeg's
 fixed-point RGB to YCbCr; box downsampling with libjpeg's alternating
 bias; edges padded by replication. Gray input writes one component.
-Alpha is flattened onto white before conversion.
+Alpha is flattened onto white before conversion. A source that is
+already JFIF's YCbCr 4:2:0 (an 8-bit BT.601 full-range HEIC) hands its
+planes over instead of RGB rows, and they are encoded as they are, at
+4:2:0 whatever the quality.
 
 ## Known deviations
 

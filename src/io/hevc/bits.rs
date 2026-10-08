@@ -6,18 +6,26 @@ use super::HevcError;
 
 /// A NAL unit: its type and its payload as an RBSP (the two header bytes
 /// and every emulation prevention byte, the `03` of `00 00 03`, gone).
-pub struct Nal {
+pub struct Nal<'a> {
     pub kind: u8,
-    pub rbsp: Vec<u8>,
+    pub rbsp: std::borrow::Cow<'a, [u8]>,
 }
 
-impl Nal {
+impl<'a> Nal<'a> {
     /// A NAL unit from its bytes, header included.
-    pub fn parse(bytes: &[u8]) -> Result<Nal, HevcError> {
+    pub fn parse(bytes: &'a [u8]) -> Result<Nal<'a>, HevcError> {
         if bytes.len() < 2 {
             return Err(HevcError::new("a NAL unit shorter than its header"));
         }
         let kind = (bytes[0] >> 1) & 0x3F;
+        let payload = &bytes[2..];
+        // Most payloads hold no emulation prevention byte: borrowed whole.
+        if !payload.windows(3).any(|window| window == [0, 0, 3]) {
+            return Ok(Nal {
+                kind,
+                rbsp: std::borrow::Cow::Borrowed(payload),
+            });
+        }
         let mut rbsp = Vec::with_capacity(bytes.len());
         let mut zeros = 0;
         for &byte in &bytes[2..] {
@@ -28,7 +36,10 @@ impl Nal {
             zeros = if byte == 0 { zeros + 1 } else { 0 };
             rbsp.push(byte);
         }
-        Ok(Nal { kind, rbsp })
+        Ok(Nal {
+            kind,
+            rbsp: std::borrow::Cow::Owned(rbsp),
+        })
     }
 }
 

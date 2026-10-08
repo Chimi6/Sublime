@@ -27,70 +27,114 @@ const DCT32_WIDE: [[i32; 32]; 32] = {
 /// The inverse transform of an `n` by `n` block of scaled coefficients,
 /// row-major, in place: columns first, the intermediate clipped to 16
 /// bits, then rows, then the final shift (8.6.4.2, 8.6.2).
-pub fn inverse_transform(block: &mut [i32], log2: u32, dst: bool, bit_depth: u32) {
+/// `rows` and `columns` bound the nonzero coefficients.
+pub fn inverse_transform(
+    block: &mut [i32],
+    log2: u32,
+    dst: bool,
+    bit_depth: u32,
+    rows: usize,
+    columns: usize,
+) {
     let n = 1usize << log2;
-    let step = 32 >> log2;
     let shift = 20 - bit_depth as i32;
     let round = 1i32 << (shift - 1);
-    // Rows with any coefficient, and the highest frequency used, bound the work.
-    let mut last_row = 0;
-    let mut last_column = 0;
-    for (y, row) in block[..n * n].chunks_exact(n).enumerate() {
-        if let Some(x) = row.iter().rposition(|&level| level != 0) {
-            last_row = y + 1;
-            last_column = last_column.max(x + 1);
-        }
-    }
-    if last_row == 0 {
-        block[..n * n].fill(0);
+    let block = &mut block[..n * n];
+    let (last_row, last_column) = (rows.min(n), columns.min(n));
+    if last_row == 0 || last_column == 0 {
         return;
     }
-    let block = &mut block[..n * n];
     // A lone DC coefficient (most blocks): a flat block.
     if !dst && last_row == 1 && last_column == 1 {
         let column = ((64 * block[0] + 64) >> 7).clamp(-32768, 32767);
         block.fill((64 * column + round) >> shift);
         return;
     }
-    let matrix = |frequency: usize| -> &[i32] {
-        if dst {
-            &DST4[frequency]
-        } else {
-            &DCT32_WIDE[frequency * step][..n]
-        }
-    };
-    // Columns: e[y][x] = sum over j of M[j][y] * d[j][x], a row of the
-    // intermediate at a time so the inner loop runs along x.
+    if dst {
+        dst_transform(block, last_row, last_column, shift);
+        return;
+    }
+    let step = 32 >> log2;
+    let half = n / 2;
+    // Columns, a whole row of the intermediate at a time so the inner
+    // loops run along x. M[j][n-1-y] is M[j][y] for even j and its
+    // negative for odd j, so rows y and n-1-y come from the same two
+    // sums, their even and odd parts.
     let mut intermediate = [0i32; 32 * 32];
-    for y in 0..n {
-        let target = &mut intermediate[y * n..y * n + last_column];
+    let mut even = [0i32; 32];
+    let mut odd = [0i32; 32];
+    for y in 0..half {
+        let (even, odd) = (&mut even[..last_column], &mut odd[..last_column]);
+        even.fill(0);
+        odd.fill(0);
         for j in 0..last_row {
-            let weight = matrix(j)[y];
+            let weight = DCT32_WIDE[j * step][y];
             let source = &block[j * n..j * n + last_column];
-            for (value, &level) in target.iter_mut().zip(source) {
-                *value += weight * level;
+            let target = if j % 2 == 0 { &mut *even } else { &mut *odd };
+            for (sum, &level) in target.iter_mut().zip(source) {
+                *sum += weight * level;
             }
         }
-        for value in target.iter_mut() {
-            *value = ((*value + 64) >> 7).clamp(-32768, 32767);
+        let (top, bottom) = intermediate.split_at_mut((n - 1 - y) * n);
+        for ((upper, lower), (&even, &odd)) in top[y * n..y * n + last_column]
+            .iter_mut()
+            .zip(&mut bottom[..last_column])
+            .zip(even.iter().zip(odd.iter()))
+        {
+            *upper = ((even + odd + 64) >> 7).clamp(-32768, 32767);
+            *lower = ((even - odd + 64) >> 7).clamp(-32768, 32767);
         }
     }
-    // Rows: r[y][x] = sum over j of M[j][x] * e[y][j].
-    let mut row = [0i32; 32];
+    // Rows: r[y][x] = sum over j of M[j][x] * e[y][j], the first half of
+    // x by even and odd parts and the second half mirrored from them.
     for y in 0..n {
-        let row = &mut row[..n];
-        row.fill(0);
+        let (even, odd) = (&mut even[..half], &mut odd[..half]);
+        even.fill(0);
+        odd.fill(0);
         for j in 0..last_column {
             let value = intermediate[y * n + j];
             if value == 0 {
                 continue;
             }
-            for (sum, &weight) in row.iter_mut().zip(matrix(j)) {
+            let weights = &DCT32_WIDE[j * step][..half];
+            let target = if j % 2 == 0 { &mut *even } else { &mut *odd };
+            for (sum, &weight) in target.iter_mut().zip(weights) {
                 *sum += weight * value;
             }
         }
-        for (out, &sum) in block[y * n..(y + 1) * n].iter_mut().zip(row.iter()) {
-            *out = (sum + round) >> shift;
+        let row = &mut block[y * n..(y + 1) * n];
+        let (left, right) = row.split_at_mut(half);
+        for ((low, high), (&even, &odd)) in left
+            .iter_mut()
+            .zip(right.iter_mut().rev())
+            .zip(even.iter().zip(odd.iter()))
+        {
+            *low = (even + odd + round) >> shift;
+            *high = (even - odd + round) >> shift;
+        }
+    }
+}
+
+/// The 4x4 DST of intra luma, the same two passes over its matrix.
+fn dst_transform(block: &mut [i32], last_row: usize, last_column: usize, shift: i32) {
+    let round = 1i32 << (shift - 1);
+    let mut intermediate = [0i32; 16];
+    for y in 0..4 {
+        for x in 0..last_column {
+            let mut sum = 0;
+            for j in 0..last_row {
+                sum += DST4[j][y] * block[j * 4 + x];
+            }
+            intermediate[y * 4 + x] = ((sum + 64) >> 7).clamp(-32768, 32767);
+        }
+    }
+    for y in 0..4 {
+        for x in 0..4 {
+            let mut sum = 0;
+            for j in 0..last_column {
+                sum += DST4[j][x] * intermediate[y * 4 + j];
+            }
+            block[y * 4 + x] = (sum + round) >> shift;
         }
     }
 }
@@ -257,7 +301,7 @@ mod tests {
             let n = 1usize << log2;
             let mut block = vec![0i32; n * n];
             block[0] = 64 << 6;
-            inverse_transform(&mut block, log2, false, 8);
+            inverse_transform(&mut block, log2, false, 8, 1, 1);
             assert!(block.iter().all(|&value| value == block[0]), "size {n}");
         }
         let mut block = vec![0i32; 16];

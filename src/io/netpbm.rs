@@ -39,6 +39,8 @@ impl std::error::Error for NetpbmError {}
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NetpbmNotes {
     pub maxval: u32,
+    /// Samples over 8 bits went on at 16 bits (the sink took them).
+    pub deep: bool,
 }
 
 fn fail<T>(message: &str) -> Result<T, RowsError> {
@@ -262,9 +264,18 @@ pub fn read_netpbm_rows(
         3 => ColorType::Rgb,
         _ => ColorType::Rgba,
     };
+    // Samples over 8 bits go on at 16 bits to a sink that holds them.
+    let deep = layout.maxval > 255 && !layout.bits && sink.accept_deep(color);
     sink.start(layout.width, layout.height, color)
         .map_err(RowsError::Io)?;
     let samples = layout.width as usize * layout.depth;
+    if deep {
+        read_deep_rows(&mut source, &layout, samples, sink)?;
+        return Ok(NetpbmNotes {
+            maxval: layout.maxval,
+            deep,
+        });
+    }
     let mut row = vec![0u8; samples];
     let maxval = layout.maxval;
     // Each 8-bit sample's value, scaled as Netpbm's tools scale.
@@ -325,7 +336,52 @@ pub fn read_netpbm_rows(
             sink.row(&row).map_err(RowsError::Io)?;
         }
     }
-    Ok(NetpbmNotes { maxval })
+    Ok(NetpbmNotes {
+        maxval,
+        deep: false,
+    })
+}
+
+/// Rows of samples over 8 bits, as big-endian 16-bit samples scaled to
+/// 65535 (unchanged when maxval is 65535).
+fn read_deep_rows(
+    source: &mut Source<'_>,
+    layout: &Layout,
+    samples: usize,
+    sink: &mut dyn RowSink,
+) -> Result<(), RowsError> {
+    let maxval = layout.maxval;
+    let widen = |value: u32| -> [u8; 2] {
+        let scaled = (u64::from(value) * 65_535 + u64::from(maxval) / 2) / u64::from(maxval);
+        (scaled as u16).to_be_bytes()
+    };
+    let mut row = vec![0u8; samples * 2];
+    let mut wide = vec![0u8; samples * 2];
+    for _ in 0..layout.height {
+        if layout.plain {
+            for target in row.chunks_exact_mut(2) {
+                let value = source
+                    .number()
+                    .map_err(|_| RowsError::Png(PngError("Netpbm image data cut short".into())))?;
+                if value > maxval {
+                    return fail("Netpbm sample above maxval");
+                }
+                target.copy_from_slice(&widen(value));
+            }
+        } else {
+            source.fill(&mut wide)?;
+            if maxval == 65_535 {
+                row.copy_from_slice(&wide);
+            } else {
+                for (target, pair) in row.chunks_exact_mut(2).zip(wide.chunks_exact(2)) {
+                    let value = u32::from(u16::from_be_bytes([pair[0], pair[1]]));
+                    target.copy_from_slice(&widen(value.min(maxval)));
+                }
+            }
+        }
+        sink.row(&row).map_err(RowsError::Io)?;
+    }
+    Ok(())
 }
 
 /// A sample in `0..=maxval` as 8 bits, rounded (Netpbm's own scaling).
@@ -352,6 +408,8 @@ pub struct NetpbmRows<'a> {
     color: ColorType,
     rows_left: u32,
     out: Vec<u8>,
+    /// 16-bit samples, written as they come (maxval 65535 is big-endian).
+    deep: bool,
 }
 
 impl<'a> NetpbmRows<'a> {
@@ -362,6 +420,7 @@ impl<'a> NetpbmRows<'a> {
             color: ColorType::Rgb,
             rows_left: 0,
             out: Vec::with_capacity(PIECE + 1024),
+            deep: false,
         }
     }
 
@@ -384,10 +443,11 @@ impl RowSink for NetpbmRows<'_> {
     fn start(&mut self, width: u32, height: u32, color: ColorType) -> io::Result<()> {
         self.color = color;
         self.rows_left = height;
+        let maxval = if self.deep { 65_535 } else { 255 };
         let header = match self.kind {
             Kind::Pbm => format!("P4\n{width} {height}\n"),
-            Kind::Pgm => format!("P5\n{width} {height}\n255\n"),
-            Kind::Ppm => format!("P6\n{width} {height}\n255\n"),
+            Kind::Pgm => format!("P5\n{width} {height}\n{maxval}\n"),
+            Kind::Ppm => format!("P6\n{width} {height}\n{maxval}\n"),
             Kind::Pam => {
                 let (depth, tuple_type) = match color {
                     ColorType::Gray => (1, "GRAYSCALE"),
@@ -396,7 +456,7 @@ impl RowSink for NetpbmRows<'_> {
                     ColorType::Rgba => (4, "RGB_ALPHA"),
                 };
                 format!(
-                    "P7\nWIDTH {width}\nHEIGHT {height}\nDEPTH {depth}\nMAXVAL 255\nTUPLTYPE {tuple_type}\nENDHDR\n"
+                    "P7\nWIDTH {width}\nHEIGHT {height}\nDEPTH {depth}\nMAXVAL {maxval}\nTUPLTYPE {tuple_type}\nENDHDR\n"
                 )
             }
         };
@@ -404,8 +464,30 @@ impl RowSink for NetpbmRows<'_> {
         Ok(())
     }
 
+    /// Deep rows go straight through where the format holds the color as
+    /// it is: PAM always, PPM for RGB, PGM for gray.
+    fn accept_deep(&mut self, color: ColorType) -> bool {
+        self.deep = matches!(
+            (self.kind, color),
+            (Kind::Pam, _) | (Kind::Ppm, ColorType::Rgb) | (Kind::Pgm, ColorType::Gray)
+        );
+        self.deep
+    }
+
     fn row(&mut self, pixels: &[u8]) -> io::Result<()> {
         let channels = self.color.channels();
+        if self.deep {
+            self.out.extend_from_slice(pixels);
+            self.rows_left = self.rows_left.saturating_sub(1);
+            if self.out.len() >= PIECE || self.rows_left == 0 {
+                self.sink.write_all(&self.out)?;
+                self.out.clear();
+            }
+            if self.rows_left == 0 {
+                self.sink.flush()?;
+            }
+            return Ok(());
+        }
         match self.kind {
             Kind::Pam => self.out.extend_from_slice(pixels),
             Kind::Ppm => match self.color {

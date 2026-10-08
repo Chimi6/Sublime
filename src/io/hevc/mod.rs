@@ -11,11 +11,13 @@ mod filter;
 mod intra;
 mod params;
 mod residual;
+mod sample;
 mod tables;
 mod transform;
 
-pub use decode::Picture;
+pub use decode::{Picture, Workspace};
 pub use params::VuiColour;
+pub use sample::Samples;
 
 use std::collections::HashMap;
 
@@ -47,6 +49,15 @@ const PPS: u8 = 34;
 /// Decodes the first picture of a sequence of NAL units (each without a
 /// start code or length prefix).
 pub fn decode_picture<'a>(nals: impl IntoIterator<Item = &'a [u8]>) -> Result<Picture, HevcError> {
+    decode_picture_in(nals, &mut Workspace::default())
+}
+
+/// Decodes the first picture, its large buffers from `workspace` (one per
+/// thread decoding a grid's tiles).
+pub fn decode_picture_in<'a>(
+    nals: impl IntoIterator<Item = &'a [u8]>,
+    workspace: &mut Workspace,
+) -> Result<Picture, HevcError> {
     let mut sps_sets: HashMap<u32, Sps> = HashMap::new();
     let mut pps_sets: HashMap<u32, Pps> = HashMap::new();
     let mut decoder: Option<decode::Decoder> = None;
@@ -76,7 +87,7 @@ pub fn decode_picture<'a>(nals: impl IntoIterator<Item = &'a [u8]>) -> Result<Pi
                     break;
                 }
                 if decoder.is_none() {
-                    decoder = Some(decode::Decoder::new(sps, pps)?);
+                    decoder = Some(decode::Decoder::reusing(sps, pps, workspace)?);
                 }
                 let picture = decoder
                     .as_mut()
@@ -95,5 +106,5 @@ pub fn decode_picture<'a>(nals: impl IntoIterator<Item = &'a [u8]>) -> Result<Pi
             "a picture whose data ends before its last block",
         ));
     }
-    Ok(decoder.finish())
+    Ok(decoder.finish_into(workspace))
 }

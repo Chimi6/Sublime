@@ -13,7 +13,9 @@ pub struct Oriented<'a> {
     orientation: u16,
     width: usize,
     height: usize,
+    /// Bytes a pixel: channels, twice over for 16-bit rows.
     channels: usize,
+    deep: bool,
     pixels: Vec<u8>,
 }
 
@@ -29,6 +31,7 @@ impl<'a> Oriented<'a> {
             width: 0,
             height: 0,
             channels: 0,
+            deep: false,
             pixels: Vec::new(),
         }
     }
@@ -79,7 +82,7 @@ impl RowSink for Oriented<'_> {
     fn start(&mut self, width: u32, height: u32, color: ColorType) -> std::io::Result<()> {
         self.width = width as usize;
         self.height = height as usize;
-        self.channels = color.channels();
+        self.channels = color.channels() * if self.deep { 2 } else { 1 };
         if self.orientation != 1 {
             self.pixels = Vec::with_capacity(self.width * self.height * self.channels);
         }
@@ -115,6 +118,11 @@ impl RowSink for Oriented<'_> {
 
     fn exif(&mut self, exif: &[u8]) -> bool {
         self.sink.exif(exif)
+    }
+
+    fn accept_deep(&mut self, color: ColorType) -> bool {
+        self.deep = self.sink.accept_deep(color);
+        self.deep
     }
 }
 

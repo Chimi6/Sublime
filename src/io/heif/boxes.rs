@@ -207,13 +207,19 @@ impl<'a> Meta<'a> {
     }
 
     /// An item's bytes, from the file, `idat`, or other items.
-    pub fn data(&self, file: &'a [u8], item: &Item) -> Result<Vec<u8>, HeifError> {
+    /// An item's bytes: borrowed when they lie in one extent, joined
+    /// when in several.
+    pub fn data(
+        &self,
+        file: &'a [u8],
+        item: &Item,
+    ) -> Result<std::borrow::Cow<'a, [u8]>, HeifError> {
         let (method, base, extents) = item
             .location
             .as_ref()
             .ok_or_else(|| HeifError::new("an item without a location"))?;
         let mut bytes = Vec::new();
-        for &(offset, length) in extents {
+        for (index, &(offset, length)) in extents.iter().enumerate() {
             let source: &[u8] = match method {
                 0 => file,
                 1 => self.item_data,
@@ -228,13 +234,15 @@ impl<'a> Meta<'a> {
                     .checked_add(length as usize)
                     .ok_or_else(|| HeifError::new("an item past the file"))?
             };
-            bytes.extend_from_slice(
-                source
-                    .get(start..end)
-                    .ok_or_else(|| HeifError::new("an item past the file's end"))?,
-            );
+            let part = source
+                .get(start..end)
+                .ok_or_else(|| HeifError::new("an item past the file's end"))?;
+            if extents.len() == 1 && index == 0 {
+                return Ok(std::borrow::Cow::Borrowed(part));
+            }
+            bytes.extend_from_slice(part);
         }
-        Ok(bytes)
+        Ok(std::borrow::Cow::Owned(bytes))
     }
 }
 

@@ -235,3 +235,48 @@ fn exif_is_carried_with_its_orientation_reset() {
     let exif = &png[at + 4..at + 4 + length];
     assert_eq!(sublime::io::orient::exif_orientation(exif), Some(1));
 }
+
+#[test]
+fn ycbcr_rows_encode_as_they_come() {
+    use sublime::io::png::RowSink;
+    // A 37 by 21 gradient (odd sizes, partial blocks) with neutral chroma
+    // on the left half and blue-ish on the right.
+    let (width, height) = (37usize, 21usize);
+    let mut jpeg = Vec::new();
+    {
+        let mut rows = sublime::io::jpeg::JpegRows::new(&mut jpeg, 95);
+        assert!(rows.accept_ycbcr());
+        rows.start(width as u32, height as u32, ColorType::Rgb)
+            .expect("start");
+        let chroma_width = width.div_ceil(2);
+        let blue: Vec<u8> = (0..chroma_width)
+            .map(|x| if x < chroma_width / 2 { 128 } else { 180 })
+            .collect();
+        let red = vec![128u8; chroma_width];
+        for y in 0..height {
+            let luma: Vec<u8> = (0..width).map(|x| (x * 3 + y * 2) as u8).collect();
+            let chroma = (y % 2 == 0).then_some((&blue[..], &red[..]));
+            rows.ycbcr_row(&luma, chroma).expect("row");
+        }
+    }
+    let (image, _) = read_jpeg(&jpeg).expect("decodes");
+    assert_eq!(
+        (image.width as usize, image.height as usize),
+        (width, height)
+    );
+    // Neutral chroma decodes gray at the luma; blue-ish chroma raises blue.
+    for y in 0..height {
+        let at = |x: usize| &image.pixels[(y * width + x) * 3..(y * width + x) * 3 + 3];
+        let left = at(2);
+        let expected = (2 * 3 + y * 2) as i32;
+        assert!(
+            left.iter().all(|&v| (i32::from(v) - expected).abs() <= 3),
+            "row {y}: {left:?}"
+        );
+        let right = at(width - 2);
+        assert!(
+            i32::from(right[2]) > i32::from(right[0]) + 40,
+            "row {y}: {right:?}"
+        );
+    }
+}

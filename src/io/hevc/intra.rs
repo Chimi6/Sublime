@@ -5,52 +5,48 @@
 /// `top[x]` p[x][-1] and `left[y]` p[-1][y] for 0 to 2n - 1.
 pub struct References {
     pub corner: i32,
-    pub top: Vec<i32>,
-    pub left: Vec<i32>,
+    pub top: [i32; 64],
+    pub left: [i32; 64],
 }
 
+/// The most reference samples a block has: 2n left, the corner, 2n top.
+pub const LINE: usize = 4 * 32 + 1;
+
 impl References {
-    /// Fills unavailable samples (8.4.4.2.2): from the bottom of the left
-    /// column up, round the corner, and along the top, each takes the last
-    /// available one before it; with none available, the mid-level.
-    pub fn substitute(
-        n: usize,
-        bit_depth: u32,
-        sample: impl Fn(Side, usize) -> Option<i32>,
-    ) -> References {
-        // In the order of 8.4.4.2.2: left bottom to top, corner, top left to right.
+    /// Fills unavailable samples (8.4.4.2.2). `line` holds the samples in
+    /// that clause's order (the left column from the bottom up, the
+    /// corner, the top row left to right) and `known` which are
+    /// available; each missing one takes the last available one before
+    /// it, the first from the first available; with none, the mid-level.
+    pub fn substitute(n: usize, bit_depth: u32, line: &mut [i32], known: &[bool]) -> References {
         let total = 4 * n + 1;
-        let mut values: Vec<Option<i32>> = Vec::with_capacity(total);
-        for y in (0..2 * n).rev() {
-            values.push(sample(Side::Left, y));
-        }
-        values.push(sample(Side::Corner, 0));
-        for x in 0..2 * n {
-            values.push(sample(Side::Top, x));
-        }
-        let first = values.iter().flatten().next().copied();
-        let filled: Vec<i32> = match first {
-            None => vec![1 << (bit_depth - 1); total],
+        let (line, known) = (&mut line[..total], &known[..total]);
+        match known.iter().position(|&flag| flag) {
+            None => line.fill(1 << (bit_depth - 1)),
             Some(first) => {
-                let mut last = first;
-                values
-                    .into_iter()
-                    .map(|value| {
-                        if let Some(value) = value {
-                            last = value;
-                        }
-                        last
-                    })
-                    .collect()
+                let mut last = line[first];
+                for (value, &flag) in line.iter_mut().zip(known) {
+                    if flag {
+                        last = *value;
+                    } else {
+                        *value = last;
+                    }
+                }
             }
-        };
-        let mut left: Vec<i32> = filled[..2 * n].to_vec();
-        left.reverse();
-        References {
-            corner: filled[2 * n],
-            top: filled[2 * n + 1..].to_vec(),
-            left,
         }
+        let mut references = References {
+            corner: line[2 * n],
+            top: [0; 64],
+            left: [0; 64],
+        };
+        references.top[..2 * n].copy_from_slice(&line[2 * n + 1..]);
+        for (value, &sample) in references.left[..2 * n]
+            .iter_mut()
+            .zip(line[..2 * n].iter().rev())
+        {
+            *value = sample;
+        }
+        references
     }
 
     /// The filtering of 8.4.4.2.3: [1 2 1], or for 32x32 luma with strong
@@ -72,37 +68,20 @@ impl References {
             }
             return;
         }
-        let corner = (self.left[0] + 2 * self.corner + self.top[0] + 2) >> 2;
-        let smooth = |line: &[i32], corner_value: i32| -> Vec<i32> {
-            (0..=last)
-                .map(|index| {
-                    if index == last {
-                        line[index]
-                    } else {
-                        let before = if index == 0 {
-                            corner_value
-                        } else {
-                            line[index - 1]
-                        };
-                        (before + 2 * line[index] + line[index + 1] + 2) >> 2
-                    }
-                })
-                .collect()
+        let corner = self.corner;
+        let smooth = |line: &mut [i32; 64]| {
+            let mut before = corner;
+            for index in 0..last {
+                let here = line[index];
+                line[index] = (before + 2 * here + line[index + 1] + 2) >> 2;
+                before = here;
+            }
         };
-        let top = smooth(&self.top, self.corner);
-        let left = smooth(&self.left, self.corner);
-        self.top = top;
-        self.left = left;
-        self.corner = corner;
+        let new_corner = (self.left[0] + 2 * corner + self.top[0] + 2) >> 2;
+        smooth(&mut self.top);
+        smooth(&mut self.left);
+        self.corner = new_corner;
     }
-}
-
-/// Where a reference sample lies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Side {
-    Left,
-    Corner,
-    Top,
 }
 
 /// Whether the references of a block are filtered (8.4.4.2.3).
@@ -180,7 +159,7 @@ pub fn predict(
             } else {
                 (&references.left, &references.top)
             };
-            let mut line = vec![0i32; 3 * n + 1];
+            let mut line = [0i32; 3 * 32 + 1];
             let origin = n;
             line[origin] = references.corner;
             for index in 0..2 * n {
@@ -196,21 +175,28 @@ pub fn predict(
                     }
                 }
             }
+            // Vertical modes run i across and j down: each j is a row of
+            // `out`. Horizontal ones are worked the same way into rows and
+            // turned after.
             for j in 0..n {
                 let position = (j as i32 + 1) * angle;
                 let offset = position >> 5;
                 let fraction = position & 31;
-                for i in 0..n {
-                    let base = (origin as i32 + i as i32 + offset + 1) as usize;
-                    let value = if fraction != 0 {
-                        ((32 - fraction) * line[base] + fraction * line[base + 1] + 16) >> 5
-                    } else {
-                        line[base]
-                    };
-                    // Vertical modes run i across and j down; horizontal ones
-                    // the other way.
-                    let (x, y) = if vertical { (i, j) } else { (j, i) };
-                    out[y * n + x] = value;
+                let start = (origin as i32 + offset + 1) as usize;
+                let row = &mut out[j * n..(j + 1) * n];
+                if fraction == 0 {
+                    row.copy_from_slice(&line[start..start + n]);
+                } else {
+                    for (value, pair) in row.iter_mut().zip(line[start..start + n + 1].windows(2)) {
+                        *value = ((32 - fraction) * pair[0] + fraction * pair[1] + 16) >> 5;
+                    }
+                }
+            }
+            if !vertical {
+                for y in 0..n {
+                    for x in y + 1..n {
+                        out.swap(y * n + x, x * n + y);
+                    }
                 }
             }
             if edge_filters && n < 32 {
@@ -235,11 +221,11 @@ pub fn predict(
 mod tests {
     use super::*;
 
-    fn flat(n: usize, value: i32) -> References {
+    fn flat(_n: usize, value: i32) -> References {
         References {
             corner: value,
-            top: vec![value; 2 * n],
-            left: vec![value; 2 * n],
+            top: [value; 64],
+            left: [value; 64],
         }
     }
 
@@ -257,14 +243,17 @@ mod tests {
     #[test]
     fn missing_references_take_their_neighbours() {
         // Only the top row available: the left column and corner take top[0].
-        let references = References::substitute(4, 8, |side, index| match side {
-            Side::Top => Some(index as i32 + 10),
-            _ => None,
-        });
+        let mut line = [0i32; LINE];
+        let mut known = [false; LINE];
+        for x in 0..8 {
+            line[9 + x] = x as i32 + 10;
+            known[9 + x] = true;
+        }
+        let references = References::substitute(4, 8, &mut line, &known);
         assert_eq!(references.corner, 10);
-        assert!(references.left.iter().all(|&value| value == 10));
+        assert!(references.left[..8].iter().all(|&value| value == 10));
         assert_eq!(references.top[7], 17);
-        let none = References::substitute(4, 10, |_, _| None);
+        let none = References::substitute(4, 10, &mut [0; LINE], &[false; LINE]);
         assert_eq!(none.corner, 512);
     }
 }

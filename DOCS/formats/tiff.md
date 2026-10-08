@@ -9,7 +9,8 @@ the image hub and writes TIFF from it (`src/io/tiff.rs`).
 
 - `tiff` (`.tif`, `.tiff`) to and from every image format: shipped.
   Reading takes the first page (reporting the others as dropped),
-  scales 16-bit samples to 8, converts CMYK to RGB without a profile,
+  keeps 16-bit gray and RGB at 16 bits into PNG, TIFF, and Netpbm (and
+  scales them to 8 elsewhere), converts CMYK to RGB without a profile,
   and drops metadata (resolution, EXIF, ICC, XMP). Writing is lossless.
 
 Oracles (`tests/tiff_suite.rs`, fixtures in `tests/fixtures/tiff`
@@ -26,7 +27,7 @@ pixels; all 6 corrupt and unsupported files are refused.
 | Layout | strips and tiles; chunky and planar (8 and 16-bit) |
 | Compression | none, LZW (libtiff's form, codes growing one early), deflate (both tag values), PackBits |
 | Predictor | horizontal differencing at 8 and 16 bits |
-| Samples | 1, 2, 4, 8, and 16 bits unsigned; 16 is scaled to 8 by its high byte, as for PNG |
+| Samples | 1, 2, 4, 8, and 16 bits unsigned; 16-bit gray and RGB go on whole to a 16-bit writer, else by their high byte, as for PNG; associated alpha is divided out at 16 bits too |
 | Color | min-is-white and min-is-black gray, palette (the color map's high bytes), RGB, CMYK (as Pillow converts it), with unassociated or associated (premultiplied, divided out) alpha |
 
 The file is held (its strips may lie anywhere in it); a band of rows,

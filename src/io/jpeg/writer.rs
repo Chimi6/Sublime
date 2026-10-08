@@ -203,6 +203,8 @@ pub struct JpegRows<'a> {
     height: usize,
     color: ColorType,
     subsampled: bool,
+    /// Rows arrive as YCbCr 4:2:0 planes (`ycbcr_row`), not RGB.
+    planar: bool,
     band_rows: usize,
     /// Rows of the band in hand, as Y, Cb, Cr (or Y alone) samples,
     /// each row the image width rounded up to the MCU.
@@ -233,6 +235,7 @@ impl<'a> JpegRows<'a> {
             height: 0,
             color: ColorType::Rgb,
             subsampled: false,
+            planar: false,
             band_rows: 8,
             band: Vec::new(),
             rows_in_band: 0,
@@ -446,10 +449,16 @@ impl<'a> JpegRows<'a> {
     fn encode_band(&mut self) -> io::Result<()> {
         // Pad the bottom by replicating the last row taken.
         let rows = self.band_rows;
-        for plane in self.band.iter_mut() {
+        for (index, plane) in self.band.iter_mut().enumerate() {
+            // Planar chroma holds half the band's rows.
+            let (rows, taken) = if self.planar && index > 0 {
+                (rows / 2, self.rows_in_band.div_ceil(2))
+            } else {
+                (rows, self.rows_in_band)
+            };
             let stride = plane.len() / rows;
-            let last = self.rows_in_band - 1;
-            for y in self.rows_in_band..rows {
+            let last = taken - 1;
+            for y in taken..rows {
                 let (before, after) = plane.split_at_mut(y * stride);
                 after[..stride].copy_from_slice(&before[last * stride..(last + 1) * stride]);
             }
@@ -488,7 +497,21 @@ impl<'a> JpegRows<'a> {
             if !self.gray() {
                 let x0 = mcu_x * mcu;
                 let mut chroma = [[0i32; 64]; 2];
-                if self.subsampled {
+                if self.planar {
+                    let half = self.padded_width / 2;
+                    for (component, samples) in chroma.iter_mut().enumerate() {
+                        let plane = &self.band[component + 1];
+                        for row in 0..8 {
+                            let start = row * half + x0 / 2;
+                            for (sample, byte) in samples[row * 8..row * 8 + 8]
+                                .iter_mut()
+                                .zip(&plane[start..start + 8])
+                            {
+                                *sample = i32::from(*byte) - 128;
+                            }
+                        }
+                    }
+                } else if self.subsampled {
                     // Each chroma sample from the sum of a 2x2 block's RGB:
                     // the conversion is linear, so this is the average of
                     // the four pixels' chroma, rounded once.
@@ -778,12 +801,20 @@ impl RowSink for JpegRows<'_> {
         self.width = width as usize;
         self.height = height as usize;
         self.color = color;
-        self.subsampled = !self.gray() && self.quality < 90;
+        // A 4:2:0 source has no more chroma than 4:2:0 keeps.
+        self.subsampled = self.planar || (!self.gray() && self.quality < 90);
         self.band_rows = if self.subsampled { 16 } else { 8 };
         let mcu = self.band_rows;
         self.padded_width = self.width.div_ceil(mcu) * mcu;
         let planes = if self.gray() { 1 } else { 3 };
-        self.band = if self.subsampled {
+        self.band = if self.planar {
+            let chroma = self.band_rows / 2 * self.padded_width / 2;
+            vec![
+                vec![0u8; self.band_rows * self.padded_width],
+                vec![0u8; chroma],
+                vec![0u8; chroma],
+            ]
+        } else if self.subsampled {
             // Luma at full resolution, and the band's RGB rows: chroma is
             // computed per 2x2 block from the summed RGB when the band is
             // encoded, a quarter of the chroma arithmetic of converting
@@ -804,6 +835,49 @@ impl RowSink for JpegRows<'_> {
         self.headers()?;
         self.bits = BitWriter::new();
         self.started = true;
+        Ok(())
+    }
+
+    fn accept_ycbcr(&mut self) -> bool {
+        self.planar = true;
+        true
+    }
+
+    fn ycbcr_row(&mut self, luma: &[u8], chroma: Option<(&[u8], &[u8])>) -> io::Result<()> {
+        if !self.started || !self.planar {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a YCbCr row before start or without the offer",
+            ));
+        }
+        let (padded, width) = (self.padded_width, self.width);
+        let y_index = self.rows_in_band;
+        // Each row padded on the right by replication, as libjpeg does.
+        let target = &mut self.band[0][y_index * padded..(y_index + 1) * padded];
+        target[..width].copy_from_slice(&luma[..width]);
+        let last = target[width - 1];
+        target[width..].fill(last);
+        if let Some((blue, red)) = chroma {
+            let (half, chroma_width) = (padded / 2, width.div_ceil(2));
+            let row = y_index / 2;
+            for (plane, source) in [(1, blue), (2, red)] {
+                let target = &mut self.band[plane][row * half..(row + 1) * half];
+                target[..chroma_width].copy_from_slice(&source[..chroma_width]);
+                let last = target[chroma_width - 1];
+                target[chroma_width..].fill(last);
+            }
+        }
+        self.rows_in_band += 1;
+        self.rows_taken += 1;
+        if self.rows_in_band == self.band_rows || self.rows_taken == self.height {
+            self.encode_band()?;
+        }
+        if self.rows_taken == self.height {
+            let mut bits = std::mem::replace(&mut self.bits, BitWriter::new());
+            bits.finish(self.sink)?;
+            self.sink.write_all(&[0xFF, 0xD9])?;
+            self.sink.flush()?;
+        }
         Ok(())
     }
 

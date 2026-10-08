@@ -121,6 +121,8 @@ pub struct PngRows<'a> {
     stream: Option<FilteredZlib>,
     icc_profile: Option<Vec<u8>>,
     exif: Option<Vec<u8>>,
+    /// Rows of 16-bit samples, as a deep reader hands them.
+    deep: bool,
 }
 
 impl<'a> PngRows<'a> {
@@ -131,6 +133,7 @@ impl<'a> PngRows<'a> {
             stream: None,
             icc_profile: None,
             exif: None,
+            deep: false,
         }
     }
 
@@ -154,12 +157,17 @@ impl RowSink for PngRows<'_> {
         true
     }
 
+    fn accept_deep(&mut self, _color: ColorType) -> bool {
+        self.deep = true;
+        true
+    }
+
     fn start(&mut self, width: u32, height: u32, color: ColorType) -> io::Result<()> {
         self.sink.write_all(&SIGNATURE)?;
         let mut header = Vec::with_capacity(13);
         header.extend_from_slice(&width.to_be_bytes());
         header.extend_from_slice(&height.to_be_bytes());
-        header.push(8);
+        header.push(if self.deep { 16 } else { 8 });
         header.push(match color {
             ColorType::Gray => 0,
             ColorType::GrayAlpha => 4,
@@ -179,8 +187,9 @@ impl RowSink for PngRows<'_> {
         if let Some(exif) = self.exif.take() {
             write_chunk(self.sink, b"eXIf", &exif)?;
         }
-        let stride = width as usize * color.channels();
-        self.stream = Some(FilteredZlib::new(stride, color.channels()));
+        let bytes = if self.deep { 2 } else { 1 };
+        let stride = width as usize * color.channels() * bytes;
+        self.stream = Some(FilteredZlib::new(stride, color.channels() * bytes));
         self.rows_left = height;
         if height == 0 {
             self.finish()?;

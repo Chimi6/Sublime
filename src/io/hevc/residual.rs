@@ -59,8 +59,15 @@ const SIG_CTX_PATTERN: [[u8; 16]; 4] = {
     tables
 };
 
-/// Reads a block's levels into `levels` (row-major); true when it is
-/// coded with transform skip.
+/// What a block's coding said beyond its levels.
+pub struct Coded {
+    pub transform_skip: bool,
+    /// The rows and columns that hold every nonzero level.
+    pub rows: usize,
+    pub columns: usize,
+}
+
+/// Reads a block's levels into `levels` (row-major, zero beforehand).
 #[allow(clippy::too_many_arguments)]
 pub fn residual_coding(
     decoder: &Decoder,
@@ -71,7 +78,7 @@ pub fn residual_coding(
     log2: u32,
     mode: u32,
     levels: &mut [i32],
-) -> Result<bool, HevcError> {
+) -> Result<Coded, HevcError> {
     let sps = &decoder.sps;
     let pps = &decoder.pps;
     let n = 1usize << log2;
@@ -141,6 +148,7 @@ pub fn residual_coding(
         && !(sps.implicit_rdpcm && transform_skip && (mode == 10 || mode == 26));
     let skip_context = sps.transform_skip_context && (transform_skip || bypass);
     let mut greater1_ctx = 1u32;
+    let (mut rows, mut columns) = (0usize, 0usize);
     let stat_index = 2 * usize::from(luma) + usize::from(transform_skip || bypass);
     for sub in (0..=last_sub).rev() {
         let (sx, sy) = (usize::from(sub_scan[sub].0), usize::from(sub_scan[sub].1));
@@ -156,141 +164,117 @@ pub fn residual_coding(
             coded_sub[sy * subs + sx] = true;
         }
         let pattern = usize::from(right) + 2 * usize::from(below);
-        // Significance (9.3.4.2.5).
-        let mut significant = [false; 16];
+        // Significance (9.3.4.2.5): the significant positions, highest
+        // scan position first, as every later pass walks them.
+        let mut found = [0u8; 16];
+        let mut count = 0usize;
         if sub == last_sub {
-            significant[last_position] = true;
+            found[0] = last_position as u8;
+            count = 1;
         }
         let start = if sub == last_sub {
             last_position as isize - 1
         } else {
             15
         };
-        // Each scan position's context, for this sub-block.
-        let mut contexts_here = [0usize; 16];
-        let chroma_base = if luma { 0 } else { 27 };
-        if skip_context {
-            contexts_here = [chroma_base + if luma { 42 } else { 16 }; 16];
-        } else if log2 == 2 {
-            for (p, context) in contexts_here.iter_mut().enumerate() {
-                let (px, py) = position_scan[p];
-                *context =
-                    chroma_base + usize::from(SIG_CTX_4X4[usize::from(py) * 4 + usize::from(px)]);
-            }
-        } else {
-            let offset = chroma_base
-                + if luma {
-                    (if sx > 0 || sy > 0 { 3 } else { 0 })
-                        + if log2 == 3 {
-                            if kind == Scan::Diagonal { 9 } else { 15 }
-                        } else {
-                            21
-                        }
-                } else if log2 == 3 {
-                    9
-                } else {
-                    12
-                };
-            let table = &SIG_CTX_PATTERN[pattern];
-            for (p, context) in contexts_here.iter_mut().enumerate() {
-                let (px, py) = position_scan[p];
-                *context = offset + usize::from(table[usize::from(py) * 4 + usize::from(px)]);
-            }
-            if sub == 0 {
-                // The block's DC.
-                contexts_here[0] = chroma_base;
-            }
-        }
         let coded_here = coded_sub[sy * subs + sx];
-        let mut position = start;
-        while position >= 0 {
-            let p = position as usize;
-            if coded_here && (p > 0 || !infer_dc) {
-                significant[p] = cabac
-                    .decision(&mut contexts.contexts[cabac::SIG_COEFF + contexts_here[p]])
-                    == 1;
-                if significant[p] {
-                    infer_dc = false;
-                }
-            } else if p == 0 && infer_dc && coded_here {
-                significant[0] = true;
-            }
-            position -= 1;
-        }
-        // Greater-than-one and -two flags (9.3.4.2.6, 9.3.4.2.7).
-        let mut greater1 = [false; 16];
-        let mut greater2 = [false; 16];
-        let mut first_sig: Option<usize> = None;
-        let mut last_sig: Option<usize> = None;
-        let mut greater1_count = 0;
-        let mut last_greater1: Option<usize> = None;
-        let mut escape = false;
-        let any = significant.iter().any(|&flag| flag);
-        let mut ctx_set = if sub == 0 || !luma { 0 } else { 2 };
-        if any {
-            if sub != last_sub && greater1_ctx == 0 {
-                ctx_set += 1;
-            }
-            greater1_ctx = 1;
-        }
-        for p in (0..16).rev() {
-            if !significant[p] {
-                continue;
-            }
-            if greater1_count < 8 {
-                let increment =
-                    ctx_set * 4 + greater1_ctx.min(3) as usize + if luma { 0 } else { 16 };
-                greater1[p] =
-                    cabac.decision(&mut contexts.contexts[cabac::GREATER1 + increment]) == 1;
-                greater1_count += 1;
-                if greater1[p] {
-                    greater1_ctx = 0;
-                    if last_greater1.is_none() {
-                        last_greater1 = Some(p);
-                    }
-                } else if greater1_ctx > 0 {
-                    greater1_ctx += 1;
-                }
-                if greater1[p] && last_greater1 != Some(p) {
-                    escape = true;
+        if coded_here && start >= 0 {
+            // Each scan position's context, for this sub-block.
+            let mut contexts_here = [0usize; 16];
+            let chroma_base = if luma { 0 } else { 27 };
+            if skip_context {
+                contexts_here = [chroma_base + if luma { 42 } else { 16 }; 16];
+            } else if log2 == 2 {
+                for (p, context) in contexts_here.iter_mut().enumerate() {
+                    let (px, py) = position_scan[p];
+                    *context = chroma_base
+                        + usize::from(SIG_CTX_4X4[usize::from(py) * 4 + usize::from(px)]);
                 }
             } else {
-                escape = true;
+                let offset = chroma_base
+                    + if luma {
+                        (if sx > 0 || sy > 0 { 3 } else { 0 })
+                            + if log2 == 3 {
+                                if kind == Scan::Diagonal { 9 } else { 15 }
+                            } else {
+                                21
+                            }
+                    } else if log2 == 3 {
+                        9
+                    } else {
+                        12
+                    };
+                let table = &SIG_CTX_PATTERN[pattern];
+                for (p, context) in contexts_here.iter_mut().enumerate() {
+                    let (px, py) = position_scan[p];
+                    *context = offset + usize::from(table[usize::from(py) * 4 + usize::from(px)]);
+                }
+                if sub == 0 {
+                    // The block's DC.
+                    contexts_here[0] = chroma_base;
+                }
             }
-            if last_sig.is_none() {
-                last_sig = Some(p);
+            for p in (1..=start as usize).rev() {
+                if cabac.decision(&mut contexts.contexts[cabac::SIG_COEFF + contexts_here[p]]) == 1
+                {
+                    found[count] = p as u8;
+                    count += 1;
+                    infer_dc = false;
+                }
             }
-            first_sig = Some(p);
+            // The DC position: coded, or inferred when nothing after it was.
+            if infer_dc
+                || cabac.decision(&mut contexts.contexts[cabac::SIG_COEFF + contexts_here[0]]) == 1
+            {
+                found[count] = 0;
+                count += 1;
+            }
         }
-        let Some(first_sig) = first_sig else {
+        if count == 0 {
             continue;
-        };
-        let last_sig = last_sig.unwrap_or(first_sig);
-        let sign_hidden = sign_hiding_allowed && last_sig - first_sig > 3;
-        if let Some(position) = last_greater1 {
+        }
+        let found = &found[..count];
+        // Greater-than-one and -two flags (9.3.4.2.6, 9.3.4.2.7) for the
+        // first eight; each level starts at 1, 2, or 3.
+        let mut ctx_set = if sub == 0 || !luma { 0 } else { 2 };
+        if sub != last_sub && greater1_ctx == 0 {
+            ctx_set += 1;
+        }
+        greater1_ctx = 1;
+        let greater1_base = cabac::GREATER1 + ctx_set * 4 + if luma { 0 } else { 16 };
+        let mut base = [1i32; 16];
+        let mut first_greater1: Option<usize> = None;
+        let mut escape = count > 8;
+        for (index, value) in base.iter_mut().enumerate().take(count.min(8)) {
+            let increment = greater1_ctx.min(3) as usize;
+            if cabac.decision(&mut contexts.contexts[greater1_base + increment]) == 1 {
+                *value = 2;
+                greater1_ctx = 0;
+                if first_greater1.is_none() {
+                    first_greater1 = Some(index);
+                } else {
+                    escape = true;
+                }
+            } else if greater1_ctx > 0 {
+                greater1_ctx += 1;
+            }
+        }
+        if let Some(index) = first_greater1 {
             let increment = ctx_set + if luma { 0 } else { 4 };
-            greater2[position] =
-                cabac.decision(&mut contexts.contexts[cabac::GREATER2 + increment]) == 1;
-            if greater2[position] {
+            if cabac.decision(&mut contexts.contexts[cabac::GREATER2 + increment]) == 1 {
+                base[index] = 3;
                 escape = true;
             }
         }
         if sps.cabac_bypass_alignment && escape {
             cabac.align_bypass();
         }
-        // The signs, as one run of bypass bins, first coefficient first.
-        let mut negative = [false; 16];
-        let signed: u32 = (0..16)
-            .filter(|&p| significant[p] && (!sign_hidden || p != first_sig))
-            .count() as u32;
+        // The signs, as one run of bypass bins, first coefficient first;
+        // with sign hiding the lowest position's sign is not sent.
+        let (first_sig, last_sig) = (usize::from(found[count - 1]), usize::from(found[0]));
+        let sign_hidden = sign_hiding_allowed && last_sig - first_sig > 3;
+        let signed = (count - usize::from(sign_hidden)) as u32;
         let signs = cabac.bypass_bits(signed);
-        let mut remaining_signs = signed;
-        for p in (0..16).rev() {
-            if significant[p] && (!sign_hidden || p != first_sig) {
-                remaining_signs -= 1;
-                negative[p] = (signs >> remaining_signs) & 1 == 1;
-            }
-        }
         // Remaining levels (9.3.3.11), the Rice parameter adapting.
         let mut rice = if sps.persistent_rice_adaptation {
             u32::from(contexts.stat_coeff[stat_index]) / 4
@@ -298,15 +282,12 @@ pub fn residual_coding(
             0
         };
         let mut first_remaining = true;
-        let mut sig_count = 0;
-        let mut sum = 0i64;
-        for p in (0..16).rev() {
-            if !significant[p] {
-                continue;
-            }
-            let base = 1 + i32::from(greater1[p]) + i32::from(greater2[p]);
-            let threshold = if sig_count < 8 {
-                if Some(p) == last_greater1 { 3 } else { 2 }
+        let mut sum = 0i32;
+        let origin = (sy << 2) * n + (sx << 2);
+        for (index, &p) in found.iter().enumerate() {
+            let base = base[index];
+            let threshold = if index < 8 {
+                if Some(index) == first_greater1 { 3 } else { 2 }
             } else {
                 1
             };
@@ -327,26 +308,27 @@ pub fn residual_coding(
                     rice = (rice + 1).min(4);
                 }
             }
-            sig_count += 1;
-            let (px, py) = (
-                usize::from(position_scan[p].0),
-                usize::from(position_scan[p].1),
-            );
-            let x = (sx << 2) + px;
-            let y = (sy << 2) + py;
-            sum += i64::from(level);
-            levels[y * n + x] = if negative[p] { -level } else { level };
+            sum = sum.wrapping_add(level);
+            let negative =
+                (index as u32) < signed && (signs >> (signed - 1 - index as u32)) & 1 == 1;
+            let (px, py) = position_scan[usize::from(p)];
+            let (x, y) = ((sx << 2) + usize::from(px), (sy << 2) + usize::from(py));
+            rows = rows.max(y + 1);
+            columns = columns.max(x + 1);
+            levels[origin + usize::from(py) * n + usize::from(px)] =
+                if negative { -level } else { level };
         }
-        if sign_hidden && sum % 2 == 1 {
-            let (px, py) = (
-                usize::from(position_scan[first_sig].0),
-                usize::from(position_scan[first_sig].1),
-            );
-            let at = ((sy << 2) + py) * n + (sx << 2) + px;
+        if sign_hidden && sum & 1 == 1 {
+            let (px, py) = position_scan[first_sig];
+            let at = origin + usize::from(py) * n + usize::from(px);
             levels[at] = -levels[at];
         }
     }
-    Ok(transform_skip)
+    Ok(Coded {
+        transform_skip,
+        rows,
+        columns,
+    })
 }
 
 /// `coeff_abs_level_remaining`: a unary prefix, then the Rice part or,

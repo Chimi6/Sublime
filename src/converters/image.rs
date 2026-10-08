@@ -279,7 +279,7 @@ fn report_jpeg_notes(notes: JpegNotes, context: &mut Context<'_>) {
 }
 
 fn report_netpbm_notes(notes: NetpbmNotes, name: &'static str, context: &mut Context<'_>) {
-    if notes.maxval > 255 {
+    if notes.maxval > 255 && !notes.deep {
         context.loss(
             name,
             Location::default(),
@@ -446,7 +446,7 @@ static CODECS: [Codec; 15] = [
         format: &formats::PNG,
         kind: ImageFormat::Png,
         read: Some(Fidelity::Conditional(
-            "16-bit samples become 8-bit, and metadata (gamma, color profile, text) is dropped",
+            "16-bit samples stay 16-bit into PNG, TIFF, and Netpbm and become 8-bit elsewhere (and from interlaced files); metadata (gamma, color profile, text) is dropped",
         )),
         write: Some(Fidelity::Lossless),
     },
@@ -518,7 +518,7 @@ static CODECS: [Codec; 15] = [
         format: &formats::TIFF,
         kind: ImageFormat::Tiff,
         read: Some(Fidelity::Conditional(
-            "the first page is read; 16-bit samples become 8-bit, CMYK becomes RGB, and metadata (resolution, EXIF, ICC, XMP) is dropped",
+            "the first page is read; 16-bit gray and RGB stay 16-bit into PNG, TIFF, and Netpbm and become 8-bit elsewhere; CMYK becomes RGB, and metadata (resolution, EXIF, ICC, XMP) is dropped",
         )),
         write: Some(Fidelity::Lossless),
     },
@@ -544,7 +544,7 @@ static CODECS: [Codec; 15] = [
         format: &formats::HEIC,
         kind: ImageFormat::Heic,
         read: Some(Fidelity::Conditional(
-            "the primary image is read with its crop, rotation, mirroring, and alpha applied; deeper samples (10-bit) become 8-bit; the color profile and Exif are carried into PNG and JPEG and dropped elsewhere",
+            "the primary image is read with its crop, rotation, mirroring, and alpha applied; 10-bit samples become 16-bit in PNG, TIFF, and Netpbm and 8-bit elsewhere; the color profile and Exif are carried into PNG and JPEG and dropped elsewhere",
         )),
         write: None,
     },
@@ -558,7 +558,7 @@ static CODECS: [Codec; 15] = [
     },
 ];
 
-const NETPBM_READ: &str = "samples wider than 8 bits (maxval over 255) are scaled to 8 bits";
+const NETPBM_READ: &str = "samples wider than 8 bits (maxval over 255) are scaled to 16 bits into PNG, TIFF, and Netpbm and to 8 bits elsewhere";
 
 /// The worse of two fidelities, carrying both texts when both lose.
 fn combine(read: &Fidelity, write: &Fidelity) -> Fidelity {

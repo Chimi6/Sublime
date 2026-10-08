@@ -4,8 +4,9 @@
 
 use super::HevcError;
 use super::cabac::{self, Cabac, Contexts};
-use super::intra::{self, References, Side};
+use super::intra::{self, References};
 use super::params::{Pps, ScalingFactors, SliceHeader, Sps};
+use super::sample::{Sample, Samples, with_samples};
 use super::transform::{self, LEVEL_SCALE};
 
 /// A decoded picture: its planes at their own bit depth, before the
@@ -18,7 +19,7 @@ pub struct Picture {
     pub bit_depth_luma: u32,
     pub bit_depth_chroma: u32,
     /// Luma, then Cb and Cr (absent for monochrome), row-major.
-    pub planes: Vec<Vec<u16>>,
+    pub planes: Vec<Samples>,
     /// Each plane's width and height.
     pub sizes: Vec<(usize, usize)>,
     /// The conformance window: left, right, top, bottom, in luma samples.
@@ -68,7 +69,7 @@ pub struct Decoder {
     pub sub_x: u32,
     pub sub_y: u32,
     pub chroma: u32,
-    pub planes: Vec<Vec<u16>>,
+    pub planes: Vec<Samples>,
     pub strides: Vec<usize>,
     pub units: Vec<Unit>,
     pub units_wide: usize,
@@ -98,7 +99,13 @@ pub struct Decoder {
 }
 
 impl Decoder {
-    pub fn new(sps: Sps, mut pps: Pps) -> Result<Decoder, HevcError> {
+    /// A decoder whose large buffers come from `workspace`, when it holds
+    /// some from a picture before.
+    pub fn reusing(
+        sps: Sps,
+        mut pps: Pps,
+        workspace: &mut Workspace,
+    ) -> Result<Decoder, HevcError> {
         let width = sps.width as usize;
         let height = sps.height as usize;
         // The size is a whole number of minimum coding blocks (7.4.3.2.1).
@@ -121,12 +128,19 @@ impl Decoder {
             2 => (1, 0),
             _ => (0, 0),
         };
-        let mut planes = vec![vec![0u16; width * height]];
+        // Every sample is predicted before it is read, so reused planes
+        // need no clearing.
+        let mut spare = std::mem::take(&mut workspace.planes).into_iter();
+        let mut plane = |depth: u32, count: usize| match spare.next() {
+            Some(samples) => samples.reused(depth, count),
+            None => Samples::new(depth, count),
+        };
+        let mut planes = vec![plane(sps.bit_depth_luma, width * height)];
         let mut strides = vec![width];
         if chroma != 0 {
             let (chroma_width, chroma_height) = (width >> sub_x, height >> sub_y);
-            planes.push(vec![0u16; chroma_width * chroma_height]);
-            planes.push(vec![0u16; chroma_width * chroma_height]);
+            planes.push(plane(sps.bit_depth_chroma, chroma_width * chroma_height));
+            planes.push(plane(sps.bit_depth_chroma, chroma_width * chroma_height));
             strides.push(chroma_width);
             strides.push(chroma_width);
         }
@@ -166,7 +180,9 @@ impl Decoder {
         let units_wide = width.div_ceil(4);
         let units_high = height.div_ceil(4);
         let unit_log2 = ctb_log2 - 2;
-        let mut zscan = vec![0u32; units_wide * units_high];
+        let mut zscan = std::mem::take(&mut workspace.zscan);
+        zscan.clear();
+        zscan.resize(units_wide * units_high, 0);
         for y in 0..units_high {
             for x in 0..units_wide {
                 let ctb_address = (y >> unit_log2) * width_ctbs + (x >> unit_log2);
@@ -195,7 +211,12 @@ impl Decoder {
             chroma,
             planes,
             strides,
-            units: vec![Unit::default(); units_wide * units_high],
+            units: {
+                let mut units = std::mem::take(&mut workspace.units);
+                units.clear();
+                units.resize(units_wide * units_high, Unit::default());
+                units
+            },
             units_wide,
             zscan,
             rs_to_ts,
@@ -843,12 +864,14 @@ impl Decoder {
                                depth: u32|
          -> Result<(), HevcError> {
             let stride = self.strides[plane];
-            for row in 0..h {
-                for column in 0..w {
-                    let value = reader.bits(pcm_depth)? << (depth - pcm_depth);
-                    self.planes[plane][(py + row) * stride + px + column] = value as u16;
+            with_samples!(&mut self.planes[plane], samples => {
+                for row in 0..h {
+                    for column in 0..w {
+                        let value = reader.bits(pcm_depth)? << (depth - pcm_depth);
+                        samples[(py + row) * stride + px + column] = Sample::of(value as i32);
+                    }
                 }
-            }
+            });
             Ok(())
         };
         let (bit_depth_luma, bit_depth_chroma) =
@@ -1178,58 +1201,54 @@ impl Decoder {
         let plane_width = self.width >> shift_x;
         let plane_height = self.height >> shift_y;
         let (luma_x, luma_y) = (x << shift_x, y << shift_y);
-        let available = |sx: isize, sy: isize| -> bool {
-            if sx < 0 || sy < 0 || sx as usize >= plane_width || sy as usize >= plane_height {
-                return false;
-            }
-            self.available(
-                luma_x,
-                luma_y,
-                (sx as usize as isize) << shift_x,
-                (sy as usize as isize) << shift_y,
-            )
+        // Availability holds for a whole 4x4 luma unit: one check a unit,
+        // its samples copied as a run (8.4.4.2.2's order: the left column
+        // bottom up, the corner, the top row).
+        let unit_x = 4 >> shift_x;
+        let unit_y = 4 >> shift_y;
+        let mut line = [0i32; intra::LINE];
+        let mut known = [false; intra::LINE];
+        let available = |sx: usize, sy: usize| -> bool {
+            sx < plane_width
+                && sy < plane_height
+                && self.available(
+                    luma_x,
+                    luma_y,
+                    (sx << shift_x) as isize,
+                    (sy << shift_y) as isize,
+                )
         };
-        let plane = &self.planes[component];
-        let sample = |sx: isize, sy: isize| -> Option<i32> {
-            if available(sx, sy) {
-                Some(i32::from(plane[sy as usize * stride + sx as usize]))
-            } else {
-                None
-            }
+        let gather = Gather {
+            x,
+            y,
+            n,
+            stride,
+            unit_x,
+            unit_y,
         };
-        let (bx, by) = (x as isize, y as isize);
-        let mut references = References::substitute(n, bit_depth, |side, index| match side {
-            Side::Left => sample(bx - 1, by + index as isize),
-            Side::Corner => sample(bx - 1, by - 1),
-            Side::Top => sample(bx + index as isize, by - 1),
+        with_samples!(&self.planes[component], samples => {
+            gather.run(samples, &available, &mut line, &mut known)
         });
+        let mut references = References::substitute(n, bit_depth, &mut line, &known);
         let filter_allowed = component == 0 || self.chroma == 3;
         if filter_allowed && !self.sps.intra_smoothing_disabled && intra::filters(mode, n) {
             let strong = component == 0 && self.sps.strong_intra_smoothing;
             references.filter(n, strong, bit_depth);
         }
-        let mut predicted = vec![0i32; n * n];
+        let mut predicted = [0i32; 32 * 32];
+        let predicted = &mut predicted[..n * n];
         let edge_filters = component == 0 && n < 32;
-        intra::predict(
-            &references,
-            mode,
-            n,
-            edge_filters,
-            bit_depth,
-            &mut predicted,
-        );
-        let plane = &mut self.planes[component];
-        for row in 0..n {
-            if y + row >= plane_height {
-                break;
-            }
-            for column in 0..n {
-                if x + column >= plane_width {
-                    break;
+        intra::predict(&references, mode, n, edge_filters, bit_depth, predicted);
+        // Coded blocks lie inside the picture: its size is whole minimum
+        // coding blocks, and no block crosses one.
+        with_samples!(&mut self.planes[component], samples => {
+            for (row, values) in predicted.chunks_exact(n).enumerate() {
+                let start = (y + row) * stride + x;
+                for (sample, &value) in samples[start..start + n].iter_mut().zip(values) {
+                    *sample = Sample::of(value);
                 }
-                plane[(y + row) * stride + x + column] = predicted[row * n + column] as u16;
             }
-        }
+        });
         Ok(())
     }
 
@@ -1254,8 +1273,8 @@ impl Decoder {
         buffer.resize(32 * 32, 0);
         let levels = &mut buffer[..n * n];
         levels.fill(0);
-        let transform_skip = coded
-            && super::residual::residual_coding(
+        let extent = if coded {
+            super::residual::residual_coding(
                 self,
                 cabac,
                 contexts,
@@ -1264,7 +1283,15 @@ impl Decoder {
                 log2,
                 mode,
                 levels,
-            )?;
+            )?
+        } else {
+            super::residual::Coded {
+                transform_skip: false,
+                rows: 0,
+                columns: 0,
+            }
+        };
+        let transform_skip = extent.transform_skip;
         let bit_depth = if component == 0 {
             self.sps.bit_depth_luma
         } else {
@@ -1296,22 +1323,33 @@ impl Decoder {
             let scale = LEVEL_SCALE[(qp % 6) as usize] << (qp / 6);
             let factors = self.scaling.as_ref().filter(|_| !(transform_skip && n > 4));
             let matrix = &factors.map(|factors| &factors.factors[log2 as usize - 2][component]);
-            for (index, level) in levels.iter_mut().enumerate() {
-                if *level == 0 {
-                    continue;
+            // Only the coded rows and columns hold levels.
+            let round = 1i64 << (shift - 1);
+            for row in 0..extent.rows {
+                let start = row * n;
+                for (column, level) in levels[start..start + extent.columns].iter_mut().enumerate()
+                {
+                    if *level == 0 {
+                        continue;
+                    }
+                    let m = matrix.map_or(16, |matrix| i64::from(matrix[start + column]));
+                    let scaled = (i64::from(*level) * m * i64::from(scale) + round) >> shift;
+                    *level = scaled.clamp(-32768, 32767) as i32;
                 }
-                let m = matrix.map_or(16, |matrix| i32::from(matrix[index]));
-                let scaled = (i64::from(*level) * i64::from(m) * i64::from(scale)
-                    + (1i64 << (shift - 1)))
-                    >> shift;
-                *level = scaled.clamp(-32768, 32767) as i32;
             }
             if transform_skip {
                 let rotate = self.sps.transform_skip_rotation && n == 4;
                 transform::transform_skip(levels, log2, bit_depth, rotate);
             } else {
                 let dst = component == 0 && n == 4;
-                transform::inverse_transform(levels, log2, dst, bit_depth);
+                transform::inverse_transform(
+                    levels,
+                    log2,
+                    dst,
+                    bit_depth,
+                    extent.rows,
+                    extent.columns,
+                );
             }
         }
         // Implicit residual DPCM of transform skip and bypass blocks
@@ -1346,24 +1384,14 @@ impl Decoder {
         }
         let stride = self.strides[component];
         let max = (1i32 << bit_depth) - 1;
-        let (plane_width, plane_height) = if component == 0 {
-            (self.width, self.height)
-        } else {
-            (self.width >> self.sub_x, self.height >> self.sub_y)
-        };
-        let plane = &mut self.planes[component];
-        for row in 0..n {
-            if y + row >= plane_height {
-                break;
-            }
-            for column in 0..n {
-                if x + column >= plane_width {
-                    break;
+        with_samples!(&mut self.planes[component], samples => {
+            for (row, residuals) in levels.chunks_exact(n).enumerate() {
+                let start = (y + row) * stride + x;
+                for (sample, &residual) in samples[start..start + n].iter_mut().zip(residuals) {
+                    *sample = Sample::of((sample.value() + residual).clamp(0, max));
                 }
-                let at = (y + row) * stride + x + column;
-                plane[at] = (i32::from(plane[at]) + levels[row * n + column]).clamp(0, max) as u16;
             }
-        }
+        });
         self.levels = buffer;
         Ok(())
     }
@@ -1374,10 +1402,19 @@ impl Decoder {
         self.decoded.iter().all(|&done| done)
     }
 
-    /// The picture, filtered, with its crop.
-    pub fn finish(mut self) -> Picture {
-        super::filter::deblock(&mut self);
-        super::filter::sample_adaptive_offset(&mut self);
+    /// The picture, filtered, with its crop; the block buffers go back to
+    /// `workspace` for the next picture.
+    pub fn finish_into(mut self, workspace: &mut Workspace) -> Picture {
+        let picture = self.filtered();
+        workspace.units = std::mem::take(&mut self.units);
+        workspace.zscan = std::mem::take(&mut self.zscan);
+        picture
+    }
+
+    /// Runs the loop filters and takes the planes out as the picture.
+    fn filtered(&mut self) -> Picture {
+        super::filter::deblock(self);
+        super::filter::sample_adaptive_offset(self);
         let sizes = (0..self.planes.len())
             .map(|plane| {
                 if plane == 0 {
@@ -1397,6 +1434,95 @@ impl Decoder {
             sizes,
             crop: self.sps.crop,
             vui_colour: self.sps.vui_colour,
+        }
+    }
+}
+
+/// The large buffers a decoder keeps between pictures of a size (a grid's
+/// tiles), so decoding many pictures allocates them once: the planes
+/// (handed back with `recycle`) and the per-block tables.
+#[derive(Default)]
+pub struct Workspace {
+    planes: Vec<Samples>,
+    units: Vec<Unit>,
+    zscan: Vec<u32>,
+}
+
+impl Workspace {
+    /// Takes a picture's planes back for the next picture.
+    pub fn recycle(&mut self, planes: Vec<Samples>) {
+        self.planes = planes;
+    }
+}
+
+/// Where a block's reference samples are, in its component's samples.
+struct Gather {
+    x: usize,
+    y: usize,
+    n: usize,
+    stride: usize,
+    /// A 4x4 luma unit's size in this component's samples.
+    unit_x: usize,
+    unit_y: usize,
+}
+
+impl Gather {
+    /// Fills `line` and `known` in 8.4.4.2.2's order (the left column
+    /// bottom up, the corner, the top row): availability once a unit,
+    /// its samples copied as a run.
+    fn run<T: Sample>(
+        &self,
+        plane: &[T],
+        available: &dyn Fn(usize, usize) -> bool,
+        line: &mut [i32; intra::LINE],
+        known: &mut [bool; intra::LINE],
+    ) {
+        let Gather {
+            x,
+            y,
+            n,
+            stride,
+            unit_x,
+            unit_y,
+        } = *self;
+        if x > 0 {
+            let column = x - 1;
+            let mut index = 0;
+            while index < 2 * n {
+                let sy = y + index;
+                let run = unit_y.min(2 * n - index);
+                if available(column, sy) {
+                    for k in 0..run {
+                        let at = 2 * n - 1 - (index + k);
+                        line[at] = plane[(sy + k) * stride + column].value();
+                        known[at] = true;
+                    }
+                }
+                index += run;
+            }
+            if y > 0 && available(column, y - 1) {
+                line[2 * n] = plane[(y - 1) * stride + column].value();
+                known[2 * n] = true;
+            }
+        }
+        if y > 0 {
+            let row = (y - 1) * stride;
+            let mut index = 0;
+            while index < 2 * n {
+                let sx = x + index;
+                let run = unit_x.min(2 * n - index);
+                if available(sx, y - 1) {
+                    let at = 2 * n + 1 + index;
+                    for (value, &sample) in line[at..at + run]
+                        .iter_mut()
+                        .zip(&plane[row + sx..row + sx + run])
+                    {
+                        *value = sample.value();
+                    }
+                    known[at..at + run].fill(true);
+                }
+                index += run;
+            }
         }
     }
 }

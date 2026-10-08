@@ -7,6 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use sublime::image::ColorType;
+use sublime::io::heif::rgb::Converter;
 use sublime::io::heif::{decode_planes, read_heif_rows};
 use sublime::io::png::{PngRows, RowSink};
 
@@ -81,9 +82,34 @@ struct Rows {
     pixels: Vec<u8>,
     profile: Option<Vec<u8>>,
     exif: Option<Vec<u8>>,
+    /// Offers this sink takes.
+    takes_deep: bool,
+    takes_ycbcr: bool,
+    deep: bool,
+    /// YCbCr rows as given: luma, and the chroma rows.
+    luma: Vec<u8>,
+    chroma: Vec<u8>,
 }
 
 impl RowSink for Rows {
+    fn accept_deep(&mut self, _color: ColorType) -> bool {
+        self.deep = self.takes_deep;
+        self.deep
+    }
+
+    fn accept_ycbcr(&mut self) -> bool {
+        self.takes_ycbcr
+    }
+
+    fn ycbcr_row(&mut self, luma: &[u8], chroma: Option<(&[u8], &[u8])>) -> std::io::Result<()> {
+        self.luma.extend_from_slice(luma);
+        if let Some((blue, red)) = chroma {
+            self.chroma.extend_from_slice(blue);
+            self.chroma.extend_from_slice(red);
+        }
+        Ok(())
+    }
+
     fn start(&mut self, width: u32, height: u32, color: ColorType) -> std::io::Result<()> {
         self.width = width as usize;
         self.height = height as usize;
@@ -190,6 +216,69 @@ fn png_carries_the_profile_and_exif() {
         exif.starts_with(b"MM\0*") || exif.starts_with(b"II*\0"),
         "TIFF Exif"
     );
+}
+
+#[test]
+fn ten_bit_pictures_go_on_at_sixteen_bits_to_a_sink_that_takes_them() {
+    let eight = rows("x265-odd-10bit");
+    let mut deep = Rows {
+        takes_deep: true,
+        ..Rows::default()
+    };
+    read_heif_rows(&fixture("x265-odd-10bit"), &mut deep).expect("deep");
+    assert!(deep.deep);
+    assert_eq!(deep.pixels.len(), eight.pixels.len() * 2);
+    // Each 16-bit sample, scaled down, is the 8-bit sample within one.
+    let mut fine = 0;
+    for (pair, &byte) in deep.pixels.chunks_exact(2).zip(&eight.pixels) {
+        let value = u32::from(u16::from_be_bytes([pair[0], pair[1]]));
+        let scaled = (value * 255 + 32_767) / 65_535;
+        assert!(scaled.abs_diff(u32::from(byte)) <= 1);
+        // Two 10-bit levels apart fall in one 8-bit level.
+        fine += usize::from(value % 257 != 0);
+    }
+    assert!(fine > deep.pixels.len() / 4, "the low bits carry detail");
+}
+
+#[test]
+fn a_jpeg_sink_takes_the_pictures_own_ycbcr() {
+    // An 8-bit 4:2:0 BT.601 full-range picture (Apple's), uncropped.
+    let (planes, _) = decode_planes(&fixture("apple-tiny")).expect("planes");
+    let mut rows = Rows {
+        takes_ycbcr: true,
+        ..Rows::default()
+    };
+    read_heif_rows(&fixture("apple-tiny"), &mut rows).expect("ycbcr");
+    assert!(rows.pixels.is_empty(), "no RGB rows");
+    let luma: Vec<u8> = (0..planes.planes[0].len())
+        .map(|index| planes.planes[0].get(index) as u8)
+        .collect();
+    assert_eq!(rows.luma, luma);
+    assert_eq!(rows.chroma.len(), 2 * planes.planes[1].len());
+    // The first chroma row: Cb then Cr.
+    let width = planes.sizes[1].0;
+    for x in 0..width {
+        assert_eq!(rows.chroma[x], planes.planes[1].get(x) as u8);
+        assert_eq!(rows.chroma[width + x], planes.planes[2].get(x) as u8);
+    }
+}
+
+#[test]
+fn a_grid_streamed_by_bands_matches_its_whole_canvas() {
+    // 1600 by 1200 in 512-row tiles: three bands, two seams.
+    let streamed = rows("apple-photo");
+    let (planes, _) = decode_planes(&fixture("apple-photo")).expect("planes");
+    let mut converter = Converter::new(&planes, 6, true, false);
+    let mut row = vec![0u8; planes.width * 3];
+    for y in 0..planes.height {
+        converter.row(y, 0, &mut row);
+        let stride = planes.width * 3;
+        assert_eq!(
+            &streamed.pixels[y * stride..(y + 1) * stride],
+            &row[..],
+            "row {y}"
+        );
+    }
 }
 
 #[test]
