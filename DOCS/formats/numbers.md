@@ -30,7 +30,7 @@ names worksheets when it exports to Excel.
 | CSV, TSV, JSON Lines | a folder named after the output, a file per table; one table is one file |
 | JSON | one object of arrays keyed by table name; one table stays the plain array |
 | Markdown and the documents through it | a table under a heading of its name per table |
-| Excel | a worksheet per table; numbers, dates, durations, and booleans as cells of their type, with the Excel format that shows them as Numbers does |
+| Excel | a worksheet per table; numbers, dates, durations, and booleans as cells of their type, with the Excel format that shows them as Numbers does; merged cells merged |
 | standard output | the first table, the rest reported as a loss |
 
 `--sheet` picks a sheet (its every table), a table by its name, or a table
@@ -82,6 +82,16 @@ Numbers' view and export show it (built from its group-by tree, not a view
 map); formulas are their last value
 (Numbers recalculates some, `NOW()` and locale functions, when it opens a
 document).
+
+Merged cells are read from the first source that has them, in the order
+numbers-parser reads them: the table's merge owner's formulas (a range
+each, as a colon tract, node type 67), the calculation engine's
+dependencies on the merge owner, and an older document's merge region map
+(`merge_region_map`, origin and size packed column high, row low). The
+cells a region covers read empty, as Numbers exports them; Excel output
+merges the region. The same reading serves Pages tables. Against
+numbers-parser on its test documents: every merged range of the 11 that
+have them.
 
 ## Writing
 

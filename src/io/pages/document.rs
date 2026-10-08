@@ -590,6 +590,8 @@ impl<'p> Reader<'p> {
 const DOCUMENT_ARCHIVE: u32 = 10000;
 const STORAGE_ARCHIVE: u32 = 2001;
 const CALCULATION_ENGINE: u32 = 4000;
+/// `TSCE.ASTNodeArrayArchive` node type of a range (`A1:B2`).
+const COLON_TRACT_NODE: i64 = 67;
 const PACKAGE_METADATA: u32 = 11006;
 
 /// Cell storage: the flag bits of the fields a cell record carries, in
@@ -2429,14 +2431,8 @@ impl Reader<'_> {
                 }
             }
         }
-        if let Some(owner) = view
-            .message("merge_owner")
-            .and_then(|owner| owner.message("owner_id"))
-            .and_then(uuid)
-        {
-            for region in self.merge_regions(owner) {
-                apply_merge(&mut rows, region);
-            }
+        for region in self.table_merges(view) {
+            apply_merge(&mut rows, region);
         }
         Some(Table {
             rows,
@@ -2686,6 +2682,94 @@ impl Reader<'_> {
     /// The merged regions a merge owner records, from the calculation
     /// engine's dependency tracker, where the owner's range dependencies
     /// are the regions.
+    /// A table's merged regions (`model` its `TST.TableModelArchive`), from
+    /// the first source that has any, in the order numbers-parser reads
+    /// them: the merge owner's formulas (each a range, as a colon tract),
+    /// the calculation engine's dependencies on the merge owner, and an
+    /// older document's merge region map.
+    fn table_merges(&mut self, model: View<'_>) -> Vec<Region> {
+        let owner = model.message("merge_owner");
+        let mut regions = Vec::new();
+        let formulas = owner
+            .and_then(|owner| owner.message("formula_store"))
+            .map(|store| store.messages("formulas"))
+            .unwrap_or_default();
+        for formula in formulas {
+            let Some(node) = formula
+                .message("formula")
+                .and_then(|formula| formula.message("AST_node_array"))
+                .and_then(|array| array.messages("AST_node").into_iter().next())
+            else {
+                continue;
+            };
+            if node.integer("AST_node_type") != Some(COLON_TRACT_NODE) {
+                continue;
+            }
+            let Some(tract) = node.message("AST_colon_tract") else {
+                continue;
+            };
+            // The first and last row (or column); a range of one leaves
+            // its end out.
+            let span = |name: &str| {
+                let range = tract.messages(name).into_iter().next()?;
+                let begin = range.integer("range_begin")?.max(0) as usize;
+                let end = range
+                    .integer("range_end")
+                    .map_or(begin, |end| end.max(0) as usize);
+                (end >= begin).then(|| (begin, end - begin + 1))
+            };
+            if let (Some((row, rows)), Some((column, columns))) =
+                (span("absolute_row"), span("absolute_column"))
+            {
+                regions.push(Region {
+                    row,
+                    column,
+                    rows,
+                    columns,
+                });
+            }
+        }
+        if !regions.is_empty() {
+            return regions;
+        }
+        if let Some(owner) = owner
+            .and_then(|owner| owner.message("owner_id"))
+            .and_then(uuid)
+        {
+            regions = self.merge_regions(owner);
+            if !regions.is_empty() {
+                return regions;
+            }
+        }
+        let map = model
+            .message("base_data_store")
+            .and_then(|store| store.reference("merge_region_map"))
+            .and_then(|map| self.graph.object(map));
+        let packed = |view: Option<View<'_>>| match view?.node("packedData")? {
+            Node::Fixed32(value) => Some(u64::from(value)),
+            Node::Uint(value) => Some(value),
+            _ => None,
+        };
+        for range in map
+            .map(|map| View::of(map).messages("cell_range"))
+            .unwrap_or_default()
+        {
+            // Each packs the column in its high half and the row in its low.
+            if let (Some(origin), Some(size)) = (
+                packed(range.message("origin")),
+                packed(range.message("size")),
+            ) {
+                regions.push(Region {
+                    row: (origin & 0xFFFF) as usize,
+                    column: (origin >> 16) as usize,
+                    rows: (size & 0xFFFF) as usize,
+                    columns: (size >> 16) as usize,
+                });
+            }
+        }
+        regions
+    }
+
     fn merge_regions(&mut self, owner: [u64; 4]) -> Vec<Region> {
         if self.merges.is_none() {
             self.merges = Some(self.read_merges());
@@ -3674,30 +3758,31 @@ impl<'p> WorkbookReader<'p> {
     /// from the calculation engine: none when the package was read without
     /// it (`Scope::Workbook` skips it).
     pub fn merges(&mut self, sheet: usize, table: usize) -> Vec<(usize, usize, usize, usize)> {
-        let Some(model) = self
+        let Some((model, size)) = self
             .sheets
             .get(sheet)
             .and_then(|sheet| sheet.tables.get(table))
-            .map(|table| table.model)
+            .filter(|table| table.view.is_none())
+            .map(|table| (table.model, (table.rows, table.columns)))
         else {
             return Vec::new();
         };
-        let owner = self
-            .reader
-            .graph
-            .object(model)
-            .and_then(|message| View::of(message).message("merge_owner"))
-            .and_then(|owner| owner.message("owner_id"))
-            .and_then(uuid);
-        match owner {
-            Some(owner) => self
-                .reader
-                .merge_regions(owner)
-                .into_iter()
-                .map(|region| (region.row, region.column, region.rows, region.columns))
-                .collect(),
-            None => Vec::new(),
-        }
+        let Some(message) = self.reader.graph.object(model) else {
+            return Vec::new();
+        };
+        self.reader
+            .table_merges(View::of(message))
+            .into_iter()
+            // Regions past the table's edges are left alone, as `rows`
+            // leaves them.
+            .filter(|region| {
+                region.rows > 0
+                    && region.columns > 0
+                    && region.row + region.rows <= size.0
+                    && region.column + region.columns <= size.1
+            })
+            .map(|region| (region.row, region.column, region.rows, region.columns))
+            .collect()
     }
 
     /// Every row of a table on its full grid, in order: each cell as it
@@ -3795,13 +3880,12 @@ impl<'p> WorkbookReader<'p> {
             styles: HashMap::new(),
             formats: reader.data_list_formats(store.reference("format_table"), &self.customs),
         };
-        let merges: Vec<Region> = view
-            .message("merge_owner")
-            .filter(|_| base)
-            .and_then(|owner| owner.message("owner_id"))
-            .and_then(uuid)
-            .map(|owner| reader.merge_regions(owner))
-            .unwrap_or_default()
+        let merges: Vec<Region> = if base {
+            reader.table_merges(view)
+        } else {
+            Vec::new()
+        };
+        let merges: Vec<Region> = merges
             .into_iter()
             // Regions past the table's edges are left alone, as
             // `apply_merge` leaves them.
