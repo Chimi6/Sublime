@@ -2417,8 +2417,8 @@ impl Reader<'_> {
                 let Some(tile) = tile.reference("tile").and_then(|id| self.graph.object(id)) else {
                     continue;
                 };
-                for info in View::of(tile).messages("rowInfos") {
-                    let row = base + info.integer("tile_row_index").unwrap_or(0).max(0) as usize;
+                for info in tile_rows(View::of(tile)) {
+                    let row = base + info.index;
                     if row >= row_count {
                         continue;
                     }
@@ -2453,18 +2453,12 @@ impl Reader<'_> {
     #[inline(never)]
     fn tile_row(
         &mut self,
-        info: &View<'_>,
+        info: &TileRow<'_>,
         cells: &mut [Cell],
         lists: &TableLists,
         default_text_style: Option<u64>,
     ) {
-        let Some(offsets) = info.bytes("cell_offsets") else {
-            return;
-        };
-        let Some(buffer) = info.bytes("cell_storage_buffer") else {
-            return;
-        };
-        let wide = info.boolean("has_wide_offsets").unwrap_or(false);
+        let (offsets, buffer, wide) = (info.offsets, info.buffer, info.wide);
         for (column, cell) in cells.iter_mut().enumerate() {
             let Some(pair) = offsets.get(column * 2..column * 2 + 2) else {
                 break;
@@ -2628,19 +2622,44 @@ impl Reader<'_> {
         }
     }
 
+    /// A `TST.TableDataList`'s entries, each handed to `each`: decoded, or,
+    /// as a document or workbook reads them, kept as their bytes (a table's
+    /// strings are four fields each, and a large table has millions) and
+    /// decoded one at a time into a scratch tree.
+    fn data_list_entries(&self, list: Option<u64>, each: &mut dyn FnMut(View<'_>)) {
+        let Some(message) = list.and_then(|id| self.graph.object(id)) else {
+            return;
+        };
+        let view = View::of(message);
+        for entry in view.messages("entries") {
+            each(entry);
+        }
+        let Some(schema) = super::schema::SCHEMA.message("TST.TableDataList.ListEntry") else {
+            return;
+        };
+        let mut scratch = Tree::new(&super::schema::SCHEMA);
+        for bytes in view.deferred_all("entries") {
+            scratch.entries.clear();
+            scratch.text.clear();
+            if let Ok(first) = scratch.decode(bytes, Some(schema)) {
+                each(View {
+                    tree: &scratch,
+                    first,
+                });
+            }
+        }
+    }
+
     /// Key -> string of a `TST.TableDataList`.
     fn data_list_strings(&self, list: Option<u64>) -> HashMap<u32, String> {
         let mut strings = HashMap::new();
-        let Some(message) = list.and_then(|id| self.graph.object(id)) else {
-            return strings;
-        };
-        for entry in View::of(message).messages("entries") {
+        self.data_list_entries(list, &mut |entry| {
             if let Some(key) = entry.integer("key")
                 && let Some(text) = entry.string("string")
             {
                 strings.insert(key as u32, text.to_string());
             }
-        }
+        });
         strings
     }
 
@@ -2648,16 +2667,13 @@ impl Reader<'_> {
     /// that holds the reference.
     fn data_list_references(&self, list: Option<u64>, field: &str) -> HashMap<u32, u64> {
         let mut references = HashMap::new();
-        let Some(message) = list.and_then(|id| self.graph.object(id)) else {
-            return references;
-        };
-        for entry in View::of(message).messages("entries") {
+        self.data_list_entries(list, &mut |entry| {
             if let Some(key) = entry.integer("key")
                 && let Some(reference) = entry.reference(field)
             {
                 references.insert(key as u32, reference);
             }
-        }
+        });
         references
     }
 
@@ -2668,10 +2684,7 @@ impl Reader<'_> {
         customs: &HashMap<(u64, u64), CustomFormat>,
     ) -> HashMap<u32, std::rc::Rc<CellFormat>> {
         let mut formats = HashMap::new();
-        let Some(message) = list.and_then(|id| self.graph.object(id)) else {
-            return formats;
-        };
-        for entry in View::of(message).messages("entries") {
+        self.data_list_entries(list, &mut |entry| {
             if let Some(key) = entry.integer("key")
                 && let Some(format) = entry.message("format")
             {
@@ -2679,13 +2692,10 @@ impl Reader<'_> {
                 let custom = format.custom_uid.and_then(|uid| customs.get(&uid)).cloned();
                 formats.insert(key as u32, std::rc::Rc::new(CellFormat { format, custom }));
             }
-        }
+        });
         formats
     }
 
-    /// The merged regions a merge owner records, from the calculation
-    /// engine's dependency tracker, where the owner's range dependencies
-    /// are the regions.
     /// A table's merged regions (`model` its `TST.TableModelArchive`), from
     /// the first source that has any, in the order numbers-parser reads
     /// them: the merge owner's formulas (each a range, as a colon tract),
@@ -2774,6 +2784,9 @@ impl Reader<'_> {
         regions
     }
 
+    /// The merged regions a merge owner records, from the calculation
+    /// engine's dependency tracker, where the owner's range dependencies
+    /// are the regions.
     fn merge_regions(&mut self, owner: [u64; 4]) -> Vec<Region> {
         if self.merges.is_none() {
             self.merges = Some(self.read_merges());
