@@ -8,6 +8,8 @@ pub trait Sample: Copy + Default + Send + Sync + 'static {
     fn value(self) -> i32;
     /// From a value already within the bit depth's range.
     fn of(value: i32) -> Self;
+    /// The samples, when they are of this width; else none.
+    fn slice(samples: &Samples) -> &[Self];
 }
 
 impl Sample for u8 {
@@ -19,6 +21,13 @@ impl Sample for u8 {
     #[inline(always)]
     fn of(value: i32) -> u8 {
         value as u8
+    }
+
+    fn slice(samples: &Samples) -> &[u8] {
+        match samples {
+            Samples::Eight(samples) => samples,
+            Samples::Deep(_) => &[],
+        }
     }
 }
 
@@ -32,21 +41,18 @@ impl Sample for u16 {
     fn of(value: i32) -> u16 {
         value as u16
     }
-}
 
-/// Runs `$body` with `$plane` bound to the samples of either width.
-macro_rules! with_samples {
-    ($samples:expr, $plane:ident => $body:expr) => {
-        match $samples {
-            $crate::io::hevc::Samples::Eight($plane) => $body,
-            $crate::io::hevc::Samples::Deep($plane) => $body,
+    fn slice(samples: &Samples) -> &[u16] {
+        match samples {
+            Samples::Deep(samples) => samples,
+            Samples::Eight(_) => &[],
         }
-    };
+    }
 }
-pub(crate) use with_samples;
 
 /// A plane's samples: bytes at 8 bits, which halves a large photo's
 /// memory, and 16-bit words above.
+#[derive(Clone)]
 pub enum Samples {
     Eight(Vec<u8>),
     Deep(Vec<u16>),
@@ -74,6 +80,22 @@ impl Samples {
                 Samples::Deep(samples)
             }
             _ => Samples::new(depth, count),
+        }
+    }
+
+    /// The samples as a band of rows to write.
+    pub(super) fn band(&mut self) -> super::decode::Band<'_> {
+        match self {
+            Samples::Eight(samples) => super::decode::Band::Eight(samples),
+            Samples::Deep(samples) => super::decode::Band::Deep(samples),
+        }
+    }
+
+    /// `count` samples from `start`, copied.
+    pub fn slice_of(&self, start: usize, count: usize) -> Samples {
+        match self {
+            Samples::Eight(samples) => Samples::Eight(samples[start..start + count].to_vec()),
+            Samples::Deep(samples) => Samples::Deep(samples[start..start + count].to_vec()),
         }
     }
 

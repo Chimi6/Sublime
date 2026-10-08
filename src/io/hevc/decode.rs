@@ -6,7 +6,7 @@ use super::HevcError;
 use super::cabac::{self, Cabac, Contexts};
 use super::intra::{self, References};
 use super::params::{Pps, ScalingFactors, SliceHeader, Sps};
-use super::sample::{Sample, Samples, with_samples};
+use super::sample::{Sample, Samples};
 use super::transform::{self, LEVEL_SCALE};
 
 /// A decoded picture: its planes at their own bit depth, before the
@@ -57,8 +57,9 @@ pub struct Sao {
     pub class: u8,
 }
 
-/// The state of a picture being decoded.
-pub struct Decoder {
+/// What a picture's decoding reads and never changes once it starts: the
+/// parameter sets, the sizes, and the scans. Every row reads it at once.
+pub struct Layout {
     pub sps: Sps,
     pub pps: Pps,
     pub width: usize,
@@ -69,22 +70,29 @@ pub struct Decoder {
     pub sub_x: u32,
     pub sub_y: u32,
     pub chroma: u32,
-    pub planes: Vec<Samples>,
     pub strides: Vec<usize>,
-    pub units: Vec<Unit>,
     pub units_wide: usize,
     /// Z-scan order of each 4x4 unit (6.5.2), for availability.
     zscan: Vec<u32>,
     pub rs_to_ts: Vec<usize>,
     pub ts_to_rs: Vec<usize>,
     pub tile_of: Vec<usize>,
+    scaling: Option<ScalingFactors>,
+    /// Threads the picture's rows and filters may use.
+    pub threads: usize,
+}
+
+/// The state of a picture being decoded.
+pub struct Decoder {
+    pub layout: Layout,
+    pub planes: Vec<Samples>,
+    pub units: Vec<Unit>,
     /// Per CTB (raster): the index of its slice segment header, and the
     /// raster address of its slice's first CTB.
     pub slice_of: Vec<usize>,
     slice_address_of: Vec<usize>,
     pub slices: Vec<SliceHeader>,
     pub sao: Vec<[Sao; 3]>,
-    scaling: Option<ScalingFactors>,
     decoded: Vec<bool>,
     /// Context state saved after a row's second CTB, for the row below
     /// (wavefront parallel processing).
@@ -92,10 +100,283 @@ pub struct Decoder {
     /// Context state and last QpY at the end of a slice segment, for a
     /// dependent segment after it.
     saved_slice_contexts: Option<(Contexts, i32)>,
+}
+
+/// One component's samples in a band of rows, writable.
+pub(super) enum Band<'a> {
+    Eight(&'a mut [u8]),
+    Deep(&'a mut [u16]),
+}
+
+/// Runs `$body` with `$samples` bound to a band's samples of either width.
+macro_rules! with_band {
+    ($band:expr, $samples:ident => $body:expr) => {
+        match $band {
+            Band::Eight($samples) => $body,
+            Band::Deep($samples) => $body,
+        }
+    };
+}
+
+pub(super) use with_band;
+
+/// The bottom of the CTB row above a band, as the band reads it: each
+/// component's last line of samples, the last row of 4x4 units, and each
+/// CTB's record.
+pub(super) struct Edge {
+    pub lines: Vec<Samples>,
+    pub units: Vec<Unit>,
+    pub decoded: Vec<bool>,
+    pub slice_address_of: Vec<usize>,
+    pub sao: Vec<[Sao; 3]>,
+    /// The context state after the row's second CTB (wavefront storage).
+    pub contexts: Option<Contexts>,
+    /// CTBs of the row received so far.
+    received: usize,
+}
+
+impl Edge {
+    fn new(layout: &Layout) -> Edge {
+        let lines = (0..layout.strides.len())
+            .map(|component| {
+                let depth = if component == 0 {
+                    layout.sps.bit_depth_luma
+                } else {
+                    layout.sps.bit_depth_chroma
+                };
+                Samples::new(depth, layout.strides[component])
+            })
+            .collect();
+        Edge {
+            lines,
+            units: vec![Unit::default(); layout.units_wide],
+            decoded: vec![false; layout.width_ctbs],
+            slice_address_of: vec![usize::MAX; layout.width_ctbs],
+            sao: vec![[Sao::default(); 3]; layout.width_ctbs],
+            contexts: None,
+            received: 0,
+        }
+    }
+
+    fn apply(&mut self, update: RowUpdate) {
+        match update {
+            RowUpdate::Contexts(contexts) => self.contexts = Some(*contexts),
+            RowUpdate::Ctb(ctb) => {
+                for (line, (from, segment)) in self.lines.iter_mut().zip(ctb.lines) {
+                    line.copy_from(from, &segment, 0, segment.len());
+                }
+                self.units[ctb.unit_from..ctb.unit_from + ctb.units.len()]
+                    .copy_from_slice(&ctb.units);
+                self.decoded[ctb.ctb_x] = true;
+                self.slice_address_of[ctb.ctb_x] = ctb.slice_address;
+                self.sao[ctb.ctb_x] = ctb.sao;
+                self.received = ctb.ctb_x + 1;
+            }
+        }
+    }
+}
+
+/// What a row tells the row below as it goes.
+enum RowUpdate {
+    Ctb(Box<CtbBottom>),
+    /// After the row's second CTB.
+    Contexts(Box<Contexts>),
+}
+
+/// A finished CTB's bottom: its last line of each component (from where
+/// in the line), its last row of units, and its record.
+struct CtbBottom {
+    ctb_x: usize,
+    lines: Vec<(usize, Samples)>,
+    unit_from: usize,
+    units: Vec<Unit>,
+    slice_address: usize,
+    sao: [Sao; 3],
+}
+
+/// A CTB row's share of the picture, to decode on its own.
+struct RowParts<'a> {
+    row: usize,
+    planes: Vec<Band<'a>>,
+    units: &'a mut [Unit],
+    slice_of: &'a mut [usize],
+    slice_address_of: &'a mut [usize],
+    sao: &'a mut [[Sao; 3]],
+    decoded: &'a mut [bool],
+}
+
+/// A band of CTB rows being decoded: its samples, units, and CTB records
+/// (all from the band's first row), and the edge of the row above it,
+/// when the band does not start the picture. A band can be the whole
+/// picture.
+pub(super) struct Rows<'a> {
+    layout: &'a Layout,
+    /// The band's first CTB row.
+    top_ctb: usize,
+    planes: Vec<Band<'a>>,
+    units: &'a mut [Unit],
+    slice_of: &'a mut [usize],
+    slice_address_of: &'a mut [usize],
+    sao: &'a mut [[Sao; 3]],
+    decoded: &'a mut [bool],
+    above: Option<Edge>,
     /// The last luma block's residual, for cross-component prediction.
     luma_residual: Vec<i32>,
     /// A block's levels, then residuals: kept between blocks.
     levels: Vec<i32>,
+}
+
+impl std::ops::Deref for Rows<'_> {
+    type Target = Layout;
+
+    fn deref(&self) -> &Layout {
+        self.layout
+    }
+}
+
+impl<'a> Rows<'a> {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new(
+        layout: &'a Layout,
+        top_ctb: usize,
+        planes: Vec<Band<'a>>,
+        units: &'a mut [Unit],
+        slice_of: &'a mut [usize],
+        slice_address_of: &'a mut [usize],
+        sao: &'a mut [[Sao; 3]],
+        decoded: &'a mut [bool],
+        above: Option<Edge>,
+    ) -> Rows<'a> {
+        Rows {
+            layout,
+            top_ctb,
+            planes,
+            units,
+            slice_of,
+            slice_address_of,
+            sao,
+            decoded,
+            above,
+            luma_residual: Vec::new(),
+            levels: vec![0; 32 * 32],
+        }
+    }
+
+    /// The band's first row of `component`'s samples.
+    fn top_of(&self, component: usize) -> usize {
+        let top = self.top_ctb << self.ctb_log2;
+        if component == 0 {
+            top
+        } else {
+            top >> self.sub_y
+        }
+    }
+
+    /// CTB `rs`'s index in the band's records, when it is in the band.
+    fn in_band(&self, rs: usize) -> Option<usize> {
+        rs.checked_sub(self.top_ctb * self.width_ctbs)
+    }
+
+    /// The 4x4 unit holding luma (x, y): the band's, or the row above's.
+    pub fn unit(&self, x: usize, y: usize) -> Unit {
+        let top = (self.top_ctb << self.ctb_log2) >> 2;
+        match (y >> 2).checked_sub(top) {
+            Some(row) => self.units[row * self.units_wide + (x >> 2)],
+            None => self
+                .above
+                .as_ref()
+                .map_or(Unit::default(), |edge| edge.units[x >> 2]),
+        }
+    }
+
+    fn unit_mut(&mut self, x: usize, y: usize) -> &mut Unit {
+        let top = (self.top_ctb << self.ctb_log2) >> 2;
+        let at = ((y >> 2) - top) * self.units_wide + (x >> 2);
+        &mut self.units[at]
+    }
+
+    fn decoded_at(&self, rs: usize) -> bool {
+        match self.in_band(rs) {
+            Some(at) => self.decoded[at],
+            None => self
+                .above
+                .as_ref()
+                .is_some_and(|edge| edge.decoded[rs % self.width_ctbs]),
+        }
+    }
+
+    fn slice_address(&self, rs: usize) -> usize {
+        match self.in_band(rs) {
+            Some(at) => self.slice_address_of[at],
+            None => self.above.as_ref().map_or(usize::MAX, |edge| {
+                edge.slice_address_of[rs % self.width_ctbs]
+            }),
+        }
+    }
+
+    fn sao_of(&self, rs: usize) -> [Sao; 3] {
+        match self.in_band(rs) {
+            Some(at) => self.sao[at],
+            None => self
+                .above
+                .as_ref()
+                .map_or([Sao::default(); 3], |edge| edge.sao[rs % self.width_ctbs]),
+        }
+    }
+
+    fn sao_mut(&mut self, rs: usize) -> &mut [Sao; 3] {
+        let at = rs - self.top_ctb * self.width_ctbs;
+        &mut self.sao[at]
+    }
+
+    /// Records CTB `rs` as in a slice segment and its slice.
+    fn place_ctb(&mut self, rs: usize, slice_index: usize, slice_address: usize) {
+        let at = rs - self.top_ctb * self.width_ctbs;
+        self.slice_of[at] = slice_index;
+        self.slice_address_of[at] = slice_address;
+    }
+
+    fn mark_decoded(&mut self, rs: usize) {
+        let at = rs - self.top_ctb * self.width_ctbs;
+        self.decoded[at] = true;
+    }
+
+    fn ctb_address(&self, x: usize, y: usize) -> usize {
+        (y >> self.ctb_log2) * self.width_ctbs + (x >> self.ctb_log2)
+    }
+
+    /// Whether the block at (`nx`, `ny`) is available to the block at
+    /// (`x`, `y`) (6.4.1): inside the picture, decoded already, in the same
+    /// slice and tile.
+    pub fn available(&self, x: usize, y: usize, nx: isize, ny: isize) -> bool {
+        if nx < 0 || ny < 0 || nx as usize >= self.width || ny as usize >= self.height {
+            return false;
+        }
+        let (nx, ny) = (nx as usize, ny as usize);
+        let neighbour = self.zscan[(ny >> 2) * self.units_wide + (nx >> 2)];
+        let current = self.zscan[(y >> 2) * self.units_wide + (x >> 2)];
+        if neighbour > current {
+            return false;
+        }
+        let (a, b) = (self.ctb_address(x, y), self.ctb_address(nx, ny));
+        if !self.decoded_at(b) && a != b {
+            return false;
+        }
+        self.slice_address(a) == self.slice_address(b) && self.tile_of[a] == self.tile_of[b]
+    }
+}
+
+/// A row of samples above a band, at the band's sample width.
+fn above_line<T: Sample>(line: Option<&Samples>) -> &[T] {
+    line.map_or(&[], T::slice)
+}
+
+impl std::ops::Deref for Decoder {
+    type Target = Layout;
+
+    fn deref(&self) -> &Layout {
+        &self.layout
+    }
 }
 
 impl Decoder {
@@ -105,6 +386,7 @@ impl Decoder {
         sps: Sps,
         mut pps: Pps,
         workspace: &mut Workspace,
+        threads: usize,
     ) -> Result<Decoder, HevcError> {
         let width = sps.width as usize;
         let height = sps.height as usize;
@@ -201,68 +483,45 @@ impl Decoder {
         }
         let scaling = pps.scaling.clone().or_else(|| sps.scaling.clone());
         Ok(Decoder {
-            width,
-            height,
-            ctb_log2,
-            width_ctbs,
-            height_ctbs,
-            sub_x,
-            sub_y,
-            chroma,
+            layout: Layout {
+                width,
+                height,
+                ctb_log2,
+                width_ctbs,
+                height_ctbs,
+                sub_x,
+                sub_y,
+                chroma,
+                strides,
+                units_wide,
+                zscan,
+                rs_to_ts,
+                ts_to_rs,
+                tile_of,
+                scaling,
+                sps,
+                pps,
+                threads: threads.max(1),
+            },
             planes,
-            strides,
             units: {
                 let mut units = std::mem::take(&mut workspace.units);
                 units.clear();
                 units.resize(units_wide * units_high, Unit::default());
                 units
             },
-            units_wide,
-            zscan,
-            rs_to_ts,
-            ts_to_rs,
-            tile_of,
             slice_of: vec![usize::MAX; ctbs],
             slice_address_of: vec![usize::MAX; ctbs],
             slices: Vec::new(),
             sao: vec![[Sao::default(); 3]; ctbs],
-            scaling,
             decoded: vec![false; ctbs],
             saved_row_contexts: None,
             saved_slice_contexts: None,
-            luma_residual: Vec::new(),
-            levels: vec![0; 32 * 32],
-            sps,
-            pps,
         })
     }
 
     pub fn unit(&self, x: usize, y: usize) -> &Unit {
         &self.units[(y >> 2) * self.units_wide + (x >> 2)]
-    }
-
-    fn ctb_address(&self, x: usize, y: usize) -> usize {
-        (y >> self.ctb_log2) * self.width_ctbs + (x >> self.ctb_log2)
-    }
-
-    /// Whether the block at (`nx`, `ny`) is available to the block at
-    /// (`x`, `y`) (6.4.1): inside the picture, decoded already, in the same
-    /// slice and tile.
-    pub fn available(&self, x: usize, y: usize, nx: isize, ny: isize) -> bool {
-        if nx < 0 || ny < 0 || nx as usize >= self.width || ny as usize >= self.height {
-            return false;
-        }
-        let (nx, ny) = (nx as usize, ny as usize);
-        let neighbour = self.zscan[(ny >> 2) * self.units_wide + (nx >> 2)];
-        let current = self.zscan[(y >> 2) * self.units_wide + (x >> 2)];
-        if neighbour > current {
-            return false;
-        }
-        let (a, b) = (self.ctb_address(x, y), self.ctb_address(nx, ny));
-        if !self.decoded[b] && a != b {
-            return false;
-        }
-        self.slice_address_of[a] == self.slice_address_of[b] && self.tile_of[a] == self.tile_of[b]
     }
 
     /// Decodes one slice segment.
@@ -287,6 +546,30 @@ impl Decoder {
             header.address as usize
         };
         self.slices.push(header.clone());
+        let Decoder {
+            layout,
+            planes,
+            units,
+            slice_of,
+            slice_address_of,
+            sao,
+            decoded,
+            saved_row_contexts,
+            saved_slice_contexts,
+            ..
+        } = self;
+        let planes = planes.iter_mut().map(Samples::band).collect();
+        let mut rows = Rows::new(
+            layout,
+            0,
+            planes,
+            units,
+            slice_of,
+            slice_address_of,
+            sao,
+            decoded,
+            None,
+        );
         let mut cabac = Cabac::new(data, header.data_offset);
         let mut contexts = Contexts::new(slice_qp);
         let mut state = SliceState {
@@ -306,65 +589,352 @@ impl Decoder {
             if ts >= ctbs {
                 return Err(HevcError::new("a slice running past the picture"));
             }
-            let rs = self.ts_to_rs[ts];
-            let (ctb_x, ctb_y) = (rs % self.width_ctbs, rs / self.width_ctbs);
-            self.slice_of[rs] = slice_index;
-            self.slice_address_of[rs] = slice_address;
+            let rs = rows.ts_to_rs[ts];
+            let (ctb_x, ctb_y) = (rs % rows.width_ctbs, rs / rows.width_ctbs);
+            rows.place_ctb(rs, slice_index, slice_address);
             // The context state and QP predictor at a CTB's start (9.3.1,
             // 8.6.1): fresh at a tile's start; at a row's start under
             // wavefronts, the state after the second CTB above when that CTB
             // is available, else fresh; at a dependent segment's start, the
             // state the segment before ended with.
-            let tile_start = ts == 0 || self.tile_of[rs] != self.tile_of[self.ts_to_rs[ts - 1]];
-            let row_start = self.pps.entropy_sync && ctb_x == self.tile_column_start(ctb_x);
+            let tile_start = ts == 0 || rows.tile_of[rs] != rows.tile_of[rows.ts_to_rs[ts - 1]];
+            let row_start = rows.pps.entropy_sync && ctb_x == rows.tile_column_start(ctb_x);
             if tile_start {
                 contexts = Contexts::new(slice_qp);
                 state.last_qp = slice_qp;
             } else if row_start {
-                let x = ctb_x << self.ctb_log2;
-                let y = ctb_y << self.ctb_log2;
-                let ctb = 1isize << self.ctb_log2;
-                let above_right = self.available(x, y, x as isize + ctb, y as isize - ctb);
-                contexts = match (&self.saved_row_contexts, above_right) {
+                let x = ctb_x << rows.ctb_log2;
+                let y = ctb_y << rows.ctb_log2;
+                let ctb = 1isize << rows.ctb_log2;
+                let above_right = rows.available(x, y, x as isize + ctb, y as isize - ctb);
+                contexts = match (&*saved_row_contexts, above_right) {
                     (Some(saved), true) => saved.clone(),
                     _ => Contexts::new(slice_qp),
                 };
                 state.last_qp = slice_qp;
             } else if first && state.header.dependent {
-                if let Some((saved, last_qp)) = &self.saved_slice_contexts {
+                if let Some((saved, last_qp)) = &*saved_slice_contexts {
                     contexts = saved.clone();
                     state.last_qp = *last_qp;
                 }
             }
             first = false;
-            self.coding_tree_unit(&mut cabac, &mut contexts, &mut state, ctb_x, ctb_y)?;
-            self.decoded[rs] = true;
+            rows.coding_tree_unit(&mut cabac, &mut contexts, &mut state, ctb_x, ctb_y)?;
+            rows.mark_decoded(rs);
             // Storage for the row below (9.3.2.4): after a row's second CTB
             // in its tile.
-            if self.pps.entropy_sync && ctb_x == self.tile_column_start(ctb_x) + 1 {
-                self.saved_row_contexts = Some(contexts.clone());
+            if rows.pps.entropy_sync && ctb_x == rows.tile_column_start(ctb_x) + 1 {
+                *saved_row_contexts = Some(contexts.clone());
             }
             let end_of_slice = cabac.terminate() == 1;
             ts += 1;
             if end_of_slice {
-                if self.pps.dependent_slices {
-                    self.saved_slice_contexts = Some((contexts, state.last_qp));
+                if rows.pps.dependent_slices {
+                    *saved_slice_contexts = Some((contexts, state.last_qp));
                 }
                 return Ok(());
             }
             if ts >= ctbs {
                 return Err(HevcError::new("a slice without its end"));
             }
-            let next = self.ts_to_rs[ts];
-            let new_tile = self.pps.tiles && self.tile_of[next] != self.tile_of[rs];
-            let new_row = self.pps.entropy_sync
-                && (next % self.width_ctbs == 0 || self.tile_of[next] != self.tile_of[next - 1]);
+            let next = rows.ts_to_rs[ts];
+            let new_tile = rows.pps.tiles && rows.tile_of[next] != rows.tile_of[rs];
+            let new_row = rows.pps.entropy_sync
+                && (next % rows.width_ctbs == 0 || rows.tile_of[next] != rows.tile_of[next - 1]);
             if new_tile || new_row {
                 if cabac.terminate() != 1 {
                     return Err(HevcError::new("a substream without its end bit"));
                 }
                 cabac.restart();
             }
+        }
+    }
+}
+
+impl Decoder {
+    /// Decodes a picture's one slice segment, its wavefront rows on up to
+    /// `threads` threads at once (9.3.1, 9.3.2.4): each CTB row from its own
+    /// substream (`starts`, positions in `data`), a row's CTB waiting for
+    /// the CTB above and to its right, a row starting from the context
+    /// state after the second CTB above. Each row owns its band of the
+    /// picture and hears the bottom of the row above as it is decoded.
+    pub fn slice_in_rows(
+        &mut self,
+        header: SliceHeader,
+        data: &[u8],
+        starts: &[usize],
+        threads: usize,
+    ) -> Result<(), HevcError> {
+        let slice_qp = self.pps.init_qp + header.qp_delta;
+        let qp_offset = 6 * (self.sps.bit_depth_luma as i32 - 8);
+        if !(-qp_offset..=51).contains(&slice_qp) {
+            return Err(HevcError::new("a slice QP out of range"));
+        }
+        let rows = self.height_ctbs;
+        if starts.len() != rows || starts.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(HevcError::new("entry points that do not divide the rows"));
+        }
+        self.slices.push(header.clone());
+        let Decoder {
+            layout,
+            planes,
+            units,
+            slice_of,
+            slice_address_of,
+            sao,
+            decoded,
+            ..
+        } = self;
+        let layout: &Layout = layout;
+        let width_ctbs = layout.width_ctbs;
+        let ctb = 1usize << layout.ctb_log2;
+        // Each row's share: its band of every plane, units, and records.
+        let mut plane_bands: Vec<std::vec::IntoIter<Band<'_>>> = planes
+            .iter_mut()
+            .enumerate()
+            .map(|(component, plane)| {
+                let rows_per_band = if component == 0 {
+                    ctb
+                } else {
+                    ctb >> layout.sub_y
+                };
+                plane
+                    .band()
+                    .split(rows_per_band * layout.strides[component])
+                    .into_iter()
+            })
+            .collect();
+        let unit_rows = (ctb >> 2) * layout.units_wide;
+        let mut unit_bands = units.chunks_mut(unit_rows);
+        let mut slice_bands = slice_of.chunks_mut(width_ctbs);
+        let mut address_bands = slice_address_of.chunks_mut(width_ctbs);
+        let mut sao_bands = sao.chunks_mut(width_ctbs);
+        let mut decoded_bands = decoded.chunks_mut(width_ctbs);
+        let workers = threads.clamp(1, rows);
+        let mut shares: Vec<Vec<RowParts<'_>>> = (0..workers).map(|_| Vec::new()).collect();
+        for row in 0..rows {
+            let parts = RowParts {
+                row,
+                planes: plane_bands.iter_mut().filter_map(Iterator::next).collect(),
+                units: unit_bands.next().unwrap_or_default(),
+                slice_of: slice_bands.next().unwrap_or_default(),
+                slice_address_of: address_bands.next().unwrap_or_default(),
+                sao: sao_bands.next().unwrap_or_default(),
+                decoded: decoded_bands.next().unwrap_or_default(),
+            };
+            shares[row % workers].push(parts);
+        }
+        // Row r tells row r + 1.
+        let mut senders = Vec::new();
+        let mut receivers = vec![None];
+        for _ in 1..rows {
+            let (sender, receiver) = std::sync::mpsc::channel::<RowUpdate>();
+            senders.push(Some(sender));
+            receivers.push(Some(receiver));
+        }
+        senders.push(None);
+        let mut links: Vec<Vec<_>> = (0..workers).map(|_| Vec::new()).collect();
+        for (row, (sender, receiver)) in senders.into_iter().zip(receivers).enumerate() {
+            links[row % workers].push((sender, receiver));
+        }
+        let header = &header;
+        let failures: Vec<(usize, HevcError)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = shares
+                .into_iter()
+                .zip(links)
+                .map(|(share, links)| {
+                    scope.spawn(move || {
+                        for (parts, (sender, receiver)) in share.into_iter().zip(links) {
+                            let row = parts.row;
+                            let end = starts.get(row + 1).copied().unwrap_or(data.len());
+                            let outcome = decode_row(
+                                layout,
+                                parts,
+                                header,
+                                &data[..end],
+                                starts[row],
+                                slice_qp,
+                                receiver,
+                                sender,
+                            );
+                            if let Err(error) = outcome {
+                                return Some((row, error));
+                            }
+                        }
+                        None
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .filter_map(|handle| {
+                    handle.join().unwrap_or_else(|_| {
+                        Some((usize::MAX, HevcError::new("a row's decoding failed")))
+                    })
+                })
+                .collect()
+        });
+        // The first failure in picture order: rows below a failed row fail
+        // too, for want of it.
+        match failures.into_iter().min_by_key(|(row, _)| *row) {
+            Some((_, error)) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Decodes CTB row `parts.row` from its substream at `start`, hearing the
+/// row above on `above` and telling the row below on `below`.
+#[allow(clippy::too_many_arguments)]
+fn decode_row(
+    layout: &Layout,
+    parts: RowParts<'_>,
+    header: &SliceHeader,
+    data: &[u8],
+    start: usize,
+    slice_qp: i32,
+    above: Option<std::sync::mpsc::Receiver<RowUpdate>>,
+    below: Option<std::sync::mpsc::Sender<RowUpdate>>,
+) -> Result<(), HevcError> {
+    let row = parts.row;
+    let width_ctbs = layout.width_ctbs;
+    let edge = above.as_ref().map(|_| Edge::new(layout));
+    let mut rows = Rows::new(
+        layout,
+        row,
+        parts.planes,
+        parts.units,
+        parts.slice_of,
+        parts.slice_address_of,
+        parts.sao,
+        parts.decoded,
+        edge,
+    );
+    let lost = || HevcError::new("the row above stopped");
+    let mut cabac = Cabac::new(data, start);
+    let mut contexts = Contexts::new(slice_qp);
+    let mut state = SliceState {
+        qp: slice_qp,
+        header: header.clone(),
+        last_qp: slice_qp,
+        quant_group: (usize::MAX, usize::MAX),
+        group_qp: slice_qp,
+        qp_delta: 0,
+        qp_delta_coded: false,
+        chroma_offset: (0, 0),
+        chroma_offset_coded: false,
+        bypass: false,
+    };
+    for ctb_x in 0..width_ctbs {
+        let rs = row * width_ctbs + ctb_x;
+        rows.place_ctb(rs, 0, 0);
+        // The CTB above and to the right (or above, at the row's end) must
+        // be in before this one reads it.
+        if let (Some(receiver), Some(edge)) = (&above, rows.above.as_mut()) {
+            let needed = (ctb_x + 2).min(width_ctbs);
+            while edge.received < needed {
+                edge.apply(receiver.recv().map_err(|_| lost())?);
+            }
+        }
+        if ctb_x == 0 {
+            // A row starts from the state after the second CTB above.
+            contexts = match rows.above.as_ref().and_then(|edge| edge.contexts.clone()) {
+                Some(saved) if width_ctbs > 1 => saved,
+                _ => Contexts::new(slice_qp),
+            };
+            state.last_qp = slice_qp;
+        }
+        rows.coding_tree_unit(&mut cabac, &mut contexts, &mut state, ctb_x, row)?;
+        rows.mark_decoded(rs);
+        if let Some(sender) = &below {
+            if ctb_x == 1 {
+                let _ = sender.send(RowUpdate::Contexts(Box::new(contexts.clone())));
+            }
+            let _ = sender.send(RowUpdate::Ctb(Box::new(rows.bottom_of(ctb_x))));
+        }
+        let end_of_slice = cabac.terminate() == 1;
+        let last_row = row + 1 == layout.height_ctbs;
+        if ctb_x + 1 == width_ctbs {
+            if end_of_slice != last_row {
+                return Err(HevcError::new("a wavefront row ending out of place"));
+            }
+            if !last_row && cabac.terminate() != 1 {
+                return Err(HevcError::new("a substream without its end bit"));
+            }
+        } else if end_of_slice {
+            return Err(HevcError::new("a slice ending inside a row"));
+        }
+    }
+    Ok(())
+}
+
+impl Rows<'_> {
+    /// The bottom of the band's CTB `ctb_x`, for the row below.
+    fn bottom_of(&self, ctb_x: usize) -> CtbBottom {
+        let layout = self.layout;
+        let ctb = 1usize << layout.ctb_log2;
+        let top = self.top_ctb << layout.ctb_log2;
+        let last_row = (top + ctb).min(layout.height) - 1;
+        let lines = self
+            .planes
+            .iter()
+            .enumerate()
+            .map(|(component, band)| {
+                let (shift_x, shift_y) = if component == 0 {
+                    (0, 0)
+                } else {
+                    (layout.sub_x, layout.sub_y)
+                };
+                let stride = layout.strides[component];
+                let from = (ctb_x * ctb) >> shift_x;
+                let to = (((ctb_x + 1) * ctb) >> shift_x).min(stride);
+                let row = (last_row >> shift_y) - (top >> shift_y);
+                let at = row * stride;
+                let segment = match band {
+                    Band::Eight(samples) => Samples::Eight(samples[at + from..at + to].to_vec()),
+                    Band::Deep(samples) => Samples::Deep(samples[at + from..at + to].to_vec()),
+                };
+                (from, segment)
+            })
+            .collect();
+        let unit_from = (ctb_x * ctb) >> 2;
+        let unit_to = (((ctb_x + 1) * ctb) >> 2).min(layout.units_wide);
+        let unit_row = (last_row >> 2) - (top >> 2);
+        let units = self.units
+            [unit_row * layout.units_wide + unit_from..unit_row * layout.units_wide + unit_to]
+            .to_vec();
+        let rs = self.top_ctb * layout.width_ctbs + ctb_x;
+        CtbBottom {
+            ctb_x,
+            lines,
+            unit_from,
+            units,
+            slice_address: self.slice_address(rs),
+            sao: self.sao_of(rs),
+        }
+    }
+}
+
+impl<'a> Band<'a> {
+    /// The band cut in two at sample `at`.
+    pub(super) fn split_at(self, at: usize) -> (Band<'a>, Band<'a>) {
+        match self {
+            Band::Eight(samples) => {
+                let (before, after) = samples.split_at_mut(at);
+                (Band::Eight(before), Band::Eight(after))
+            }
+            Band::Deep(samples) => {
+                let (before, after) = samples.split_at_mut(at);
+                (Band::Deep(before), Band::Deep(after))
+            }
+        }
+    }
+
+    /// The band cut into pieces of `size` samples (the last shorter).
+    pub(super) fn split(self, size: usize) -> Vec<Band<'a>> {
+        match self {
+            Band::Eight(samples) => samples.chunks_mut(size).map(Band::Eight).collect(),
+            Band::Deep(samples) => samples.chunks_mut(size).map(Band::Deep).collect(),
         }
     }
 }
@@ -414,7 +984,7 @@ fn chroma_qp(qpi: i32, chroma_format: u32) -> i32 {
     }
 }
 
-impl Decoder {
+impl Rows<'_> {
     /// The first CTB column of the tile column holding `ctb_x`.
     fn tile_column_start(&self, ctb_x: usize) -> usize {
         self.pps
@@ -450,7 +1020,7 @@ impl Decoder {
     ) {
         let rs = ctb_y * self.width_ctbs + ctb_x;
         let same = |other: usize| {
-            self.slice_address_of[other] == self.slice_address_of[rs]
+            self.slice_address(other) == self.slice_address(rs)
                 && self.tile_of[other] == self.tile_of[rs]
         };
         let mut merge_left = false;
@@ -467,15 +1037,16 @@ impl Decoder {
             } else {
                 rs - self.width_ctbs
             };
-            self.sao[rs] = self.sao[source];
+            let mut merged = self.sao_of(source);
             // A merged component off for this slice stays off.
             if !state.header.sao_luma {
-                self.sao[rs][0] = Sao::default();
+                merged[0] = Sao::default();
             }
             if !state.header.sao_chroma {
-                self.sao[rs][1] = Sao::default();
-                self.sao[rs][2] = Sao::default();
+                merged[1] = Sao::default();
+                merged[2] = Sao::default();
             }
+            *self.sao_mut(rs) = merged;
             return;
         }
         let components = if self.chroma == 0 { 1 } else { 3 };
@@ -547,7 +1118,7 @@ impl Decoder {
                 }
             }
         }
-        self.sao[rs] = params;
+        *self.sao_mut(rs) = params;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -671,7 +1242,7 @@ impl Decoder {
         let height = size.min(self.height - y);
         for uy in (y..y + height).step_by(4) {
             for ux in (x..x + width).step_by(4) {
-                let unit = &mut self.units[(uy >> 2) * self.units_wide + (ux >> 2)];
+                let unit = self.unit_mut(ux, uy);
                 *unit = Unit {
                     depth: depth as u8,
                     mode: 1,
@@ -692,7 +1263,7 @@ impl Decoder {
             {
                 for uy in (y..y + height).step_by(4) {
                     for ux in (x..x + width).step_by(4) {
-                        self.units[(uy >> 2) * self.units_wide + (ux >> 2)].unfiltered = true;
+                        self.unit_mut(ux, uy).unfiltered = true;
                     }
                 }
             }
@@ -741,7 +1312,7 @@ impl Decoder {
             let part_size = if split_intra { half } else { size };
             for uy in (py..(py + part_size).min(self.height)).step_by(4) {
                 for ux in (px..(px + part_size).min(self.width)).step_by(4) {
-                    self.units[(uy >> 2) * self.units_wide + (ux >> 2)].mode = mode as u8;
+                    self.unit_mut(ux, uy).mode = mode as u8;
                 }
             }
         }
@@ -797,7 +1368,7 @@ impl Decoder {
         // The CU's final QpY, for its neighbours and the deblocking filter.
         for uy in (y..y + height).step_by(4) {
             for ux in (x..x + width).step_by(4) {
-                self.units[(uy >> 2) * self.units_wide + (ux >> 2)].qp = state.qp as i8;
+                self.unit_mut(ux, uy).qp = state.qp as i8;
             }
         }
         state.last_qp = state.qp;
@@ -854,6 +1425,13 @@ impl Decoder {
         let data = cabac.data();
         let mut reader = super::bits::BitReader::new(&data[cabac.byte_position()..]);
         let size = 1usize << log2;
+        let (bit_depth_luma, bit_depth_chroma) = (
+            self.layout.sps.bit_depth_luma,
+            self.layout.sps.bit_depth_chroma,
+        );
+        let (chroma, sub_x, sub_y) = (self.layout.chroma, self.layout.sub_x, self.layout.sub_y);
+        let layout = self.layout;
+        let tops = [self.top_of(0), self.top_of(1), self.top_of(2)];
         let mut write_block = |reader: &mut super::bits::BitReader<'_>,
                                plane: usize,
                                px: usize,
@@ -863,19 +1441,19 @@ impl Decoder {
                                pcm_depth: u32,
                                depth: u32|
          -> Result<(), HevcError> {
-            let stride = self.strides[plane];
-            with_samples!(&mut self.planes[plane], samples => {
+            let stride = layout.strides[plane];
+            let top = tops[plane];
+            with_band!(&mut self.planes[plane], samples => {
                 for row in 0..h {
                     for column in 0..w {
                         let value = reader.bits(pcm_depth)? << (depth - pcm_depth);
-                        samples[(py + row) * stride + px + column] = Sample::of(value as i32);
+                        samples[(py + row - top) * stride + px + column] = Sample::of(value as i32);
                     }
                 }
             });
             Ok(())
         };
-        let (bit_depth_luma, bit_depth_chroma) =
-            (self.sps.bit_depth_luma, self.sps.bit_depth_chroma);
+
         write_block(
             &mut reader,
             0,
@@ -886,9 +1464,9 @@ impl Decoder {
             params.bit_depth_luma,
             bit_depth_luma,
         )?;
-        if self.chroma != 0 {
-            let (w, h) = (size >> self.sub_x, size >> self.sub_y);
-            let (cx, cy) = (x >> self.sub_x, y >> self.sub_y);
+        if chroma != 0 {
+            let (w, h) = (size >> sub_x, size >> sub_y);
+            let (cx, cy) = (x >> sub_x, y >> sub_y);
             for plane in 1..3 {
                 write_block(
                     &mut reader,
@@ -923,7 +1501,7 @@ struct TreeNode {
     block: usize,
 }
 
-impl Decoder {
+impl Rows<'_> {
     #[allow(clippy::too_many_arguments)]
     fn transform_tree(
         &mut self,
@@ -1078,7 +1656,7 @@ impl Decoder {
             )?;
         }
         // The chroma of 4:4:4 takes the prediction block's own mode.
-        let chroma_mode = |decoder: &Decoder, x: usize, y: usize| -> u32 {
+        let chroma_mode = |decoder: &Rows<'_>, x: usize, y: usize| -> u32 {
             if decoder.chroma == 3 {
                 let index = decoder.partition_index(node, x, y);
                 modes.chroma[index]
@@ -1106,7 +1684,7 @@ impl Decoder {
         let size = 1usize << log2;
         for uy in (node.y..(node.y + size).min(self.height)).step_by(4) {
             for ux in (node.x..(node.x + size).min(self.width)).step_by(4) {
-                let unit = &mut self.units[(uy >> 2) * self.units_wide + (ux >> 2)];
+                let unit = self.unit_mut(ux, uy);
                 if ux == node.x {
                     unit.left_edge = true;
                 }
@@ -1225,9 +1803,11 @@ impl Decoder {
             stride,
             unit_x,
             unit_y,
+            top: self.top_of(component),
         };
-        with_samples!(&self.planes[component], samples => {
-            gather.run(samples, &available, &mut line, &mut known)
+        let above = self.above.as_ref().map(|edge| &edge.lines[component]);
+        with_band!(&self.planes[component], samples => {
+            gather.run(&samples[..], above_line(above), &available, &mut line, &mut known)
         });
         let mut references = References::substitute(n, bit_depth, &mut line, &known);
         let filter_allowed = component == 0 || self.chroma == 3;
@@ -1241,9 +1821,10 @@ impl Decoder {
         intra::predict(&references, mode, n, edge_filters, bit_depth, predicted);
         // Coded blocks lie inside the picture: its size is whole minimum
         // coding blocks, and no block crosses one.
-        with_samples!(&mut self.planes[component], samples => {
+        let top = self.top_of(component);
+        with_band!(&mut self.planes[component], samples => {
             for (row, values) in predicted.chunks_exact(n).enumerate() {
-                let start = (y + row) * stride + x;
+                let start = (y + row - top) * stride + x;
                 for (sample, &value) in samples[start..start + n].iter_mut().zip(values) {
                     *sample = Sample::of(value);
                 }
@@ -1273,32 +1854,13 @@ impl Decoder {
         buffer.resize(32 * 32, 0);
         let levels = &mut buffer[..n * n];
         levels.fill(0);
-        let extent = if coded {
-            super::residual::residual_coding(
-                self,
-                cabac,
-                contexts,
-                state.bypass,
-                component,
-                log2,
-                mode,
-                levels,
-            )?
-        } else {
-            super::residual::Coded {
-                transform_skip: false,
-                rows: 0,
-                columns: 0,
-            }
-        };
-        let transform_skip = extent.transform_skip;
         let bit_depth = if component == 0 {
             self.sps.bit_depth_luma
         } else {
             self.sps.bit_depth_chroma
         };
-        if coded && !state.bypass {
-            // Scaling (8.6.3).
+        // Scaling (8.6.3), applied as the levels are read.
+        let dequant = (coded && !state.bypass).then(|| {
             let qp = if component == 0 {
                 state.qp + 6 * (self.sps.bit_depth_luma as i32 - 8)
             } else {
@@ -1319,24 +1881,36 @@ impl Decoder {
                 let qpi = (state.qp + pps_offset + slice_offset + cu_offset).clamp(-offset_c, 57);
                 chroma_qp(qpi, self.chroma) + offset_c
             };
-            let shift = bit_depth as i32 + log2 as i32 - 5;
-            let scale = LEVEL_SCALE[(qp % 6) as usize] << (qp / 6);
-            let factors = self.scaling.as_ref().filter(|_| !(transform_skip && n > 4));
-            let matrix = &factors.map(|factors| &factors.factors[log2 as usize - 2][component]);
-            // Only the coded rows and columns hold levels.
-            let round = 1i64 << (shift - 1);
-            for row in 0..extent.rows {
-                let start = row * n;
-                for (column, level) in levels[start..start + extent.columns].iter_mut().enumerate()
-                {
-                    if *level == 0 {
-                        continue;
-                    }
-                    let m = matrix.map_or(16, |matrix| i64::from(matrix[start + column]));
-                    let scaled = (i64::from(*level) * m * i64::from(scale) + round) >> shift;
-                    *level = scaled.clamp(-32768, 32767) as i32;
-                }
+            super::residual::Dequant {
+                scale: i64::from(LEVEL_SCALE[(qp % 6) as usize] << (qp / 6)),
+                shift: bit_depth + log2 - 5,
+                matrix: self
+                    .scaling
+                    .as_ref()
+                    .map(|factors| &factors.factors[log2 as usize - 2][component][..]),
             }
+        });
+        let extent = if coded {
+            super::residual::residual_coding(
+                self.layout,
+                cabac,
+                contexts,
+                state.bypass,
+                component,
+                log2,
+                mode,
+                levels,
+                dequant,
+            )?
+        } else {
+            super::residual::Coded {
+                transform_skip: false,
+                rows: 0,
+                columns: 0,
+            }
+        };
+        let transform_skip = extent.transform_skip;
+        if coded && !state.bypass {
             if transform_skip {
                 let rotate = self.sps.transform_skip_rotation && n == 4;
                 transform::transform_skip(levels, log2, bit_depth, rotate);
@@ -1384,9 +1958,10 @@ impl Decoder {
         }
         let stride = self.strides[component];
         let max = (1i32 << bit_depth) - 1;
-        with_samples!(&mut self.planes[component], samples => {
+        let top = self.top_of(component);
+        with_band!(&mut self.planes[component], samples => {
             for (row, residuals) in levels.chunks_exact(n).enumerate() {
-                let start = (y + row) * stride + x;
+                let start = (y + row - top) * stride + x;
                 for (sample, &residual) in samples[start..start + n].iter_mut().zip(residuals) {
                     *sample = Sample::of((sample.value() + residual).clamp(0, max));
                 }
@@ -1395,7 +1970,9 @@ impl Decoder {
         self.levels = buffer;
         Ok(())
     }
+}
 
+impl Decoder {
     /// Whether every CTB was decoded: a picture whose data ends early is
     /// not filtered or handed on.
     pub fn complete(&self) -> bool {
@@ -1407,7 +1984,7 @@ impl Decoder {
     pub fn finish_into(mut self, workspace: &mut Workspace) -> Picture {
         let picture = self.filtered();
         workspace.units = std::mem::take(&mut self.units);
-        workspace.zscan = std::mem::take(&mut self.zscan);
+        workspace.zscan = std::mem::take(&mut self.layout.zscan);
         picture
     }
 
@@ -1464,6 +2041,9 @@ struct Gather {
     /// A 4x4 luma unit's size in this component's samples.
     unit_x: usize,
     unit_y: usize,
+    /// The band's first row in this component's samples: rows above it
+    /// come from the line above.
+    top: usize,
 }
 
 impl Gather {
@@ -1472,7 +2052,8 @@ impl Gather {
     /// its samples copied as a run.
     fn run<T: Sample>(
         &self,
-        plane: &[T],
+        band: &[T],
+        above: &[T],
         available: &dyn Fn(usize, usize) -> bool,
         line: &mut [i32; intra::LINE],
         known: &mut [bool; intra::LINE],
@@ -1484,7 +2065,16 @@ impl Gather {
             stride,
             unit_x,
             unit_y,
+            top,
         } = *self;
+        // Row `y` of the plane: the band's, or the line above it.
+        let row_of = |y: usize| -> &[T] {
+            if y >= top {
+                &band[(y - top) * stride..(y - top + 1) * stride]
+            } else {
+                above
+            }
+        };
         if x > 0 {
             let column = x - 1;
             let mut index = 0;
@@ -1494,29 +2084,26 @@ impl Gather {
                 if available(column, sy) {
                     for k in 0..run {
                         let at = 2 * n - 1 - (index + k);
-                        line[at] = plane[(sy + k) * stride + column].value();
+                        line[at] = row_of(sy + k)[column].value();
                         known[at] = true;
                     }
                 }
                 index += run;
             }
             if y > 0 && available(column, y - 1) {
-                line[2 * n] = plane[(y - 1) * stride + column].value();
+                line[2 * n] = row_of(y - 1)[column].value();
                 known[2 * n] = true;
             }
         }
         if y > 0 {
-            let row = (y - 1) * stride;
+            let row = row_of(y - 1);
             let mut index = 0;
             while index < 2 * n {
                 let sx = x + index;
                 let run = unit_x.min(2 * n - index);
                 if available(sx, y - 1) {
                     let at = 2 * n + 1 + index;
-                    for (value, &sample) in line[at..at + run]
-                        .iter_mut()
-                        .zip(&plane[row + sx..row + sx + run])
-                    {
+                    for (value, &sample) in line[at..at + run].iter_mut().zip(&row[sx..sx + run]) {
                         *value = sample.value();
                     }
                     known[at..at + run].fill(true);

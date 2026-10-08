@@ -4,7 +4,7 @@
 
 use super::HevcError;
 use super::cabac::{self, Cabac, Contexts};
-use super::decode::Decoder;
+use super::decode::Layout;
 use super::tables::{Scan, scan};
 
 /// The scan of a block (7.4.9.11): intra 4x4 blocks, and 8x8 luma (or
@@ -59,6 +59,81 @@ const SIG_CTX_PATTERN: [[u8; 16]; 4] = {
     tables
 };
 
+/// The scaling of levels as they are read (8.6.3): times the level scale
+/// and the scaling list's factor (16 without one), rounded down `shift`
+/// bits, clipped to 16 bits.
+pub struct Dequant<'s> {
+    pub scale: i64,
+    pub shift: u32,
+    /// The block's scaling factors, row-major; not used by a transform
+    /// skip block over 4x4.
+    pub matrix: Option<&'s [u8]>,
+}
+
+/// Each significance context table, once: by block size (4x4, 8x8, 16x16
+/// and up), component, scan, the pattern of coded neighbours, and whether
+/// the sub-block is the block's first (which holds the DC).
+fn significance_table(
+    log2: u32,
+    luma: bool,
+    kind: Scan,
+    pattern: usize,
+    first: bool,
+) -> &'static [u8; 16] {
+    static TABLES: std::sync::OnceLock<Vec<[u8; 16]>> = std::sync::OnceLock::new();
+    let tables = TABLES.get_or_init(|| {
+        let mut tables = Vec::with_capacity(144);
+        for size in 0..3u32 {
+            for luma in [false, true] {
+                for kind in [Scan::Diagonal, Scan::Horizontal, Scan::Vertical] {
+                    for pattern_table in &SIG_CTX_PATTERN {
+                        for first in [false, true] {
+                            let position_scan = scan(2, kind);
+                            let chroma_base = if luma { 0 } else { 27 };
+                            let mut table = [0u8; 16];
+                            for (p, context) in table.iter_mut().enumerate() {
+                                let (px, py) = position_scan[p];
+                                let at = usize::from(py) * 4 + usize::from(px);
+                                *context = if size == 0 {
+                                    chroma_base + SIG_CTX_4X4[at]
+                                } else {
+                                    let offset = chroma_base
+                                        + if luma {
+                                            (if first { 0 } else { 3 })
+                                                + if size == 1 {
+                                                    if kind == Scan::Diagonal { 9 } else { 15 }
+                                                } else {
+                                                    21
+                                                }
+                                        } else if size == 1 {
+                                            9
+                                        } else {
+                                            12
+                                        };
+                                    offset + pattern_table[at]
+                                };
+                            }
+                            if size > 0 && first {
+                                // The block's DC.
+                                table[0] = chroma_base;
+                            }
+                            tables.push(table);
+                        }
+                    }
+                }
+            }
+        }
+        tables
+    });
+    let size = (log2.min(4) - 2) as usize;
+    let kind = match kind {
+        Scan::Diagonal => 0,
+        Scan::Horizontal => 1,
+        Scan::Vertical => 2,
+    };
+    &tables[(((size * 2 + usize::from(luma)) * 3 + kind) * 4 + pattern) * 2 + usize::from(first)]
+}
+
 /// What a block's coding said beyond its levels.
 pub struct Coded {
     pub transform_skip: bool,
@@ -70,7 +145,7 @@ pub struct Coded {
 /// Reads a block's levels into `levels` (row-major, zero beforehand).
 #[allow(clippy::too_many_arguments)]
 pub fn residual_coding(
-    decoder: &Decoder,
+    layout: &Layout,
     cabac: &mut Cabac<'_>,
     contexts: &mut Contexts,
     bypass: bool,
@@ -78,9 +153,10 @@ pub fn residual_coding(
     log2: u32,
     mode: u32,
     levels: &mut [i32],
+    dequant: Option<Dequant<'_>>,
 ) -> Result<Coded, HevcError> {
-    let sps = &decoder.sps;
-    let pps = &decoder.pps;
+    let sps = &layout.sps;
+    let pps = &layout.pps;
     let n = 1usize << log2;
     let luma = component == 0;
     let mut transform_skip = false;
@@ -88,6 +164,15 @@ pub fn residual_coding(
         transform_skip =
             cabac.decision(&mut contexts.contexts[cabac::TRANSFORM_SKIP + usize::from(!luma)]) == 1;
     }
+    // Scaling as levels are read; a transform skip block over 4x4 takes
+    // no scaling list.
+    let matrix = dequant
+        .as_ref()
+        .and_then(|dequant| dequant.matrix)
+        .filter(|_| !(transform_skip && n > 4));
+    let round = dequant
+        .as_ref()
+        .map_or(0, |dequant| 1i64 << (dequant.shift - 1));
     // The last significant coefficient (9.3.4.2.3).
     let (offset, shift) = if luma {
         (
@@ -120,7 +205,7 @@ pub fn residual_coding(
     };
     let mut last_x = suffix(cabac, x_prefix) as usize;
     let mut last_y = suffix(cabac, y_prefix) as usize;
-    let kind = scan_kind(log2, component, decoder.chroma, mode);
+    let kind = scan_kind(log2, component, layout.chroma, mode);
     if kind == Scan::Vertical {
         std::mem::swap(&mut last_x, &mut last_y);
     }
@@ -180,52 +265,23 @@ pub fn residual_coding(
         let coded_here = coded_sub[sy * subs + sx];
         if coded_here && start >= 0 {
             // Each scan position's context, for this sub-block.
-            let mut contexts_here = [0usize; 16];
-            let chroma_base = if luma { 0 } else { 27 };
-            if skip_context {
-                contexts_here = [chroma_base + if luma { 42 } else { 16 }; 16];
-            } else if log2 == 2 {
-                for (p, context) in contexts_here.iter_mut().enumerate() {
-                    let (px, py) = position_scan[p];
-                    *context = chroma_base
-                        + usize::from(SIG_CTX_4X4[usize::from(py) * 4 + usize::from(px)]);
-                }
+            let chroma_base: u8 = if luma { 0 } else { 27 };
+            let skip_table = [chroma_base + if luma { 42 } else { 16 }; 16];
+            let contexts_here = if skip_context {
+                &skip_table
             } else {
-                let offset = chroma_base
-                    + if luma {
-                        (if sx > 0 || sy > 0 { 3 } else { 0 })
-                            + if log2 == 3 {
-                                if kind == Scan::Diagonal { 9 } else { 15 }
-                            } else {
-                                21
-                            }
-                    } else if log2 == 3 {
-                        9
-                    } else {
-                        12
-                    };
-                let table = &SIG_CTX_PATTERN[pattern];
-                for (p, context) in contexts_here.iter_mut().enumerate() {
-                    let (px, py) = position_scan[p];
-                    *context = offset + usize::from(table[usize::from(py) * 4 + usize::from(px)]);
-                }
-                if sub == 0 {
-                    // The block's DC.
-                    contexts_here[0] = chroma_base;
-                }
-            }
+                significance_table(log2, luma, kind, pattern, sx == 0 && sy == 0)
+            };
+            let significance = &mut contexts.contexts[cabac::SIG_COEFF..cabac::SIG_COEFF + 44 + 27];
             for p in (1..=start as usize).rev() {
-                if cabac.decision(&mut contexts.contexts[cabac::SIG_COEFF + contexts_here[p]]) == 1
-                {
+                if cabac.decision(&mut significance[usize::from(contexts_here[p])]) == 1 {
                     found[count] = p as u8;
                     count += 1;
                     infer_dc = false;
                 }
             }
             // The DC position: coded, or inferred when nothing after it was.
-            if infer_dc
-                || cabac.decision(&mut contexts.contexts[cabac::SIG_COEFF + contexts_here[0]]) == 1
-            {
+            if infer_dc || cabac.decision(&mut significance[usize::from(contexts_here[0])]) == 1 {
                 found[count] = 0;
                 count += 1;
             }
@@ -309,19 +365,27 @@ pub fn residual_coding(
                 }
             }
             sum = sum.wrapping_add(level);
-            let negative =
-                (index as u32) < signed && (signs >> (signed - 1 - index as u32)) & 1 == 1;
+            // The hidden sign is the last coefficient's: odd levels' sum
+            // makes it negative.
+            let negative = if (index as u32) < signed {
+                (signs >> (signed - 1 - index as u32)) & 1 == 1
+            } else {
+                sum & 1 == 1
+            };
             let (px, py) = position_scan[usize::from(p)];
             let (x, y) = ((sx << 2) + usize::from(px), (sy << 2) + usize::from(py));
             rows = rows.max(y + 1);
             columns = columns.max(x + 1);
-            levels[origin + usize::from(py) * n + usize::from(px)] =
-                if negative { -level } else { level };
-        }
-        if sign_hidden && sum & 1 == 1 {
-            let (px, py) = position_scan[first_sig];
             let at = origin + usize::from(py) * n + usize::from(px);
-            levels[at] = -levels[at];
+            let signed_level = if negative { -level } else { level };
+            levels[at] = match &dequant {
+                Some(dequant) => {
+                    let factor = matrix.map_or(16, |matrix| i64::from(matrix[at]));
+                    ((i64::from(signed_level) * factor * dequant.scale + round) >> dequant.shift)
+                        .clamp(-32768, 32767) as i32
+                }
+                None => signed_level,
+            };
         }
     }
     Ok(Coded {

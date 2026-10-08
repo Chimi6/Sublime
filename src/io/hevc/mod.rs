@@ -49,19 +49,23 @@ const PPS: u8 = 34;
 /// Decodes the first picture of a sequence of NAL units (each without a
 /// start code or length prefix).
 pub fn decode_picture<'a>(nals: impl IntoIterator<Item = &'a [u8]>) -> Result<Picture, HevcError> {
-    decode_picture_in(nals, &mut Workspace::default())
+    let threads = std::thread::available_parallelism().map_or(1, |count| count.get());
+    decode_picture_in(nals, &mut Workspace::default(), threads)
 }
 
 /// Decodes the first picture, its large buffers from `workspace` (one per
-/// thread decoding a grid's tiles).
+/// thread decoding a grid's tiles). A picture of one slice segment with
+/// wavefront rows decodes its rows on up to `threads` threads.
 pub fn decode_picture_in<'a>(
     nals: impl IntoIterator<Item = &'a [u8]>,
     workspace: &mut Workspace,
+    threads: usize,
 ) -> Result<Picture, HevcError> {
     let mut sps_sets: HashMap<u32, Sps> = HashMap::new();
     let mut pps_sets: HashMap<u32, Pps> = HashMap::new();
-    let mut decoder: Option<decode::Decoder> = None;
     let mut previous: Option<SliceHeader> = None;
+    // The first picture's slice segments, each with its parameter sets.
+    let mut segments: Vec<(Nal<'a>, SliceHeader, Sps, Pps)> = Vec::new();
     for bytes in nals {
         let nal = Nal::parse(bytes)?;
         match nal.kind {
@@ -82,25 +86,44 @@ pub fn decode_picture_in<'a>(
                 };
                 let (header, sps, pps) =
                     SliceHeader::parse(&nal.rbsp, kind, lookup, previous.as_ref())?;
-                if header.first_in_picture && decoder.is_some() {
+                if header.first_in_picture && !segments.is_empty() {
                     // The next picture: the first is done.
                     break;
                 }
-                if decoder.is_none() {
-                    decoder = Some(decode::Decoder::reusing(sps, pps, workspace)?);
-                }
-                let picture = decoder
-                    .as_mut()
-                    .ok_or_else(|| HevcError::new("no picture"))?;
                 if !header.dependent {
                     previous = Some(header.clone());
                 }
-                picture.slice(header, &nal.rbsp)?;
+                segments.push((nal, header, sps, pps));
             }
             _ => {}
         }
     }
-    let decoder = decoder.ok_or_else(|| HevcError::new("no picture in the bitstream"))?;
+    let Some((_, _, sps, pps)) = segments.first() else {
+        return Err(HevcError::new("no picture in the bitstream"));
+    };
+    let mut decoder = decode::Decoder::reusing(sps.clone(), pps.clone(), workspace, threads)?;
+    let wavefront_rows = segments.len() == 1
+        && threads > 1
+        && decoder.pps.entropy_sync
+        && !decoder.pps.tiles
+        && decoder.height_ctbs > 1
+        && segments[0].1.address == 0
+        && segments[0].1.entry_points.len() + 1 == decoder.height_ctbs;
+    if wavefront_rows {
+        let (nal, header, _, _) = segments.remove(0);
+        // Entry points count bytes as sent: each row's start in the RBSP.
+        let mut raw = nal.raw_position(header.data_offset);
+        let mut starts = vec![header.data_offset];
+        for &size in &header.entry_points {
+            raw += size as usize;
+            starts.push(nal.rbsp_position(raw));
+        }
+        decoder.slice_in_rows(header, &nal.rbsp, &starts, threads)?;
+    } else {
+        for (nal, header, _, _) in segments {
+            decoder.slice(header, &nal.rbsp)?;
+        }
+    }
     if !decoder.complete() {
         return Err(HevcError::new(
             "a picture whose data ends before its last block",

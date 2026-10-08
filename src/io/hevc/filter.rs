@@ -3,8 +3,10 @@
 //! such edge of an intra picture has boundary strength 2), then the sample
 //! adaptive offset per CTB.
 
+use super::decode::{Band, with_band};
 use super::decode::{Decoder, Unit};
-use super::sample::{Sample, with_samples};
+use super::sample::Sample;
+use super::sample::Samples;
 
 const BETA: [i32; 52] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
@@ -52,22 +54,105 @@ fn slice_start(decoder: &Decoder, ctb: usize) -> usize {
     decoder.slices[index].address as usize
 }
 
+/// The deblocking filter, its edges shared out by bands of rows: first
+/// every vertical edge, a CTB row's band at a time; then every horizontal
+/// edge, from bands that start four rows above each CTB row so an edge and
+/// every sample it reads or changes lie in one band (edges are 8 apart and
+/// reach 4 rows).
 pub fn deblock(decoder: &mut Decoder) {
     // The planes come out of the decoder so the edge decisions can read
     // it while the samples change.
     let mut planes = std::mem::take(&mut decoder.planes);
-    for vertical in [true, false] {
-        with_samples!(&mut planes[0], plane => deblock_luma(decoder, plane, vertical));
-        if decoder.chroma != 0 {
-            for (component, plane) in planes.iter_mut().enumerate().skip(1) {
-                with_samples!(plane, plane => deblock_chroma(decoder, plane, component, vertical));
+    {
+        let decoder: &Decoder = decoder;
+        let ctb = 1usize << decoder.ctb_log2;
+        for vertical in [true, false] {
+            let mut tasks = Vec::new();
+            for (component, plane) in planes.iter_mut().enumerate() {
+                if component > 0 && decoder.chroma == 0 {
+                    break;
+                }
+                let shift_y = if component == 0 { 0 } else { decoder.sub_y };
+                let rows = decoder.height >> shift_y;
+                let band = ctb >> shift_y;
+                let stride = decoder.strides[component];
+                // Bands start at each CTB row, or four rows above it.
+                let lead = if vertical { 0 } else { 4 };
+                let mut starts: Vec<usize> = (0..rows.div_ceil(band))
+                    .map(|row| (row * band).saturating_sub(lead))
+                    .collect();
+                starts.dedup();
+                let mut rest = plane.band();
+                let mut taken = 0;
+                for (index, &start) in starts.iter().enumerate() {
+                    let end = starts.get(index + 1).copied().unwrap_or(rows);
+                    let (piece, after) = rest.split_at((end - start) * stride);
+                    rest = after;
+                    debug_assert_eq!(taken, start);
+                    taken = end;
+                    // The edges this band filters: rows across for vertical
+                    // edges, the edges' own rows for horizontal ones.
+                    let edges = if vertical {
+                        start..end
+                    } else {
+                        (index * band)..((index + 1) * band).min(rows)
+                    };
+                    tasks.push((component, start, piece, edges));
+                }
             }
+            run_parallel(
+                decoder.threads,
+                tasks,
+                |(component, start, piece, edges)| {
+                    with_band!(piece, plane => {
+                        if component == 0 {
+                            deblock_luma(decoder, plane, start, vertical, edges)
+                        } else {
+                            deblock_chroma(decoder, plane, start, component, vertical, edges)
+                        }
+                    })
+                },
+            );
         }
     }
     decoder.planes = planes;
 }
 
-fn deblock_luma<T: Sample>(decoder: &Decoder, plane: &mut [T], vertical: bool) {
+/// Runs `work` on every task, on up to `threads` threads.
+fn run_parallel<T: Send>(threads: usize, tasks: Vec<T>, work: impl Fn(T) + Sync) {
+    let threads = threads.min(tasks.len());
+    if threads <= 1 {
+        tasks.into_iter().for_each(work);
+        return;
+    }
+    let queue = std::sync::Mutex::new(tasks.into_iter());
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                loop {
+                    let task = queue
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .next();
+                    match task {
+                        Some(task) => work(task),
+                        None => break,
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// The luma edges of a band of rows starting at row `start`: vertical
+/// edges on the rows of `edges`, or the horizontal edges on rows `edges`.
+fn deblock_luma<T: Sample>(
+    decoder: &Decoder,
+    plane: &mut [T],
+    start: usize,
+    vertical: bool,
+    edges: std::ops::Range<usize>,
+) {
     let (width, height) = (decoder.width, decoder.height);
     let stride = decoder.strides[0];
     let bit_depth = decoder.sps.bit_depth_luma;
@@ -79,8 +164,15 @@ fn deblock_luma<T: Sample>(decoder: &Decoder, plane: &mut [T], vertical: bool) {
     } else {
         (height, width)
     };
-    for edge in (8..outer).step_by(8) {
-        for segment in (0..inner).step_by(4) {
+    let _ = outer;
+    let (edge_range, segment_range) = if vertical {
+        (8..width, edges.start..edges.end.min(inner))
+    } else {
+        (edges.start.max(8)..edges.end, 0..inner)
+    };
+    let base = start * stride;
+    for edge in edge_range.step_by(8) {
+        for segment in segment_range.clone().step_by(4) {
             let (qx, qy) = if vertical {
                 (edge, segment)
             } else {
@@ -110,9 +202,9 @@ fn deblock_luma<T: Sample>(decoder: &Decoder, plane: &mut [T], vertical: bool) {
             // Sample k across the edge (p side negative) on line `line`.
             let at = |line: usize, k: isize| -> usize {
                 if vertical {
-                    (segment + line) * stride + (edge as isize + k) as usize
+                    (segment + line) * stride + (edge as isize + k) as usize - base
                 } else {
-                    (edge as isize + k) as usize * stride + segment + line
+                    (edge as isize + k) as usize * stride + segment + line - base
                 }
             };
             let lines = 4.min(inner - segment);
@@ -230,7 +322,15 @@ fn deblock_luma<T: Sample>(decoder: &Decoder, plane: &mut [T], vertical: bool) {
     }
 }
 
-fn deblock_chroma<T: Sample>(decoder: &Decoder, plane: &mut [T], component: usize, vertical: bool) {
+/// The chroma edges of a band, as `deblock_luma`.
+fn deblock_chroma<T: Sample>(
+    decoder: &Decoder,
+    plane: &mut [T],
+    start: usize,
+    component: usize,
+    vertical: bool,
+    edges: std::ops::Range<usize>,
+) {
     let (sub_x, sub_y) = (decoder.sub_x, decoder.sub_y);
     let width = decoder.width >> sub_x;
     let height = decoder.height >> sub_y;
@@ -248,8 +348,15 @@ fn deblock_chroma<T: Sample>(decoder: &Decoder, plane: &mut [T], component: usiz
     } else {
         (height, width)
     };
-    for edge in (8..outer).step_by(8) {
-        for line in 0..inner {
+    let _ = outer;
+    let (edge_range, line_range) = if vertical {
+        (8..width, edges.start..edges.end.min(inner))
+    } else {
+        (edges.start.max(8)..edges.end, 0..inner)
+    };
+    let base = start * stride;
+    for edge in edge_range.step_by(8) {
+        for line in line_range.clone() {
             let (cx, cy) = if vertical { (edge, line) } else { (line, edge) };
             let (qx, qy) = (cx << sub_x, cy << sub_y);
             let (px, py) = if vertical { (qx - 1, qy) } else { (qx, qy - 1) };
@@ -283,9 +390,9 @@ fn deblock_chroma<T: Sample>(decoder: &Decoder, plane: &mut [T], component: usiz
             }
             let at = |k: isize| -> usize {
                 if vertical {
-                    line * stride + (edge as isize + k) as usize
+                    line * stride + (edge as isize + k) as usize - base
                 } else {
-                    (edge as isize + k) as usize * stride + line
+                    (edge as isize + k) as usize * stride + line - base
                 }
             };
             let (p0, p1) = (plane[at(-1)].value(), plane[at(-2)].value());
@@ -311,9 +418,48 @@ pub fn sample_adaptive_offset(decoder: &mut Decoder) {
         return;
     }
     let mut planes = std::mem::take(&mut decoder.planes);
-    let rules = SaoRules::of(decoder);
-    for (component, plane) in planes.iter_mut().enumerate() {
-        with_samples!(plane, plane => sao_plane(decoder, &rules, plane, component));
+    {
+        let decoder: &Decoder = decoder;
+        let rules = SaoRules::of(decoder);
+        let ctb = 1usize << decoder.ctb_log2;
+        let mut tasks = Vec::new();
+        for (component, plane) in planes.iter_mut().enumerate() {
+            let shift_y = if component == 0 { 0 } else { decoder.sub_y };
+            let rows = decoder.height >> shift_y;
+            let band = ctb >> shift_y;
+            let stride = decoder.strides[component];
+            // Each band's line above and line below as deblocked, before
+            // any band takes its offsets.
+            let edges: Vec<(Samples, Samples)> = (0..decoder.height_ctbs)
+                .map(|ctb_y| {
+                    let top = ctb_y * band;
+                    let bottom = (top + band).min(rows);
+                    let line = |y: Option<usize>| match y {
+                        Some(y) if y < rows => plane.slice_of(y * stride, stride),
+                        _ => Samples::new(8, 0),
+                    };
+                    (line(top.checked_sub(1)), line(Some(bottom)))
+                })
+                .collect();
+            for ((ctb_y, piece), (above, below)) in plane
+                .band()
+                .split(band * stride)
+                .into_iter()
+                .enumerate()
+                .zip(edges)
+            {
+                tasks.push((component, ctb_y, piece, above, below));
+            }
+        }
+        run_parallel(
+            decoder.threads,
+            tasks,
+            |(component, ctb_y, piece, above, below)| {
+                with_band!(piece, band => {
+                    sao_band(decoder, &rules, component, ctb_y, band, Sample::slice(&above), Sample::slice(&below))
+                })
+            },
+        );
     }
     decoder.planes = planes;
 }
@@ -348,10 +494,18 @@ impl SaoRules {
     }
 }
 
-/// The offsets of one component, a CTB row at a time: a window holds the
-/// band's deblocked lines with one above (kept from before the band above
-/// changed it) and one below, and the plane takes the results.
-fn sao_plane<T: Sample>(decoder: &Decoder, rules: &SaoRules, plane: &mut [T], component: usize) {
+/// The offsets of one component's band of CTB row `ctb_y`: a window holds
+/// the band's deblocked lines with the line above and the line below
+/// (copied before any band changed), and the band takes the results.
+fn sao_band<T: Sample>(
+    decoder: &Decoder,
+    rules: &SaoRules,
+    component: usize,
+    ctb_y: usize,
+    band: &mut [T],
+    above_line: &[T],
+    below_line: &[T],
+) {
     let (shift_x, shift_y) = if component == 0 {
         (0, 0)
     } else {
@@ -369,18 +523,20 @@ fn sao_plane<T: Sample>(decoder: &Decoder, rules: &SaoRules, plane: &mut [T], co
     let ctb = 1usize << decoder.ctb_log2;
     let band_height = ctb >> shift_y;
     let mut window: Vec<T> = vec![T::default(); (band_height + 2) * stride];
-    let mut above: Vec<T> = vec![T::default(); stride];
-    for ctb_y in 0..decoder.height_ctbs {
+    {
         let band_top = ctb_y * band_height;
         let band_bottom = (band_top + band_height).min(height);
         // Window line k holds picture line band_top - 1 + k.
-        if band_top > 0 {
-            window[..stride].copy_from_slice(&above);
+        if !above_line.is_empty() {
+            window[..stride].copy_from_slice(above_line);
         }
-        let below = (band_bottom + 1).min(height);
-        window[stride..(1 + below - band_top) * stride]
-            .copy_from_slice(&plane[band_top * stride..below * stride]);
-        above.copy_from_slice(&window[(band_bottom - band_top) * stride..][..stride]);
+        let rows = band_bottom - band_top;
+        window[stride..(1 + rows) * stride].copy_from_slice(&band[..rows * stride]);
+        if !below_line.is_empty() {
+            window[(1 + rows) * stride..(2 + rows) * stride].copy_from_slice(below_line);
+        }
+        let plane = band;
+        let base = band_top * stride;
         let line = |y: usize| -> &[T] {
             let k = y + 1 - band_top;
             &window[k * stride..(k + 1) * stride]
@@ -407,14 +563,14 @@ fn sao_plane<T: Sample>(decoder: &Decoder, rules: &SaoRules, plane: &mut [T], co
                 let shift = bit_depth - 5;
                 for y in band_top..band_bottom {
                     let source = &line(y)[x0..x1];
-                    let target = &mut plane[y * stride + x0..y * stride + x1];
+                    let target = &mut plane[y * stride + x0 - base..y * stride + x1 - base];
                     for (out, &value) in target.iter_mut().zip(source) {
                         let value = value.value();
                         *out = T::of((value + table[(value >> shift) as usize]).clamp(0, max));
                     }
                     if rules.unfiltered {
                         restore_unfiltered(
-                            decoder, plane, source, y, x0, x1, shift_x, shift_y, stride,
+                            decoder, plane, source, y, x0, x1, shift_x, shift_y, stride, base,
                         );
                     }
                 }
@@ -447,7 +603,7 @@ fn sao_plane<T: Sample>(decoder: &Decoder, rules: &SaoRules, plane: &mut [T], co
                 } else {
                     (left, right)
                 };
-                let target = &mut plane[y * stride..(y + 1) * stride];
+                let target = &mut plane[y * stride - base..(y + 1) * stride - base];
                 if !edge_row && inner_left < inner_right {
                     let current = &line(y)[inner_left..inner_right];
                     let a = &line(rows[0])[(inner_left as isize + dx[0]) as usize..];
@@ -505,6 +661,7 @@ fn sao_plane<T: Sample>(decoder: &Decoder, rules: &SaoRules, plane: &mut [T], co
                         shift_x,
                         shift_y,
                         stride,
+                        base,
                     );
                 }
             }
@@ -525,10 +682,11 @@ fn restore_unfiltered<T: Sample>(
     shift_x: u32,
     shift_y: u32,
     stride: usize,
+    base: usize,
 ) {
     for x in x0..x1 {
         if decoder.unit(x << shift_x, y << shift_y).unfiltered {
-            plane[y * stride + x] = source[x - x0];
+            plane[y * stride + x - base] = source[x - x0];
         }
     }
 }

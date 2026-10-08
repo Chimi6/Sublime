@@ -12,6 +12,8 @@ section under a version heading.
 
 - HEIC decoding beats libheif everywhere it is measured (`DOCS/benchmarks/heic-png.md`): to PNG 3.7 to 27 times faster, to JPEG 1.3 to 5 times, at 36 to 81% of its memory; grids stream by bands of tiles, and JPEG output takes the picture's own YCbCr. Bit-exact with libheif on 41 reference files; where three multi-slice streams differ, libde265 is wrong and Apple's decoder agrees with ours.
 
+- A single HEIC picture's wavefront rows decode on every core, and so do its loop filters and a megapixel JPEG's bands (restart intervals, decoded pixels unchanged): the 4000-pixel quality-50 photo to JPEG in 0.09 s, against libheif's 0.87 and Apple's hardware `sips` at 0.16.
+
 - 16-bit images stay 16-bit: 10-bit HEIC, 16-bit PNG and TIFF, and Netpbm over 8 bits go to PNG, TIFF, and Netpbm at 16 bits (16-bit PNG to PAM and back is identical) instead of losing their low byte.
 
 - JPEGs come out upright: the Exif orientation is applied (all eight, as Quick Look shows them), in PDF by the drawing so the JPEG stays embedded unchanged, and the ICC profile and Exif are carried into PNG and JPEG output.

@@ -1,14 +1,15 @@
 //! CABAC (H.265 9.3): the arithmetic decoding engine and the context
-//! variables of intra slices. The engine is the byte-wise form of the
-//! standard's (a 16-bit window, refilled a byte at a time), so after a
-//! terminating bin the next byte to read is where PCM samples and the next
-//! substream begin.
+//! variables of intra slices. The engine is the branch-free form H.264
+//! decoders use: the offset held with eight bits below it and a marker bit
+//! that says when to read the next byte, each decision's LPS case taken by
+//! masks rather than a branch, and a context's state and MPS in one byte
+//! whose next value, for either outcome, comes from one table.
 
-/// A context variable: its probability state and most probable symbol.
+/// A context variable: its probability state times two plus its most
+/// probable symbol.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Context {
-    state: u8,
-    mps: u8,
+    packed: u8,
 }
 
 impl Context {
@@ -18,15 +19,15 @@ impl Context {
         let offset = (i32::from(init & 15) << 3) - 16;
         let state = (((slope * qp.clamp(0, 51)) >> 4) + offset).clamp(1, 126);
         if state <= 63 {
-            Context {
-                state: (63 - state) as u8,
-                mps: 0,
-            }
+            Context::of((63 - state) as u8, 0)
         } else {
-            Context {
-                state: (state - 64) as u8,
-                mps: 1,
-            }
+            Context::of((state - 64) as u8, 1)
+        }
+    }
+
+    fn of(state: u8, mps: u8) -> Context {
+        Context {
+            packed: (state << 1) | mps,
         }
     }
 }
@@ -215,13 +216,69 @@ const NEXT_STATE_LPS: [u8; 64] = [
     34, 35, 35, 35, 36, 36, 36, 37, 37, 37, 38, 38, 63,
 ];
 
+/// A decision's LPS range by `2 * (range & 0xC0) + packed state`.
+const LPS_TABLE: [u8; 512] = {
+    let mut table = [0u8; 512];
+    let mut quarter = 0;
+    while quarter < 4 {
+        let mut packed = 0;
+        while packed < 128 {
+            table[quarter * 128 + packed] = LPS_RANGE[packed >> 1][quarter];
+            packed += 1;
+        }
+        quarter += 1;
+    }
+    table
+};
+
+/// The shift that brings a value below 512 to at least 256 (9 for zero).
+const NORM_SHIFT: [u8; 512] = {
+    let mut table = [0u8; 512];
+    let mut value = 0;
+    while value < 512 {
+        let mut length = 0;
+        while length < 10 && (value >> length) != 0 {
+            length += 1;
+        }
+        table[value] = (9 - length) as u8;
+        value += 1;
+    }
+    table
+};
+
+/// A packed state's next value, at `128 + packed` after its MPS and at
+/// `127 - packed` after its LPS (the packed state's complement).
+const NEXT_STATE: [u8; 256] = {
+    let mut table = [0u8; 256];
+    let mut packed = 0;
+    while packed < 128 {
+        let (state, mps) = (packed >> 1, (packed & 1) as u8);
+        let after_mps = if state < 62 { state + 1 } else { state };
+        table[128 + packed] = ((after_mps as u8) << 1) | mps;
+        table[127 - packed] = if state == 0 {
+            (NEXT_STATE_LPS[0] << 1) | (1 - mps)
+        } else {
+            (NEXT_STATE_LPS[state] << 1) | mps
+        };
+        packed += 1;
+    }
+    table
+};
+
+/// Bits below the offset's integer part: the next byte goes in when they
+/// run out.
+const LOW_BITS: i32 = 8;
+const LOW_MASK: i32 = (1 << LOW_BITS) - 1;
+
 /// The arithmetic decoder over a slice segment's data.
 pub struct Cabac<'a> {
     data: &'a [u8],
+    /// The next byte to read into `low`.
     position: usize,
-    range: u32,
-    value: u32,
-    bits_needed: i32,
+    range: i32,
+    /// The offset times 2^9, with the bits read ahead below it and a
+    /// marker bit after them.
+    low: i32,
 }
 
 impl<'a> Cabac<'a> {
@@ -230,41 +287,28 @@ impl<'a> Cabac<'a> {
         let mut cabac = Cabac {
             data,
             position,
-            range: 510,
-            value: 0,
-            bits_needed: 8,
+            range: 0x1FE,
+            low: 0,
         };
         cabac.start();
         cabac
     }
 
-    fn next_byte(&mut self) -> u32 {
-        match self.data.get(self.position) {
-            Some(&byte) => {
-                self.position += 1;
-                u32::from(byte)
-            }
-            None => 0,
-        }
+    #[inline(always)]
+    fn byte(&self, at: usize) -> i32 {
+        i32::from(self.data.get(at).copied().unwrap_or(0))
     }
 
     fn start(&mut self) {
-        self.range = 510;
-        self.bits_needed = 8;
-        self.value = 0;
-        if self.position < self.data.len() {
-            self.value = self.next_byte() << 8;
-            self.bits_needed -= 8;
-        }
-        if self.position < self.data.len() {
-            self.value |= self.next_byte();
-            self.bits_needed -= 8;
-        }
+        self.range = 0x1FE;
+        self.low = (self.byte(self.position) << 10) + (self.byte(self.position + 1) << 2) + 2;
+        self.position += 2;
     }
 
     /// Restarts at the next byte, after a terminating bin of 1: a new
     /// substream, or the bins after PCM samples.
     pub fn restart(&mut self) {
+        self.position = self.byte_position();
         self.start();
     }
 
@@ -273,9 +317,15 @@ impl<'a> Cabac<'a> {
         self.data
     }
 
-    /// The next byte to read: where PCM samples begin after `pcm_flag`.
+    /// The next byte to read after a terminating bin of 1: where PCM
+    /// samples and the next substream begin.
     pub fn byte_position(&self) -> usize {
-        self.position
+        // A byte read ahead into `low` and not yet used is given back.
+        if self.low & 1 != 0 {
+            self.position - 1
+        } else {
+            self.position
+        }
     }
 
     /// Restarts at `position` (after PCM samples).
@@ -284,111 +334,84 @@ impl<'a> Cabac<'a> {
         self.start();
     }
 
-    /// A context-coded bin (9.3.4.3.2).
+    /// The next byte, when the bits below the offset run out.
+    #[inline(always)]
+    fn refill(&mut self) {
+        self.low += (self.byte(self.position) << 1) - LOW_MASK;
+        self.position += 1;
+    }
+
+    /// The next byte after a shift of several bits: placed under the
+    /// bits still read ahead.
+    #[inline(always)]
+    fn refill_after_shift(&mut self) {
+        let x = self.low ^ (self.low - 1);
+        let shift = 7 - i32::from(NORM_SHIFT[(x >> (LOW_BITS - 1)) as usize]);
+        let byte = (self.byte(self.position) << 1) - LOW_MASK;
+        self.low += byte << shift;
+        self.position += 1;
+    }
+
+    /// A context-coded bin (9.3.4.3.2), without a branch on its outcome.
     #[inline(always)]
     pub fn decision(&mut self, context: &mut Context) -> u32 {
-        let lps =
-            u32::from(LPS_RANGE[usize::from(context.state)][((self.range >> 6) - 4) as usize]);
+        let packed = i32::from(context.packed);
+        let lps = i32::from(LPS_TABLE[(2 * (self.range & 0xC0) + packed) as usize]);
         self.range -= lps;
-        let scaled = self.range << 7;
-        if self.value < scaled {
-            let bin = u32::from(context.mps);
-            if context.state < 62 {
-                context.state += 1;
-            }
-            if scaled < (256 << 7) {
-                self.range = scaled >> 6;
-                self.value <<= 1;
-                self.bits_needed += 1;
-                if self.bits_needed == 0 {
-                    self.bits_needed = -8;
-                    self.value |= self.next_byte();
-                }
-            }
-            bin
-        } else {
-            self.value -= scaled;
-            // Renormalize: the LPS range (2 to 240) back to at least 256.
-            let shift = lps.leading_zeros() - 23;
-            self.value <<= shift;
-            self.range = lps << shift;
-            let bin = 1 - u32::from(context.mps);
-            if context.state == 0 {
-                context.mps = 1 - context.mps;
-            }
-            context.state = NEXT_STATE_LPS[usize::from(context.state)];
-            self.bits_needed += shift as i32;
-            if self.bits_needed >= 0 {
-                self.value |= self.next_byte() << self.bits_needed;
-                self.bits_needed -= 8;
-            }
-            bin
+        // All ones when the offset is past the MPS range: the LPS.
+        let mask = ((self.range << (LOW_BITS + 1)) - self.low) >> 31;
+        self.low -= (self.range << (LOW_BITS + 1)) & mask;
+        self.range += (lps - self.range) & mask;
+        let outcome = packed ^ mask;
+        context.packed = NEXT_STATE[(128 + outcome) as usize];
+        let shift = i32::from(NORM_SHIFT[self.range as usize]);
+        self.range <<= shift;
+        self.low <<= shift;
+        if self.low & LOW_MASK == 0 {
+            self.refill_after_shift();
         }
+        (outcome & 1) as u32
     }
 
     /// A bypass bin (9.3.4.3.4).
     #[inline(always)]
     pub fn bypass(&mut self) -> u32 {
-        self.value <<= 1;
-        self.bits_needed += 1;
-        if self.bits_needed >= 0 {
-            self.bits_needed = -8;
-            self.value |= self.next_byte();
+        self.low += self.low;
+        if self.low & LOW_MASK == 0 {
+            self.refill();
         }
-        let scaled = self.range << 7;
-        if self.value >= scaled {
-            self.value -= scaled;
-            1
-        } else {
+        let scaled = self.range << (LOW_BITS + 1);
+        if self.low < scaled {
             0
+        } else {
+            self.low -= scaled;
+            1
         }
     }
 
     /// `count` bypass bins as a number, first bin most significant.
     pub fn bypass_bits(&mut self, count: u32) -> u32 {
         let mut value = 0;
-        let mut left = count;
-        while left > 0 {
-            let take = left.min(8);
-            value = (value << take) | self.bypass_run(take);
-            left -= take;
+        for _ in 0..count {
+            value = (value << 1) | self.bypass();
         }
         value
-    }
-
-    /// Up to 8 bypass bins at once: each bin is one more bit of the
-    /// offset's quotient by the range, so they come out of one division.
-    #[inline]
-    fn bypass_run(&mut self, count: u32) -> u32 {
-        self.value <<= count;
-        self.bits_needed += count as i32;
-        if self.bits_needed >= 0 {
-            self.value |= self.next_byte() << self.bits_needed;
-            self.bits_needed -= 8;
-        }
-        let scaled = self.range << 7;
-        let bins = (self.value / scaled).min((1 << count) - 1);
-        self.value -= bins * scaled;
-        bins
     }
 
     /// A terminating bin (9.3.4.3.5).
     pub fn terminate(&mut self) -> u32 {
         self.range -= 2;
-        let scaled = self.range << 7;
-        if self.value >= scaled {
-            1
-        } else {
-            if scaled < (256 << 7) {
-                self.range = scaled >> 6;
-                self.value <<= 1;
-                self.bits_needed += 1;
-                if self.bits_needed == 0 {
-                    self.bits_needed = -8;
-                    self.value |= self.next_byte();
+        if self.low < self.range << (LOW_BITS + 1) {
+            if self.range < 0x100 {
+                self.range <<= 1;
+                self.low <<= 1;
+                if self.low & LOW_MASK == 0 {
+                    self.refill();
                 }
             }
             0
+        } else {
+            1
         }
     }
 
@@ -404,20 +427,17 @@ mod tests {
 
     #[test]
     fn contexts_start_from_their_init_values() {
-        // initValue 154 is equiprobable: state 0 or 1 near the middle.
-        let context = Context::new(154, 26);
-        assert!(context.state <= 2);
         // 139 at QP 26: m = -5, n = 72: preCtxState 63, MPS 0, state 0.
-        assert_eq!(Context::new(139, 26), Context { state: 0, mps: 0 });
+        assert_eq!(Context::new(139, 26), Context::of(0, 0));
         // 154 at QP 26: m = 0, n = 64: preCtxState 64, MPS 1, state 0.
-        assert_eq!(Context::new(154, 26), Context { state: 0, mps: 1 });
+        assert_eq!(Context::new(154, 26), Context::of(0, 1));
     }
 
     #[test]
     fn renormalization_after_an_lps_matches_the_table() {
         // The shift brings an LPS range back to at least 256.
         for lps in [2u32, 6, 7, 8, 15, 16, 31, 32, 63, 64, 127, 128, 240] {
-            let shift = lps.leading_zeros() - 23;
+            let shift = u32::from(NORM_SHIFT[lps as usize]);
             assert!(
                 (lps << shift) >= 256 && (lps << shift) < 512,
                 "{lps} {shift}"

@@ -828,6 +828,9 @@ pub struct SliceHeader {
     pub loop_filter_across_slices: bool,
     /// Where the slice data begins in the RBSP.
     pub data_offset: usize,
+    /// The sizes of the slice data's substreams but the last (wavefront
+    /// rows, tiles), in bytes as sent, emulation prevention included.
+    pub entry_points: Vec<u32>,
 }
 
 impl SliceHeader {
@@ -868,6 +871,7 @@ impl SliceHeader {
                 dependent,
                 address,
                 data_offset: 0,
+                entry_points: Vec::new(),
                 ..previous.clone()
             },
             (true, None) => return Err(HevcError::new("a dependent slice with none before it")),
@@ -886,6 +890,7 @@ impl SliceHeader {
                 tc_offset: pps.tc_offset,
                 loop_filter_across_slices: pps.loop_filter_across_slices,
                 data_offset: 0,
+                entry_points: Vec::new(),
             },
         };
         if !dependent {
@@ -969,8 +974,11 @@ impl SliceHeader {
                 if bits > 32 {
                     return Err(HevcError::new("an entry point offset over 32 bits"));
                 }
+                if offsets > picture_ctbs {
+                    return Err(HevcError::new("more entry points than CTBs"));
+                }
                 for _ in 0..offsets {
-                    reader.skip(bits as usize)?;
+                    header.entry_points.push(reader.bits(bits)? + 1);
                 }
             }
         }

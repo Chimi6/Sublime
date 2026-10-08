@@ -9,6 +9,9 @@ use super::HevcError;
 pub struct Nal<'a> {
     pub kind: u8,
     pub rbsp: std::borrow::Cow<'a, [u8]>,
+    /// Where emulation prevention bytes were, in the payload as sent:
+    /// slice entry points count them.
+    removed: Vec<usize>,
 }
 
 impl<'a> Nal<'a> {
@@ -24,13 +27,16 @@ impl<'a> Nal<'a> {
             return Ok(Nal {
                 kind,
                 rbsp: std::borrow::Cow::Borrowed(payload),
+                removed: Vec::new(),
             });
         }
         let mut rbsp = Vec::with_capacity(bytes.len());
+        let mut removed = Vec::new();
         let mut zeros = 0;
-        for &byte in &bytes[2..] {
+        for (at, &byte) in payload.iter().enumerate() {
             if zeros >= 2 && byte == 3 {
                 zeros = 0;
+                removed.push(at);
                 continue;
             }
             zeros = if byte == 0 { zeros + 1 } else { 0 };
@@ -39,7 +45,27 @@ impl<'a> Nal<'a> {
         Ok(Nal {
             kind,
             rbsp: std::borrow::Cow::Owned(rbsp),
+            removed,
         })
+    }
+
+    /// The RBSP position of payload byte `raw` (as sent).
+    pub fn rbsp_position(&self, raw: usize) -> usize {
+        raw - self.removed.partition_point(|&at| at < raw)
+    }
+
+    /// The payload position (as sent) of RBSP byte `position`.
+    pub fn raw_position(&self, position: usize) -> usize {
+        // Each removed byte at or before the result shifts it on by one.
+        let mut raw = position;
+        for &at in &self.removed {
+            if at <= raw {
+                raw += 1;
+            } else {
+                break;
+            }
+        }
+        raw
     }
 }
 

@@ -57,6 +57,7 @@ fn decode_hevc_item(
     file: &[u8],
     item: &Item,
     workspace: &mut hevc::Workspace,
+    threads: usize,
 ) -> Result<Planes, HeifError> {
     let (nals, length_size) = meta
         .properties_of(item)
@@ -80,7 +81,7 @@ fn decode_hevc_item(
         units.push(&data[at..end]);
         at = end;
     }
-    let picture = hevc::decode_picture_in(units, workspace)?;
+    let picture = hevc::decode_picture_in(units, workspace, threads)?;
     Ok(cropped(picture))
 }
 
@@ -142,7 +143,10 @@ fn crop_in_place<T: Copy>(
 
 /// An image item's planes: one picture, or a grid's tiles assembled.
 fn decode_image_item(meta: &Meta<'_>, file: &[u8], id: u32) -> Result<Planes, HeifError> {
-    decode_item_in(meta, file, id, &mut hevc::Workspace::default())
+    // One picture's wavefront rows decode on every thread; a grid's tiles
+    // do instead, each on one.
+    let threads = std::thread::available_parallelism().map_or(1, |count| count.get());
+    decode_item_in(meta, file, id, &mut hevc::Workspace::default(), threads)
 }
 
 /// An image item's planes, an HEVC picture's buffers from `workspace`.
@@ -151,12 +155,13 @@ fn decode_item_in(
     file: &[u8],
     id: u32,
     workspace: &mut hevc::Workspace,
+    threads: usize,
 ) -> Result<Planes, HeifError> {
     let item = meta
         .item(id)
         .ok_or_else(|| HeifError::new("a missing image item"))?;
     match &item.kind {
-        b"hvc1" => decode_hevc_item(meta, file, item, workspace),
+        b"hvc1" => decode_hevc_item(meta, file, item, workspace, threads),
         b"grid" => {
             let grid = Grid::of(meta, file, item)?;
             let canvas: std::sync::Mutex<(Option<Planes>, Option<TileShape>)> =
@@ -372,7 +377,7 @@ pub(super) fn decode_tiles(
     if threads <= 1 {
         let mut workspace = hevc::Workspace::default();
         for (index, &tile) in tiles.iter().enumerate() {
-            let decoded = decode_item_in(meta, file, tile, &mut workspace)?;
+            let decoded = decode_item_in(meta, file, tile, &mut workspace, 1)?;
             place(index, &decoded)?;
             workspace.recycle(decoded.planes);
             drain(false)?;
@@ -395,7 +400,7 @@ pub(super) fn decode_tiles(
                     let Some(&tile) = tiles.get(index) else {
                         break;
                     };
-                    let outcome = decode_item_in(meta, file, tile, &mut workspace)
+                    let outcome = decode_item_in(meta, file, tile, &mut workspace, 1)
                         .and_then(|decoded| place(index, &decoded).map(|()| decoded));
                     let mut state = lock();
                     match outcome {

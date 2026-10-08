@@ -1,8 +1,9 @@
 # HEIC -> PNG and JPEG
 
-**Latest** (2026-10-08, `heic-read` branch: every line PASSES against libheif;
-Apple's hardware decoder (`sips`, context) is faster on single-picture JPEG
-output and lighter on JPEG output)
+**Latest** (2026-10-08, `heic-read` branch, wavefront rows in parallel: every
+line PASSES against libheif; ahead of Apple's hardware decoder (`sips`,
+context) on every line but the 36-megapixel stock image to JPEG (437 against
+524 MB/s) and memory on JPEG output)
 
 ## Purpose
 
@@ -45,13 +46,46 @@ clock of the whole process, peak resident memory from GNU `time`.
 - `heif-dec` writes 16-bit PNGs for 10-bit inputs, as we do; its PNG writer
   (libpng at its default level) is most of its PNG time.
 - libheif decodes a grid's tiles on several threads and a single picture on
-  one; so do we (wavefront rows are not decoded in parallel yet).
+  one; we decode a single picture's wavefront rows on every thread too, and
+  JPEG bands of a megapixel image on every thread.
 - Ours and libheif's outputs differ in chroma upsampling (ours interpolates,
   libheif repeats); decoded planes are bit-identical (`tests/heic_suite.rs`).
 
 ## Results
 
-### 2026-10-08, decoder speed and memory pass
+### 2026-10-08, wavefront rows, filters, and JPEG bands in parallel
+
+| Target | Ours | Reference (heif-dec) | Context (sips) | Result |
+|---|---|---|---|---|
+| heic -> png, hphoto-x265-q50 (45.8 MB of pixels, 2.1 MB on disk): throughput (MB/s of decoded pixels) | 108.8 | 10.7 | 47.9 | PASS |
+| heic -> png, hphoto-x265-q50: peak memory (MB) | 49.8 | 120.3 | 149.8 | PASS |
+| heic -> jpeg, hphoto-x265-q50 (45.8 MB of pixels, 2.1 MB on disk): throughput (MB/s of decoded pixels) | 523.1 | 53.9 | 290.5 | PASS |
+| heic -> jpeg, hphoto-x265-q50: peak memory (MB) | 50.8 | 74.6 | 32.3 | PASS |
+| heic -> png, hphoto-x265-q90 (45.8 MB of pixels, 11.9 MB on disk): throughput (MB/s of decoded pixels) | 66.0 | 8.7 | 41.4 | PASS |
+| heic -> png, hphoto-x265-q90: peak memory (MB) | 80.9 | 150.0 | 189.2 | PASS |
+| heic -> jpeg, hphoto-x265-q90 (45.8 MB of pixels, 11.9 MB on disk): throughput (MB/s of decoded pixels) | 236.6 | 32.8 | 207.2 | PASS |
+| heic -> jpeg, hphoto-x265-q90: peak memory (MB) | 83.1 | 103.8 | 76.4 | PASS |
+| heic -> png, hphoto-x265-10bit (45.8 MB of pixels, 8.7 MB on disk): throughput (MB/s of decoded pixels) | 57.7 | 1.9 | 16.3 | PASS |
+| heic -> png, hphoto-x265-10bit: peak memory (MB) | 106.0 | 239.6 | 183.1 | PASS |
+| heic -> jpeg, hphoto-x265-10bit (45.8 MB of pixels, 8.7 MB on disk): throughput (MB/s of decoded pixels) | 225.9 | 32.7 | 191.4 | PASS |
+| heic -> jpeg, hphoto-x265-10bit: peak memory (MB) | 113.6 | 167.1 | 60.3 | PASS |
+| heic -> png, hflat-x265-q75 (45.8 MB of pixels, 0.1 MB on disk): throughput (MB/s of decoded pixels) | 661.4 | 95.6 | 82.5 | PASS |
+| heic -> png, hflat-x265-q75: peak memory (MB) | 45.4 | 110.5 | 142.5 | PASS |
+| heic -> jpeg, hflat-x265-q75 (45.8 MB of pixels, 0.1 MB on disk): throughput (MB/s of decoded pixels) | 1258.9 | 275.8 | 387.6 | PASS |
+| heic -> jpeg, hflat-x265-q75: peak memory (MB) | 47.7 | 68.4 | 18.8 | PASS |
+| heic -> png, hphoto-apple (45.8 MB of pixels, 2.3 MB on disk): throughput (MB/s of decoded pixels) | 100.5 | 10.7 | 39.8 | PASS |
+| heic -> png, hphoto-apple: peak memory (MB) | 42.6 | 93.6 | 148.3 | PASS |
+| heic -> jpeg, hphoto-apple (45.8 MB of pixels, 2.3 MB on disk): throughput (MB/s of decoded pixels) | 526.2 | 175.5 | 291.6 | PASS |
+| heic -> jpeg, hphoto-apple: peak memory (MB) | 43.1 | 47.5 | 27.6 | PASS |
+| heic -> png, stock (103.5 MB of pixels, 19.4 MB on disk): throughput (MB/s of decoded pixels) [stock] | 101.1 | 3.6 | 45.4 | PASS |
+| heic -> png, stock: peak memory (MB) [stock] | 126.0 | 227.2 | 316.0 | PASS |
+| heic -> jpeg, stock (103.5 MB of pixels, 19.4 MB on disk): throughput (MB/s of decoded pixels) [stock] | 436.7 | 75.6 | 523.5 | PASS |
+| heic -> jpeg, stock: peak memory (MB) [stock] | 119.3 | 131.0 | 38.8 | PASS |
+
+commit: the `heic-read` branch, this change
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+### 2026-10-08, decoder speed and memory pass (single-threaded pictures)
 
 | Target | Ours | Reference (heif-dec) | Context (sips) | Result |
 |---|---|---|---|---|
@@ -114,8 +148,29 @@ How it got there, each step bit-exact on 41 reference files:
 - JPEG output takes the picture's own 4:2:0 YCbCr when it is BT.601 at full
   range: no conversion to RGB and back, and no second chroma subsampling.
 
-`sips` decodes on Apple's hardware: it leads on single-picture JPEG output
-(285 against 94 MB/s at quality 50) and on JPEG memory (a streaming
-hardware path). Wavefront rows decoded in parallel, and a decoder that
-hands on rows as its loop filters finish them instead of holding the
-picture, are the levers (`DOCS/STATE.md`).
+The second round parallelized what was left single-threaded, each step
+bit-exact on the same 41 files:
+
+- Wavefront rows decoded in parallel (x265 writes them by default, and so
+  does Apple inside each tile): the decoder became row-oriented, each CTB
+  row owning its band of the picture and hearing the bottom line, units,
+  and records of the row above as messages, with the contexts after its
+  second CTB; the crate's no-`unsafe` rule holds. The quality-50 photo's
+  decode 429 to 103 ms.
+- The deblocking filter by bands (vertical edges by CTB rows, horizontal
+  edges from bands four rows up, so no edge spans two) and SAO by bands
+  from boundary lines copied first: 103 to 65 ms.
+- JPEG output of a megapixel and up with a restart interval each band
+  (0.02% larger), bands encoded on every thread: decoded pixels identical
+  (libjpeg-turbo and ours), quality-50 photo to JPEG 0.136 to 0.087 s.
+- Dequantization as levels are read, significance contexts from tables
+  built once, and CABAC in the branch-free form (packed state, one
+  transition table, masks for the LPS case).
+
+`sips` decodes on Apple's hardware. It still leads on the 36-megapixel
+stock image to JPEG (437 against 524 MB/s): its 36 tiles of 1024 decode
+in 4.5 waves on 10 cores, two of them efficiency cores, 1.42 s of work
+taking 0.2 s where an even share would take 0.16; and it holds less
+memory on JPEG output (a streaming hardware path). The levers are a single
+pool of wavefront rows across a grid's tiles, and a decoder that hands on
+rows as its loop filters finish (`DOCS/STATE.md`).
