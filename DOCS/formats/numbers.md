@@ -66,22 +66,26 @@ kept: day of year and week fields (a date in ISO 8601), base formats and
 custom formats with conditions (text), the zeros Numbers adds from unused
 decimals, and accounting style's tab.
 
-A pivot table reads as Numbers shows it. Its model stores the body in the
-order the groups were made; the table's view (`view_column_row_uids` on
-`TST.TableInfoArchive`) orders every row and column by uid, and the
-summary model (`TST.SummaryModelArchive`, its own `data_store` and uid
-map) holds the grand total row and column. Each shown cell is the
-summary's at that row and column if it has one, else the stored cell. The
-workbook read keeps these maps and the summary model for pivot tables
-alone (found by the references in the objects' headers), and reads a
-pivot's two grids whole.
+Pivot and categorised tables read as Numbers shows them, through the
+table's view (`view_column_row_uids` on `TST.TableInfoArchive`, which only
+they have): it orders every row and column by uid and leaves hidden
+columns out. A shown row or column is a stored one (the model's uid map),
+one of the summary model's (`TST.SummaryModelArchive`, its own
+`data_store` and uid map: a pivot's grand total row and column), or a
+category's (a group of `TST.GroupByArchive`, by the info's
+`group_by_uuid`). Each shown cell is the summary's if it has one there,
+else the stored cell; a category's row holds its label in the view's own
+column: the group's text, its number under its format, its date under the
+grouping's pattern (`yyyy`, `LLLL yyyy`, `yyyy-QQQ`, `yyyy'-W'w`,
+`d/M/yyyy`, `EEEE`), or, for a boolean, `Is “Column”` or `Not “Column”`.
+Numbers' export leaves a category's summary cells empty, and so do we.
+The workbook read keeps these maps, summary models, and group-by trees for
+tables with a view alone (found by the references in the objects'
+headers), and reads such a table's grids whole.
 
-Not shown as Numbers does: a categorised table is written as its rows (its
-data), not grouped under category rows with its hidden columns left out, as
-Numbers' view and export show it (built from its group-by tree, not a view
-map); formulas are their last value
-(Numbers recalculates some, `NOW()` and locale functions, when it opens a
-document).
+Not shown as Numbers does: formulas are their last value (Numbers
+recalculates some when it opens a document, `NOW()` among them, and
+functions that format text in the locale of the Mac that opens it).
 
 Merged cells are read from the first source that has them, in the order
 numbers-parser reads them: the table's merge owner's formulas (a range
@@ -186,11 +190,13 @@ LibreOffice), on numbers-parser's test documents
 (<https://github.com/masaccio/numbers-parser>, MIT):
 
 - `check.sh` exports each document to CSV with Numbers and compares every
-  cell we read. As text: 72 of 79 documents exact, 130,044 of 131,593
-  non-empty cells (98.8%). Through Excel (our workbook shown by
-  LibreOffice): 65 of 79 exact, 98.7% of cells. The rest are the
-  categorised view, formulas Numbers recalculates on opening,
-  and, through Excel, what Excel formats cannot express (above).
+  cell we read. As text: 75 of 79 documents exact, 131,455 of 131,593
+  non-empty cells (99.9%). Through Excel (our workbook shown by
+  LibreOffice): 67 of 79 exact, 99.8% of cells. The rest are formulas
+  Numbers recalculates on opening (`NOW()`, and text a function formats
+  in the opening Mac's locale: `$` where the document's British locale
+  stored `£`), and, through Excel, what Excel formats cannot express
+  (above).
 - `write.sh` rewrites each document through our writer (Numbers, Excel,
   Numbers), opens it in Numbers, and reads Numbers' log and export: all 79
   open with no repair, upgrade, or assertion and export what our reader
@@ -211,5 +217,5 @@ Speed and memory are the `numbers-csv` and `numbers-xlsx` benchmark pairs
 Fixtures (`tests/fixtures/numbers`, from numbers-parser's test data): two
 sheets with three tables, a zipped package folder with an LZFSE stream, an
 older document whose object headers leave references out, and two
-documents of formats and a pivot table with Numbers' own CSV export of
-each (`reference/`) as the expected text.
+documents of formats, a pivot table, and categorised tables with Numbers'
+own CSV export of each (`reference/`) as the expected text.

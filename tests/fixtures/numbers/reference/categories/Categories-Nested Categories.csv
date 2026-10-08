@@ -1,0 +1,37 @@
+,Description,Edible,Category,Count
+Not “Edible”,,,,
+Transport,,,,
+,Airplane,FALSE,Transport,5
+,Bicycle,FALSE,Transport,40
+,Bus,FALSE,Transport,5
+,Car,FALSE,Transport,30
+,Helicopter,FALSE,Transport,5
+,Motorcycle,FALSE,Transport,30
+,Scooter,FALSE,Transport,10
+,Train,FALSE,Transport,10
+,Truck,FALSE,Transport,20
+,Van,FALSE,Transport,5
+Animal,,,,
+,Bear,FALSE,Animal,10
+,Cat,FALSE,Animal,20
+,Dog,FALSE,Animal,20
+,Elephant,FALSE,Animal,10
+,Lion,FALSE,Animal,10
+,Parrot,FALSE,Animal,30
+Is “Edible”,,,,
+Fruit,,,,
+,Apple,TRUE,Fruit,40
+,Banana,TRUE,Fruit,40
+,Grape,TRUE,Fruit,120
+,Kiwi,TRUE,Fruit,30
+,Mango,TRUE,Fruit,30
+,Orange,TRUE,Fruit,40
+,Peach,TRUE,Fruit,40
+,Pineapple,TRUE,Fruit,40
+,Strawberry,TRUE,Fruit,120
+,Watermelon,TRUE,Fruit,40
+Animal,,,,
+,Deer,TRUE,Animal,10
+,Horse,TRUE,Animal,30
+,Rabbit,TRUE,Animal,120
+,Zebra,TRUE,Animal,30

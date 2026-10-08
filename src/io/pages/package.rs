@@ -141,20 +141,23 @@ const SKIPPED_TYPES: [u32; 11] = [
     4003, 4004, 4009, 6220, 6267, 6316, 6317, 6365, 6366, 6373, 6383,
 ];
 
-/// `TST.TableModelArchive`, `TST.TableInfoArchive`, `TST.PivotOwnerArchive`,
-/// `TST.SummaryModelArchive`, and `TST.ColumnRowUIDMapArchive`.
+/// `TST.TableModelArchive`, `TST.TableInfoArchive`, `TST.SummaryModelArchive`,
+/// `TST.ColumnRowUIDMapArchive`, and `TST.GroupByArchive`.
 const TABLE_MODEL: u32 = 6001;
 const TABLE_INFO: u32 = 6000;
-const PIVOT_OWNER: u32 = 6370;
 const SUMMARY_MODEL: u32 = 6316;
 const UID_MAP: u32 = 6267;
+const GROUP_BY: u32 = 6373;
 
-/// The objects of skipped types a pivot table's view needs, among a
-/// stream's objects (Numbers keeps a table's model, info, and maps in one
-/// stream): the uid maps of its info, model, and summary model, and the
-/// summary model, which holds the grand totals. Found by the references
-/// each object's header lists.
-fn pivot_views(objects: &[crate::io::iwa::IwaObject<'_>]) -> HashSet<u64> {
+/// The objects of skipped types a table's view needs, among a stream's
+/// objects (Numbers keeps a table's model, info, and maps in one stream):
+/// for each table whose info names a view (`view_column_row_uids`, which
+/// only pivot and categorised tables have), the uid maps of its info,
+/// model, and summary model, and the summary model, which holds a pivot's
+/// grand totals; and, when any does, the stream's categories
+/// (`TST.GroupByArchive`, small for a table without them). Found by the
+/// references each object's header lists.
+fn view_objects(objects: &[crate::io::iwa::IwaObject<'_>]) -> HashSet<u64> {
     let types: HashMap<u64, u32> = objects
         .iter()
         .map(|object| (object.identifier, object.message_type().unwrap_or(0)))
@@ -168,36 +171,42 @@ fn pivot_views(objects: &[crate::io::iwa::IwaObject<'_>]) -> HashSet<u64> {
             .flat_map(|message| message.object_references.iter().copied())
             .collect()
     };
-    let models: HashSet<u64> = objects
-        .iter()
-        .filter(|object| object.message_type() == Some(TABLE_MODEL))
-        .filter(|object| {
-            references(object)
-                .iter()
-                .any(|id| of_type(id, &[PIVOT_OWNER]))
-        })
-        .map(|object| object.identifier)
-        .collect();
     let mut keep = HashSet::new();
-    if models.is_empty() {
+    let mut models = HashSet::new();
+    for object in objects {
+        if object.message_type() != Some(TABLE_INFO) {
+            continue;
+        }
+        let refs = references(object);
+        if !refs.iter().any(|id| of_type(id, &[UID_MAP])) {
+            continue;
+        }
+        models.extend(
+            refs.iter()
+                .copied()
+                .filter(|id| of_type(id, &[TABLE_MODEL])),
+        );
+        keep.extend(
+            refs.into_iter()
+                .filter(|id| of_type(id, &[UID_MAP, SUMMARY_MODEL])),
+        );
+    }
+    if keep.is_empty() {
         return keep;
     }
     for object in objects {
-        let refs = references(object);
-        let pivot = models.contains(&object.identifier)
-            || (object.message_type() == Some(TABLE_INFO)
-                && refs.iter().any(|id| models.contains(id)));
-        if pivot {
-            keep.extend(
-                refs.into_iter()
-                    .filter(|id| of_type(id, &[UID_MAP, SUMMARY_MODEL])),
-            );
+        let message_type = object.message_type();
+        if message_type == Some(GROUP_BY) {
+            keep.insert(object.identifier);
         }
-    }
-    for object in objects {
-        if keep.contains(&object.identifier) && object.message_type() == Some(SUMMARY_MODEL) {
-            let refs = references(object);
-            keep.extend(refs.into_iter().filter(|id| of_type(id, &[UID_MAP])));
+        let named = models.contains(&object.identifier)
+            || (message_type == Some(SUMMARY_MODEL) && keep.contains(&object.identifier));
+        if named {
+            keep.extend(
+                references(object)
+                    .into_iter()
+                    .filter(|id| of_type(id, &[UID_MAP])),
+            );
         }
     }
     keep
@@ -324,13 +333,13 @@ impl Package {
                 stream: entry.name.clone(),
                 error,
             })?;
-            let pivots = pivot_views(&objects);
+            let views = view_objects(&objects);
             let skipped: Vec<u64> = objects
                 .iter()
                 .filter(|object| {
                     let message_type = object.message_type().unwrap_or(0);
                     (SKIPPED_TYPES.contains(&message_type) || message_type == ROW_HEADERS)
-                        && !pivots.contains(&object.identifier)
+                        && !views.contains(&object.identifier)
                 })
                 .map(|object| object.identifier)
                 .collect();
