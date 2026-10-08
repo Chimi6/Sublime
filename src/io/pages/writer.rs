@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 mod numbers;
-pub use numbers::{NumbersSheet, NumbersTable, write_numbers_to};
+pub use numbers::{NumbersRows, NumbersSheet, NumbersTable, write_numbers_to};
 
 use super::format as cell_format;
 use super::package::{Entry, Object, ObjectMessage, Package, PackageError, Stream};
@@ -1455,6 +1455,9 @@ fn reuse_table(
     if mark.rows > TILE_ROWS {
         let mut tiles = vec![(0u64, table.tile_id)];
         let stream = stream_containing(package, table.tile_id)?;
+        // The tiles' bytes, sized once: growing to them by doubling would
+        // hold up to twice them.
+        stream.tree.text.reserve(mark.data_tile_bytes());
         for (index, start) in (TILE_ROWS..mark.rows).step_by(TILE_ROWS).enumerate() {
             let id = *next_id;
             *next_id += 1;
@@ -3977,6 +3980,23 @@ impl Typed {
 }
 
 impl TableMark {
+    /// About the bytes a data table's tiles take, encoded: each row's
+    /// offsets, placeholders, and framing, and each cell's record.
+    fn data_tile_bytes(&self) -> usize {
+        let records: usize = self
+            .data
+            .iter()
+            .map(|cell| match cell {
+                DataCell::Empty => 0,
+                DataCell::Text(_) => 16,
+                DataCell::Value(Typed::Number(_, key)) => 28 + if *key > 0 { 8 } else { 0 },
+                DataCell::Value(Typed::Date(_, key)) => 20 + if *key > 0 { 8 } else { 0 },
+                DataCell::Value(Typed::Boolean(_)) => 20,
+            })
+            .sum();
+        records + self.rows * (self.columns * 2 + 40)
+    }
+
     /// Row-major indices of the cells merged regions cover (every cell of a
     /// region but its top-left origin).
     fn covered(&self) -> std::collections::HashSet<usize> {
@@ -5962,8 +5982,8 @@ fn tree_mark(tree: &Tree) -> (usize, usize) {
 
 /// Encodes the message chain `first`, built since `mark`, as bytes, drops
 /// its entries and text, and returns the bytes as one raw value: a large
-/// table's repeated records (tile rows, strings, row headers) then cost a
-/// tree entry each instead of one per field.
+/// table's repeated records (tile rows, strings, row headers) then cost no
+/// tree entry of their own (`push_sealed` runs them together).
 fn seal(tree: &mut Tree, first: u32, mark: (usize, usize)) -> Result<Node, PackageError> {
     let mut bytes = Vec::new();
     tree.encode(first, &mut bytes).map_err(tree_error)?;
@@ -5973,7 +5993,9 @@ fn seal(tree: &mut Tree, first: u32, mark: (usize, usize)) -> Result<Node, Packa
     Ok(Node::RawBytes(span))
 }
 
-/// Pushes a sealed record as field `name` of `message`.
+/// Pushes a sealed record (or packed run) as field `name` of `message`:
+/// written whole, tag and length included, and run on into the chain's
+/// last entry when that holds the records just before it in the text.
 fn push_sealed(
     tree: &mut Tree,
     chain: &mut Chain,
@@ -5984,7 +6006,33 @@ fn push_sealed(
     let (_, field) = message
         .slot_named(name)
         .ok_or_else(|| malformed("field is not in the schema"))?;
-    tree.push_unknown(chain, field.number, value)
+    let Node::RawBytes(span) = value else {
+        tree.push_unknown(chain, field.number, value)
+            .map_err(tree_error)?;
+        return Ok(());
+    };
+    // The record with its tag and length, in place of its bare bytes.
+    let body = tree.bytes(span).to_vec();
+    if span.start as usize + span.length as usize == tree.text.len() {
+        tree.text.truncate(span.start as usize);
+    }
+    let mut field_bytes = Vec::with_capacity(body.len() + 8);
+    crate::io::protobuf::tree::write_tag(&mut field_bytes, field.number, 2);
+    crate::io::protobuf::tree::write_varint(&mut field_bytes, body.len() as u64);
+    field_bytes.extend_from_slice(&body);
+    let start = tree.text.len();
+    let span = tree.push_bytes(&field_bytes).map_err(tree_error)?;
+    if chain.last != crate::io::protobuf::tree::NONE {
+        let last = &mut tree.entries[chain.last as usize];
+        if last
+            .verbatim()
+            .is_some_and(|run| run.start as usize + run.length as usize == start)
+        {
+            last.extend_verbatim(span.length);
+            return Ok(());
+        }
+    }
+    tree.push_verbatim(chain, field.number, span)
         .map_err(tree_error)?;
     Ok(())
 }
@@ -6186,9 +6234,8 @@ fn build_tile(
         "last_saved_in_BNC",
         Node::Bool(true),
     )?;
-    // A tile of a table past 255 columns says its rows are wide, as Numbers
-    // saves one.
-    if data && mark.columns > TILE_COLUMN_SLOTS {
+    // A data table's tile says its rows are wide, as Numbers saves one.
+    if data {
         push_field(
             tree,
             &mut chain,
@@ -6208,9 +6255,10 @@ fn build_tile(
         // bytes), and a slot per column in a wider table: the byte offset of
         // each present column's record in the buffer, then 0xFFFF for every
         // empty column.
-        // A data table past 255 columns is read only as wide offsets, its
-        // tile marked wide.
-        let past_slots = data && mark.columns > TILE_COLUMN_SLOTS;
+        // A data table's rows are wide, as Numbers writes a large table's
+        // (and a table past 255 columns is read only as wide offsets): no
+        // legacy copy of the row, a quarter of a narrow row's size.
+        let wide_rows = data;
         // A data table's array has a slot per column (Numbers accepts it,
         // and pads none it does not need); a document table's has 255.
         let slots = if data {
@@ -6252,7 +6300,7 @@ fn build_tile(
         }
         // A row past 64 KiB counts its offsets in 4-byte words, as Numbers
         // does (`has_wide_offsets`); every record is a whole number of words.
-        let wide = past_slots || buffer.len() > usize::from(u16::MAX - 1);
+        let wide = wide_rows || buffer.len() > usize::from(u16::MAX - 1);
         for (column, start) in starts.iter().enumerate() {
             let Some(start) = start else {
                 continue;
@@ -6290,10 +6338,10 @@ fn build_tile(
         // Pages needs both the legacy (pre-BNC) and current buffers; the same
         // storage-version-5 bytes serve for each (Numbers checks a narrow
         // row's copy against the row). A wide row's legacy fields hold the
-        // placeholder Numbers writes instead: it parses them as the old
-        // layout, and the new bytes there crash it.
+        // placeholder Numbers writes instead, gaps or not: it parses them as
+        // the old layout, and the new bytes there crash it.
         // Numbers ends a wide row's array at its last present column.
-        if past_slots {
+        if wide_rows {
             let last = starts
                 .iter()
                 .rposition(Option::is_some)
@@ -6302,7 +6350,7 @@ fn build_tile(
         }
         let buffer_span = tree.push_bytes(&buffer).map_err(tree_error)?;
         let offsets_span = tree.push_bytes(&offsets).map_err(tree_error)?;
-        let (legacy_buffer, legacy_offsets) = if past_slots {
+        let (legacy_buffer, legacy_offsets) = if wide_rows {
             let placeholder = tree.push_bytes(LEGACY_PLACEHOLDER).map_err(tree_error)?;
             (placeholder, placeholder)
         } else {

@@ -17,11 +17,15 @@ use crate::format::Format;
 use crate::format::formats;
 use crate::io::csv::{CsvReader, DocumentTables, Record};
 use crate::io::markdown::{Options, parse_into};
-use crate::io::pages::{NumbersSheet, NumbersTable, write_numbers_to};
+use crate::io::pages::{NumbersRows, NumbersSheet, NumbersTable, write_numbers_to};
 use crate::io::xlsx::Workbook;
 
 const NOTE: &str = "a sheet per worksheet (delimited rows one sheet, JSON a sheet per table), each one table with its first row the header; plain decimals become numbers, ISO 8601 dates and dates with times dates, TRUE and FALSE booleans, everything else text; a workbook's number and date formats where Numbers has the same (decimals, currency, percent, scientific, fraction, date patterns) and its merged cells; Numbers' default table style otherwise";
 const DOCUMENT_NOTE: &str = "the document's tables as tables of one sheet, each named after the heading before it, its first row the header; plain decimals become numbers, ISO 8601 dates and dates with times dates, TRUE and FALSE booleans, everything else text; everything but the tables is dropped";
+
+/// The largest table Numbers opens.
+const NUMBERS_MAX_ROWS: usize = 1_000_000;
+const NUMBERS_MAX_COLUMNS: usize = 1_000;
 
 #[derive(Clone, Copy)]
 enum Source {
@@ -159,20 +163,30 @@ impl Converter for ToNumbers {
                         .into_iter()
                         .map(|(name, rows)| NumbersTable {
                             name,
-                            rows,
+                            rows: NumbersRows::from(rows),
                             ..NumbersTable::default()
                         })
                         .collect(),
                 }]
             }
         };
+        for table in sheets.iter().flat_map(|sheet| &sheet.tables) {
+            if table.rows.len() > NUMBERS_MAX_ROWS || table.rows.width() > NUMBERS_MAX_COLUMNS {
+                context.warning(format!(
+                    "table '{}' is {} rows by {} columns, past the 1,000,000 rows and 1,000 columns Numbers opens",
+                    table.name,
+                    table.rows.len(),
+                    table.rows.width()
+                ));
+            }
+        }
         write_numbers_to(sheets, output).map_err(package_error)?;
         output.flush()?;
         Ok(())
     }
 }
 
-fn one_table(sheet: &str, table: &str, rows: Vec<Vec<String>>) -> NumbersSheet {
+fn one_table(sheet: &str, table: &str, rows: NumbersRows) -> NumbersSheet {
     NumbersSheet {
         name: sheet.to_string(),
         tables: vec![NumbersTable {
@@ -193,10 +207,10 @@ fn workbook_table(workbook: &Workbook, sheet: usize) -> Result<NumbersTable, Con
     // Per style index, the format's key (0 for none), mapped when first seen.
     let mut keys: Vec<Option<u16>> = Vec::new();
     let mut formatted = false;
-    let mut rows = Vec::new();
+    let mut rows = NumbersRows::new();
     let mut cell_formats = Vec::new();
     let merges = workbook.read_sheet(sheet, &mut |cells, styles| -> Result<(), ConvertError> {
-        rows.push(cells.to_vec());
+        rows.push_row(cells.iter().map(String::as_str));
         let mut row_keys = Vec::with_capacity(styles.len());
         for style in styles {
             let key = match *style {
@@ -233,12 +247,12 @@ fn workbook_table(workbook: &Workbook, sheet: usize) -> Result<NumbersTable, Con
     Ok(table)
 }
 
-fn read_rows(input: &mut dyn Read, delimiter: u8) -> Result<Vec<Vec<String>>, ConvertError> {
+fn read_rows(input: &mut dyn Read, delimiter: u8) -> Result<NumbersRows, ConvertError> {
     let mut reader = CsvReader::with_delimiter(input, delimiter);
     let mut record = Record::new();
-    let mut rows = Vec::new();
+    let mut rows = NumbersRows::new();
     while reader.read_record(&mut record)? {
-        rows.push(record.fields().map(str::to_string).collect());
+        rows.push_row(record.fields());
     }
     Ok(rows)
 }

@@ -13,6 +13,8 @@ section under a version heading.
 
 ### Changed
 
+- The Numbers writer's large tables take about half the memory and a sixth less space: every row in wide offsets with Numbers' placeholder in its legacy fields (as Numbers writes its own large tables) instead of a second copy of its records, repeated records run together in one tree entry, and source rows held in one text buffer. 300,000 rows of four columns peak at about 175 MB (from 350) in a 19.8 MB document (from 23); 1,000,000 rows at about 500 MB (from 900), 2.1 s (from 2.8), 70 MB (from 81), and open in Numbers with an export identical to the source. A table past Numbers' 1,000,000 rows or 1,000 columns is written with a warning.
+
 - Numbers cells: the narrow no-break space before AM and PM is for a formula's result under Numbers' automatic format only, as Numbers shows it; a time format the cell chose keeps its space (70 of 79 test documents exact against Numbers' export, from 69).
 - The Numbers writer lays out tables past 65,535 rows as Numbers does (no multiple-choice list, the row tile tree, the next row strip id): all 79 rewritten test documents now open in Numbers with no repair or upgrade, and so does a 300,000-row table.
 - The Numbers writer holds a table's cells compactly, encodes large tables' repeated records as it builds them, and sizes each row's offset array to the table: 300,000 rows of four columns write at about 350 MB peak instead of 933, in 0.6 s instead of 0.8, to a document of 23 MB instead of 39.
