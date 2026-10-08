@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-10-08
+
 ### Added
 
 - Numbers categorised tables read as Numbers shows them: a row per category above its rows, labelled with the group's text, number, date (by year, quarter, week, month, day, or weekday), or `Is “Column”` / `Not “Column”`, nested categories in turn, and hidden columns left out. Every categorised table of numbers-parser's test documents matches Numbers' own export.
