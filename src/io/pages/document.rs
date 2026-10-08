@@ -3446,13 +3446,74 @@ pub struct WorkbookSheet {
     pub tables: Vec<WorkbookTable>,
 }
 
-/// A Numbers table: its name and its size.
+/// A Numbers table: its name and its size (as Numbers shows it).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkbookTable {
     pub name: String,
     pub rows: usize,
     pub columns: usize,
     model: u64,
+    /// A pivot table's layout, which places its stored cells and its
+    /// summary's (the grand totals) as Numbers shows them.
+    view: Option<std::rc::Rc<TableLayout>>,
+}
+
+/// A table laid out by its view (`TST.TableInfoArchive`
+/// `view_column_row_uids`), which orders every row and column by its uid:
+/// the model's stored grid and the summary model's (`data_store`) each map
+/// a uid to their own row or column (`TST.ColumnRowUIDMapArchive`).
+#[derive(Debug, PartialEq)]
+struct TableLayout {
+    /// The stored grid's rows and columns.
+    base: (usize, usize),
+    /// The summary model, and its grid's rows and columns.
+    summary: u64,
+    summary_size: (usize, usize),
+    /// Per view row, its row in the stored grid and in the summary's.
+    rows: Vec<(Option<usize>, Option<usize>)>,
+    /// Per view column, likewise.
+    columns: Vec<(Option<usize>, Option<usize>)>,
+}
+
+/// A `TST.ColumnRowUIDMapArchive`: each uid's index, and the uids in
+/// index order, of the rows and of the columns.
+struct UidMap {
+    row_index: HashMap<(u64, u64), usize>,
+    column_index: HashMap<(u64, u64), usize>,
+    rows: Vec<(u64, u64)>,
+    columns: Vec<(u64, u64)>,
+}
+
+impl UidMap {
+    fn of(view: View<'_>) -> UidMap {
+        let side = |uids: &str, index_for: &str, for_index: &str| {
+            let sorted: Vec<(u64, u64)> =
+                view.messages(uids).into_iter().filter_map(uid_of).collect();
+            let index: HashMap<(u64, u64), usize> = sorted
+                .iter()
+                .zip(view.integers(index_for))
+                .map(|(uid, index)| (*uid, index.max(0) as usize))
+                .collect();
+            let ordered: Vec<(u64, u64)> = view
+                .integers(for_index)
+                .into_iter()
+                .filter_map(|at| sorted.get(at.max(0) as usize).copied())
+                .collect();
+            (index, ordered)
+        };
+        let (row_index, rows) = side("sorted_row_uids", "row_index_for_uid", "row_uid_for_index");
+        let (column_index, columns) = side(
+            "sorted_column_uids",
+            "column_index_for_uid",
+            "column_uid_for_index",
+        );
+        UidMap {
+            row_index,
+            column_index,
+            rows,
+            columns,
+        }
+    }
 }
 
 /// `TN.DocumentArchive` and `TN.SheetArchive`: Numbers' own types, which
@@ -3543,13 +3604,19 @@ impl<'p> WorkbookReader<'p> {
             }
             let tables = models
                 .into_iter()
-                .filter_map(|model| {
+                .filter_map(|(info, model)| {
                     let view = View::of(reader.graph.object(model)?);
+                    let rows = view.integer("number_of_rows")?.clamp(0, 1 << 20) as usize;
+                    let columns = view.integer("number_of_columns")?.clamp(0, 1 << 16) as usize;
+                    let layout = reader.pivot_layout(info, view, (rows, columns));
                     Some(WorkbookTable {
                         name: view.string("table_name").unwrap_or_default().to_string(),
-                        rows: view.integer("number_of_rows")?.clamp(0, 1 << 20) as usize,
-                        columns: view.integer("number_of_columns")?.clamp(0, 1 << 16) as usize,
+                        rows: layout.as_ref().map_or(rows, |layout| layout.rows.len()),
+                        columns: layout
+                            .as_ref()
+                            .map_or(columns, |layout| layout.columns.len()),
                         model,
+                        view: layout.map(std::rc::Rc::new),
                     })
                 })
                 .collect();
@@ -3649,12 +3716,76 @@ impl<'p> WorkbookReader<'p> {
         else {
             return Ok(());
         };
+        let Some(layout) = table.view.as_deref() else {
+            return self.store_rows(table.model, true, table.rows, table.columns, each);
+        };
+        // A pivot table as Numbers shows it: its stored cells and its
+        // summary's (the grand totals), each placed by its row and column
+        // in the view. The stores are read whole; a pivot is a summary.
+        let mut base: Vec<Vec<WorkbookCell>> = Vec::new();
+        self.store_rows(
+            table.model,
+            true,
+            layout.base.0,
+            layout.base.1,
+            &mut |cells| {
+                base.push(cells.to_vec());
+                Ok(())
+            },
+        )?;
+        let mut summary: Vec<Vec<WorkbookCell>> = Vec::new();
+        self.store_rows(
+            layout.summary,
+            false,
+            layout.summary_size.0,
+            layout.summary_size.1,
+            &mut |cells| {
+                summary.push(cells.to_vec());
+                Ok(())
+            },
+        )?;
+        let at = |grid: &[Vec<WorkbookCell>], row: Option<usize>, column: Option<usize>| {
+            grid.get(row?)?
+                .get(column?)
+                .filter(|cell| !matches!(cell.value, CellValue::Empty) || !cell.text.is_empty())
+                .cloned()
+        };
+        let mut row = Vec::with_capacity(layout.columns.len());
+        for &(base_row, summary_row) in &layout.rows {
+            row.clear();
+            for &(base_column, summary_column) in &layout.columns {
+                row.push(
+                    at(&summary, summary_row, summary_column)
+                        .or_else(|| at(&base, base_row, base_column))
+                        .unwrap_or_default(),
+                );
+            }
+            each(&row)?;
+        }
+        Ok(())
+    }
+
+    /// The rows of a table's data store, tile by tile: the model's
+    /// (`base_data_store`, its merges applied) or a summary model's
+    /// (`data_store`), on a grid of `rows` by `columns`.
+    fn store_rows(
+        &mut self,
+        object: u64,
+        base: bool,
+        rows: usize,
+        columns: usize,
+        each: &mut dyn FnMut(&[WorkbookCell]) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         let reader = &mut self.reader;
-        let Some(message) = reader.graph.object(table.model) else {
+        let Some(message) = reader.graph.object(object) else {
             return Ok(());
         };
         let view = View::of(message);
-        let Some(store) = view.message("base_data_store") else {
+        let Some(store) = view.message(if base {
+            "base_data_store"
+        } else {
+            "data_store"
+        }) else {
             return Ok(());
         };
         let lists = TableLists {
@@ -3666,6 +3797,7 @@ impl<'p> WorkbookReader<'p> {
         };
         let merges: Vec<Region> = view
             .message("merge_owner")
+            .filter(|_| base)
             .and_then(|owner| owner.message("owner_id"))
             .and_then(uuid)
             .map(|owner| reader.merge_regions(owner))
@@ -3676,8 +3808,8 @@ impl<'p> WorkbookReader<'p> {
             .filter(|region| {
                 region.rows > 0
                     && region.columns > 0
-                    && region.row + region.rows <= table.rows
-                    && region.column + region.columns <= table.columns
+                    && region.row + region.rows <= rows
+                    && region.column + region.columns <= columns
             })
             .collect();
         let mut tiles: Vec<(usize, u64)> = Vec::new();
@@ -3692,11 +3824,11 @@ impl<'p> WorkbookReader<'p> {
             }
         }
         tiles.sort_unstable();
-        let empty = vec![WorkbookCell::default(); table.columns];
+        let empty = vec![WorkbookCell::default(); columns];
         let mut next = 0;
         let mut block: Vec<Vec<WorkbookCell>> = Vec::new();
         for (base, tile) in tiles {
-            if base < next || base >= table.rows {
+            if base < next || base >= rows {
                 continue;
             }
             while next < base {
@@ -3711,7 +3843,7 @@ impl<'p> WorkbookReader<'p> {
             // in one tile, so the block spans the rows the tile holds.
             let infos = tile_rows(View::of(tile));
             let held = infos.iter().map(|info| info.index + 1).max().unwrap_or(0);
-            let height = tile_size.max(held).min(table.rows - base);
+            let height = tile_size.max(held).min(rows - base);
             block.clear();
             block.resize(height, empty.clone());
             for info in infos {
@@ -3742,7 +3874,7 @@ impl<'p> WorkbookReader<'p> {
             }
             next = base + height;
         }
-        while next < table.rows {
+        while next < rows {
             each(&empty)?;
             next += 1;
         }
@@ -3802,14 +3934,14 @@ impl Reader<'_> {
 
     /// The table models a sheet's drawable holds: a table, or the tables
     /// in a group.
-    fn collect_table_models(&self, drawable: u64, models: &mut Vec<u64>, depth: u32) {
+    fn collect_table_models(&self, drawable: u64, models: &mut Vec<(u64, u64)>, depth: u32) {
         let Some(message) = self.graph.object(drawable) else {
             return;
         };
         let view = View::of(message);
         if self.graph.object_type(drawable) == Some(TABLE_INFO) {
             if let Some(model) = view.reference("tableModel") {
-                models.push(model);
+                models.push((drawable, model));
             }
             return;
         }
@@ -3818,6 +3950,54 @@ impl Reader<'_> {
                 self.collect_table_models(child, models, depth + 1);
             }
         }
+    }
+
+    /// A pivot table's layout as Numbers shows it, from its view's uid map
+    /// and its stored and summary grids' maps; `None` for any other table,
+    /// or when a map is missing (the stored cells are read as they are).
+    fn pivot_layout(
+        &self,
+        info: u64,
+        model: View<'_>,
+        base: (usize, usize),
+    ) -> Option<TableLayout> {
+        model.reference("pivot_owner")?;
+        let info = View::of(self.graph.object(info)?);
+        let map = |id: Option<u64>| Some(UidMap::of(View::of(self.graph.object(id?)?)));
+        let shown = map(info.reference("view_column_row_uids"))?;
+        let stored = map(model.reference("base_column_row_uids"))?;
+        let summary = info.reference("summary_model")?;
+        let summed = map(View::of(self.graph.object(summary)?).reference("column_row_uids"))?;
+        let place = |uids: &[(u64, u64)],
+                     stored: &HashMap<(u64, u64), usize>,
+                     summed: &HashMap<(u64, u64), usize>,
+                     limit: usize| {
+            uids.iter()
+                .map(|uid| {
+                    (
+                        stored.get(uid).copied().filter(|index| *index < limit),
+                        summed.get(uid).copied(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let rows = place(&shown.rows, &stored.row_index, &summed.row_index, base.0);
+        let columns = place(
+            &shown.columns,
+            &stored.column_index,
+            &summed.column_index,
+            base.1,
+        );
+        if rows.is_empty() || columns.is_empty() {
+            return None;
+        }
+        Some(TableLayout {
+            base,
+            summary,
+            summary_size: (summed.rows.len(), summed.columns.len()),
+            rows,
+            columns,
+        })
     }
 }
 

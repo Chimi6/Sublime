@@ -227,6 +227,13 @@ fn cells_read_as_numbers_shows_them() {
             ],
         ),
         ("currencies.numbers", vec![("Income", "currencies.csv")]),
+        (
+            "pivot.numbers",
+            vec![
+                ("Sheet 1 - Source", "pivot/Sheet 1-Source.csv"),
+                ("Sheet 1 - Pivot", "pivot/Sheet 1-Pivot.csv"),
+            ],
+        ),
     ];
     for (document, tables) in cases {
         let ours = parts(&NUMBERS_TO_CSV, &fixture(document), None);

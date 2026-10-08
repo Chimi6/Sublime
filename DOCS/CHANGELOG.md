@@ -8,6 +8,7 @@ section under a version heading.
 
 ### Added
 
+- Numbers pivot tables read as Numbers shows them: rows and columns in the view's order, with the grand total row and column from the table's summary (72 of 79 test documents exact against Numbers' export, from 70; through Excel 65, from 63).
 - Excel to Numbers keeps each cell's number format where Numbers has the same (decimals with separators and red or parenthesised negatives, currency by symbol or locale, percent, scientific, fractions, and date and time patterns) and the sheet's merged cells; formats Numbers' built-in ones cannot say (padding, optional decimals, scaling, elapsed time) leave the value unformatted. The Excel reader gives each cell's format code and the sheet's merges (`Workbook::read_sheet`), and the Numbers reader a table's merges (`WorkbookReader::merges`).
 
 ### Changed

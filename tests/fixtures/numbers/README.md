@@ -15,3 +15,6 @@ them small; the documents are otherwise unchanged.
   (`test-8.numbers`): dates, fractions, custom number formats, currencies,
   and percentages; `reference/` holds Numbers' own CSV export of each (made
   by Numbers 12.0 on macOS), the text our reader must produce.
+- `pivot.numbers` (`test-pivot.numbers`): a pivot table of a source table,
+  rows and columns sorted by group with grand totals; `reference/pivot/`
+  holds Numbers' CSV export of both tables.
