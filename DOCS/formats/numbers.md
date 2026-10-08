@@ -48,7 +48,7 @@ formats with their conditions.
 |---|---|
 | decimal, currency, percent | places (or as many as the number needs, at fifteen significant digits), thousands separators, the currency's symbol (`£1,877`), negatives with a minus, in red (no sign), or in parentheses |
 | scientific, fraction, base | `1.23456E+03`; `2 1/3` to the stated accuracy or denominator; any base from 2 to 36, two's complement for negatives in 2, 8, and 16 |
-| date | the format's pattern (`EEE, d MMM yyyy`, `'Day #'DDD`), with week fields; the system's short time shows AM and PM after a narrow no-break space, as macOS does |
+| date | the format's pattern (`EEE, d MMM yyyy`, `'Day #'DDD`), with week fields; a formula's result under Numbers' automatic format in the system's short time shows AM and PM after a narrow no-break space, as macOS does (a cell's record marks the format kinds it chose, byte 6: 0x01 number, 0x02 currency, 0x04 duration, 0x08 date, 0x80 text) |
 | duration | Numbers' units and styles (`1w 1d 1h`, `1 week`, `0:01:05`), automatic units included |
 | checkbox, rating | `TRUE` or `FALSE`, and the number of stars, as Numbers' own CSV export writes them |
 | custom number | Numbers' rules for its custom formats: integer digits padded with zeros or spaces, optional decimals trimmed, the width unused decimals leave turned into leading zeros, conditions, currency symbols, quoted text |
@@ -87,7 +87,7 @@ under it a node per table) are rebuilt.
 | Source | Becomes |
 |---|---|
 | CSV, TSV | one sheet, one table |
-| Excel | a sheet per worksheet, one table each |
+| Excel | a sheet per worksheet, one table each, with its number formats and merged cells |
 | JSON | a sheet per table (an object of arrays a sheet per member) |
 | Markdown, and Word, Pages, HTML, RTF, PDF through it | one sheet holding the document's tables, each named after the heading before it |
 
@@ -97,7 +97,27 @@ are decimal128 numbers; ISO 8601 dates and dates with times are dates with
 a `yyyy-MM-dd` or `yyyy-MM-dd'T'HH:mm:ss` format, so they show as written;
 `TRUE` and `FALSE` are booleans; everything else is text. The first row is
 the header row; the table has Numbers' default style, no header column, and
-default column widths. Formats, merges, and styling are not written yet.
+default column widths. Styling is not written.
+
+From Excel, each cell's number format becomes the Numbers format that
+shows it the same (`format::from_excel`), written to the table's format
+list with the fields Numbers writes for its kind, and named by the cell
+record (the format kind it shows at `0x1000`, the key at `0x2000` for a
+number, `0x4000` and record kind 10 for a currency, `0x8000` for a date),
+and marked as chosen rather than automatic (byte 6, as Numbers marks a
+format picked in its inspector):
+
+| Excel | Numbers |
+|---|---|
+| `0.00`, `#,##0`, red or parenthesised negatives | decimal: places, thousands separator, negative style |
+| `"£"#,##0.00`, `[$€-407]#,##0.00`, accounting | currency by its ISO code |
+| `0.0%`, `0.00E+00`, `# ?/?`, `# ?/8` | percent, scientific, fraction to digits or a denominator |
+| date and time codes (`d mmm yyyy`, `h:mm AM/PM`) | the date pattern in ICU (`d MMM yyyy`, `h:mm a`); a time alone on Excel's day zero |
+| General, text, elapsed time (`[h]:mm`), padding (`000`, `??`), optional decimals beside fixed ones, scaling, engineering notation, text around the digits | none: the value as it is |
+
+Under a number format a cell is a number whatever its digits (the
+workbook says so). Merged ranges are written as the Pages writer writes
+them; the cells they cover are left empty.
 
 The table layout follows Numbers': a tile per 256 rows, listed in the row
 tile tree with the next row strip id after them; no record for an empty
@@ -138,16 +158,22 @@ LibreOffice), on numbers-parser's test documents
 (<https://github.com/masaccio/numbers-parser>, MIT):
 
 - `check.sh` exports each document to CSV with Numbers and compares every
-  cell we read. As text: 69 of 79 documents exact, 130,008 of 131,593
+  cell we read. As text: 70 of 79 documents exact, 130,018 of 131,593
   non-empty cells (98.8%). Through Excel (our workbook shown by
   LibreOffice): 63 to 64 of 79 exact, 98.7% of cells. The rest are the
   categorised and pivot views, formulas Numbers recalculates on opening,
-  macOS's narrow space before AM and PM in one document's built-in time
-  format, and, through Excel, what Excel formats cannot express (above).
+  and, through Excel, what Excel formats cannot express (above).
 - `write.sh` rewrites each document through our writer (Numbers, Excel,
   Numbers), opens it in Numbers, and reads Numbers' log and export: all 79
   open with no repair, upgrade, or assertion and export what our reader
   reads; no crashes. So do tables of 65,534, 65,537, and 300,000 rows.
+- Formats and merges from Excel: each test document through our workbook
+  and back (Numbers, Excel, Numbers) opens in Numbers cleanly, and
+  Numbers' export of it matches LibreOffice's view of the workbook in 67
+  of 79 documents and 99.1% of cells; the rest are Excel formats Numbers'
+  built-in ones cannot say (padding, optional decimals), left
+  unformatted. A workbook of every mapped format and three merges
+  (`tests/fixtures/xlsx/formats.xlsx`) shows in Numbers as in Excel.
 
 Speed and memory are the `numbers-csv` and `numbers-xlsx` benchmark pairs
 (`DOCS/benchmarks/numbers-csv.md`, `numbers-xlsx.md`).

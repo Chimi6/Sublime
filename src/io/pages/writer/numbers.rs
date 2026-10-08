@@ -6,7 +6,8 @@
 //! its header, footer, and guide storages. Cells are typed by their text
 //! under the workbook writer's read-back rule: plain decimals are numbers,
 //! ISO 8601 dates and dates with times are dates, `TRUE` and `FALSE` are
-//! booleans, everything else is text.
+//! booleans, everything else is text. A table may name its cells' number
+//! and date formats (from a workbook's), and its merged ranges.
 
 use super::*;
 
@@ -35,11 +36,19 @@ pub struct NumbersSheet {
 }
 
 /// A table to write: its name and rows of cell text, the first row its
-/// header.
+/// header; the formats its cells show in, and its merged ranges.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NumbersTable {
     pub name: String,
     pub rows: Vec<Vec<String>>,
+    /// Number and date formats the cells name.
+    pub formats: Vec<cell_format::Format>,
+    /// Per row, each cell's format: its index in `formats` from 1, or 0
+    /// for none. A number takes a number format, a date a date format;
+    /// another pairing is left unformatted. Empty when no cell has one.
+    pub cell_formats: Vec<Vec<u16>>,
+    /// Merged ranges as (row, column, rows, columns) from 0.
+    pub merges: Vec<(usize, usize, usize, usize)>,
 }
 
 /// Writes `sheets` as a Numbers package into `sink`.
@@ -71,7 +80,7 @@ pub fn write_numbers_to(
         if sheet.tables.is_empty() {
             sheet.tables.push(NumbersTable {
                 name: "Table 1".to_string(),
-                rows: Vec::new(),
+                ..NumbersTable::default()
             });
         }
     }
@@ -122,7 +131,7 @@ pub fn write_numbers_to(
             let template = template_table(&package, info, info)
                 .ok_or_else(|| malformed("cloned table is incomplete"))?;
             // The table's rows move into its mark, and go with it.
-            let mark = data_mark(&package, &template, std::mem::take(&mut table.rows));
+            let mark = data_mark(&package, &template, table);
             reuse_table(
                 &mut package,
                 &template,
@@ -163,11 +172,11 @@ pub fn write_numbers_to(
 
 /// A table's cells as a data table mark: typed where the text reads back
 /// as a number, a date, or a boolean; the first row the header.
-fn data_mark(
-    package: &Package,
-    template: &TemplateTable,
-    mut source: Vec<Vec<String>>,
-) -> TableMark {
+fn data_mark(package: &Package, template: &TemplateTable, table: &mut NumbersTable) -> TableMark {
+    let mut source = std::mem::take(&mut table.rows);
+    let mut named = std::mem::take(&mut table.formats);
+    let cell_formats = std::mem::take(&mut table.cell_formats);
+    let merges = std::mem::take(&mut table.merges);
     let rows = source.len().max(1);
     let columns = source.iter().map(Vec::len).max().unwrap_or(0).max(1);
     let width = object_message(package, template.model_id)
@@ -181,6 +190,26 @@ fn data_mark(
         .unwrap_or(100.0);
     let count = rows * columns;
     let mut data = Vec::with_capacity(count);
+    // Merged ranges within the table, their covered cells left empty.
+    let merges: Vec<(usize, usize, usize, usize)> = merges
+        .into_iter()
+        .filter(|&(row, column, height, width)| {
+            (height > 1 || width > 1) && row + height <= rows && column + width <= columns
+        })
+        .collect();
+    let mut covered = HashSet::new();
+    for &(row, column, height, width) in &merges {
+        for r in row..row + height {
+            for c in column..column + width {
+                if (r, c) != (row, column) {
+                    covered.insert((r, c));
+                }
+            }
+        }
+    }
+    // A date's format: the one it names, else the ISO form it was
+    // written in (`DATA_DATE_FORMATS`), added to the list when used.
+    let mut iso_keys = [0u16; 2];
     for row in 0..rows {
         for column in 0..columns {
             let text = source
@@ -188,7 +217,40 @@ fn data_mark(
                 .and_then(|cells| cells.get_mut(column))
                 .map(std::mem::take)
                 .unwrap_or_default();
-            data.push(match typed_value(&text) {
+            if covered.contains(&(row, column)) {
+                data.push(DataCell::Empty);
+                continue;
+            }
+            let key = cell_formats
+                .get(row)
+                .and_then(|keys| keys.get(column))
+                .copied()
+                .unwrap_or(0);
+            let kind = (key > 0)
+                .then(|| named.get(usize::from(key) - 1))
+                .flatten()
+                .map(|format| format.kind);
+            let is_date = kind == Some(cell_format::DATE);
+            let value = typed_value(&text, kind).map(|value| match value {
+                Typed::Number(decimal, _) if kind.is_some() && !is_date => {
+                    Typed::Number(decimal, key)
+                }
+                Typed::Date(seconds, _) if is_date => Typed::Date(seconds, key),
+                Typed::Date(seconds, time) => {
+                    let slot = usize::from(time != 0);
+                    if iso_keys[slot] == 0 {
+                        named.push(cell_format::Format {
+                            kind: cell_format::DATE,
+                            date_time_format: DATA_DATE_FORMATS[slot].to_string(),
+                            ..cell_format::Format::default()
+                        });
+                        iso_keys[slot] = named.len() as u16;
+                    }
+                    Typed::Date(seconds, iso_keys[slot])
+                }
+                other => other,
+            });
+            data.push(match value {
                 Some(value) => DataCell::Value(value),
                 None if text.is_empty() => DataCell::Empty,
                 None => DataCell::Text(text),
@@ -208,7 +270,7 @@ fn data_mark(
         cells: Vec::new(),
         widths: vec![width; columns],
         heights: vec![DEFAULT_ROW_HEIGHT; rows],
-        merges: Vec::new(),
+        merges,
         // A data table has no per-cell look: styled tables alone read these.
         backgrounds: Vec::new(),
         alignments: Vec::new(),
@@ -216,33 +278,52 @@ fn data_mark(
         borders: None,
         cell_borders: Vec::new(),
         data,
+        formats: named,
     }
 }
 
 /// A cell's value when its text reads back as one (the workbook writer's
-/// rule): a number, a date or date and time, or a boolean.
-fn typed_value(text: &str) -> Option<Typed> {
+/// rule): a number, a date or date and time, or a boolean; a time alone
+/// only when a date format shows it (as a time on Excel's day zero). A
+/// number's format key is 0, a date's 1 when it has a time and 0 if not,
+/// for the caller to replace. Under a number format (`format` the kind it
+/// names) any plain decimal is a number: the workbook said so.
+fn typed_value(text: &str, format: Option<u32>) -> Option<Typed> {
     if text.is_empty() {
         return None;
     }
+    let date_format = format == Some(cell_format::DATE);
+    let plain = |text: &str| {
+        let digits = text.strip_prefix('-').unwrap_or(text);
+        let (mantissa, power) = digits.split_once(['e', 'E']).unwrap_or((digits, "0"));
+        let power = power.strip_prefix('+').unwrap_or(power);
+        let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+        !whole.is_empty()
+            && whole.bytes().all(|byte| byte.is_ascii_digit())
+            && fraction.bytes().all(|byte| byte.is_ascii_digit())
+            && power.parse::<i32>().is_ok()
+    };
     // A number with an exponent reads back without it (`1e3` is 1000):
-    // it stays text.
-    if crate::io::xlsx::writer::is_number_literal(text) && !text.contains(['e', 'E']) {
-        return decimal128(text).map(Typed::Number);
+    // it stays text, unless a number format says it is a number.
+    if (crate::io::xlsx::writer::is_number_literal(text) && !text.contains(['e', 'E']))
+        || (format.is_some() && !date_format && plain(text))
+    {
+        return decimal128(text).map(|decimal| Typed::Number(decimal, 0));
     }
     if text == "TRUE" || text == "FALSE" {
         return Some(Typed::Boolean(text == "TRUE"));
     }
     match crate::io::xlsx::writer::iso_serial(text) {
-        // A time alone has no date in Numbers; it stays text.
-        Some((serial, style)) if style != 3 => {
+        // A time alone has no date in Numbers; it stays text unless a
+        // format shows only its time.
+        Some((serial, style)) if style != 3 || date_format => {
             // Whole days and whole seconds, apart: a fractional serial
             // loses the last second.
             let days = serial.floor();
             let seconds = ((serial - days) * 86_400.0).round();
             Some(Typed::Date(
                 (days - EXCEL_DAYS_TO_2001) * 86_400.0 + seconds,
-                style == 2,
+                u16::from(style == 2),
             ))
         }
         _ => None,
