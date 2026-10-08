@@ -1,9 +1,10 @@
 # HEIC -> PNG and JPEG
 
-**Latest** (2026-10-08, `heic-read` branch, wavefront rows in parallel: every
-line PASSES against libheif; ahead of Apple's hardware decoder (`sips`,
-context) on every line but the 36-megapixel stock image to JPEG (437 against
-524 MB/s) and memory on JPEG output)
+**Latest** (2026-10-08, `heic-read` branch, pictures streamed by bands and
+files read by item: every line PASSES against libheif; ahead of Apple's
+hardware decoder (`sips`, context) in speed and memory on every line but
+the 36-megapixel stock grid to JPEG (430 against 529 MB/s, 66 against
+42 MB))
 
 ## Purpose
 
@@ -45,6 +46,10 @@ clock of the whole process, peak resident memory from GNU `time`.
 - The images are synthetic; the noisy photo makes CABAC-heavy streams.
 - `heif-dec` writes 16-bit PNGs for 10-bit inputs, as we do; its PNG writer
   (libpng at its default level) is most of its PNG time.
+- Peak resident memory counts what the allocator keeps of freed blocks,
+  so churn shows even where the peak heap does not. `sips` holds 19 MB
+  for a 64-pixel file and for the flat 16-megapixel one alike: its
+  hardware decoder's buffers are not in its resident memory.
 - libheif decodes a grid's tiles on several threads and a single picture on
   one; we decode a single picture's wavefront rows on every thread too, and
   JPEG bands of a megapixel image on every thread.
@@ -52,6 +57,38 @@ clock of the whole process, peak resident memory from GNU `time`.
   libheif repeats); decoded planes are bit-identical (`tests/heic_suite.rs`).
 
 ## Results
+
+### 2026-10-08, pictures streamed by bands, files read by item
+
+| Target | Ours | Reference (heif-dec) | Context (sips) | Result |
+|---|---|---|---|---|
+| heic -> png, hphoto-x265-q50 (45.8 MB of pixels, 2.1 MB on disk): throughput (MB/s of decoded pixels) | 123.5 | 10.7 | 47.9 | PASS |
+| heic -> png, hphoto-x265-q50: peak memory (MB) | 22.7 | 122.8 | 152.6 | PASS |
+| heic -> jpeg, hphoto-x265-q50 (45.8 MB of pixels, 2.1 MB on disk): throughput (MB/s of decoded pixels) | 553.3 | 53.5 | 290.5 | PASS |
+| heic -> jpeg, hphoto-x265-q50: peak memory (MB) | 20.2 | 66.9 | 32.6 | PASS |
+| heic -> png, hphoto-x265-q90 (45.8 MB of pixels, 11.9 MB on disk): throughput (MB/s of decoded pixels) | 78.4 | 8.4 | 41.2 | PASS |
+| heic -> png, hphoto-x265-q90: peak memory (MB) | 42.9 | 150.2 | 189.3 | PASS |
+| heic -> jpeg, hphoto-x265-q90 (45.8 MB of pixels, 11.9 MB on disk): throughput (MB/s of decoded pixels) | 239.1 | 32.6 | 204.4 | PASS |
+| heic -> jpeg, hphoto-x265-q90: peak memory (MB) | 41.7 | 104.0 | 76.5 | PASS |
+| heic -> png, hphoto-x265-10bit (45.8 MB of pixels, 8.7 MB on disk): throughput (MB/s of decoded pixels) | 64.7 | 1.9 | 16.2 | PASS |
+| heic -> png, hphoto-x265-10bit: peak memory (MB) | 46.1 | 239.4 | 182.6 | PASS |
+| heic -> jpeg, hphoto-x265-10bit (45.8 MB of pixels, 8.7 MB on disk): throughput (MB/s of decoded pixels) | 252.4 | 32.5 | 190.7 | PASS |
+| heic -> jpeg, hphoto-x265-10bit: peak memory (MB) | 42.4 | 166.6 | 60.6 | PASS |
+| heic -> png, hflat-x265-q75 (45.8 MB of pixels, 0.1 MB on disk): throughput (MB/s of decoded pixels) | 798.6 | 94.9 | 82.1 | PASS |
+| heic -> png, hflat-x265-q75: peak memory (MB) | 16.6 | 114.2 | 142.0 | PASS |
+| heic -> jpeg, hflat-x265-q75 (45.8 MB of pixels, 0.1 MB on disk): throughput (MB/s of decoded pixels) | 1196.9 | 266.9 | 395.5 | PASS |
+| heic -> jpeg, hflat-x265-q75: peak memory (MB) | 17.2 | 60.6 | 19.1 | PASS |
+| heic -> png, hphoto-apple (45.8 MB of pixels, 2.3 MB on disk): throughput (MB/s of decoded pixels) | 94.8 | 10.7 | 39.4 | PASS |
+| heic -> png, hphoto-apple: peak memory (MB) | 28.7 | 92.9 | 148.8 | PASS |
+| heic -> jpeg, hphoto-apple (45.8 MB of pixels, 2.3 MB on disk): throughput (MB/s of decoded pixels) | 484.1 | 171.1 | 284.3 | PASS |
+| heic -> jpeg, hphoto-apple: peak memory (MB) | 26.3 | 46.3 | 27.6 | PASS |
+| heic -> png, stock (103.5 MB of pixels, 19.4 MB on disk): throughput (MB/s of decoded pixels) [stock] | 95.5 | 3.6 | 45.0 | PASS |
+| heic -> png, stock: peak memory (MB) [stock] | 72.7 | 232.2 | 315.5 | PASS |
+| heic -> jpeg, stock (103.5 MB of pixels, 19.4 MB on disk): throughput (MB/s of decoded pixels) [stock] | 430.0 | 75.3 | 529.1 | PASS |
+| heic -> jpeg, stock: peak memory (MB) [stock] | 66.4 | 126.7 | 41.8 | PASS |
+
+commit: the `heic-read` branch, this change
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
 
 ### 2026-10-08, wavefront rows, filters, and JPEG bands in parallel
 
@@ -119,9 +156,9 @@ machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
 
 ## Conclusions
 
-Against libheif every line passes: PNG output 3.7 to 27 times faster (its
-PNG writer and, for 10-bit, its 16-bit path are slow), JPEG output 1.3 to 5
-times faster, at 36 to 81% of its memory. The decoder alone, in
+Against libheif every line passes: PNG output 8 to 34 times faster (its
+PNG writer and, for 10-bit, its 16-bit path are slow), JPEG output 2.8 to
+10 times faster, at 15 to 57% of its memory. The decoder alone, in
 process and best of seven, beats libde265 on every input (the 4000-pixel
 photo at quality 50: 422 ms against 771; the flat image: 61 against 104).
 
@@ -167,10 +204,44 @@ bit-exact on the same 41 files:
   built once, and CABAC in the branch-free form (packed state, one
   transition table, masks for the LPS case).
 
-`sips` decodes on Apple's hardware. It still leads on the 36-megapixel
-stock image to JPEG (437 against 524 MB/s): its 36 tiles of 1024 decode
-in 4.5 waves on 10 cores, two of them efficiency cores, 1.42 s of work
-taking 0.2 s where an even share would take 0.16; and it holds less
-memory on JPEG output (a streaming hardware path). The levers are a single
-pool of wavefront rows across a grid's tiles, and a decoder that hands on
-rows as its loop filters finish (`DOCS/STATE.md`).
+The third round took the memory, each step bit-exact on the same 41
+files and the streamed output byte-identical to the whole decode
+(`tests/heic_suite.rs` checks both):
+
+- A single picture streams by CTB rows: each row decodes into a band
+  buffer from a pool of the thread count plus four, deblocks inside
+  itself on its thread, and a thread of its own deblocks between bands
+  and runs SAO while the calling thread converts the band before. The
+  4x4 records live with each row (7 MB on a 16-megapixel picture) and
+  z-scan order is computed (4 MB of table gone). The quality-50 photo
+  to JPEG 50.8 to 20.2 MB, and faster: with the filters on the calling
+  thread the flat image lost 30% to the serial work, which their own
+  thread wins back (flat to PNG 64 to 50 ms against the whole decode).
+- Buffers kept rather than churned: one window of rows reused across
+  bands, SAO's band copy from a per-thread scratch, JPEG bands' output
+  buffers kept between batches. Peak heap barely moved but resident
+  memory did (the allocator keeps freed blocks): SAO's scratch alone
+  took the 10-bit photo to JPEG from 53 to 45 MB.
+- The JPEG writer takes 4:2:0 chroma from each pair of rows as it comes,
+  a band holding luma and halved chroma instead of its RGB (256 to
+  96 KB a band of a 4000-pixel image), and batches 16 bands, not 32:
+  output bytes identical (one saturated-blue rounding aside).
+- The command line read an input whole into a buffer grown by doubling
+  (a 9 MB file into 16 MB, copied); it is sized from the file now. A
+  HEIC file is not read whole at all: its `meta` box, then each item's
+  bytes as they decode (the stock image's 19 MB no longer held).
+- A grid hands each row of tiles on as soon as it is in, holding back
+  two rows for the seam, and tiles start at most a row and a tile a
+  thread past the band in hand; pooled band buffers are reshaped, not
+  matched by height. Apple's photo to JPEG 43 to 26 MB, at the same
+  speed; to PNG (bound by deflate) unbounded lookahead is 4% faster for
+  10 MB more, and the bound stays.
+
+`sips` decodes on Apple's hardware, whose buffers are not in its
+resident memory (19 MB whatever the picture). It still leads on the
+36-megapixel stock grid to JPEG (430 against 529 MB/s, 66 against 42 MB):
+its 36 tiles of 1024 each decode whole on one thread (1.5 MB of planes
+and 0.5 of records a thread), 1.42 s of work in 4.5 waves on 8+2 cores.
+The levers are tiles decoded by CTB rows as their filters finish, from
+one pool of rows across the grid, so neither a tile's planes nor its
+tail of idle threads is paid (`DOCS/STATE.md`).

@@ -376,7 +376,8 @@ impl<'a> Cabac<'a> {
     /// A bypass bin (9.3.4.3.4).
     #[inline(always)]
     pub fn bypass(&mut self) -> u32 {
-        self.low += self.low;
+        // Wrapping: a damaged stream's offset can start past its range.
+        self.low = self.low.wrapping_add(self.low);
         if self.low & LOW_MASK == 0 {
             self.refill();
         }

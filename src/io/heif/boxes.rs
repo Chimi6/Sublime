@@ -2,7 +2,119 @@
 //! format, ISO/IEC 14496-12): the `meta` box's items, their locations,
 //! references, and properties.
 
+use std::borrow::Cow;
+use std::sync::Mutex;
+
 use super::HeifError;
+use crate::converter::RewindableRead;
+
+/// Where items' bytes are read from: the file in memory, or the file
+/// itself, an item's extents at a time (its `meta` box read ahead), so
+/// a large file is never held whole.
+pub enum Source<'f> {
+    Bytes(&'f [u8]),
+    Reader(Mutex<&'f mut dyn RewindableRead>),
+}
+
+impl<'f> Source<'f> {
+    /// `length` bytes from `start` (to the end when `length` is zero).
+    fn range(&self, start: u64, length: u64) -> Result<Cow<'f, [u8]>, HeifError> {
+        let past = || HeifError::new("an item past the file's end");
+        match self {
+            Source::Bytes(file) => {
+                let start = usize::try_from(start).map_err(|_| past())?;
+                let end = if length == 0 {
+                    file.len()
+                } else {
+                    usize::try_from(length)
+                        .ok()
+                        .and_then(|length| start.checked_add(length))
+                        .ok_or_else(past)?
+                };
+                file.get(start..end).map(Cow::Borrowed).ok_or_else(past)
+            }
+            Source::Reader(reader) => {
+                let mut reader = reader.lock().unwrap_or_else(|poison| poison.into_inner());
+                reader.seek_to(start).map_err(|_| past())?;
+                let mut bytes = Vec::new();
+                if length == 0 {
+                    reader.read_to_end(&mut bytes).map_err(|_| past())?;
+                } else {
+                    use std::io::Read;
+                    let length = usize::try_from(length).map_err(|_| past())?;
+                    // Sized ahead up to a bound, and grown past it only as
+                    // the file has the bytes: a corrupt length cannot ask
+                    // for more memory than the file holds.
+                    bytes.reserve_exact(length.min(1 << 26));
+                    (&mut **reader)
+                        .take(length as u64)
+                        .read_to_end(&mut bytes)
+                        .map_err(|_| past())?;
+                    if bytes.len() < length {
+                        return Err(past());
+                    }
+                }
+                Ok(Cow::Owned(bytes))
+            }
+        }
+    }
+}
+
+/// The boxes of a file a `meta` box needs (`ftyp` and `meta`), read
+/// from the file's top-level boxes and laid end to end; the rest (the
+/// media data) is skipped.
+pub fn read_head(reader: &mut dyn RewindableRead) -> Result<Vec<u8>, super::HeifRowsError> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    let mut at = 0u64;
+    loop {
+        reader.seek_to(at)?;
+        let mut header = [0u8; 16];
+        let mut got = 0;
+        while got < 8 {
+            match reader.read(&mut header[got..8])? {
+                0 => break,
+                count => got += count,
+            }
+        }
+        if got < 8 {
+            return Ok(head);
+        }
+        let size32 = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
+        let kind = [header[4], header[5], header[6], header[7]];
+        let wanted = matches!(&kind, b"ftyp" | b"meta");
+        let size = match size32 {
+            // To the end of the file.
+            0 => {
+                if wanted {
+                    head.extend_from_slice(&header[..8]);
+                    reader.read_to_end(&mut head)?;
+                }
+                return Ok(head);
+            }
+            1 => {
+                reader.read_exact(&mut header[8..16])?;
+                u64::from_be_bytes(header[8..16].try_into().unwrap_or([0; 8]))
+            }
+            size => u64::from(size),
+        };
+        let header_length = if size32 == 1 { 16 } else { 8 };
+        if size < header_length {
+            return Err(HeifError::new("a box running past its container").into());
+        }
+        if wanted {
+            let start = head.len();
+            head.extend_from_slice(&header[..header_length as usize]);
+            reader.take(size - header_length).read_to_end(&mut head)?;
+            if (head.len() - start) as u64 != size {
+                return Err(HeifError::new("a box running past its container").into());
+            }
+        }
+        at = at
+            .checked_add(size)
+            .ok_or_else(|| HeifError::new("a box running past its container"))?;
+    }
+}
 
 /// A box: its four-character type and its payload.
 pub struct BoxRef<'a> {
@@ -206,43 +318,35 @@ impl<'a> Meta<'a> {
             .filter_map(|&index| self.properties.get(index))
     }
 
-    /// An item's bytes, from the file, `idat`, or other items.
-    /// An item's bytes: borrowed when they lie in one extent, joined
-    /// when in several.
-    pub fn data(
-        &self,
-        file: &'a [u8],
-        item: &Item,
-    ) -> Result<std::borrow::Cow<'a, [u8]>, HeifError> {
+    /// An item's bytes, from the file or `idat`: borrowed when they lie
+    /// in one extent of a file in memory, else read or joined.
+    pub fn data<'s>(&self, file: &Source<'s>, item: &Item) -> Result<Cow<'s, [u8]>, HeifError> {
         let (method, base, extents) = item
             .location
             .as_ref()
             .ok_or_else(|| HeifError::new("an item without a location"))?;
         let mut bytes = Vec::new();
         for (index, &(offset, length)) in extents.iter().enumerate() {
-            let source: &[u8] = match method {
-                0 => file,
-                1 => self.item_data,
+            let start = base
+                .checked_add(offset)
+                .ok_or_else(|| HeifError::new("an item offset past the file"))?;
+            let part = match method {
+                0 => file.range(start, length)?,
+                // `idat` is small: copied, so the bytes do not borrow the
+                // box they came from.
+                1 => Cow::Owned(
+                    Source::Bytes(self.item_data)
+                        .range(start, length)?
+                        .into_owned(),
+                ),
                 _ => return Err(HeifError::new("an item built from other items")),
             };
-            let start = usize::try_from(base + offset)
-                .map_err(|_| HeifError::new("an item offset past the file"))?;
-            let end = if length == 0 {
-                source.len()
-            } else {
-                start
-                    .checked_add(length as usize)
-                    .ok_or_else(|| HeifError::new("an item past the file"))?
-            };
-            let part = source
-                .get(start..end)
-                .ok_or_else(|| HeifError::new("an item past the file's end"))?;
             if extents.len() == 1 && index == 0 {
-                return Ok(std::borrow::Cow::Borrowed(part));
+                return Ok(part);
             }
-            bytes.extend_from_slice(part);
+            bytes.extend_from_slice(&part);
         }
-        Ok(std::borrow::Cow::Owned(bytes))
+        Ok(Cow::Owned(bytes))
     }
 }
 

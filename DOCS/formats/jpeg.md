@@ -59,8 +59,12 @@ what it means everywhere; 4:2:0 chroma below quality 90 and 4:4:4 from
 90 up (the jpeg-encoder crate's rule); the standard Huffman tables of
 Annex K, which let the encoder stream; the accurate integer FDCT
 (`jfdctint`) with quantization by reciprocal multiply; libjpeg's
-fixed-point RGB to YCbCr; box downsampling with libjpeg's alternating
-bias; edges padded by replication. Gray input writes one component.
+fixed-point RGB to YCbCr; 4:2:0 chroma from each 2x2 block's summed
+RGB, rounded once, as each pair of rows comes in (a band holds luma and
+the halved chroma, not its RGB); edges padded by replication. An image
+of a megapixel and up has a restart interval each MCU row, so its bands
+encode on every thread (decided by size alone: the bytes do not depend
+on the machine). Gray input writes one component.
 Alpha is flattened onto white before conversion. A source that is
 already JFIF's YCbCr 4:2:0 (an 8-bit BT.601 full-range HEIC) hands its
 planes over instead of RGB rows, and they are encoded as they are, at
@@ -71,9 +75,9 @@ planes over instead of RGB rows, and they are encoded as they are, at
 - Not read: CMYK and YCCK (four-component Adobe files), 12-bit
   samples, arithmetic coding, lossless and hierarchical JPEG, and a
   height given late by a DNL marker.
-- The writer offers no progressive output, optimized Huffman tables,
-  or restart intervals; the standard tables cost a few percent of size
-  against optimized ones.
+- The writer offers no progressive output or optimized Huffman
+  tables; the standard tables cost a few percent of size against
+  optimized ones, and the restart markers of a large image 0.02%.
 - Flat graphics with hard color edges lose more to 4:2:0 chroma than
   photographs do; the `image` crate's 4:2:2 default scores far higher
   on them at a larger file. Choosing the subsampling from the chroma's

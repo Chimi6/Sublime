@@ -67,14 +67,29 @@ original than either: 0.1 to 1.4 dB of PSNR over libheif's default (the
 least on the hard-edged pattern), and 1.0 to 3.3 dB over `sips`. libheif's own bilinear option scores 40 dB where its
 default scores 50, so it is not used as a reference.
 
+A file is read an item at a time: its `meta` box first, then each
+picture's or tile's bytes as it decodes, so a 19 MB wallpaper is never
+held whole (a stream on standard input is read whole first).
+
 Grid tiles decode on as many threads as the machine has (one in
 WebAssembly), each worker reusing its decoding buffers and placing its
 tile itself. A grid whose rows come out top to bottom streams: each row
-of tiles is converted and handed on once it and the row below are in,
-from a band buffer whose margins hold the rows the chroma interpolation
-reads across its edges, and the band's buffer is reused. Otherwise the
-canvas is assembled, 8-bit samples as bytes, and a turned image is read
-down its columns a strip of 64 at a time.
+of tiles is converted and handed on as soon as it is in, but for its
+last two rows, which wait for the row below (the chroma interpolation
+reads across the seam); a band's buffer holds the four rows above it on
+top, and goes back to a pool. Tiles start no further ahead than the band
+below the one being handed on, and a tile a thread past it, so a slow
+sink holds a few bands, not the canvas.
+
+A single picture with wavefront substreams (x265's default, and every
+picture a phone writes in tiles) streams too: each CTB row decodes on a
+thread into a band buffer from a small pool, deblocks inside itself
+there, and a thread of its own runs the deblocking between bands and
+SAO a band at a time while the calling thread converts the band before
+and hands its rows on. The picture's 4x4 records live with each row's
+band, and availability is computed, not tabled. Otherwise the canvas is
+assembled, 8-bit samples as bytes, and a turned image is read down its
+columns a strip of 64 at a time.
 
 Conversion is exact to 0.5 of a step: at 8 bits 0.23% of samples sit one
 off float rounding, all on exact halves; at 16 bits 3 samples in half a
@@ -83,9 +98,10 @@ million.
 ## Measured
 
 `DOCS/benchmarks/heic-png.md` has the pair: every line passes against
-libheif's `heif-dec`, PNG output 3.7 to 27 times faster and JPEG output
-1.3 to 5 times faster at 36 to 81% of its memory. Apple's `sips`, on the
-hardware decoder, leads on single-picture JPEG speed and on JPEG memory.
+libheif's `heif-dec`, PNG output 8 to 34 times faster and JPEG output 2.8
+to 10 times faster at 15 to 57% of its memory. Apple's `sips`, on the
+hardware decoder, is behind on every line but the 36-megapixel stock
+grid to JPEG (430 against 529 MB/s, 66 against 42 MB).
 
 ## Known deviations
 
@@ -99,9 +115,12 @@ hardware decoder, leads on single-picture JPEG speed and on JPEG memory.
   pictures in a collection) are reported as dropped. XMP is dropped.
 - WebP, TIFF, and the other formats drop the profile and Exif with a
   warning; their writers do not carry metadata yet.
-- One picture without tiles decodes on one thread, and is held whole
-  until its loop filters have run; wavefront rows could decode in
-  parallel and rows could go on as the filters finish them.
+- A grid's tiles are each decoded whole on one thread: a 1024-pixel
+  tile is a megabyte and a half held per thread, and a grid's last
+  tiles leave threads idle. Tiles decoded by CTB rows as they finish,
+  from one pool of rows across the grid, are the lever.
+- A picture without wavefront substreams decodes on one thread and is
+  held whole until its loop filters have run.
 - Not read: AVIF (`av01`), JPEG items, overlays (`iovl`), image
   sequences, and derived `iden` items; the stream's inter frames (a
   HEIF holds intra pictures).

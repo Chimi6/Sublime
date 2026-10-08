@@ -10,9 +10,11 @@ section under a version heading.
 
 - HEIC read, natively: an HEVC still-picture decoder and HEIF parser written here, bit-exact with libheif on Apple's and x265's files (grids, odd sizes, 10-bit, 4:4:4, alpha), to every image format and PDF. Crop, rotation, mirroring, and alpha are applied, and the colour profile and Exif carried into PNG and JPEG. Chroma is interpolated rather than repeated, closer to the original than libheif or `sips`; grid tiles decode in parallel (Apple's 6016-pixel wallpaper to JPEG in 0.3 s against libheif's 1.4). Notes in `DOCS/formats/heic.md`.
 
-- HEIC decoding beats libheif everywhere it is measured (`DOCS/benchmarks/heic-png.md`): to PNG 3.7 to 27 times faster, to JPEG 1.3 to 5 times, at 36 to 81% of its memory; grids stream by bands of tiles, and JPEG output takes the picture's own YCbCr. Bit-exact with libheif on 41 reference files; where three multi-slice streams differ, libde265 is wrong and Apple's decoder agrees with ours.
+- HEIC decoding beats libheif everywhere it is measured (`DOCS/benchmarks/heic-png.md`): to PNG 8 to 34 times faster, to JPEG 2.8 to 10 times, at 15 to 57% of its memory; grids stream by bands of tiles, and JPEG output takes the picture's own YCbCr. Bit-exact with libheif on 41 reference files; where three multi-slice streams differ, libde265 is wrong and Apple's decoder agrees with ours.
 
 - A single HEIC picture's wavefront rows decode on every core, and so do its loop filters and a megapixel JPEG's bands (restart intervals, decoded pixels unchanged): the 4000-pixel quality-50 photo to JPEG in 0.09 s, against libheif's 0.87 and Apple's hardware `sips` at 0.16.
+
+- HEIC to JPEG and PNG in a fraction of the memory, and faster: a single picture streams by bands as its rows decode (the loop filters on a thread of their own), a file is read an item at a time instead of whole, and a grid hands each row of tiles on as soon as it is in. Against Apple's hardware `sips`, ahead in speed and memory on every measured line but the 36-megapixel stock grid to JPEG; the 4000-pixel quality-50 photo to JPEG in 0.08 s and 20 MB (libheif: 0.85 s, 67 MB; `sips`: 0.16 s, 33 MB).
 
 - 16-bit images stay 16-bit: 10-bit HEIC, 16-bit PNG and TIFF, and Netpbm over 8 bits go to PNG, TIFF, and Netpbm at 16 bits (16-bit PNG to PAM and back is identical) instead of losing their low byte.
 
@@ -22,8 +24,13 @@ section under a version heading.
 
 - Semicolon and pipe CSV: a CSV input's delimiter is read from its first records (a European spreadsheet's semicolon export, decimal commas and all, reads as semicolons), and `--delimiter` sets the one read and written (`;`, `|`, `tab`). Notes in `DOCS/formats/csv.md`.
 
+### Changed
+
+- JPEG output holds a band's 4:2:0 chroma, not its RGB, until the band encodes (256 to 96 KB a band of a 4000-pixel image); the bytes are unchanged.
+
 ### Fixed
 
+- An input read whole was read into a buffer grown by doubling, up to twice the file and a copy; the file's length sizes it now.
 - The CSV reader only ever split on commas and tabs; any other delimiter now works.
 - An invalid value for `--page`, `--quality`, or `--jobs` said "expected human or json"; each flag now names what it takes.
 

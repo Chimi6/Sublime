@@ -11,7 +11,7 @@ use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
 use crate::io::bmp::{BmpError, BmpRows, BmpRowsError, read_bmp_rows, read_bmp_rows_seekable};
-use crate::io::heif::{HeifNotes, HeifRowsError, read_heif_rows};
+use crate::io::heif::{HeifNotes, HeifRowsError, read_heif_rows, read_heif_rows_from};
 use crate::io::ico::{IcoNotes, IcoRows, read_ico_rows};
 use crate::io::jpeg::{DEFAULT_QUALITY, JpegError, JpegNotes, JpegRows, read_jpeg_rows};
 use crate::io::netpbm::{Kind, NetpbmNotes, NetpbmRows, read_netpbm_rows};
@@ -235,10 +235,17 @@ fn read_rows(
             report_netpbm_notes(notes, name, context);
         }
         ImageFormat::Heic => {
-            // The container's items sit anywhere in the file.
-            let mut file = Vec::new();
-            input.read_to_end(&mut file)?;
-            let notes = read_heif_rows(&file, sink).map_err(|error| match error {
+            // The container's items sit anywhere in the file: a file is
+            // read an item at a time, a stream whole.
+            let read = match input {
+                Input::Rewindable(reader) => read_heif_rows_from(&mut **reader, sink),
+                Input::Stream(stream) => {
+                    let mut file = Vec::new();
+                    stream.read_to_end(&mut file)?;
+                    read_heif_rows(&file, sink)
+                }
+            };
+            let notes = read.map_err(|error| match error {
                 HeifRowsError::Heif(error) => {
                     let unsupported = error.0.contains("not supported") || error.0.contains("only");
                     if unsupported {

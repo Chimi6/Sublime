@@ -72,8 +72,6 @@ pub struct Layout {
     pub chroma: u32,
     pub strides: Vec<usize>,
     pub units_wide: usize,
-    /// Z-scan order of each 4x4 unit (6.5.2), for availability.
-    zscan: Vec<u32>,
     pub rs_to_ts: Vec<usize>,
     pub ts_to_rs: Vec<usize>,
     pub tile_of: Vec<usize>,
@@ -197,12 +195,37 @@ struct CtbBottom {
 /// A CTB row's share of the picture, to decode on its own.
 struct RowParts<'a> {
     row: usize,
-    planes: Vec<Band<'a>>,
-    units: &'a mut [Unit],
+    units: Units<'a>,
     slice_of: &'a mut [usize],
     slice_address_of: &'a mut [usize],
     sao: &'a mut [[Sao; 3]],
     decoded: &'a mut [bool],
+}
+
+/// A row's 4x4 units: a share of the whole picture's, or a buffer of its
+/// own when the picture streams.
+enum Units<'a> {
+    Shared(&'a mut [Unit]),
+    Own(Vec<Unit>),
+}
+
+impl std::ops::Deref for Units<'_> {
+    type Target = [Unit];
+    fn deref(&self) -> &[Unit] {
+        match self {
+            Units::Shared(units) => units,
+            Units::Own(units) => units,
+        }
+    }
+}
+
+impl std::ops::DerefMut for Units<'_> {
+    fn deref_mut(&mut self) -> &mut [Unit] {
+        match self {
+            Units::Shared(units) => units,
+            Units::Own(units) => units,
+        }
+    }
 }
 
 /// A band of CTB rows being decoded: its samples, units, and CTB records
@@ -341,6 +364,15 @@ impl<'a> Rows<'a> {
         self.decoded[at] = true;
     }
 
+    /// The z-scan order of the 4x4 unit at luma (`x`, `y`) (6.5.2): its
+    /// CTB's tile scan address, then the unit's place in the CTB's quadtree.
+    fn z_order(&self, x: usize, y: usize) -> usize {
+        let unit_log2 = self.ctb_log2 - 2;
+        let mask = (1 << unit_log2) - 1;
+        let inside = SPREAD[(x >> 2) & mask] | (SPREAD[(y >> 2) & mask] << 1);
+        (self.rs_to_ts[self.ctb_address(x, y)] << (unit_log2 * 2)) | inside
+    }
+
     fn ctb_address(&self, x: usize, y: usize) -> usize {
         (y >> self.ctb_log2) * self.width_ctbs + (x >> self.ctb_log2)
     }
@@ -353,9 +385,7 @@ impl<'a> Rows<'a> {
             return false;
         }
         let (nx, ny) = (nx as usize, ny as usize);
-        let neighbour = self.zscan[(ny >> 2) * self.units_wide + (nx >> 2)];
-        let current = self.zscan[(y >> 2) * self.units_wide + (x >> 2)];
-        if neighbour > current {
+        if self.z_order(nx, ny) > self.z_order(x, y) {
             return false;
         }
         let (a, b) = (self.ctb_address(x, y), self.ctb_address(nx, ny));
@@ -366,9 +396,46 @@ impl<'a> Rows<'a> {
     }
 }
 
+/// A unit's column or row in its CTB with a zero between each bit: half of
+/// a z-scan order (CTBs are at most 16 units across).
+const SPREAD: [usize; 16] = [0, 1, 4, 5, 16, 17, 20, 21, 64, 65, 68, 69, 80, 81, 84, 85];
+
 /// A row of samples above a band, at the band's sample width.
-fn above_line<T: Sample>(line: Option<&Samples>) -> &[T] {
+pub(super) fn above_line<T: Sample>(line: Option<&Samples>) -> &[T] {
     line.map_or(&[], T::slice)
+}
+
+/// What the loop filters read around the samples they change: the
+/// picture's layout, its 4x4 units, its slices, and each CTB's slice and
+/// offsets. The whole decoder is one; a window of decoded bands another.
+pub(super) trait Neighbourhood: Sync {
+    fn layout(&self) -> &Layout;
+    fn unit(&self, x: usize, y: usize) -> Unit;
+    fn slice_index(&self, ctb: usize) -> usize;
+    fn slices(&self) -> &[SliceHeader];
+    fn sao_params(&self, ctb: usize) -> [Sao; 3];
+}
+
+impl Neighbourhood for Decoder {
+    fn layout(&self) -> &Layout {
+        &self.layout
+    }
+
+    fn unit(&self, x: usize, y: usize) -> Unit {
+        self.units[(y >> 2) * self.units_wide + (x >> 2)]
+    }
+
+    fn slice_index(&self, ctb: usize) -> usize {
+        self.slice_of[ctb]
+    }
+
+    fn slices(&self) -> &[SliceHeader] {
+        &self.slices
+    }
+
+    fn sao_params(&self, ctb: usize) -> [Sao; 3] {
+        self.sao[ctb]
+    }
 }
 
 impl std::ops::Deref for Decoder {
@@ -387,6 +454,7 @@ impl Decoder {
         mut pps: Pps,
         workspace: &mut Workspace,
         threads: usize,
+        whole: bool,
     ) -> Result<Decoder, HevcError> {
         let width = sps.width as usize;
         let height = sps.height as usize;
@@ -398,6 +466,10 @@ impl Decoder {
         // Four times the largest picture any HEVC level allows.
         if width * height > 1 << 27 {
             return Err(HevcError::new("a picture too large to decode"));
+        }
+        // QP groups are no smaller than the smallest coding block (7.4.3.3.1).
+        if pps.diff_cu_qp_delta_depth > sps.log2_ctb.saturating_sub(sps.log2_min_cb) {
+            return Err(HevcError::new("a QP group smaller than a coding block"));
         }
         let ctb_log2 = sps.log2_ctb;
         let ctb = 1usize << ctb_log2;
@@ -417,12 +489,18 @@ impl Decoder {
             Some(samples) => samples.reused(depth, count),
             None => Samples::new(depth, count),
         };
-        let mut planes = vec![plane(sps.bit_depth_luma, width * height)];
+        // A picture streamed by bands holds no whole planes.
+        let mut planes = Vec::new();
         let mut strides = vec![width];
+        if whole {
+            planes.push(plane(sps.bit_depth_luma, width * height));
+        }
         if chroma != 0 {
             let (chroma_width, chroma_height) = (width >> sub_x, height >> sub_y);
-            planes.push(plane(sps.bit_depth_chroma, chroma_width * chroma_height));
-            planes.push(plane(sps.bit_depth_chroma, chroma_width * chroma_height));
+            if whole {
+                planes.push(plane(sps.bit_depth_chroma, chroma_width * chroma_height));
+                planes.push(plane(sps.bit_depth_chroma, chroma_width * chroma_height));
+            }
             strides.push(chroma_width);
             strides.push(chroma_width);
         }
@@ -458,29 +536,8 @@ impl Decoder {
         for (rs, &ts) in rs_to_ts.iter().enumerate() {
             ts_to_rs[ts] = rs;
         }
-        // Z-scan of 4x4 units (6.5.2).
         let units_wide = width.div_ceil(4);
         let units_high = height.div_ceil(4);
-        let unit_log2 = ctb_log2 - 2;
-        let mut zscan = std::mem::take(&mut workspace.zscan);
-        zscan.clear();
-        zscan.resize(units_wide * units_high, 0);
-        for y in 0..units_high {
-            for x in 0..units_wide {
-                let ctb_address = (y >> unit_log2) * width_ctbs + (x >> unit_log2);
-                let mut order = (rs_to_ts[ctb_address] as u32) << (unit_log2 * 2);
-                for bit in 0..unit_log2 {
-                    let mask = 1usize << bit;
-                    if x & mask != 0 {
-                        order += (mask * mask) as u32;
-                    }
-                    if y & mask != 0 {
-                        order += (2 * mask * mask) as u32;
-                    }
-                }
-                zscan[y * units_wide + x] = order;
-            }
-        }
         let scaling = pps.scaling.clone().or_else(|| sps.scaling.clone());
         Ok(Decoder {
             layout: Layout {
@@ -494,7 +551,6 @@ impl Decoder {
                 chroma,
                 strides,
                 units_wide,
-                zscan,
                 rs_to_ts,
                 ts_to_rs,
                 tile_of,
@@ -507,7 +563,10 @@ impl Decoder {
             units: {
                 let mut units = std::mem::take(&mut workspace.units);
                 units.clear();
-                units.resize(units_wide * units_high, Unit::default());
+                // A streamed picture's rows hold their own.
+                if whole {
+                    units.resize(units_wide * units_high, Unit::default());
+                }
                 units
             },
             slice_of: vec![usize::MAX; ctbs],
@@ -518,10 +577,6 @@ impl Decoder {
             saved_row_contexts: None,
             saved_slice_contexts: None,
         })
-    }
-
-    pub fn unit(&self, x: usize, y: usize) -> &Unit {
-        &self.units[(y >> 2) * self.units_wide + (x >> 2)]
     }
 
     /// Decodes one slice segment.
@@ -671,7 +726,10 @@ impl Decoder {
             return Err(HevcError::new("a slice QP out of range"));
         }
         let rows = self.height_ctbs;
-        if starts.len() != rows || starts.windows(2).any(|pair| pair[0] >= pair[1]) {
+        if starts.len() != rows
+            || starts.windows(2).any(|pair| pair[0] >= pair[1])
+            || starts.last().is_some_and(|&last| last >= data.len())
+        {
             return Err(HevcError::new("entry points that do not divide the rows"));
         }
         self.slices.push(header.clone());
@@ -711,18 +769,19 @@ impl Decoder {
         let mut sao_bands = sao.chunks_mut(width_ctbs);
         let mut decoded_bands = decoded.chunks_mut(width_ctbs);
         let workers = threads.clamp(1, rows);
-        let mut shares: Vec<Vec<RowParts<'_>>> = (0..workers).map(|_| Vec::new()).collect();
+        let mut shares: Vec<Vec<(RowParts<'_>, Vec<Band<'_>>)>> =
+            (0..workers).map(|_| Vec::new()).collect();
         for row in 0..rows {
+            let planes: Vec<Band<'_>> = plane_bands.iter_mut().filter_map(Iterator::next).collect();
             let parts = RowParts {
                 row,
-                planes: plane_bands.iter_mut().filter_map(Iterator::next).collect(),
-                units: unit_bands.next().unwrap_or_default(),
+                units: Units::Shared(unit_bands.next().unwrap_or_default()),
                 slice_of: slice_bands.next().unwrap_or_default(),
                 slice_address_of: address_bands.next().unwrap_or_default(),
                 sao: sao_bands.next().unwrap_or_default(),
                 decoded: decoded_bands.next().unwrap_or_default(),
             };
-            shares[row % workers].push(parts);
+            shares[row % workers].push((parts, planes));
         }
         // Row r tells row r + 1.
         let mut senders = Vec::new();
@@ -744,12 +803,15 @@ impl Decoder {
                 .zip(links)
                 .map(|(share, links)| {
                     scope.spawn(move || {
-                        for (parts, (sender, receiver)) in share.into_iter().zip(links) {
+                        for ((mut parts, planes), (sender, receiver)) in
+                            share.into_iter().zip(links)
+                        {
                             let row = parts.row;
                             let end = starts.get(row + 1).copied().unwrap_or(data.len());
                             let outcome = decode_row(
                                 layout,
-                                parts,
+                                &mut parts,
+                                planes,
                                 header,
                                 &data[..end],
                                 starts[row],
@@ -788,7 +850,8 @@ impl Decoder {
 #[allow(clippy::too_many_arguments)]
 fn decode_row(
     layout: &Layout,
-    parts: RowParts<'_>,
+    parts: &mut RowParts<'_>,
+    planes: Vec<Band<'_>>,
     header: &SliceHeader,
     data: &[u8],
     start: usize,
@@ -802,8 +865,8 @@ fn decode_row(
     let mut rows = Rows::new(
         layout,
         row,
-        parts.planes,
-        parts.units,
+        planes,
+        &mut parts.units,
         parts.slice_of,
         parts.slice_address_of,
         parts.sao,
@@ -939,6 +1002,467 @@ impl<'a> Band<'a> {
     }
 }
 
+/// A band of picture rows the loop filters have finished, handed on in
+/// order: the CTB row's luma rows from `top`, and each component's samples
+/// as rows of the plane's width.
+pub struct DoneBand {
+    pub top: usize,
+    pub rows: usize,
+    pub planes: Vec<Samples>,
+}
+
+/// A decoded row's records, back from its worker for the filters.
+struct RowRecords<'a> {
+    units: Units<'a>,
+    slice_of: &'a [usize],
+    sao: &'a [[Sao; 3]],
+    /// Some unit of the row leaves its samples unfiltered.
+    unfiltered: bool,
+}
+
+/// The rows the filters can read around a band: the picture's layout and
+/// slices, and the records of the decoded rows still held.
+struct Window<'w, 'a> {
+    layout: &'a Layout,
+    slices: &'a [SliceHeader],
+    rows: &'w std::collections::BTreeMap<usize, RowRecords<'a>>,
+}
+
+impl Neighbourhood for Window<'_, '_> {
+    fn layout(&self) -> &Layout {
+        self.layout
+    }
+
+    fn unit(&self, x: usize, y: usize) -> Unit {
+        let row = y >> self.layout.ctb_log2;
+        let top = (row << self.layout.ctb_log2) >> 2;
+        self.rows.get(&row).map_or(Unit::default(), |records| {
+            records.units[((y >> 2) - top) * self.layout.units_wide + (x >> 2)]
+        })
+    }
+
+    fn slice_index(&self, ctb: usize) -> usize {
+        let width = self.layout.width_ctbs;
+        self.rows
+            .get(&(ctb / width))
+            .map_or(0, |records| records.slice_of[ctb % width])
+    }
+
+    fn slices(&self) -> &[SliceHeader] {
+        self.slices
+    }
+
+    fn sao_params(&self, ctb: usize) -> [Sao; 3] {
+        let width = self.layout.width_ctbs;
+        self.rows
+            .get(&(ctb / width))
+            .map_or([Sao::default(); 3], |records| records.sao[ctb % width])
+    }
+}
+
+/// A finished row's band buffers and records, or why it failed.
+type RowDone<'a> = Result<(usize, Vec<Samples>, RowRecords<'a>), (usize, HevcError)>;
+
+impl Decoder {
+    /// Decodes a picture's one slice segment as `slice_in_rows` does, but
+    /// holds no whole planes: each row decodes into a band buffer from a
+    /// small pool, a thread of its own runs the loop filters a band at a
+    /// time as the rows around it finish, and `emit` (on the calling
+    /// thread) takes each finished band before its buffer goes back to
+    /// the pool. Rows start in order,
+    /// so the pool cannot starve the row a finished band waits on.
+    pub fn stream_in_rows(
+        &mut self,
+        header: SliceHeader,
+        data: &[u8],
+        starts: &[usize],
+        threads: usize,
+        emit: &mut dyn FnMut(&DoneBand) -> Result<(), HevcError>,
+    ) -> Result<(), HevcError> {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{Condvar, Mutex};
+        let slice_qp = self.pps.init_qp + header.qp_delta;
+        let qp_offset = 6 * (self.sps.bit_depth_luma as i32 - 8);
+        if !(-qp_offset..=51).contains(&slice_qp) {
+            return Err(HevcError::new("a slice QP out of range"));
+        }
+        let rows = self.height_ctbs;
+        if starts.len() != rows
+            || starts.windows(2).any(|pair| pair[0] >= pair[1])
+            || starts.last().is_some_and(|&last| last >= data.len())
+        {
+            return Err(HevcError::new("entry points that do not divide the rows"));
+        }
+        self.slices.push(header.clone());
+        let Decoder {
+            layout,
+            slice_of,
+            slice_address_of,
+            sao,
+            decoded,
+            slices,
+            ..
+        } = self;
+        let layout: &Layout = layout;
+        let slices: &[SliceHeader] = slices;
+        let width_ctbs = layout.width_ctbs;
+        let ctb = 1usize << layout.ctb_log2;
+        // Each row's records, taken by the worker that decodes it; its
+        // units come from a pool as it starts, like its samples.
+        let units_high = layout.height.div_ceil(4);
+        let unit_pool: Mutex<Vec<Vec<Unit>>> = Mutex::new(Vec::new());
+        let shares: Vec<Mutex<Option<RowParts<'_>>>> = slice_of
+            .chunks_mut(width_ctbs)
+            .zip(slice_address_of.chunks_mut(width_ctbs))
+            .zip(sao.chunks_mut(width_ctbs))
+            .zip(decoded.chunks_mut(width_ctbs))
+            .enumerate()
+            .map(|(row, (((slice_of, slice_address_of), sao), decoded))| {
+                Mutex::new(Some(RowParts {
+                    row,
+                    units: Units::Own(Vec::new()),
+                    slice_of,
+                    slice_address_of,
+                    sao,
+                    decoded,
+                }))
+            })
+            .collect();
+        // Band buffers: a CTB row of each component.
+        let band_samples = |component: usize| {
+            let rows_here = if component == 0 {
+                ctb
+            } else {
+                ctb >> layout.sub_y
+            };
+            rows_here * layout.strides[component]
+        };
+        let depths = [
+            layout.sps.bit_depth_luma,
+            layout.sps.bit_depth_chroma,
+            layout.sps.bit_depth_chroma,
+        ];
+        let components = layout.strides.len();
+        let workers = threads.clamp(1, rows);
+        let pool: Mutex<Vec<Vec<Samples>>> = Mutex::new(Vec::new());
+        let pool_free = Condvar::new();
+        // Enough that the row the loop filters wait on always finds one:
+        // the rows past it hold at most `workers - 1`, the filters one,
+        // and the band handed on and the one waiting for it two.
+        let pool_size = workers + 4;
+        let made = AtomicUsize::new(0);
+        let next_row = AtomicUsize::new(0);
+        let stop = AtomicBool::new(false);
+        // Row r tells row r + 1.
+        let mut senders: Vec<Mutex<Option<std::sync::mpsc::Sender<RowUpdate>>>> = Vec::new();
+        let mut receivers: Vec<Mutex<Option<std::sync::mpsc::Receiver<RowUpdate>>>> =
+            vec![Mutex::new(None)];
+        for _ in 1..rows {
+            let (sender, receiver) = std::sync::mpsc::channel::<RowUpdate>();
+            senders.push(Mutex::new(Some(sender)));
+            receivers.push(Mutex::new(Some(receiver)));
+        }
+        senders.push(Mutex::new(None));
+        let (done_sender, done_receiver) = std::sync::mpsc::channel::<RowDone<'_>>();
+        let header = &header;
+        fn lock(mutex: &Mutex<Vec<Vec<Samples>>>) -> std::sync::MutexGuard<'_, Vec<Vec<Samples>>> {
+            mutex.lock().unwrap_or_else(|poison| poison.into_inner())
+        }
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let done_sender = done_sender.clone();
+                let (shares, senders, receivers, unit_pool) =
+                    (&shares, &senders, &receivers, &unit_pool);
+                let (pool, pool_free, made, next_row, stop) =
+                    (&pool, &pool_free, &made, &next_row, &stop);
+                scope.spawn(move || {
+                    loop {
+                        let row = next_row.fetch_add(1, Ordering::Relaxed);
+                        if row >= rows {
+                            break;
+                        }
+                        // The row's links, taken first: a row given up
+                        // drops its sender, so the row below stops waiting.
+                        let receiver = receivers[row]
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner())
+                            .take();
+                        let sender = senders[row]
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner())
+                            .take();
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        // A band buffer: a spare one, a new one while the
+                        // pool is not full, or one handed back.
+                        let mut planes = {
+                            let mut free = lock(pool);
+                            loop {
+                                if let Some(planes) = free.pop() {
+                                    break Some(planes);
+                                }
+                                if made.load(Ordering::Relaxed) < pool_size {
+                                    made.fetch_add(1, Ordering::Relaxed);
+                                    break Some(
+                                        (0..components)
+                                            .map(|component| {
+                                                Samples::new(
+                                                    depths[component],
+                                                    band_samples(component),
+                                                )
+                                            })
+                                            .collect(),
+                                    );
+                                }
+                                if stop.load(Ordering::Relaxed) {
+                                    break None;
+                                }
+                                free = pool_free
+                                    .wait(free)
+                                    .unwrap_or_else(|poison| poison.into_inner());
+                            }
+                        };
+                        let Some(mut planes) = planes.take() else {
+                            break;
+                        };
+                        let Some(mut parts) = shares[row]
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner())
+                            .take()
+                        else {
+                            break;
+                        };
+                        let count =
+                            (units_high - row * (ctb >> 2)).min(ctb >> 2) * layout.units_wide;
+                        let mut units = unit_pool
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner())
+                            .pop()
+                            .unwrap_or_default();
+                        units.clear();
+                        units.resize(count, Unit::default());
+                        parts.units = Units::Own(units);
+                        let end = starts.get(row + 1).copied().unwrap_or(data.len());
+                        let outcome = decode_row(
+                            layout,
+                            &mut parts,
+                            planes.iter_mut().map(Samples::band).collect(),
+                            header,
+                            &data[..end],
+                            starts[row],
+                            slice_qp,
+                            receiver,
+                            sender,
+                        );
+                        let RowParts {
+                            units,
+                            slice_of,
+                            sao,
+                            ..
+                        } = parts;
+                        let records = RowRecords {
+                            unfiltered: units.iter().any(|unit| unit.unfiltered),
+                            units,
+                            slice_of,
+                            sao,
+                        };
+                        let message = match outcome {
+                            Ok(()) => {
+                                // The deblocking inside the band reads only
+                                // the band: done here, on the row's thread.
+                                let mut own = std::collections::BTreeMap::new();
+                                own.insert(row, records);
+                                super::filter::deblock_inside(
+                                    &Window {
+                                        layout,
+                                        slices,
+                                        rows: &own,
+                                    },
+                                    &mut planes,
+                                    row,
+                                );
+                                let records = own.remove(&row).expect("inserted above");
+                                Ok((row, planes, records))
+                            }
+                            Err(error) => Err((row, error)),
+                        };
+                        let failed = message.is_err();
+                        if done_sender.send(message).is_err() || failed {
+                            break;
+                        }
+                    }
+                });
+            }
+            drop(done_sender);
+            // The loop filters run on a thread of their own, a band ahead
+            // of this one, which hands each band on.
+            let (band_sender, band_receiver) = std::sync::mpsc::sync_channel::<DoneBand>(1);
+            let (pool_free, stop, unit_pool) = (&pool_free, &stop, &unit_pool);
+            let filtering = scope.spawn(move || {
+                let outcome = filter_bands(
+                    layout,
+                    slices,
+                    rows,
+                    &done_receiver,
+                    &mut |band| {
+                        band_sender
+                            .send(band)
+                            .map_err(|_| HevcError::new("the bands stopped being taken"))
+                    },
+                    &mut |units| {
+                        if let Units::Own(units) = units {
+                            unit_pool
+                                .lock()
+                                .unwrap_or_else(|poison| poison.into_inner())
+                                .push(units);
+                        }
+                    },
+                );
+                if outcome.is_err() {
+                    stop.store(true, Ordering::Relaxed);
+                    pool_free.notify_all();
+                }
+                outcome
+            });
+            let mut handed = Ok(());
+            for band in &band_receiver {
+                if let Err(error) = emit(&band) {
+                    handed = Err(error);
+                    stop.store(true, Ordering::Relaxed);
+                    pool_free.notify_all();
+                    break;
+                }
+                lock(&pool).push(band.planes);
+                pool_free.notify_all();
+            }
+            // The filters' thread stops at its next band if this one did.
+            drop(band_receiver);
+            let filtered = filtering
+                .join()
+                .unwrap_or_else(|_| Err(HevcError::new("the loop filters failed")));
+            handed.and(filtered)
+        })
+    }
+}
+
+/// The loop filters' side of a streamed picture: takes each decoded row,
+/// runs the filters on a band once the rows around it are in, and hands
+/// it on (its buffers to come back to the pool); `recycle_units` takes
+/// each row's units back once no band reads them.
+fn filter_bands<'a>(
+    layout: &'a Layout,
+    slices: &'a [SliceHeader],
+    rows: usize,
+    done: &std::sync::mpsc::Receiver<RowDone<'a>>,
+    hand: &mut dyn FnMut(DoneBand) -> Result<(), HevcError>,
+    recycle_units: &mut dyn FnMut(Units<'a>),
+) -> Result<(), HevcError> {
+    use std::collections::BTreeMap;
+    let ctb = 1usize << layout.ctb_log2;
+    let mut records: BTreeMap<usize, RowRecords<'a>> = BTreeMap::new();
+    let mut bands: BTreeMap<usize, Vec<Samples>> = BTreeMap::new();
+    let mut next = 0;
+    // The last row of the band handed on, as deblocked, for the next
+    // band's offsets.
+    let mut above: Option<Vec<Samples>> = None;
+    let sao_on = slices
+        .iter()
+        .any(|slice| slice.sao_luma || slice.sao_chroma);
+    while next < rows {
+        let ready = |records: &BTreeMap<usize, RowRecords<'a>>| {
+            records.contains_key(&next) && (next + 1 == rows || records.contains_key(&(next + 1)))
+        };
+        if !ready(&records) {
+            match done.recv() {
+                Ok(Ok((row, planes, row_records))) => {
+                    records.insert(row, row_records);
+                    bands.insert(row, planes);
+                }
+                Ok(Err((_, error))) => return Err(error),
+                Err(_) => return Err(HevcError::new("a row's decoding stopped")),
+            }
+            continue;
+        }
+        let window = Window {
+            layout,
+            slices,
+            rows: &records,
+        };
+        // Each band comes deblocked within itself; the edge between this
+        // band and the next is done here.
+        if next + 1 < rows {
+            let mut lower = bands.remove(&(next + 1)).unwrap_or_default();
+            if let Some(upper) = bands.get_mut(&next) {
+                super::filter::deblock_between(&window, upper, &mut lower, next + 1);
+            }
+            bands.insert(next + 1, lower);
+        }
+        let band_rows = ctb.min(layout.height - next * ctb);
+        let mut planes = bands.remove(&next).unwrap_or_default();
+        let last_row = layout_lines(layout, &planes, band_rows, LineOf::Last);
+        if sao_on {
+            let below = bands
+                .get(&(next + 1))
+                .map(|lower| layout_lines(layout, lower, ctb, LineOf::First));
+            let unfiltered = records.get(&next).is_some_and(|records| records.unfiltered);
+            super::filter::sao_band_planes(
+                &window,
+                &mut planes,
+                next,
+                above.as_deref(),
+                below.as_deref(),
+                unfiltered,
+            );
+        }
+        above = Some(last_row);
+        let band = DoneBand {
+            top: next * ctb,
+            rows: band_rows,
+            planes,
+        };
+        hand(band)?;
+        // The records of the band above are read no more.
+        if let Some(done) = next.checked_sub(1).and_then(|above| records.remove(&above)) {
+            recycle_units(done.units);
+        }
+        next += 1;
+    }
+    Ok(())
+}
+
+/// Which line of a band.
+#[derive(Clone, Copy)]
+enum LineOf {
+    First,
+    Last,
+}
+
+/// A band's first or last row of each component, copied.
+fn layout_lines(
+    layout: &Layout,
+    planes: &[Samples],
+    band_rows: usize,
+    which: LineOf,
+) -> Vec<Samples> {
+    planes
+        .iter()
+        .enumerate()
+        .map(|(component, samples)| {
+            let stride = layout.strides[component];
+            let rows = if component == 0 {
+                band_rows
+            } else {
+                band_rows >> layout.sub_y
+            };
+            let row = match which {
+                LineOf::First => 0,
+                LineOf::Last => rows - 1,
+            };
+            samples.slice_of(row * stride, stride)
+        })
+        .collect()
+}
 /// The state that runs through a slice segment's CTBs.
 struct SliceState {
     qp: i32,
@@ -1984,7 +2508,6 @@ impl Decoder {
     pub fn finish_into(mut self, workspace: &mut Workspace) -> Picture {
         let picture = self.filtered();
         workspace.units = std::mem::take(&mut self.units);
-        workspace.zscan = std::mem::take(&mut self.layout.zscan);
         picture
     }
 
@@ -2022,7 +2545,6 @@ impl Decoder {
 pub struct Workspace {
     planes: Vec<Samples>,
     units: Vec<Unit>,
-    zscan: Vec<u32>,
 }
 
 impl Workspace {

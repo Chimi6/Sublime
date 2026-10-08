@@ -10,6 +10,30 @@ pub trait Sample: Copy + Default + Send + Sync + 'static {
     fn of(value: i32) -> Self;
     /// The samples, when they are of this width; else none.
     fn slice(samples: &Samples) -> &[Self];
+    /// Runs `work` on this thread's scratch of `count` samples, all zero:
+    /// the buffer is kept for the thread's next call, not allocated anew.
+    fn with_scratch<R>(count: usize, work: impl FnOnce(&mut [Self]) -> R) -> R;
+}
+
+// Each thread's scratch samples of each width.
+std::thread_local! {
+    static SCRATCH_EIGHT: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    static SCRATCH_DEEP: std::cell::RefCell<Vec<u16>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `work` on `scratch` cleared to `count` zeros; a nested call (none
+/// today) gets a buffer of its own.
+fn with_cleared<T: Copy + Default, R>(
+    scratch: &std::cell::RefCell<Vec<T>>,
+    count: usize,
+    work: impl FnOnce(&mut [T]) -> R,
+) -> R {
+    let Ok(mut buffer) = scratch.try_borrow_mut() else {
+        return work(&mut vec![T::default(); count]);
+    };
+    buffer.clear();
+    buffer.resize(count, T::default());
+    work(&mut buffer)
 }
 
 impl Sample for u8 {
@@ -29,6 +53,10 @@ impl Sample for u8 {
             Samples::Deep(_) => &[],
         }
     }
+
+    fn with_scratch<R>(count: usize, work: impl FnOnce(&mut [u8]) -> R) -> R {
+        SCRATCH_EIGHT.with(|scratch| with_cleared(scratch, count, work))
+    }
 }
 
 impl Sample for u16 {
@@ -47,6 +75,10 @@ impl Sample for u16 {
             Samples::Deep(samples) => samples,
             Samples::Eight(_) => &[],
         }
+    }
+
+    fn with_scratch<R>(count: usize, work: impl FnOnce(&mut [u16]) -> R) -> R {
+        SCRATCH_DEEP.with(|scratch| with_cleared(scratch, count, work))
     }
 }
 
@@ -83,11 +115,36 @@ impl Samples {
         }
     }
 
+    /// Keeps the storage, `count` samples long.
+    pub fn resize(&mut self, count: usize) {
+        match self {
+            Samples::Eight(samples) => samples.resize(count, 0),
+            Samples::Deep(samples) => samples.resize(count, 0),
+        }
+    }
+
+    /// Moves `count` samples from `start` to the front.
+    pub fn raise(&mut self, start: usize, count: usize) {
+        match self {
+            Samples::Eight(samples) => samples.copy_within(start..start + count, 0),
+            Samples::Deep(samples) => samples.copy_within(start..start + count, 0),
+        }
+    }
+
     /// The samples as a band of rows to write.
     pub(super) fn band(&mut self) -> super::decode::Band<'_> {
         match self {
             Samples::Eight(samples) => super::decode::Band::Eight(samples),
             Samples::Deep(samples) => super::decode::Band::Deep(samples),
+        }
+    }
+
+    /// Appends `other`'s samples (of the same width).
+    pub fn extend(&mut self, other: &Samples) {
+        match (self, other) {
+            (Samples::Eight(to), Samples::Eight(from)) => to.extend_from_slice(from),
+            (Samples::Deep(to), Samples::Deep(from)) => to.extend_from_slice(from),
+            _ => {}
         }
     }
 

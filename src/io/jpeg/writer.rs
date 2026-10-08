@@ -208,7 +208,7 @@ impl BitWriter {
 
 /// Bands encoded at once with restart intervals: enough for every thread
 /// to have a few.
-const RESTART_BATCH: usize = 32;
+const RESTART_BATCH: usize = 16;
 
 /// What encoding a band needs, apart from where it goes: shared by the
 /// threads that encode bands at once.
@@ -220,6 +220,9 @@ struct Encoder {
     subsampled: bool,
     /// Rows arrive as YCbCr 4:2:0 planes (`ycbcr_row`), not RGB.
     planar: bool,
+    /// The band holds 4:2:0 chroma at half resolution: from the planes
+    /// given, or from RGB row pairs as they come (padding included).
+    halved: bool,
     band_rows: usize,
     luma_quant: [u16; 64],
     chroma_quant: [u16; 64],
@@ -237,10 +240,12 @@ impl Encoder {
     }
 }
 
-/// A band of rows taken: its planes and how many rows are in.
+/// A band of rows taken: its planes, how many rows are in, and the
+/// buffer its bytes encode into.
 struct TakenBand {
     planes: Vec<Vec<u8>>,
     rows: usize,
+    out: Vec<u8>,
 }
 
 /// Writes a JPEG from rows as a `RowSink`.
@@ -263,8 +268,13 @@ pub struct JpegRows<'a> {
     /// Bands taken and waiting to encode, and spare buffers for more.
     taken: Vec<TakenBand>,
     spare: Vec<Vec<Vec<u8>>>,
+    /// Encoded bands' buffers, written and kept for the next batch.
+    spare_out: Vec<Vec<u8>>,
     /// Bands written, for the restart markers' numbers.
     bands_written: usize,
+    /// The last two RGB rows, padded, for 4:2:0 chroma from RGB: each
+    /// chroma row from a pair's 2x2 sums.
+    pair: Vec<u8>,
 }
 
 impl<'a> JpegRows<'a> {
@@ -278,6 +288,7 @@ impl<'a> JpegRows<'a> {
                 color: ColorType::Rgb,
                 subsampled: false,
                 planar: false,
+                halved: false,
                 band_rows: 8,
                 luma_quant: [1; 64],
                 chroma_quant: [1; 64],
@@ -302,7 +313,9 @@ impl<'a> JpegRows<'a> {
             restart: false,
             taken: Vec::new(),
             spare: Vec::new(),
+            spare_out: Vec::new(),
             bands_written: 0,
+            pair: Vec::new(),
         }
     }
 
@@ -406,9 +419,9 @@ impl<'a> JpegRows<'a> {
         let width = self.encoder.width;
         if self.encoder.subsampled {
             let padded = self.encoder.padded_width;
-            let (luma_plane, rgb_plane) = self.band.split_at_mut(1);
-            let luma = &mut luma_plane[0][y_index * padded..(y_index + 1) * padded];
-            let rgb = &mut rgb_plane[0][y_index * padded * 3..(y_index + 1) * padded * 3];
+            let luma = &mut self.band[0][y_index * padded..(y_index + 1) * padded];
+            let (upper, lower) = self.pair.split_at_mut(padded * 3);
+            let rgb = if y_index % 2 == 0 { upper } else { lower };
             if self.encoder.color == ColorType::Rgb {
                 rgb[..width * 3].copy_from_slice(&pixels[..width * 3]);
             } else {
@@ -429,6 +442,9 @@ impl<'a> JpegRows<'a> {
             let last_pixel = [rgb[width * 3 - 3], rgb[width * 3 - 2], rgb[width * 3 - 1]];
             for pixel in rgb[width * 3..].chunks_exact_mut(3) {
                 pixel.copy_from_slice(&last_pixel);
+            }
+            if y_index % 2 == 1 {
+                self.chroma_row(y_index / 2, false);
             }
             self.rows_in_band += 1;
             return;
@@ -498,10 +514,62 @@ impl<'a> JpegRows<'a> {
         self.rows_in_band += 1;
     }
 
-    /// Encodes the band in hand: one MCU row.
+    /// Chroma row `row` of the band from the RGB row pair in hand, or
+    /// (`alone`) from the last row taken twice, as the rows past the
+    /// image repeat it.
+    fn chroma_row(&mut self, row: usize, alone: bool) {
+        let half = self.encoder.padded_width / 2;
+        let stride = self.encoder.padded_width * 3;
+        let last = (self.rows_in_band % 2) * stride;
+        let (upper, lower) = if alone {
+            (
+                &self.pair[last..last + stride],
+                &self.pair[last..last + stride],
+            )
+        } else {
+            (&self.pair[..stride], &self.pair[stride..])
+        };
+        let (blue_plane, red_plane) = self.band[1..].split_at_mut(1);
+        let blue = &mut blue_plane[0][row * half..(row + 1) * half];
+        let red = &mut red_plane[0][row * half..(row + 1) * half];
+        for (((blue, red), a), b) in blue
+            .iter_mut()
+            .zip(red.iter_mut())
+            .zip(upper.chunks_exact(6))
+            .zip(lower.chunks_exact(6))
+        {
+            // Each chroma sample from the sum of a 2x2 block's RGB: the
+            // conversion is linear, so this is the average of the four
+            // pixels' chroma, rounded once (and held to a byte).
+            let red_sum = i32::from(a[0]) + i32::from(a[3]) + i32::from(b[0]) + i32::from(b[3]);
+            let green = i32::from(a[1]) + i32::from(a[4]) + i32::from(b[1]) + i32::from(b[4]);
+            let blue_sum = i32::from(a[2]) + i32::from(a[5]) + i32::from(b[2]) + i32::from(b[5]);
+            let cb = (-11_059 * red_sum - 21_709 * green + 32_768 * blue_sum + (1 << 17)) >> 18;
+            let cr = (32_768 * red_sum - 27_439 * green - 5_329 * blue_sum + (1 << 17)) >> 18;
+            *blue = (cb + 128).clamp(0, 255) as u8;
+            *red = (cr + 128).clamp(0, 255) as u8;
+        }
+    }
+
     /// Encodes the band in hand: written at once, or with restart
     /// intervals kept to encode a batch of bands on several threads.
     fn encode_band(&mut self) -> io::Result<()> {
+        if self.encoder.subsampled && !self.encoder.planar {
+            // The chroma rows below the last pair: from the last row
+            // repeated, as the padded rows below it are.
+            let first = self.rows_in_band / 2;
+            if first < self.encoder.band_rows / 2 {
+                self.rows_in_band -= 1;
+                self.chroma_row(first, true);
+                for row in first + 1..self.encoder.band_rows / 2 {
+                    let half = self.encoder.padded_width / 2;
+                    for plane in &mut self.band[1..] {
+                        plane.copy_within(first * half..(first + 1) * half, row * half);
+                    }
+                }
+                self.rows_in_band += 1;
+            }
+        }
         if self.restart {
             let spare = self.spare.pop().unwrap_or_else(|| {
                 self.band
@@ -510,9 +578,12 @@ impl<'a> JpegRows<'a> {
                     .collect()
             });
             let planes = std::mem::replace(&mut self.band, spare);
+            let mut out = self.spare_out.pop().unwrap_or_default();
+            out.clear();
             self.taken.push(TakenBand {
                 planes,
                 rows: self.rows_in_band,
+                out,
             });
             self.rows_in_band = 0;
             let last = self.rows_taken == self.encoder.height;
@@ -541,8 +612,12 @@ impl<'a> JpegRows<'a> {
     fn encode_taken(&mut self, last: bool) -> io::Result<()> {
         let mut taken = std::mem::take(&mut self.taken);
         let encoder = &self.encoder;
-        let encode = |band: &mut TakenBand| -> Vec<u8> {
-            let mut bits = BitWriter::new();
+        let encode = |band: &mut TakenBand| {
+            let mut bits = BitWriter {
+                out: std::mem::take(&mut band.out),
+                buffer: 0,
+                count: 0,
+            };
             let mut predictions = [0i32; 3];
             encode_band(
                 encoder,
@@ -552,36 +627,34 @@ impl<'a> JpegRows<'a> {
                 &mut predictions,
             );
             bits.pad();
-            bits.out
+            band.out = bits.out;
         };
         let threads = std::thread::available_parallelism()
             .map_or(1, |count| count.get())
             .min(taken.len());
-        let encoded: Vec<Vec<u8>> = if threads <= 1 {
-            taken.iter_mut().map(encode).collect()
+        if threads <= 1 {
+            taken.iter_mut().for_each(encode);
         } else {
             let chunk = taken.len().div_ceil(threads);
             std::thread::scope(|scope| {
-                let handles: Vec<_> = taken
-                    .chunks_mut(chunk)
-                    .map(|bands| scope.spawn(|| bands.iter_mut().map(&encode).collect::<Vec<_>>()))
-                    .collect();
-                handles
-                    .into_iter()
-                    .flat_map(|handle| handle.join().unwrap_or_default())
-                    .collect()
-            })
-        };
-        let count = encoded.len();
-        for (index, bytes) in encoded.into_iter().enumerate() {
-            self.sink.write_all(&bytes)?;
+                for bands in taken.chunks_mut(chunk) {
+                    scope.spawn(|| bands.iter_mut().for_each(&encode));
+                }
+            });
+        }
+        let count = taken.len();
+        for (index, band) in taken.iter().enumerate() {
+            self.sink.write_all(&band.out)?;
             if !(last && index + 1 == count) {
                 self.sink
                     .write_all(&[0xFF, 0xD0 + (self.bands_written % 8) as u8])?;
             }
             self.bands_written += 1;
         }
-        self.spare.extend(taken.into_iter().map(|band| band.planes));
+        for band in taken {
+            self.spare.push(band.planes);
+            self.spare_out.push(band.out);
+        }
         Ok(())
     }
 }
@@ -595,11 +668,15 @@ fn encode_band(
     bits: &mut BitWriter,
     predictions: &mut [i32; 3],
 ) {
-    // Pad the bottom by replicating the last row taken.
+    // Pad the bottom by replicating the last row taken (chroma from RGB
+    // comes padded).
     let rows = encoder.band_rows;
     for (index, plane) in band.iter_mut().enumerate() {
+        if index > 0 && encoder.halved && !encoder.planar {
+            break;
+        }
         // Planar chroma holds half the band's rows.
-        let (rows, taken) = if encoder.planar && index > 0 {
+        let (rows, taken) = if encoder.halved && index > 0 {
             (rows / 2, rows_in_band.div_ceil(2))
         } else {
             (rows, rows_in_band)
@@ -644,7 +721,7 @@ fn encode_band(
         if !encoder.is_gray() {
             let x0 = mcu_x * mcu;
             let mut chroma = [[0i32; 64]; 2];
-            if encoder.planar {
+            if encoder.halved {
                 let half = encoder.padded_width / 2;
                 for (component, samples) in chroma.iter_mut().enumerate() {
                     let plane = &band[component + 1];
@@ -656,31 +733,6 @@ fn encode_band(
                         {
                             *sample = i32::from(*byte) - 128;
                         }
-                    }
-                }
-            } else if encoder.subsampled {
-                // Each chroma sample from the sum of a 2x2 block's RGB:
-                // the conversion is linear, so this is the average of
-                // the four pixels' chroma, rounded once.
-                let rgb = &band[1];
-                let stride = encoder.padded_width * 3;
-                for row in 0..8 {
-                    let upper = &rgb[(row * 2) * stride + x0 * 3..(row * 2) * stride + x0 * 3 + 48];
-                    let lower =
-                        &rgb[(row * 2 + 1) * stride + x0 * 3..(row * 2 + 1) * stride + x0 * 3 + 48];
-                    for column in 0..8 {
-                        let a = &upper[column * 6..column * 6 + 6];
-                        let b = &lower[column * 6..column * 6 + 6];
-                        let red =
-                            i32::from(a[0]) + i32::from(a[3]) + i32::from(b[0]) + i32::from(b[3]);
-                        let green =
-                            i32::from(a[1]) + i32::from(a[4]) + i32::from(b[1]) + i32::from(b[4]);
-                        let blue =
-                            i32::from(a[2]) + i32::from(a[5]) + i32::from(b[2]) + i32::from(b[5]);
-                        chroma[0][row * 8 + column] =
-                            (-11_059 * red - 21_709 * green + 32_768 * blue + (1 << 17)) >> 18;
-                        chroma[1][row * 8 + column] =
-                            (32_768 * red - 27_439 * green - 5_329 * blue + (1 << 17)) >> 18;
                     }
                 }
             } else {
@@ -941,21 +993,18 @@ impl RowSink for JpegRows<'_> {
         let mcu = self.encoder.band_rows;
         self.encoder.padded_width = self.encoder.width.div_ceil(mcu) * mcu;
         let planes = if self.gray() { 1 } else { 3 };
-        self.band = if self.encoder.planar {
+        self.encoder.halved = self.encoder.subsampled;
+        self.band = if self.encoder.subsampled {
+            // Luma at full resolution, chroma at half: given, or from
+            // each pair of RGB rows as it comes.
+            if !self.encoder.planar {
+                self.pair = vec![0u8; self.encoder.padded_width * 3 * 2];
+            }
             let chroma = self.encoder.band_rows / 2 * self.encoder.padded_width / 2;
             vec![
                 vec![0u8; self.encoder.band_rows * self.encoder.padded_width],
                 vec![0u8; chroma],
                 vec![0u8; chroma],
-            ]
-        } else if self.encoder.subsampled {
-            // Luma at full resolution, and the band's RGB rows: chroma is
-            // computed per 2x2 block from the summed RGB when the band is
-            // encoded, a quarter of the chroma arithmetic of converting
-            // every pixel and averaging after.
-            vec![
-                vec![0u8; self.encoder.band_rows * self.encoder.padded_width],
-                vec![0u8; self.encoder.band_rows * self.encoder.padded_width * 3],
             ]
         } else {
             (0..planes)

@@ -3,7 +3,7 @@
 //! such edge of an intra picture has boundary strength 2), then the sample
 //! adaptive offset per CTB.
 
-use super::decode::{Band, with_band};
+use super::decode::{Band, Neighbourhood, above_line, with_band};
 use super::decode::{Decoder, Unit};
 use super::sample::Sample;
 use super::sample::Samples;
@@ -25,20 +25,27 @@ const STRENGTH: i32 = 2;
 /// (qx, qy), luma positions, is filtered: a block edge, inside the
 /// picture, and not across a slice or tile boundary the q side's slice
 /// keeps filters from.
-fn filters_edge(decoder: &Decoder, px: usize, py: usize, qx: usize, qy: usize) -> bool {
-    let q_ctb = (qy >> decoder.ctb_log2) * decoder.width_ctbs + (qx >> decoder.ctb_log2);
-    let p_ctb = (py >> decoder.ctb_log2) * decoder.width_ctbs + (px >> decoder.ctb_log2);
-    let q_slice = &decoder.slices[decoder.slice_of[q_ctb]];
+fn filters_edge<N: Neighbourhood + ?Sized>(
+    near: &N,
+    px: usize,
+    py: usize,
+    qx: usize,
+    qy: usize,
+) -> bool {
+    let layout = near.layout();
+    let q_ctb = (qy >> layout.ctb_log2) * layout.width_ctbs + (qx >> layout.ctb_log2);
+    let p_ctb = (py >> layout.ctb_log2) * layout.width_ctbs + (px >> layout.ctb_log2);
+    let q_slice = &near.slices()[near.slice_index(q_ctb)];
     if q_slice.deblocking_disabled {
         return false;
     }
-    if decoder.slice_of[p_ctb] != decoder.slice_of[q_ctb]
+    if near.slice_index(p_ctb) != near.slice_index(q_ctb)
         && !q_slice.loop_filter_across_slices
-        && slice_start(decoder, p_ctb) != slice_start(decoder, q_ctb)
+        && slice_start(near, p_ctb) != slice_start(near, q_ctb)
     {
         return false;
     }
-    if !decoder.pps.loop_filter_across_tiles && decoder.tile_of[p_ctb] != decoder.tile_of[q_ctb] {
+    if !layout.pps.loop_filter_across_tiles && layout.tile_of[p_ctb] != layout.tile_of[q_ctb] {
         return false;
     }
     true
@@ -46,12 +53,12 @@ fn filters_edge(decoder: &Decoder, px: usize, py: usize, qx: usize, qy: usize) -
 
 /// The raster address of the first CTB of the slice (not segment) holding
 /// a CTB: dependent segments share their slice's.
-fn slice_start(decoder: &Decoder, ctb: usize) -> usize {
-    let mut index = decoder.slice_of[ctb];
-    while index > 0 && decoder.slices[index].dependent {
+fn slice_start<N: Neighbourhood + ?Sized>(near: &N, ctb: usize) -> usize {
+    let mut index = near.slice_index(ctb);
+    while index > 0 && near.slices()[index].dependent {
         index -= 1;
     }
-    decoder.slices[index].address as usize
+    near.slices()[index].address as usize
 }
 
 /// The deblocking filter, its edges shared out by bands of rows: first
@@ -118,6 +125,83 @@ pub fn deblock(decoder: &mut Decoder) {
     decoder.planes = planes;
 }
 
+/// The deblocking within band `band` (its CTB row) of every component:
+/// its vertical edges, then the horizontal edges inside it (not the one at
+/// its top, which needs the band above).
+pub(super) fn deblock_inside<N: Neighbourhood + ?Sized>(
+    near: &N,
+    planes: &mut [Samples],
+    band: usize,
+) {
+    let layout = near.layout();
+    let ctb = 1usize << layout.ctb_log2;
+    for (component, plane) in planes.iter_mut().enumerate() {
+        let shift_y = if component == 0 { 0 } else { layout.sub_y };
+        let rows =
+            (layout.height >> shift_y).min((band + 1) * (ctb >> shift_y)) - band * (ctb >> shift_y);
+        let top = band * (ctb >> shift_y);
+        with_band!(plane.band(), samples => {
+            for vertical in [true, false] {
+                let edges = if vertical { top..top + rows } else { top + 8..top + rows };
+                if component == 0 {
+                    deblock_luma(near, samples, top, vertical, edges);
+                } else {
+                    deblock_chroma(near, samples, top, component, vertical, edges);
+                }
+            }
+        });
+    }
+}
+
+/// The horizontal edge between band `lower_band` and the band above it,
+/// through a scratch copy of the four rows on each side.
+pub(super) fn deblock_between<N: Neighbourhood + ?Sized>(
+    near: &N,
+    upper: &mut [Samples],
+    lower: &mut [Samples],
+    lower_band: usize,
+) {
+    let layout = near.layout();
+    let ctb = 1usize << layout.ctb_log2;
+    for (component, (upper, lower)) in upper.iter_mut().zip(lower.iter_mut()).enumerate() {
+        let shift_y = if component == 0 { 0 } else { layout.sub_y };
+        let band_rows = ctb >> shift_y;
+        let edge = lower_band * band_rows;
+        let stride = layout.strides[component];
+        let mut scratch = upper.slice_of((band_rows - 4) * stride, 4 * stride);
+        scratch.extend(&lower.slice_of(0, 4 * stride));
+        with_band!(scratch.band(), samples => {
+            if component == 0 {
+                deblock_luma(near, samples, edge - 4, false, edge..edge + 1);
+            } else {
+                deblock_chroma(near, samples, edge - 4, component, false, edge..edge + 1);
+            }
+        });
+        upper.copy_from((band_rows - 4) * stride, &scratch, 0, 4 * stride);
+        lower.copy_from(0, &scratch, 4 * stride, 4 * stride);
+    }
+}
+
+/// The offsets of band `band` of every component, from the line above
+/// and the line below it as deblocked.
+pub(super) fn sao_band_planes<N: Neighbourhood + ?Sized>(
+    near: &N,
+    planes: &mut [Samples],
+    band: usize,
+    above: Option<&[Samples]>,
+    below: Option<&[Samples]>,
+    unfiltered: bool,
+) {
+    let rules = SaoRules::of(near, unfiltered);
+    for (component, plane) in planes.iter_mut().enumerate() {
+        let above = above.map(|lines| &lines[component]);
+        let below = below.map(|lines| &lines[component]);
+        with_band!(plane.band(), samples => {
+            sao_band(near, &rules, component, band, samples, above_line(above), above_line(below))
+        });
+    }
+}
+
 /// Runs `work` on every task, on up to `threads` threads.
 fn run_parallel<T: Send>(threads: usize, tasks: Vec<T>, work: impl Fn(T) + Sync) {
     let threads = threads.min(tasks.len());
@@ -146,16 +230,17 @@ fn run_parallel<T: Send>(threads: usize, tasks: Vec<T>, work: impl Fn(T) + Sync)
 
 /// The luma edges of a band of rows starting at row `start`: vertical
 /// edges on the rows of `edges`, or the horizontal edges on rows `edges`.
-fn deblock_luma<T: Sample>(
-    decoder: &Decoder,
+fn deblock_luma<T: Sample, N: Neighbourhood + ?Sized>(
+    near: &N,
     plane: &mut [T],
     start: usize,
     vertical: bool,
     edges: std::ops::Range<usize>,
 ) {
-    let (width, height) = (decoder.width, decoder.height);
-    let stride = decoder.strides[0];
-    let bit_depth = decoder.sps.bit_depth_luma;
+    let layout = near.layout();
+    let (width, height) = (layout.width, layout.height);
+    let stride = layout.strides[0];
+    let bit_depth = layout.sps.bit_depth_luma;
     let max = (1i32 << bit_depth) - 1;
     let scale = 1 << (bit_depth - 8);
     // Each edge segment of 4 lines on the 8x8 grid.
@@ -183,18 +268,19 @@ fn deblock_luma<T: Sample>(
             } else {
                 (segment, edge - 1)
             };
-            let q_unit = *decoder.unit(qx, qy);
+            let q_unit = near.unit(qx, qy);
             let is_edge = if vertical {
                 q_unit.left_edge
             } else {
                 q_unit.top_edge
             };
-            if !is_edge || !filters_edge(decoder, px, py, qx, qy) {
+            if !is_edge || !filters_edge(near, px, py, qx, qy) {
                 continue;
             }
-            let p_unit = *decoder.unit(px, py);
-            let q_slice = &decoder.slices[decoder.slice_of
-                [(qy >> decoder.ctb_log2) * decoder.width_ctbs + (qx >> decoder.ctb_log2)]];
+            let p_unit = near.unit(px, py);
+            let q_slice = &near.slices()[near.slice_index(
+                (qy >> layout.ctb_log2) * layout.width_ctbs + (qx >> layout.ctb_log2),
+            )];
             let qp = (i32::from(p_unit.qp) + i32::from(q_unit.qp) + 1) >> 1;
             let beta = BETA[(qp + q_slice.beta_offset).clamp(0, 51) as usize] * scale;
             let tc =
@@ -323,25 +409,26 @@ fn deblock_luma<T: Sample>(
 }
 
 /// The chroma edges of a band, as `deblock_luma`.
-fn deblock_chroma<T: Sample>(
-    decoder: &Decoder,
+fn deblock_chroma<T: Sample, N: Neighbourhood + ?Sized>(
+    near: &N,
     plane: &mut [T],
     start: usize,
     component: usize,
     vertical: bool,
     edges: std::ops::Range<usize>,
 ) {
-    let (sub_x, sub_y) = (decoder.sub_x, decoder.sub_y);
-    let width = decoder.width >> sub_x;
-    let height = decoder.height >> sub_y;
-    let stride = decoder.strides[component];
-    let bit_depth = decoder.sps.bit_depth_chroma;
+    let layout = near.layout();
+    let (sub_x, sub_y) = (layout.sub_x, layout.sub_y);
+    let width = layout.width >> sub_x;
+    let height = layout.height >> sub_y;
+    let stride = layout.strides[component];
+    let bit_depth = layout.sps.bit_depth_chroma;
     let max = (1i32 << bit_depth) - 1;
     let scale = 1 << (bit_depth - 8);
     let picture_offset = if component == 1 {
-        decoder.pps.cb_qp_offset
+        layout.pps.cb_qp_offset
     } else {
-        decoder.pps.cr_qp_offset
+        layout.pps.cr_qp_offset
     };
     let (outer, inner) = if vertical {
         (width, height)
@@ -360,20 +447,21 @@ fn deblock_chroma<T: Sample>(
             let (cx, cy) = if vertical { (edge, line) } else { (line, edge) };
             let (qx, qy) = (cx << sub_x, cy << sub_y);
             let (px, py) = if vertical { (qx - 1, qy) } else { (qx, qy - 1) };
-            let q_unit: Unit = *decoder.unit(qx, qy);
+            let q_unit: Unit = near.unit(qx, qy);
             let is_edge = if vertical {
                 q_unit.left_edge
             } else {
                 q_unit.top_edge
             };
-            if !is_edge || !filters_edge(decoder, px, py, qx, qy) {
+            if !is_edge || !filters_edge(near, px, py, qx, qy) {
                 continue;
             }
-            let p_unit = *decoder.unit(px, py);
-            let q_slice = &decoder.slices[decoder.slice_of
-                [(qy >> decoder.ctb_log2) * decoder.width_ctbs + (qx >> decoder.ctb_log2)]];
+            let p_unit = near.unit(px, py);
+            let q_slice = &near.slices()[near.slice_index(
+                (qy >> layout.ctb_log2) * layout.width_ctbs + (qx >> layout.ctb_log2),
+            )];
             let qpi = ((i32::from(p_unit.qp) + i32::from(q_unit.qp) + 1) >> 1) + picture_offset;
-            let qpc = if decoder.chroma == 1 {
+            let qpc = if layout.chroma == 1 {
                 match qpi {
                     ..30 => qpi,
                     30..=43 => [29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37]
@@ -420,7 +508,7 @@ pub fn sample_adaptive_offset(decoder: &mut Decoder) {
     let mut planes = std::mem::take(&mut decoder.planes);
     {
         let decoder: &Decoder = decoder;
-        let rules = SaoRules::of(decoder);
+        let rules = SaoRules::of(decoder, decoder.units.iter().any(|unit| unit.unfiltered));
         let ctb = 1usize << decoder.ctb_log2;
         let mut tasks = Vec::new();
         for (component, plane) in planes.iter_mut().enumerate() {
@@ -474,22 +562,23 @@ struct SaoRules {
 }
 
 impl SaoRules {
-    fn of(decoder: &Decoder) -> SaoRules {
-        let independent = decoder
-            .slices
+    fn of<N: Neighbourhood + ?Sized>(near: &N, unfiltered: bool) -> SaoRules {
+        let layout = near.layout();
+        let independent = near
+            .slices()
             .iter()
             .filter(|slice| !slice.dependent)
             .count();
         let slices_open = independent <= 1
-            || decoder
-                .slices
+            || near
+                .slices()
                 .iter()
                 .all(|slice| slice.loop_filter_across_slices);
         let tiles_open =
-            decoder.pps.loop_filter_across_tiles || decoder.tile_of.iter().all(|&tile| tile == 0);
+            layout.pps.loop_filter_across_tiles || layout.tile_of.iter().all(|&tile| tile == 0);
         SaoRules {
             open: slices_open && tiles_open,
-            unfiltered: decoder.units.iter().any(|unit| unit.unfiltered),
+            unfiltered,
         }
     }
 }
@@ -497,8 +586,8 @@ impl SaoRules {
 /// The offsets of one component's band of CTB row `ctb_y`: a window holds
 /// the band's deblocked lines with the line above and the line below
 /// (copied before any band changed), and the band takes the results.
-fn sao_band<T: Sample>(
-    decoder: &Decoder,
+fn sao_band<T: Sample, N: Neighbourhood + ?Sized>(
+    near: &N,
     rules: &SaoRules,
     component: usize,
     ctb_y: usize,
@@ -506,24 +595,24 @@ fn sao_band<T: Sample>(
     above_line: &[T],
     below_line: &[T],
 ) {
+    let layout = near.layout();
     let (shift_x, shift_y) = if component == 0 {
         (0, 0)
     } else {
-        (decoder.sub_x, decoder.sub_y)
+        (layout.sub_x, layout.sub_y)
     };
-    let width = decoder.width >> shift_x;
-    let height = decoder.height >> shift_y;
-    let stride = decoder.strides[component];
+    let width = layout.width >> shift_x;
+    let height = layout.height >> shift_y;
+    let stride = layout.strides[component];
     let bit_depth = if component == 0 {
-        decoder.sps.bit_depth_luma
+        layout.sps.bit_depth_luma
     } else {
-        decoder.sps.bit_depth_chroma
+        layout.sps.bit_depth_chroma
     };
     let max = (1i32 << bit_depth) - 1;
-    let ctb = 1usize << decoder.ctb_log2;
+    let ctb = 1usize << layout.ctb_log2;
     let band_height = ctb >> shift_y;
-    let mut window: Vec<T> = vec![T::default(); (band_height + 2) * stride];
-    {
+    T::with_scratch((band_height + 2) * stride, |window| {
         let band_top = ctb_y * band_height;
         let band_bottom = (band_top + band_height).min(height);
         // Window line k holds picture line band_top - 1 + k.
@@ -541,15 +630,15 @@ fn sao_band<T: Sample>(
             let k = y + 1 - band_top;
             &window[k * stride..(k + 1) * stride]
         };
-        for ctb_x in 0..decoder.width_ctbs {
-            let rs = ctb_y * decoder.width_ctbs + ctb_x;
-            let slice = &decoder.slices[decoder.slice_of[rs]];
+        for ctb_x in 0..layout.width_ctbs {
+            let rs = ctb_y * layout.width_ctbs + ctb_x;
+            let slice = &near.slices()[near.slice_index(rs)];
             let enabled = if component == 0 {
                 slice.sao_luma
             } else {
                 slice.sao_chroma
             };
-            let params = decoder.sao[rs][component];
+            let params = near.sao_params(rs)[component];
             if !enabled || params.kind == 0 {
                 continue;
             }
@@ -570,7 +659,7 @@ fn sao_band<T: Sample>(
                     }
                     if rules.unfiltered {
                         restore_unfiltered(
-                            decoder, plane, source, y, x0, x1, shift_x, shift_y, stride, base,
+                            near, plane, source, y, x0, x1, shift_x, shift_y, stride, base,
                         );
                     }
                 }
@@ -637,7 +726,7 @@ fn sao_band<T: Sample>(
                                 ((x as isize + dx[k]) as usize) << shift_x,
                                 rows[k] << shift_y,
                             );
-                            readable &= sao_crosses(decoder, luma, neighbour);
+                            readable &= sao_crosses(near, luma, neighbour);
                         }
                         if !readable {
                             target[x] = line(y)[x];
@@ -652,7 +741,7 @@ fn sao_band<T: Sample>(
                 }
                 if rules.unfiltered {
                     restore_unfiltered(
-                        decoder,
+                        near,
                         plane,
                         &line(y)[x0..x1],
                         y,
@@ -666,14 +755,14 @@ fn sao_band<T: Sample>(
                 }
             }
         }
-    }
+    });
 }
 
 /// Puts back the deblocked samples of PCM and bypass blocks the loop
 /// filters leave alone.
 #[allow(clippy::too_many_arguments)]
-fn restore_unfiltered<T: Sample>(
-    decoder: &Decoder,
+fn restore_unfiltered<T: Sample, N: Neighbourhood + ?Sized>(
+    near: &N,
     plane: &mut [T],
     source: &[T],
     y: usize,
@@ -685,7 +774,7 @@ fn restore_unfiltered<T: Sample>(
     base: usize,
 ) {
     for x in x0..x1 {
-        if decoder.unit(x << shift_x, y << shift_y).unfiltered {
+        if near.unit(x << shift_x, y << shift_y).unfiltered {
             plane[y * stride + x - base] = source[x - x0];
         }
     }
@@ -693,24 +782,28 @@ fn restore_unfiltered<T: Sample>(
 
 /// Whether an edge offset may read the sample at `neighbour` for the one at
 /// `current` (luma positions): the slice and tile rules of 8.7.3.
-fn sao_crosses(decoder: &Decoder, current: (usize, usize), neighbour: (usize, usize)) -> bool {
+fn sao_crosses<N: Neighbourhood + ?Sized>(
+    near: &N,
+    current: (usize, usize),
+    neighbour: (usize, usize),
+) -> bool {
+    let layout = near.layout();
     let ctb_of = |(x, y): (usize, usize)| {
-        (y >> decoder.ctb_log2) * decoder.width_ctbs + (x >> decoder.ctb_log2)
+        (y >> layout.ctb_log2) * layout.width_ctbs + (x >> layout.ctb_log2)
     };
     let (a, b) = (ctb_of(current), ctb_of(neighbour));
     if a == b {
         return true;
     }
-    if slice_start(decoder, a) != slice_start(decoder, b) {
-        let current_first = decoder.rs_to_ts[a] < decoder.rs_to_ts[b];
+    if slice_start(near, a) != slice_start(near, b) {
+        let current_first = layout.rs_to_ts[a] < layout.rs_to_ts[b];
         let flag_holder = if current_first { b } else { a };
-        if !decoder.slices[decoder.slice_of[flag_holder]].loop_filter_across_slices {
+        if !near.slices()[near.slice_index(flag_holder)].loop_filter_across_slices {
             return false;
         }
     }
-    if !decoder.pps.loop_filter_across_tiles && decoder.tile_of[a] != decoder.tile_of[b] {
+    if !layout.pps.loop_filter_across_tiles && layout.tile_of[a] != layout.tile_of[b] {
         return false;
     }
-    let _: &Unit = decoder.unit(current.0, current.1);
     true
 }

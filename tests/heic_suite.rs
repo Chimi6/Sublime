@@ -8,7 +8,10 @@ use std::path::PathBuf;
 
 use sublime::image::ColorType;
 use sublime::io::heif::rgb::Converter;
-use sublime::io::heif::{decode_planes, read_heif_rows};
+use sublime::io::heif::{
+    Planes, decode_planes, decode_primary_by_bands, read_heif_rows, read_heif_rows_from,
+    read_heif_rows_whole,
+};
 use sublime::io::png::{PngRows, RowSink};
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -288,6 +291,104 @@ fn damaged_files_are_refused_not_panicked_on() {
         let mut sink = Rows::default();
         assert!(
             read_heif_rows(&whole[..cut], &mut sink).is_err(),
+            "cut at {cut}"
+        );
+    }
+}
+
+/// Every fixture, by name.
+const ALL: [&str; 11] = [
+    "apple-tiny",
+    "apple-odd",
+    "apple-photo",
+    "mirror0",
+    "mirror1",
+    "turn0",
+    "turn1",
+    "x265-tiny",
+    "x265-alpha",
+    "x265-odd-10bit",
+    "x265-444",
+];
+
+/// A sink taking 8-bit RGB, 16 bits, or the picture's own YCbCr.
+fn sink_taking(deep: bool, ycbcr: bool) -> Rows {
+    Rows {
+        takes_deep: deep,
+        takes_ycbcr: ycbcr,
+        ..Rows::default()
+    }
+}
+
+fn same_rows(name: &str, found: &Rows, wanted: &Rows) {
+    assert_eq!(
+        (found.width, found.height),
+        (wanted.width, wanted.height),
+        "{name}"
+    );
+    assert_eq!(found.color, wanted.color, "{name}");
+    assert_eq!(found.deep, wanted.deep, "{name}");
+    assert!(found.pixels == wanted.pixels, "{name}: pixels differ");
+    assert!(found.luma == wanted.luma, "{name}: luma differs");
+    assert!(found.chroma == wanted.chroma, "{name}: chroma differs");
+    assert_eq!(found.profile, wanted.profile, "{name}");
+    assert_eq!(found.exif, wanted.exif, "{name}");
+}
+
+#[test]
+fn rows_streamed_by_bands_match_rows_decoded_whole() {
+    for name in ALL {
+        let file = fixture(name);
+        for (deep, ycbcr) in [(false, false), (true, false), (false, true)] {
+            let mut streamed = sink_taking(deep, ycbcr);
+            let mut whole = sink_taking(deep, ycbcr);
+            read_heif_rows(&file, &mut streamed).expect(name);
+            read_heif_rows_whole(&file, &mut whole).expect(name);
+            same_rows(name, &streamed, &whole);
+        }
+    }
+}
+
+fn same_planes(name: &str, found: &Planes, wanted: &Planes) {
+    assert_eq!(found.sizes, wanted.sizes, "{name}");
+    assert_eq!(found.bit_depth, wanted.bit_depth, "{name}");
+    for (index, (a, b)) in found.planes.iter().zip(&wanted.planes).enumerate() {
+        assert_eq!(a.len(), b.len(), "{name} plane {index}");
+        assert!(
+            (0..a.len()).all(|at| a.get(at) == b.get(at)),
+            "{name} plane {index} differs"
+        );
+    }
+}
+
+#[test]
+fn pictures_decoded_by_bands_match_pictures_decoded_whole() {
+    // The x265 pictures run on wavefront rows, the decoding the bands
+    // come from; each by one to several threads.
+    for name in ["x265-tiny", "x265-alpha", "x265-odd-10bit", "x265-444"] {
+        let file = fixture(name);
+        let (whole, _) = decode_planes(&file).expect(name);
+        for threads in [1, 2, 3, 8] {
+            let banded = decode_primary_by_bands(&file, threads).expect(name);
+            same_planes(name, &banded, &whole);
+        }
+    }
+}
+
+#[test]
+fn a_file_read_an_item_at_a_time_matches_it_read_whole() {
+    for name in ALL {
+        let file = fixture(name);
+        let mut from_file = Rows::default();
+        let mut cursor = std::io::Cursor::new(file.clone());
+        read_heif_rows_from(&mut cursor, &mut from_file).expect(name);
+        same_rows(name, &from_file, &rows(name));
+    }
+    let whole = fixture("apple-photo");
+    for cut in [0, 8, 100, 1000, whole.len() / 2, whole.len() - 1] {
+        let mut cursor = std::io::Cursor::new(whole[..cut].to_vec());
+        assert!(
+            read_heif_rows_from(&mut cursor, &mut Rows::default()).is_err(),
             "cut at {cut}"
         );
     }

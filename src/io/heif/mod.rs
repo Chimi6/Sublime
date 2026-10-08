@@ -7,7 +7,7 @@ pub mod boxes;
 pub mod rgb;
 mod stream;
 
-use boxes::{Colour, Item, Meta, Property};
+use boxes::{Colour, Item, Meta, Property, Source};
 
 use crate::image::ColorType;
 pub use crate::io::hevc::Samples;
@@ -52,13 +52,21 @@ pub struct Planes {
 }
 
 /// One HEVC item's picture, its conformance window applied.
-fn decode_hevc_item(
+/// An HEVC item's units: its configuration's parameter sets, its data,
+/// and where each of the data's NAL units lies in it.
+type HevcUnits<'f> = (
+    Vec<Vec<u8>>,
+    std::borrow::Cow<'f, [u8]>,
+    Vec<(usize, usize)>,
+);
+
+/// An HEVC item's NAL units: its configuration's parameter sets, then its
+/// data's units.
+pub(super) fn hevc_units<'f>(
     meta: &Meta<'_>,
-    file: &[u8],
+    file: &Source<'f>,
     item: &Item,
-    workspace: &mut hevc::Workspace,
-    threads: usize,
-) -> Result<Planes, HeifError> {
+) -> Result<HevcUnits<'f>, HeifError> {
     let (nals, length_size) = meta
         .properties_of(item)
         .find_map(|property| match property {
@@ -67,7 +75,7 @@ fn decode_hevc_item(
         })
         .ok_or_else(|| HeifError::new("an HEVC item without its decoder configuration"))?;
     let data = meta.data(file, item)?;
-    let mut units: Vec<&[u8]> = nals.iter().map(Vec::as_slice).collect();
+    let mut ranges = Vec::new();
     let mut at = 0usize;
     while at + length_size <= data.len() {
         let length = data[at..at + length_size]
@@ -78,11 +86,43 @@ fn decode_hevc_item(
             .checked_add(length)
             .filter(|&end| end <= data.len())
             .ok_or_else(|| HeifError::new("a NAL unit running past its item"))?;
-        units.push(&data[at..end]);
+        ranges.push((at, end));
         at = end;
     }
+    Ok((nals, data, ranges))
+}
+
+fn decode_hevc_item(
+    meta: &Meta<'_>,
+    file: &Source<'_>,
+    item: &Item,
+    workspace: &mut hevc::Workspace,
+    threads: usize,
+) -> Result<Planes, HeifError> {
+    let (nals, data, ranges) = hevc_units(meta, file, item)?;
+    let units = nals
+        .iter()
+        .map(Vec::as_slice)
+        .chain(ranges.iter().map(|&(start, end)| &data[start..end]));
     let picture = hevc::decode_picture_in(units, workspace, threads)?;
     Ok(cropped(picture))
+}
+
+/// The primary picture (one HEVC item) decoded by bands as the streamed
+/// path decodes it, put back together: for checking that path against
+/// the whole one.
+#[doc(hidden)]
+pub fn decode_primary_by_bands(file: &[u8], threads: usize) -> Result<Planes, HeifError> {
+    let meta = boxes::read_meta(file)?;
+    let item = meta
+        .item(meta.primary)
+        .ok_or_else(|| HeifError::new("no primary image"))?;
+    let (nals, data, ranges) = hevc_units(&meta, &Source::Bytes(file), item)?;
+    let units = nals
+        .iter()
+        .map(Vec::as_slice)
+        .chain(ranges.iter().map(|&(start, end)| &data[start..end]));
+    Ok(cropped(hevc::decode_picture_assembled(units, threads)?))
 }
 
 /// A picture with its conformance window applied.
@@ -142,7 +182,7 @@ fn crop_in_place<T: Copy>(
 }
 
 /// An image item's planes: one picture, or a grid's tiles assembled.
-fn decode_image_item(meta: &Meta<'_>, file: &[u8], id: u32) -> Result<Planes, HeifError> {
+fn decode_image_item(meta: &Meta<'_>, file: &Source<'_>, id: u32) -> Result<Planes, HeifError> {
     // One picture's wavefront rows decode on every thread; a grid's tiles
     // do instead, each on one.
     let threads = std::thread::available_parallelism().map_or(1, |count| count.get());
@@ -152,7 +192,7 @@ fn decode_image_item(meta: &Meta<'_>, file: &[u8], id: u32) -> Result<Planes, He
 /// An image item's planes, an HEVC picture's buffers from `workspace`.
 fn decode_item_in(
     meta: &Meta<'_>,
-    file: &[u8],
+    file: &Source<'_>,
     id: u32,
     workspace: &mut hevc::Workspace,
     threads: usize,
@@ -176,12 +216,12 @@ fn decode_item_in(
                 canvas.place(tile, x, y);
                 Ok(())
             };
-            decode_tiles(meta, file, &grid.tiles, &place, &mut |_| Ok(())).map_err(|error| {
-                match error {
+            decode_tiles(meta, file, &grid.tiles, &place, None, &mut |_| Ok(())).map_err(
+                |error| match error {
                     HeifRowsError::Heif(error) => error,
                     HeifRowsError::Io(error) => HeifError(error.to_string()),
-                }
-            })?;
+                },
+            )?;
             let (canvas, _) = canvas
                 .into_inner()
                 .unwrap_or_else(|poison| poison.into_inner());
@@ -204,7 +244,7 @@ pub(super) struct Grid {
 }
 
 impl Grid {
-    pub(super) fn of(meta: &Meta<'_>, file: &[u8], item: &Item) -> Result<Grid, HeifError> {
+    pub(super) fn of(meta: &Meta<'_>, file: &Source<'_>, item: &Item) -> Result<Grid, HeifError> {
         let data = meta.data(file, item)?;
         let mut reader = boxes::Reader::new(&data);
         reader.u8()?;
@@ -364,9 +404,10 @@ pub(super) fn subsampling(chroma_format: u32) -> (u32, u32) {
 /// keeps.
 pub(super) fn decode_tiles(
     meta: &Meta<'_>,
-    file: &[u8],
+    file: &Source<'_>,
     tiles: &[u32],
     place: &(dyn Fn(usize, &Planes) -> Result<(), HeifError> + Sync),
+    until: Option<&std::sync::atomic::AtomicUsize>,
     drain: &mut dyn FnMut(bool) -> Result<(), HeifRowsError>,
 ) -> Result<(), HeifRowsError> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -400,6 +441,19 @@ pub(super) fn decode_tiles(
                     let Some(&tile) = tiles.get(index) else {
                         break;
                     };
+                    // A tile past `until` waits for the tiles before it to
+                    // be handed on, so decoding cannot run far ahead.
+                    if let Some(until) = until {
+                        let mut state = lock();
+                        while index >= until.load(Ordering::Acquire)
+                            && state.1.is_none()
+                            && !stop.load(Ordering::Relaxed)
+                        {
+                            state = changed
+                                .wait(state)
+                                .unwrap_or_else(|poison| poison.into_inner());
+                        }
+                    }
                     let outcome = decode_item_in(meta, file, tile, &mut workspace, 1)
                         .and_then(|decoded| place(index, &decoded).map(|()| decoded));
                     let mut state = lock();
@@ -432,10 +486,16 @@ pub(super) fn decode_tiles(
             seen = state.0;
             drop(state);
             let done = seen == tiles.len();
-            if let Err(error) = drain(done) {
+            let drained = drain(done);
+            if drained.is_err() {
                 stop.store(true, Ordering::Relaxed);
-                return Err(error);
             }
+            // The drain may have let more tiles start, or stopped them:
+            // the waiting threads look again (under the lock, so none
+            // misses the call).
+            drop(lock());
+            changed.notify_all();
+            drained?;
             if done {
                 return Ok(());
             }
@@ -462,6 +522,7 @@ fn alpha_item(meta: &Meta<'_>) -> Option<u32> {
 /// rotation, and mirroring; and its alpha plane, when it has one.
 pub fn decode_planes(file: &[u8]) -> Result<(Planes, Option<Planes>), HeifError> {
     let meta = boxes::read_meta(file)?;
+    let file = &Source::Bytes(file);
     let planes = decode_image_item(&meta, file, meta.primary)?;
     let alpha = alpha_item(&meta)
         .map(|id| decode_image_item(&meta, file, id))
@@ -780,7 +841,7 @@ pub(super) fn resolve_coefficients(nclx: Option<(u16, bool)>, planes: &Planes) -
 
 /// The primary image's Exif, as TIFF, with any orientation set to 1:
 /// the rows come out turned already, as HEIF's own properties say.
-fn exif(meta: &Meta<'_>, file: &[u8]) -> Option<Vec<u8>> {
+fn exif(meta: &Meta<'_>, file: &Source<'_>) -> Option<Vec<u8>> {
     let id = meta
         .referring(b"cdsc", meta.primary)
         .into_iter()
@@ -796,7 +857,44 @@ fn exif(meta: &Meta<'_>, file: &[u8]) -> Option<Vec<u8>> {
 /// RGB (or gray), with alpha when the file has it, its crop, rotation,
 /// and mirroring applied, and its colour profile and Exif handed over.
 pub fn read_heif_rows(file: &[u8], sink: &mut dyn RowSink) -> Result<HeifNotes, HeifRowsError> {
-    let meta = boxes::read_meta(file)?;
+    read_meta_rows(&boxes::read_meta(file)?, &Source::Bytes(file), sink, true)
+}
+
+/// `read_heif_rows` with every image decoded whole before its rows go
+/// out: for checking the streamed paths against it.
+#[doc(hidden)]
+pub fn read_heif_rows_whole(
+    file: &[u8],
+    sink: &mut dyn RowSink,
+) -> Result<HeifNotes, HeifRowsError> {
+    read_meta_rows(&boxes::read_meta(file)?, &Source::Bytes(file), sink, false)
+}
+
+/// Reads a HEIF file as `read_heif_rows` does, from a file (or anything
+/// that seeks): its `meta` box is read, then each item's bytes as they
+/// are decoded, so the file is never held whole.
+pub fn read_heif_rows_from(
+    reader: &mut dyn crate::converter::RewindableRead,
+    sink: &mut dyn RowSink,
+) -> Result<HeifNotes, HeifRowsError> {
+    let head = boxes::read_head(reader)?;
+    let meta = boxes::read_meta(&head)?;
+    read_meta_rows(
+        &meta,
+        &Source::Reader(std::sync::Mutex::new(reader)),
+        sink,
+        true,
+    )
+}
+
+/// The rows of the image `meta` describes; `by_bands` lets a grid or a
+/// picture go a band at a time when it can.
+fn read_meta_rows(
+    meta: &Meta<'_>,
+    file: &Source<'_>,
+    sink: &mut dyn RowSink,
+    by_bands: bool,
+) -> Result<HeifNotes, HeifRowsError> {
     let item = meta
         .item(meta.primary)
         .ok_or_else(|| HeifError::new("no primary image"))?;
@@ -810,15 +908,15 @@ pub fn read_heif_rows(file: &[u8], sink: &mut dyn RowSink) -> Result<HeifNotes, 
     {
         notes.profile_dropped = !sink.icc_profile(profile);
     }
-    if let Some(tiff) = exif(&meta, file) {
+    if let Some(tiff) = exif(meta, file) {
         notes.exif_dropped = !sink.exif(&tiff);
     }
-    notes.other_images = other_images(&meta);
+    notes.other_images = other_images(meta);
     // A grid whose rows come out top to bottom streams a band of tiles at
     // a time; anything else is decoded whole first.
-    if &item.kind == b"grid" && alpha_item(&meta).is_none() {
-        let grid = Grid::of(&meta, file, item)?;
-        let placed = placement(&meta, item, grid.width, grid.height);
+    if &item.kind == b"grid" && alpha_item(meta).is_none() {
+        let grid = Grid::of(meta, file, item)?;
+        let placed = placement(meta, item, grid.width, grid.height);
         let even_tiles = grid
             .tiles
             .first()
@@ -831,14 +929,14 @@ pub fn read_heif_rows(file: &[u8], sink: &mut dyn RowSink) -> Result<HeifNotes, 
                     })
             })
             .unwrap_or(false);
-        if even_tiles && stream::streams(&placed) {
+        if by_bands && even_tiles && stream::streams(&placed) {
             stream::stream_grid(
-                &meta,
+                meta,
                 file,
                 &grid,
                 stream::Stream {
                     placed,
-                    nclx: nclx(&meta, item),
+                    nclx: nclx(meta, item),
                     sink,
                     notes: &mut notes,
                 },
@@ -846,12 +944,30 @@ pub fn read_heif_rows(file: &[u8], sink: &mut dyn RowSink) -> Result<HeifNotes, 
             return Ok(notes);
         }
     }
-    let planes = decode_image_item(&meta, file, meta.primary)?;
-    let alpha = alpha_item(&meta)
-        .map(|id| decode_image_item(&meta, file, id))
+    // One picture streams by CTB rows on its wavefront threads (none in
+    // WebAssembly, where the code is left out).
+    let threads = std::thread::available_parallelism().map_or(1, |count| count.get());
+    let threaded = cfg!(not(target_family = "wasm")) && threads > 1;
+    if &item.kind == b"hvc1" && alpha_item(meta).is_none() && threaded && by_bands {
+        let streamed = stream::stream_picture(
+            meta,
+            file,
+            item,
+            threads,
+            nclx(meta, item),
+            sink,
+            &mut notes,
+        )?;
+        if streamed {
+            return Ok(notes);
+        }
+    }
+    let planes = decode_image_item(meta, file, meta.primary)?;
+    let alpha = alpha_item(meta)
+        .map(|id| decode_image_item(meta, file, id))
         .transpose()?;
     notes.deep = (planes.bit_depth > 8).then_some(planes.bit_depth);
-    let (matrix, full_range) = coefficients(&meta, item, &planes);
+    let (matrix, full_range) = coefficients(meta, item, &planes);
     let colour_channels = if planes.planes.len() < 3 { 1 } else { 3 };
     let channels = colour_channels + usize::from(alpha.is_some());
     let color = match channels {
@@ -867,7 +983,7 @@ pub fn read_heif_rows(file: &[u8], sink: &mut dyn RowSink) -> Result<HeifNotes, 
     if deep {
         notes.deep = None;
     }
-    let placed = placement(&meta, item, planes.width, planes.height);
+    let placed = placement(meta, item, planes.width, planes.height);
     if alpha.is_none() && ycbcr_exact(&planes, matrix, full_range, &placed) && sink.accept_ycbcr() {
         sink.start(placed.width as u32, placed.height as u32, color)?;
         let x0 = placed.x_from[2] as usize;
