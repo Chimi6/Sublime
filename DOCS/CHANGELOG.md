@@ -8,6 +8,10 @@ section under a version heading.
 
 ### Added
 
+- HEIC read, natively: an HEVC still-picture decoder and HEIF parser written here, bit-exact with libheif on Apple's and x265's files (grids, odd sizes, 10-bit, 4:4:4, alpha), to every image format and PDF. Crop, rotation, mirroring, and alpha are applied, and the colour profile and Exif carried into PNG and JPEG. Chroma is interpolated rather than repeated, closer to the original than libheif or `sips`; grid tiles decode in parallel (Apple's 6016-pixel wallpaper to JPEG in 1.0 s against libheif's 1.3). Notes in `DOCS/formats/heic.md`.
+
+- JPEGs come out upright: the Exif orientation is applied (all eight, as Quick Look shows them), in PDF by the drawing so the JPEG stays embedded unchanged, and the ICC profile and Exif are carried into PNG and JPEG output.
+
 - Pictures in documents written to PDF: Word, Pages, and RTF pictures at the size the document shows each, Markdown and HTML pictures by path from the input's folder or by `data:` URI; JPEGs embedded unchanged, other formats deflated with their alpha. A picture not found, unreadable (GIF), in a table, or by web address keeps its alt text.
 
 - Semicolon and pipe CSV: a CSV input's delimiter is read from its first records (a European spreadsheet's semicolon export, decimal commas and all, reads as semicolons), and `--delimiter` sets the one read and written (`;`, `|`, `tab`). Notes in `DOCS/formats/csv.md`.

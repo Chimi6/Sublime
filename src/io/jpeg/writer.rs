@@ -220,6 +220,8 @@ pub struct JpegRows<'a> {
     codes: [Codes; 4],
     bits: BitWriter,
     started: bool,
+    icc_profile: Option<Vec<u8>>,
+    exif: Option<Vec<u8>>,
 }
 
 impl<'a> JpegRows<'a> {
@@ -249,6 +251,8 @@ impl<'a> JpegRows<'a> {
             ],
             bits: BitWriter::new(),
             started: false,
+            icc_profile: None,
+            exif: None,
         }
     }
 
@@ -263,6 +267,24 @@ impl<'a> JpegRows<'a> {
         head.extend_from_slice(&[0xFF, 0xE0, 0, 16]);
         head.extend_from_slice(b"JFIF\0");
         head.extend_from_slice(&[1, 1, 0, 0, 1, 0, 1, 0, 0]);
+        // Exif in APP1, when it fits one segment.
+        if let Some(exif) = self.exif.take() {
+            head.extend_from_slice(&[0xFF, 0xE1]);
+            head.extend_from_slice(&((exif.len() + 8) as u16).to_be_bytes());
+            head.extend_from_slice(b"Exif\0\0");
+            head.extend_from_slice(&exif);
+        }
+        // The ICC profile in APP2 segments, numbered from one.
+        if let Some(profile) = self.icc_profile.take() {
+            let parts: Vec<&[u8]> = profile.chunks(65_519).collect();
+            for (index, part) in parts.iter().enumerate() {
+                head.extend_from_slice(&[0xFF, 0xE2]);
+                head.extend_from_slice(&((part.len() + 16) as u16).to_be_bytes());
+                head.extend_from_slice(b"ICC_PROFILE\0");
+                head.extend_from_slice(&[index as u8 + 1, parts.len() as u8]);
+                head.extend_from_slice(part);
+            }
+        }
         // Quantization tables in zigzag order.
         let tables: Vec<(u8, [u16; 64])> = if self.gray() {
             vec![(0, self.luma_quant)]
@@ -728,6 +750,24 @@ fn magnitude(value: i32) -> (u32, u32) {
 }
 
 impl RowSink for JpegRows<'_> {
+    fn icc_profile(&mut self, profile: &[u8]) -> bool {
+        // At most 255 segments of a profile.
+        let fits = profile.len() <= 255 * 65_519;
+        if fits {
+            self.icc_profile = Some(profile.to_vec());
+        }
+        fits
+    }
+
+    fn exif(&mut self, exif: &[u8]) -> bool {
+        // One APP1 segment.
+        let fits = exif.len() <= 65_527;
+        if fits {
+            self.exif = Some(exif.to_vec());
+        }
+        fits
+    }
+
     fn start(&mut self, width: u32, height: u32, color: ColorType) -> io::Result<()> {
         if width > 65_535 || height > 65_535 {
             return Err(io::Error::new(

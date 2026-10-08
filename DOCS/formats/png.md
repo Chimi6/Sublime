@@ -72,14 +72,16 @@ winner is kept for the rows between (image statistics change slowly
 down the rows; the trials cost four extra passes a row and the choice
 moved sizes by at most 1.4% on the benchmark inputs); a trial tries
 Sub first, stops any filter whose running sum passes the best, and
-stops trying once a filter's residuals average under a sixteenth. No
-text, gamma, or color profile chunks are written.
+stops trying once a filter's residuals average under a sixteenth. An
+ICC profile (`iCCP`) and Exif (`eXIf`) are written when the source
+carries them (JPEG and HEIC); no text or gamma chunks are written.
 
 ## Known deviations
 
 - 16-bit images lose their low byte; the hub is 8-bit.
-- Metadata (gamma, sRGB, ICC profiles, text, physical size, time) is
-  not carried in either direction.
+- Metadata a PNG holds (gamma, sRGB, ICC profiles, text, physical
+  size, time) is not read; the writer carries a JPEG's or HEIC's
+  profile and Exif.
 - APNG frames are not read; the first image is what the still PNG
   holds.
 - On noise-like images the filter heuristic can choose Average where a

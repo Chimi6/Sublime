@@ -119,6 +119,8 @@ pub struct PngRows<'a> {
     sink: &'a mut dyn Write,
     rows_left: u32,
     stream: Option<FilteredZlib>,
+    icc_profile: Option<Vec<u8>>,
+    exif: Option<Vec<u8>>,
 }
 
 impl<'a> PngRows<'a> {
@@ -127,6 +129,8 @@ impl<'a> PngRows<'a> {
             sink,
             rows_left: 0,
             stream: None,
+            icc_profile: None,
+            exif: None,
         }
     }
 
@@ -140,6 +144,16 @@ impl<'a> PngRows<'a> {
 }
 
 impl RowSink for PngRows<'_> {
+    fn icc_profile(&mut self, profile: &[u8]) -> bool {
+        self.icc_profile = Some(profile.to_vec());
+        true
+    }
+
+    fn exif(&mut self, exif: &[u8]) -> bool {
+        self.exif = Some(exif.to_vec());
+        true
+    }
+
     fn start(&mut self, width: u32, height: u32, color: ColorType) -> io::Result<()> {
         self.sink.write_all(&SIGNATURE)?;
         let mut header = Vec::with_capacity(13);
@@ -154,6 +168,17 @@ impl RowSink for PngRows<'_> {
         });
         header.extend_from_slice(&[0, 0, 0]);
         write_chunk(self.sink, b"IHDR", &header)?;
+        if let Some(profile) = self.icc_profile.take() {
+            // iCCP: a name, a compression method of 0, the zlib profile.
+            let mut chunk = b"ICC Profile\0\0".to_vec();
+            chunk.extend_from_slice(&[0x78, 0x9C]);
+            crate::io::deflate::compress::deflate(&profile, &mut chunk);
+            chunk.extend_from_slice(&adler32_update(1, &profile).to_be_bytes());
+            write_chunk(self.sink, b"iCCP", &chunk)?;
+        }
+        if let Some(exif) = self.exif.take() {
+            write_chunk(self.sink, b"eXIf", &exif)?;
+        }
         let stride = width as usize * color.channels();
         self.stream = Some(FilteredZlib::new(stride, color.channels()));
         self.rows_left = height;

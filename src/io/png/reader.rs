@@ -77,6 +77,19 @@ pub trait RowSink {
     /// down, when it records one; readers call it before `start`. Only
     /// a sink with a physical size (a PDF page) uses it.
     fn density(&mut self, _across: f64, _down: f64) {}
+    /// The ICC colour profile the image is in, when the file carries
+    /// one; readers call it before `start`. Sinks that can embed a
+    /// profile (PNG, JPEG) keep it, so the colours stay what they were,
+    /// and say so.
+    fn icc_profile(&mut self, _profile: &[u8]) -> bool {
+        false
+    }
+    /// The file's Exif metadata as a TIFF structure (from its byte-order
+    /// mark on), when it carries one; readers call it before `start`.
+    /// True when the sink keeps it.
+    fn exif(&mut self, _exif: &[u8]) -> bool {
+        false
+    }
 }
 
 /// A sink that keeps the rows as an image: the whole-image readers

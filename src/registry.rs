@@ -226,6 +226,7 @@ mod tests {
                 "csv",
                 "cur",
                 "docx",
+                "heic",
                 "html",
                 "ico",
                 "jpeg",
