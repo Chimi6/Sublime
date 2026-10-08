@@ -7,7 +7,7 @@ pub const HELP: &str = "\
 sublime: universal efficient file conversion
 
 USAGE
-  sublime convert <input> [output] [--to <format>] [--from <format>] [--strict] [--via <format>] [--sheet <name|number>] [--page <n>] [--font <file.ttf>] [--quality <1-100>]
+  sublime convert <input> [output] [--to <format>] [--from <format>] [--strict] [--via <format>] [--sheet <name|number>] [--page <n>] [--font <file.ttf>] [--quality <1-100>] [--delimiter <char>]
   sublime convert <inputs...> [out-dir/] --to <format> [--out-dir <dir>] [-r] [--jobs <n>] [--dry-run]
   sublime convert <images...> <output.pdf>
   sublime check <from> <to> [--strict]
@@ -32,6 +32,7 @@ FLAGS
   --font <file.ttf>   The font to set a written PDF's text in (the standard fonts,
                       with this machine's fonts for other scripts, when absent).
   --quality <1-100>   JPEG: the quality written at (85 when absent). Lossless WebP: effort, as cwebp reads it (50 and under fastest, 90 and up smallest).
+  --delimiter <char>  CSV: the delimiter read and written (; | or tab). Read CSV finds its own (a semicolon export reads as one) when absent; written CSV uses commas.
   --out-dir <dir>     Batch: write outputs into this directory (created if needed), keeping each input's name with the new extension. A trailing positional ending in / does the same. Without it, outputs go beside their inputs.
   -r, --recursive     Batch: descend into directories given as inputs, mirroring their structure under --out-dir.
   --jobs <n>          Batch: files converted at once (default: the CPU count).
@@ -102,6 +103,8 @@ pub struct ConvertArgs {
     pub strict: bool,
     pub sheet: Option<String>,
     pub quality: Option<u8>,
+    /// The delimiter of CSV read and written.
+    pub delimiter: Option<u8>,
     pub page: Option<u32>,
     /// A font file to set written PDFs' body text in.
     pub font: Option<String>,
@@ -169,9 +172,17 @@ impl fmt::Display for ArgsError {
             ArgsError::UnknownFlag(flag) => write!(formatter, "unknown flag '{flag}'"),
             ArgsError::MissingValue(flag) => write!(formatter, "'{flag}' needs a value"),
             ArgsError::InvalidValue { flag, value } => {
+                let expected = match flag.as_str() {
+                    "--log-format" => "human or json",
+                    "--page" => "a page number from 1",
+                    "--quality" => "a number from 1 to 100",
+                    "--jobs" => "a number from 1",
+                    "--delimiter" => "one character (such as ; or |) or tab",
+                    _ => "another value",
+                };
                 write!(
                     formatter,
-                    "'{value}' is not a valid value for '{flag}'; expected human or json"
+                    "'{value}' is not a valid value for '{flag}'; expected {expected}"
                 )
             }
             ArgsError::MissingPositional(name) => {
@@ -288,6 +299,7 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
     let mut via: Option<String> = None;
     let mut sheet: Option<String> = None;
     let mut quality: Option<u8> = None;
+    let mut delimiter: Option<u8> = None;
     let mut page: Option<u32> = None;
     let mut font: Option<String> = None;
     let mut out_dir: Option<String> = None;
@@ -322,6 +334,24 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
                     _ => {
                         return Err(ArgsError::InvalidValue {
                             flag: "--quality".to_string(),
+                            value,
+                        });
+                    }
+                });
+            }
+            "--delimiter" => {
+                let value = take_value(&mut iterator, "--delimiter")?;
+                delimiter = Some(match value.as_str() {
+                    "tab" | "\\t" | "\t" => b'\t',
+                    one if one.len() == 1
+                        && one.is_ascii()
+                        && !matches!(one, "\"" | "\n" | "\r") =>
+                    {
+                        one.as_bytes()[0]
+                    }
+                    _ => {
+                        return Err(ArgsError::InvalidValue {
+                            flag: "--delimiter".to_string(),
                             value,
                         });
                     }
@@ -391,6 +421,7 @@ fn parse_convert(rest: Vec<String>) -> Result<ConvertArgs, ArgsError> {
         via,
         sheet,
         quality,
+        delimiter,
         page,
         font,
     })

@@ -24,6 +24,19 @@ pub fn find_tsv_delimiter(bytes: &[u8]) -> Option<usize> {
     })
 }
 
+/// The next `delimiter`, quote, or line ending: the stops of delimited
+/// text with another delimiter (a semicolon, a pipe). Kept out of line so
+/// the comma and tab scans stay inlined where they are hot.
+#[inline(never)]
+pub fn find_delimited(bytes: &[u8], delimiter: u8) -> Option<usize> {
+    scan(bytes, |word| {
+        has_byte(word, delimiter)
+            | has_byte(word, b'"')
+            | has_byte(word, b'\n')
+            | has_byte(word, b'\r')
+    })
+}
+
 pub fn find_json_escape(bytes: &[u8]) -> Option<usize> {
     scan(bytes, |word| {
         has_byte(word, b'"') | has_byte(word, b'\\') | has_byte_below(word, 0x20)

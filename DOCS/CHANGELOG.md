@@ -6,6 +6,15 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- Semicolon and pipe CSV: a CSV input's delimiter is read from its first records (a European spreadsheet's semicolon export, decimal commas and all, reads as semicolons), and `--delimiter` sets the one read and written (`;`, `|`, `tab`). Notes in `DOCS/formats/csv.md`.
+
+### Fixed
+
+- The CSV reader only ever split on commas and tabs; any other delimiter now works.
+- An invalid value for `--page`, `--quality`, or `--jobs` said "expected human or json"; each flag now names what it takes.
+
 ## [0.29.0] - 2026-10-08
 
 ### Added

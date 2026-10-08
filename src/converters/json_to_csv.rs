@@ -107,7 +107,8 @@ impl Converter for JsonToCsv {
         let mut rewound = input.into_rewindable()?;
         let keys = collect_keys(&mut rewound, shape, context)?;
         rewound.rewind()?;
-        write_rows(&mut rewound, shape, self.delimiter, &keys, output, context)
+        let delimiter = crate::converters::input::written_delimiter(self.delimiter, context);
+        write_rows(&mut rewound, shape, delimiter, &keys, output, context)
     }
 
     /// JSON (not JSON Lines) whose root is an object of arrays (a workbook
@@ -248,7 +249,9 @@ impl Converter for JsonToXlsx {
             if index > 0 {
                 writer.next_sheet(name)?;
             }
-            let mut reader = crate::io::csv::CsvReader::new(csv.as_slice());
+            // As `JSON_TO_CSV` wrote it, `--delimiter` and all.
+            let delimiter = crate::converters::input::written_delimiter(b',', context);
+            let mut reader = crate::io::csv::CsvReader::with_delimiter(csv.as_slice(), delimiter);
             let mut record = crate::io::csv::Record::new();
             while reader.read_record(&mut record)? {
                 writer.write_row(record.fields())?;

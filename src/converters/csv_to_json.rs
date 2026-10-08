@@ -82,7 +82,10 @@ impl Converter for CsvToJson {
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
-        let mut reader = CsvReader::with_delimiter(input, self.delimiter);
+        let mut rest = None;
+        let (delimiter, input) =
+            crate::converters::input::delimited_input(input, self.delimiter, context, &mut rest)?;
+        let mut reader = CsvReader::with_delimiter(input, delimiter);
         let mut writer = JsonWriter::new(output);
         let mut record = Record::new();
 

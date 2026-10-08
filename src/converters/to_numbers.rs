@@ -103,11 +103,17 @@ impl Converter for ToNumbers {
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
         let sheets = match self.source {
-            Source::Delimited(delimiter) => vec![one_table(
-                "Sheet 1",
-                "Table 1",
-                read_rows(&mut input, delimiter)?,
-            )],
+            Source::Delimited(delimiter) => {
+                let mut rest = None;
+                let (delimiter, mut input) = crate::converters::input::delimited_input(
+                    input, delimiter, context, &mut rest,
+                )?;
+                vec![one_table(
+                    "Sheet 1",
+                    "Table 1",
+                    read_rows(&mut input, delimiter)?,
+                )]
+            }
             Source::Workbook => {
                 let mut bytes = Vec::new();
                 input.read_to_end(&mut bytes)?;
@@ -144,7 +150,11 @@ impl Converter for ToNumbers {
                     sheets.push(one_table(
                         &name,
                         "Table 1",
-                        read_rows(&mut csv.as_slice(), b',')?,
+                        // As `JSON_TO_CSV` wrote it, `--delimiter` and all.
+                        read_rows(
+                            &mut csv.as_slice(),
+                            crate::converters::input::written_delimiter(b',', context),
+                        )?,
                     ));
                 }
                 sheets
