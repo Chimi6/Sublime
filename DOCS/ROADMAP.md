@@ -6,6 +6,35 @@ rest. The tier list at the bottom is the reading order. This document is
 opinionated and will change; `STATE.md` records what is actually being
 built right now.
 
+## v1
+
+Decided 2026-10-08: v1 is the common converters done to a high standard
+across documents, PDF, images, and data, not the widest format count.
+Niche formats (MessagePack, CBOR, INI, subtitles, notebooks, ICNS, a
+first-frame GIF) wait until after it; GIF comes back as animation (GIF to
+and from WebP and PNG) or not at all. SQLite is out of v1. In order:
+
+1. Release the Numbers work (0.29.0), then the Pages reader's memory on
+   large tables (2.2 GB on 100,000 rows against the 64 MB goal).
+2. Semicolon and pipe delimiters for CSV on the command line.
+3. Images in documents to PDF (Word, Pages, Markdown, HTML).
+4. HEIC read: an HEVC still-image decoder written here, pixel-exact with
+   libheif, with grid tiles (iPhone photos are 512 by 512 tiles), 10-bit
+   sources, alpha, Exif orientation applied (which also turns phone JPEGs
+   upright), and Exif and the colour profile carried to the output.
+5. HEIC write, native: an intra HEVC encoder with rate-distortion
+   decisions, checked by a pair against libheif/x265 and macOS `sips` on
+   size at matched quality (SSIM, PSNR) and opened cleanly by Photos. As
+   always, the goal is to beat the existing tools. HEVC is covered by
+   patent pools; the docs say so.
+6. ODT, then EPUB.
+7. ODS.
+8. Wrap-up: every benchmark pair re-run, size budgets settled (HEIC
+   grows the binary and the WebAssembly module), this document current.
+
+After v1, the first of the novelty formats: N64 ROMs between `z64`, `v64`,
+and `n64` (Games and consoles below).
+
 ## How to read this
 
 - **Status.** `[x]` shipped, `[~]` partly shipped (one direction, or a
@@ -73,10 +102,10 @@ formats.
 | Apple plist | plist (XML and binary) | [ ] | A | S | macOS everywhere; binary bplist <-> XML plist <-> JSON is a real daily need. |
 | SQLite | sqlite, db | [ ] | S | L | Read the database file format directly: tables to CSV/JSON, one file per table or a chosen table. Enormous value; nobody expects a converter to do it. Writing SQLite from CSV is a second, harder step. |
 | dBase | dbf | [ ] | B | S | Ancient, still everywhere (shapefiles, legacy exports). DBF <-> CSV. |
-| Excel workbook | xlsx | [~] | S | M | One sheet at a time shipped (0.16.0): a chosen sheet to CSV, TSV, JSON, and JSON Lines; CSV and TSV to a workbook. Every sheet at once, and number formats beyond dates, remain. Notes in `formats/xlsx.md`. |
+| Excel workbook | xlsx | [x] | S | M | Shipped (0.16.0 to 0.28.0): every sheet, typed cells with number formats, merged cells, to and from every row format and Numbers. Notes in `formats/xlsx.md`. |
 | Excel legacy | xls | [ ] | C | L | BIFF8 over OLE2. Read only. |
 | OpenDocument spreadsheet | ods | [ ] | A | M | Same keystones as XLSX. |
-| Apple Numbers | numbers | [ ] | A | L | Shares the IWA keystone with Pages. Tables to CSV. |
+| Apple Numbers | numbers | [x] | A | L | Shipped both ways (0.27.0 to 0.29.0): cells as Numbers shows them, pivot and categorised tables, merges, and a writer with formats and merges from Excel. Notes in `formats/numbers.md`. |
 | Parquet | parquet | [ ] | A | L | Thrift-compact metadata, plain and dictionary encodings, snappy and zstd. Read to CSV/JSON first; write later. High value for data people. |
 | Apache Arrow IPC / Feather | arrow, feather | [ ] | B | M | Flatbuffers metadata plus raw buffers. Read first. |
 | Avro | avro | [ ] | B | M | Schema in the container; deflate or snappy blocks. |
@@ -106,7 +135,7 @@ formats.
 | Markdown as JSON | markdown-json | [x] | — | — | Shipped both ways: the event stream as JSON, lossless round trip. |
 | Apple Pages | pages | [x] | S | XL | Package reader, lossless `pages-json`, document reader, Word writer, and Markdown, HTML, and text paths shipped (0.6.0); Word <-> Pages mapped both ways and checked in Pages itself, matching or beating Apple's own import and export (0.25.0); the remaining gaps are listed in `formats/pages.md`. The flagship. ZIP of Snappy-framed protobuf (IWA); schemas are reverse-engineered and published. Pages -> DOCX and Pages -> Markdown/HTML. Nobody outside Apple does this well, and Pages files are shared constantly. Notes will live in `formats/pages.md`. |
 | Apple Keynote | key | [ ] | B | L | Same keystone as Pages; to PPTX or a Markdown outline. |
-| Word | docx | [~] | S | L | ZIP plus XML (WordprocessingML). Written from the model (Pages -> Word, 0.6.0, Markdown -> Word, 0.9.0) and read into it (Word -> Markdown, HTML, text, 0.8.0); HTML and text into Word next through the same bridge. Notes in `formats/docx.md`. |
+| Word | docx | [x] | S | L | ZIP plus XML (WordprocessingML). Read into the document model and written from it, so it reaches every document format both ways (0.8.0 to 0.26.0). Notes in `formats/docx.md`. |
 | Word legacy | doc | [ ] | C | L | Word 97 binary over OLE2; text and basic formatting extraction only. |
 | Rich Text Format | rtf | [x] | A | M | Both ways, to and from every document format (`DOCS/formats/rtf.md`): Word-level fidelity, checked against LibreOffice, the macOS text system, and Apple's `textutil` (`scripts/rtf-check`). |
 | OpenDocument text | odt | [ ] | A | M | ZIP plus XML; close to DOCX in shape. |
@@ -144,7 +173,8 @@ lossless and universal.
 | BMP | bmp | [x] | A | S | Shipped 0.19.0 (`DOCS/formats/bmp.md`): 1 to 32 bits with masks read; 24-bit and 32-bit with alpha written. RLE is refused. |
 | TIFF | tif, tiff | [x] | A | M | Shipped 0.22.0 (`DOCS/formats/tiff.md`): the first page read in the common layouts, deflate strips written. Also the base of DNG and GeoTIFF. |
 | WebP | webp | [x] | S | L | Shipped 0.21.0 (`DOCS/formats/webp.md`): lossless and lossy decode bit-exact with libwebp, lossless encode. Lossy encode and animation are not written. |
-| AVIF, HEIC, JPEG XL | avif, heic, jxl | [ ] | D | XL | AV1, HEVC, and JXL codecs: External tier. |
+| HEIC | heic, heif | [ ] | S | XL | v1, native both ways: an HEVC still-image decoder and an intra encoder written here, ISO base media boxes, grid tiles, 10-bit, alpha, orientation, Exif and colour profile carried (see v1 above). |
+| AVIF, JPEG XL | avif, jxl | [ ] | D | XL | AV1 and JXL codecs; AVIF reuses HEIC's boxes. |
 | Netpbm | ppm, pgm, pbm, pam | [x] | A | S | Shipped 0.22.0 (`DOCS/formats/netpbm.md`): every form read, each kind written. |
 | QOI | qoi | [x] | B | S | Shipped 0.22.0 (`DOCS/formats/qoi.md`): both ways, streaming, `qoi.h`'s bytes. |
 | farbfeld | ff | [ ] | B | S | Tiny format. |
@@ -315,11 +345,11 @@ listed.
 
 | Tier | Formats |
 |---|---|
-| **S** | Apple Pages (flagship) · SQLite read · DOCX · PDF write · PNG (keystone) · JPEG · WAV · ZIP and gzip (keystones) · HTML read (on pause) |
+| **S** | HEIC both ways (v1) · ODT, EPUB, ODS (v1) · Images in documents to PDF (v1) · SQLite read (after v1) · WAV · ZIP and gzip (keystones) |
 | **A** | Semicolon and pipe CSV · INI · MessagePack and CBOR · plist · ODS and ODT · Numbers · Parquet read · NumPy · PEM/DER · vCard and iCalendar · RTF · EPUB · reStructuredText · AsciiDoc · Jupyter · Email (EML, MBOX) · Subtitles (SRT, VTT, ASS, TTML) · GIF · BMP · TIFF · Netpbm · ICO/ICNS · Exif and XMP · AIFF · FLAC · MP3 decode · MIDI · TAR · TrueType/OpenType · WOFF · STL · OBJ · glTF · GeoJSON · GPX · KML · FASTA/FASTQ · DICOM · Intel HEX and S-record · N64 ROM byte order · N64 saves · SNES headers · Genesis SMD/BIN · Minecraft NBT · Spreadsheet to Markdown table |
 | **B** | Java properties · .env · JSON5 · BSON · dBase · Arrow · Avro · MATLAB · R data · JWK/JWT · BibTeX/RIS · PGN · Keynote · MOBI/AZW3 · FictionBook · Org-mode · LaTeX · man pages · R Markdown · Outlook MSG · WebP decode · farbfeld and QOI · TGA · SVG subset rasterizer · PSD · Aseprite · DDS/KTX · Ogg Vorbis decode · Tracker modules · N64 audio · Video remuxing · Transcoding via External · bzip2 · XZ · Zstandard · ISO 9660 · WOFF2 · Glyphs to SVG · PLY · 3MF/AMF · Quake models · Minecraft schematics · Shapefile · WKT/WKB · GenBank/GFF/BED/VCF · PDB · FITS · NES headers · Game Boy saves · PlayStation images · Doom WAD · Quake PAK · PICO-8 · Base64 and hex · Feeds |
 | **C** | XLS · HDF5 · NetCDF · SPSS/Stata/SAS · Protobuf generic · Word `.doc` · Textile/MediaWiki · RTFD · PCX · XCF · ORA/Krita · Camera raw · IFF ILBM · legacy rasters · AU/VOC/CAF · Opus, AAC, ALAC · Chiptune (SID, NSF, SPC, GBS, VGM) · Animated GIF via External · 7z · cpio/ar/deb · CAB · Type 1 fonts · Bitmap fonts · OFF/X3D/VRML · COLLADA · Source SMD · TopoJSON · OSM · GeoTIFF · SAM/BAM · NIfTI · EDF · N64 textures · Retro disk images · Hex dumps · OPML · Log formats · Diagram text-to-text |
-| **D** | UBJSON · ORC · GraphQL/OpenAPI · DjVu · CHM · WordPerfect · AVIF/HEIC/JXL · PICT · WavPack/APE · Speech codecs · RAR · LHA/ARJ/ZOO · StuffIt · FBX · ELF/PE · Save states · Pokémon saves · N64 models · Diagram rendering |
+| **D** | UBJSON · ORC · GraphQL/OpenAPI · DjVu · CHM · WordPerfect · AVIF/JXL · PICT · WavPack/APE · Speech codecs · RAR · LHA/ARJ/ZOO · StuffIt · FBX · ELF/PE · Save states · Pokémon saves · N64 models · Diagram rendering |
 
 ## Sequencing notes
 
