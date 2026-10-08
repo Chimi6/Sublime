@@ -278,10 +278,57 @@ fn a_workbook_becomes_a_sheet_per_worksheet() {
     let ours = parts(&NUMBERS_TO_CSV, &numbers, None);
     let sheets = parts(&XLSX_TO_CSV, &workbook, None);
     assert_eq!(names(&ours), vec!["Data", "Other sheet"]);
+    // The cells keep their Excel formats, shown as Numbers shows them: a
+    // date as `m/d/yyyy`, a date and time under a date-only format, `0.00`,
+    // and a time under a date and time format (on Excel's day zero).
+    let mut expected = csv_rows(sheets[0].1.as_bytes());
+    expected[1][2] = "1/5/2024".to_string();
+    expected[1][3] = "2024-01-05".to_string();
+    expected[1][4] = "3.50".to_string();
+    expected[4][3] = "12/30/1899 18:00".to_string();
+    assert_eq!(csv_rows(ours[0].1.as_bytes()), expected);
     // A Numbers table is a full grid: a short row reads back padded.
-    for ((_, ours), (_, sheet)) in ours.iter().zip(&sheets) {
-        assert_eq!(csv_rows(ours.as_bytes()), csv_rows(sheet.as_bytes()));
-    }
+    assert_eq!(
+        csv_rows(ours[1].1.as_bytes()),
+        csv_rows(sheets[1].1.as_bytes())
+    );
+}
+
+/// The formats' cells as Numbers shows them (checked in Numbers itself).
+const EXPECTED_SHOWN: [&str; 10] = [
+    "£1,234.50",
+    "25.6%",
+    "(4,321)",
+    "5 Jan 2024",
+    "6:00 PM",
+    "1.23E+05",
+    "2 1/3",
+    "€9,876.50",
+    "Friday, January 5, 2024 13:30",
+    "1/5/2024",
+];
+
+/// An Excel cell's number format becomes the Numbers format that shows it
+/// the same, where Numbers has one, and merged ranges stay merged.
+#[test]
+fn a_workbooks_formats_and_merges_carry_over() {
+    let workbook = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/xlsx/formats.xlsx"),
+    )
+    .expect("fixture");
+    let numbers = write_with(&sublime::converters::to_numbers::XLSX_TO_NUMBERS, &workbook);
+    let ours = parts(&NUMBERS_TO_CSV, &numbers, None);
+    let shown: Vec<String> = csv_rows(ours[0].1.as_bytes())
+        .iter()
+        .skip(1)
+        .take(10)
+        .map(|row| row[1].clone())
+        .collect();
+    assert_eq!(shown, EXPECTED_SHOWN);
+    let package = Package::read_scope(&numbers, Scope::Everything).expect("package");
+    let mut merges = WorkbookReader::new(&package).merges(0, 0);
+    merges.sort_unstable();
+    assert_eq!(merges, vec![(0, 0, 1, 3), (11, 0, 2, 1), (11, 1, 2, 3)]);
 }
 
 #[test]

@@ -1218,10 +1218,12 @@ const WEEKDAYS: [&str; 7] = [
 ];
 
 /// A date under an ICU-style pattern (`EEE, d MMM yyyy HH:mm:ss`), the
-/// form both built-in and custom date formats take.
-pub fn date(seconds: f64, pattern: &str) -> String {
+/// form both built-in and custom date formats take. `automatic` is a
+/// formula's result under Numbers' automatic format, which Numbers shows
+/// in the system's style.
+pub fn date(seconds: f64, pattern: &str, automatic: bool) -> String {
     let moment = Moment::from_seconds(seconds);
-    let system_style = matches!(pattern, "h:mm a" | "M/d/yy h:mm a");
+    let system_style = automatic && matches!(pattern, "h:mm a" | "M/d/yy h:mm a");
     let chars: Vec<char> = pattern.chars().collect();
     let mut out = String::new();
     let mut index = 0;
@@ -1240,7 +1242,8 @@ pub fn date(seconds: f64, pattern: &str) -> String {
         }
         if quoted || !character.is_ascii_alphabetic() {
             // The system's short time style sets AM and PM off with a
-            // narrow no-break space; other patterns keep their space.
+            // narrow no-break space; other patterns, and a format the cell
+            // chose, keep their space.
             if character == ' ' && system_style && chars.get(index + 1) == Some(&'a') {
                 out.push('\u{202f}');
             } else {
@@ -1347,6 +1350,381 @@ fn date_field(moment: &Moment, letter: char, run: usize) -> (String, usize) {
         'Q' => (format!("Q{}", (moment.month - 1) / 3 + 1), run),
         _ => (String::new(), run),
     }
+}
+
+/// Numbers' date format kind, as a table's format list names a date.
+pub const DATE: u32 = 261;
+
+/// The Numbers format that shows numbers as an Excel number format does,
+/// when Numbers has one: decimals, currency, percent, scientific,
+/// fraction, or a date pattern. General, text (`@`), elapsed time, and
+/// what Numbers' built-in formats cannot say (optional decimals beside
+/// fixed ones, conditions, scaling) give `None`, the value kept as it is.
+pub fn from_excel(code: &str) -> Option<Format> {
+    let mut sections = split_sections(code);
+    let first = sections.next()?;
+    let negative = sections.next();
+    let (body, symbol) = strip_excel(&first);
+    if body.is_empty() || body.eq_ignore_ascii_case("general") || body.contains('@') {
+        return None;
+    }
+    if body.contains('[') {
+        // Elapsed time or a condition.
+        return None;
+    }
+    let lower = body.to_ascii_lowercase();
+    if lower.contains(['y', 'd', 'h', 's']) || lower.contains('m') {
+        return Some(Format {
+            kind: DATE,
+            date_time_format: excel_to_icu(&first)?,
+            ..Format::default()
+        });
+    }
+    if !body.contains(['0', '#', '?']) {
+        return None;
+    }
+    let (integer, decimals) = body.split_once('.').unwrap_or((&body, ""));
+    let integer_digits: String = integer
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '?' || *c == '#')
+        .collect();
+    // Padding (`000`, `??`), an integer without its zero (`#.00`),
+    // scaling (`0,`), and engineering notation (`##0.0E+0`): Numbers'
+    // built-in formats have none of them.
+    let fraction = body.contains('/');
+    if (!fraction
+        && (integer.contains('?')
+            || integer.matches('0').count() > 1
+            || !integer_digits.contains('0')))
+        || integer.ends_with(',')
+        || (integer_digits.len() > 1 && body.to_ascii_lowercase().contains('e'))
+    {
+        return None;
+    }
+    let decimal_digits: String = decimals
+        .chars()
+        .take_while(|c| matches!(c, '0' | '#' | '?'))
+        .collect();
+    let decimal_places = if decimal_digits.contains(['#', '?']) {
+        if decimal_digits.contains('0') {
+            return None;
+        }
+        DECIMAL_PLACES_AUTO
+    } else {
+        decimal_digits.len() as u32
+    };
+    let negative_style = match negative.as_deref() {
+        Some(section)
+            if section.contains('(') && section.to_ascii_lowercase().contains("[red]") =>
+        {
+            3
+        }
+        Some(section) if section.contains('(') => 2,
+        Some(section) if section.to_ascii_lowercase().contains("[red]") => 1,
+        _ => 0,
+    };
+    let mut format = Format {
+        kind: DECIMAL,
+        decimal_places,
+        negative_style,
+        show_thousands_separator: integer.contains(','),
+        ..Format::default()
+    };
+    if body.contains('/') {
+        let denominator = body.rsplit('/').next().unwrap_or("");
+        format = Format {
+            kind: FRACTION,
+            fraction_accuracy: match denominator.parse::<u32>() {
+                Ok(fixed) if fixed > 0 => fixed,
+                _ => match denominator
+                    .chars()
+                    .filter(|c| matches!(c, '?' | '#' | '0'))
+                    .count()
+                {
+                    1 => 0xFFFF_FFFF,
+                    2 => 0xFFFF_FFFE,
+                    _ => 0xFFFF_FFFD,
+                },
+            },
+            ..Format::default()
+        };
+        return Some(format);
+    }
+    if lower.contains("e+") || lower.contains("e-") {
+        format.kind = SCIENTIFIC;
+        format.show_thousands_separator = false;
+        format.negative_style = 0;
+        return Some(format);
+    }
+    if body.contains('%') {
+        format.kind = PERCENT;
+        return Some(format);
+    }
+    if let Some(symbol) = symbol {
+        format.kind = CURRENCY;
+        format.currency_code = currency_code(&symbol)?;
+        format.use_accounting_style = first.contains('*');
+        return Some(format);
+    }
+    if body.contains(|c: char| !matches!(c, '0' | '#' | '?' | ',' | '.')) {
+        // Text around the digits: no built-in Numbers format says it.
+        return None;
+    }
+    Some(format)
+}
+
+/// An Excel code's sections, split at unquoted semicolons.
+fn split_sections(code: &str) -> impl Iterator<Item = String> + '_ {
+    let mut sections = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    for character in code.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => {
+                escaped = true;
+                current.push(character);
+            }
+            '"' => {
+                quoted = !quoted;
+                current.push(character);
+            }
+            ';' if !quoted => sections.push(std::mem::take(&mut current)),
+            _ => current.push(character),
+        }
+    }
+    sections.push(current);
+    sections.into_iter()
+}
+
+/// A number section's digits and signs, its quoted and escaped text,
+/// colours, padding (`_x`, `*x`), and spaces dropped; the currency symbol
+/// it shows, if any.
+fn strip_excel(section: &str) -> (String, Option<String>) {
+    let mut body = String::new();
+    let mut symbol: Option<String> = None;
+    let mut chars = section.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '"' => {
+                let mut text = String::new();
+                for next in chars.by_ref() {
+                    if next == '"' {
+                        break;
+                    }
+                    text.push(next);
+                }
+                let text = text.trim();
+                if currency_code(text).is_some() {
+                    symbol = Some(text.to_string());
+                }
+            }
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    if currency_code(&next.to_string()).is_some() {
+                        symbol = Some(next.to_string());
+                    }
+                }
+            }
+            '_' | '*' => {
+                chars.next();
+            }
+            '[' => {
+                let mut inner = String::new();
+                for next in chars.by_ref() {
+                    if next == ']' {
+                        break;
+                    }
+                    inner.push(next);
+                }
+                if let Some(locale) = inner.strip_prefix('$') {
+                    let shown = locale.split('-').next().unwrap_or("");
+                    if !shown.is_empty() {
+                        symbol = Some(shown.to_string());
+                    }
+                } else if !matches!(
+                    inner.to_ascii_lowercase().as_str(),
+                    "red" | "black" | "blue" | "green" | "white" | "yellow" | "cyan" | "magenta"
+                ) && !inner.to_ascii_lowercase().starts_with("color")
+                {
+                    // Elapsed time or a condition: keep it for the caller.
+                    body.push('[');
+                    body.push_str(&inner);
+                    body.push(']');
+                }
+            }
+            ' ' | '(' | ')' | '-' | '+' if !matches!(body.chars().last(), Some('E' | 'e')) => {}
+            c if currency_code(&c.to_string()).is_some() => symbol = Some(c.to_string()),
+            c => body.push(c),
+        }
+    }
+    (body, symbol)
+}
+
+/// A currency symbol (or ISO code) as its ISO code.
+fn currency_code(symbol: &str) -> Option<String> {
+    let symbol = symbol.trim();
+    if symbol.len() == 3 && symbol.chars().all(|c| c.is_ascii_uppercase()) {
+        return Some(symbol.to_string());
+    }
+    let plain = match symbol {
+        "$" | "US$" => "USD",
+        "£" => "GBP",
+        "€" => "EUR",
+        "¥" | "￥" => "JPY",
+        "₹" => "INR",
+        "₩" => "KRW",
+        "₪" => "ILS",
+        "₫" => "VND",
+        "฿" => "THB",
+        "R$" => "BRL",
+        "kr" => "SEK",
+        "CHF" => "CHF",
+        _ => {
+            return CURRENCY_SYMBOLS
+                .iter()
+                .find(|(_, shown)| *shown == symbol)
+                .map(|(code, _)| (*code).to_string());
+        }
+    };
+    Some(plain.to_string())
+}
+
+/// An Excel date and time code as an ICU pattern: `m` is minutes after an
+/// hour or before a second, a month otherwise; text is quoted.
+fn excel_to_icu(code: &str) -> Option<String> {
+    let chars: Vec<char> = code.chars().collect();
+    let lower: Vec<char> = chars.iter().map(|c| c.to_ascii_lowercase()).collect();
+    let period =
+        code.to_ascii_uppercase().contains("AM/PM") || code.to_ascii_uppercase().contains("A/P");
+    // The runs of letters, to tell minutes from months.
+    let mut tokens: Vec<(char, usize, usize)> = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        let character = lower[index];
+        if matches!(character, 'y' | 'm' | 'd' | 'h' | 's') {
+            let run = lower[index..]
+                .iter()
+                .take_while(|&&c| c == character)
+                .count();
+            tokens.push((character, index, run));
+            index += run;
+        } else {
+            index += 1;
+        }
+    }
+    let minutes: Vec<bool> = tokens
+        .iter()
+        .enumerate()
+        .map(|(position, &(letter, _, _))| {
+            letter == 'm'
+                && (tokens[..position].last().is_some_and(|t| t.0 == 'h')
+                    || tokens.get(position + 1).is_some_and(|t| t.0 == 's'))
+        })
+        .collect();
+    let mut out = String::new();
+    let mut literal = String::new();
+    let flush = |out: &mut String, literal: &mut String| {
+        if literal.is_empty() {
+            return;
+        }
+        if literal
+            .chars()
+            .all(|c| matches!(c, ' ' | '/' | '-' | ':' | ',' | '.'))
+        {
+            out.push_str(literal);
+        } else {
+            out.push('\'');
+            out.push_str(&literal.replace('\'', "''"));
+            out.push('\'');
+        }
+        literal.clear();
+    };
+    let mut index = 0;
+    let mut token = 0;
+    while index < chars.len() {
+        let character = chars[index];
+        if let Some(&(letter, start, run)) = tokens.get(token).filter(|t| t.1 == index) {
+            flush(&mut out, &mut literal);
+            let piece = match (letter, run) {
+                ('y', 1 | 2) => "yy".to_string(),
+                ('y', _) => "yyyy".to_string(),
+                ('m', _) if minutes[token] => "mm"[..run.min(2)].to_string(),
+                ('m', 1) => "M".to_string(),
+                ('m', 2) => "MM".to_string(),
+                ('m', 3) => "MMM".to_string(),
+                ('m', 4) => "MMMM".to_string(),
+                ('m', _) => "MMMMM".to_string(),
+                ('d', 1) => "d".to_string(),
+                ('d', 2) => "dd".to_string(),
+                ('d', 3) => "EEE".to_string(),
+                ('d', _) => "EEEE".to_string(),
+                ('h', _) => (if period { "h" } else { "H" }).repeat(run.min(2)),
+                ('s', _) => "s".repeat(run.min(2)),
+                _ => return None,
+            };
+            out.push_str(&piece);
+            index = start + run;
+            token += 1;
+            continue;
+        }
+        match character {
+            '"' => {
+                index += 1;
+                while index < chars.len() && chars[index] != '"' {
+                    literal.push(chars[index]);
+                    index += 1;
+                }
+            }
+            '\\' => {
+                if let Some(&next) = chars.get(index + 1) {
+                    literal.push(next);
+                    index += 1;
+                }
+            }
+            '[' => {
+                // A locale or colour: dropped.
+                while index < chars.len() && chars[index] != ']' {
+                    index += 1;
+                }
+            }
+            '_' | '*' => index += 1,
+            '.' if out.ends_with('s') => {
+                let zeros = chars[index + 1..].iter().take_while(|&&c| c == '0').count();
+                out.push('.');
+                out.push_str(&"S".repeat(zeros.max(1)));
+                index += zeros;
+            }
+            'A' | 'a'
+                if code[code.char_indices().nth(index)?.0..]
+                    .to_ascii_uppercase()
+                    .starts_with("AM/PM") =>
+            {
+                flush(&mut out, &mut literal);
+                out.push('a');
+                index += 4;
+            }
+            'A' | 'a'
+                if code[code.char_indices().nth(index)?.0..]
+                    .to_ascii_uppercase()
+                    .starts_with("A/P") =>
+            {
+                flush(&mut out, &mut literal);
+                out.push('a');
+                index += 2;
+            }
+            c if c.is_ascii_alphabetic() => return None,
+            c => literal.push(c),
+        }
+        index += 1;
+    }
+    flush(&mut out, &mut literal);
+    Some(out)
 }
 
 #[cfg(test)]
@@ -1596,13 +1974,20 @@ mod tests {
         // 2022-01-05 is 7,674 days after 2001-01-01.
         let seconds = 7_674.0 * 86_400.0;
         assert_eq!(
-            date(seconds, "EEE, d MMM yyyy HH:mm:ss"),
+            date(seconds, "EEE, d MMM yyyy HH:mm:ss", false),
             "Wed, 5 Jan 2022 00:00:00"
         );
-        assert_eq!(date(seconds, "'Day #'DDD' of 'yyyy"), "Day #005 of 2022");
-        assert_eq!(date(seconds + 13.5 * 3600.0, "h:mm a"), "1:30\u{202f}PM");
         assert_eq!(
-            date(seconds + 13.5 * 3600.0, "d MMM h:mm a"),
+            date(seconds, "'Day #'DDD' of 'yyyy", false),
+            "Day #005 of 2022"
+        );
+        assert_eq!(
+            date(seconds + 13.5 * 3600.0, "h:mm a", true),
+            "1:30\u{202f}PM"
+        );
+        assert_eq!(date(seconds + 13.5 * 3600.0, "h:mm a", false), "1:30 PM");
+        assert_eq!(
+            date(seconds + 13.5 * 3600.0, "d MMM h:mm a", true),
             "5 Jan 1:30 PM"
         );
     }
@@ -1623,5 +2008,45 @@ mod tests {
             ..Format::default()
         };
         assert_eq!(duration(3_725.0, &compact), "1:02:05");
+    }
+
+    #[test]
+    fn excel_codes_become_numbers_formats() {
+        let number = from_excel("#,##0.00;[Red](#,##0.00)").unwrap();
+        assert_eq!(
+            (number.kind, number.decimal_places, number.negative_style),
+            (DECIMAL, 2, 3)
+        );
+        assert!(number.show_thousands_separator);
+        let currency = from_excel("\"£\"#,##0").unwrap();
+        assert_eq!(
+            (currency.kind, currency.currency_code.as_str()),
+            (CURRENCY, "GBP")
+        );
+        let euro = from_excel("[$€-407]#,##0.00").unwrap();
+        assert_eq!(euro.currency_code, "EUR");
+        assert_eq!(from_excel("0.0%").unwrap().kind, PERCENT);
+        assert_eq!(from_excel("0.00E+00").unwrap().kind, SCIENTIFIC);
+        assert_eq!(
+            from_excel("# ??/??").unwrap().fraction_accuracy,
+            0xFFFF_FFFE
+        );
+        assert_eq!(from_excel("# ?/8").unwrap().fraction_accuracy, 8);
+        let date = |code: &str| from_excel(code).unwrap().date_time_format;
+        assert_eq!(date("m/d/yyyy"), "M/d/yyyy");
+        assert_eq!(date("d-mmm-yy"), "d-MMM-yy");
+        assert_eq!(date("h:mm AM/PM"), "h:mm a");
+        assert_eq!(date("yyyy\\-mm\\-dd hh:mm:ss"), "yyyy-MM-dd HH:mm:ss");
+        assert_eq!(date("dddd, mmmm d"), "EEEE, MMMM d");
+        assert_eq!(date("mm:ss.0"), "mm:ss.S");
+        assert_eq!(from_excel("General"), None);
+        assert_eq!(from_excel("@"), None);
+        assert_eq!(from_excel("[h]:mm:ss"), None);
+        assert_eq!(from_excel("0.0#"), None);
+        assert_eq!(from_excel("000,000,000"), None);
+        assert_eq!(from_excel("?,???.0000"), None);
+        assert_eq!(from_excel("#.00"), None);
+        assert_eq!(from_excel("##0.0E+0"), None);
+        assert_eq!(from_excel("0.0###").map(|format| format.kind), None);
     }
 }

@@ -4,6 +4,8 @@
 //! tables as tables of one sheet, each named after the heading before it.
 //! Cells are typed by their text: plain decimals are numbers, ISO 8601
 //! dates and dates with times are dates, `TRUE` and `FALSE` are booleans.
+//! A workbook's cells keep their number formats (`format::from_excel`) and
+//! its merged ranges.
 
 use std::io::{Read, Write};
 
@@ -18,7 +20,7 @@ use crate::io::markdown::{Options, parse_into};
 use crate::io::pages::{NumbersSheet, NumbersTable, write_numbers_to};
 use crate::io::xlsx::Workbook;
 
-const NOTE: &str = "a sheet per worksheet (delimited rows one sheet, JSON a sheet per table), each one table with its first row the header; plain decimals become numbers, ISO 8601 dates and dates with times dates, TRUE and FALSE booleans, everything else text; Numbers' default table style, no formats or merges";
+const NOTE: &str = "a sheet per worksheet (delimited rows one sheet, JSON a sheet per table), each one table with its first row the header; plain decimals become numbers, ISO 8601 dates and dates with times dates, TRUE and FALSE booleans, everything else text; a workbook's number and date formats where Numbers has the same (decimals, currency, percent, scientific, fraction, date patterns) and its merged cells; Numbers' default table style otherwise";
 const DOCUMENT_NOTE: &str = "the document's tables as tables of one sheet, each named after the heading before it, its first row the header; plain decimals become numbers, ISO 8601 dates and dates with times dates, TRUE and FALSE booleans, everything else text; everything but the tables is dropped";
 
 #[derive(Clone, Copy)]
@@ -117,12 +119,10 @@ impl Converter for ToNumbers {
                 };
                 let mut sheets = Vec::with_capacity(picked.len());
                 for sheet in picked {
-                    let mut rows: Vec<Vec<String>> = Vec::new();
-                    workbook.read_rows(sheet, |cells| -> Result<(), ConvertError> {
-                        rows.push(cells.to_vec());
-                        Ok(())
-                    })?;
-                    sheets.push(one_table(&names[sheet], "Table 1", rows));
+                    sheets.push(NumbersSheet {
+                        name: names[sheet].clone(),
+                        tables: vec![workbook_table(&workbook, sheet)?],
+                    });
                 }
                 sheets
             }
@@ -157,7 +157,11 @@ impl Converter for ToNumbers {
                     tables: found
                         .tables
                         .into_iter()
-                        .map(|(name, rows)| NumbersTable { name, rows })
+                        .map(|(name, rows)| NumbersTable {
+                            name,
+                            rows,
+                            ..NumbersTable::default()
+                        })
                         .collect(),
                 }]
             }
@@ -174,8 +178,59 @@ fn one_table(sheet: &str, table: &str, rows: Vec<Vec<String>>) -> NumbersSheet {
         tables: vec![NumbersTable {
             name: table.to_string(),
             rows,
+            ..NumbersTable::default()
         }],
     }
+}
+
+/// A worksheet as a table: its cells' text, the Numbers format each
+/// cell's Excel number format maps to (once per style), and its merges.
+fn workbook_table(workbook: &Workbook, sheet: usize) -> Result<NumbersTable, ConvertError> {
+    let mut table = NumbersTable {
+        name: "Table 1".to_string(),
+        ..NumbersTable::default()
+    };
+    // Per style index, the format's key (0 for none), mapped when first seen.
+    let mut keys: Vec<Option<u16>> = Vec::new();
+    let mut formatted = false;
+    let mut rows = Vec::new();
+    let mut cell_formats = Vec::new();
+    let merges = workbook.read_sheet(sheet, &mut |cells, styles| -> Result<(), ConvertError> {
+        rows.push(cells.to_vec());
+        let mut row_keys = Vec::with_capacity(styles.len());
+        for style in styles {
+            let key = match *style {
+                None => 0,
+                Some(style) => {
+                    if keys.len() <= style {
+                        keys.resize(style + 1, None);
+                    }
+                    *keys[style].get_or_insert_with(|| {
+                        match workbook
+                            .style_format(style)
+                            .and_then(crate::io::pages::format::from_excel)
+                        {
+                            Some(format) if table.formats.len() < usize::from(u16::MAX) => {
+                                table.formats.push(format);
+                                table.formats.len() as u16
+                            }
+                            _ => 0,
+                        }
+                    })
+                }
+            };
+            formatted |= key > 0;
+            row_keys.push(key);
+        }
+        cell_formats.push(row_keys);
+        Ok(())
+    })?;
+    table.rows = rows;
+    if formatted {
+        table.cell_formats = cell_formats;
+    }
+    table.merges = merges;
+    Ok(table)
 }
 
 fn read_rows(input: &mut dyn Read, delimiter: u8) -> Result<Vec<Vec<String>>, ConvertError> {
