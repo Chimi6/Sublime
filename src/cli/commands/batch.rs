@@ -157,6 +157,7 @@ pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliE
         sheet: args.sheet.clone(),
         quality: args.quality,
         delimiter: args.delimiter,
+        base: None,
         page: args.page,
         font: crate::cli::commands::font_option(args.font.as_deref())?,
     };
@@ -310,7 +311,12 @@ fn convert_one(
         }
     }
     {
-        let mut context = Context::new(sink, options);
+        // Each input's own folder, where its images by path are found.
+        let options = ConvertOptions {
+            base: job.input.parent().map(std::path::Path::to_path_buf),
+            ..options.clone()
+        };
+        let mut context = Context::new(sink, &options);
         context.emit(Event::PathChosen {
             hops: job.plan.describe(),
         });

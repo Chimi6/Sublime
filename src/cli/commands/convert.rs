@@ -48,6 +48,13 @@ pub fn run(
         sheet: args.sheet.clone(),
         quality: args.quality,
         delimiter: args.delimiter,
+        base: (!reads_stdin)
+            .then(|| {
+                std::path::Path::new(&input_name)
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+            })
+            .flatten(),
         page: args.page,
         font: crate::cli::commands::font_option(args.font.as_deref())?,
     };

@@ -92,6 +92,18 @@ pub struct TextPage<'c> {
     /// Embedded fonts the content names (`/E1`, `/E2`, ...), by index.
     pub embedded: &'c [usize],
     pub links: &'c [([f64; 4], String)],
+    /// Image objects the content names (`/I1`, `/I2`, ...), in order.
+    pub images: &'c [u32],
+}
+
+/// An image written as an object for pages to show: its number, its size
+/// in pixels, and the pixels per inch it records, when it records them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImageObject {
+    pub number: u32,
+    pub width: u32,
+    pub height: u32,
+    pub density: Option<(f64, f64)>,
 }
 
 impl<'a> PdfDocument<'a> {
@@ -178,11 +190,39 @@ impl<'a> PdfDocument<'a> {
             document: self,
             state: None,
             density: None,
+            as_page: true,
+            made: None,
         }
+    }
+
+    /// An image of pixels for text pages to show, filled as a `RowSink`
+    /// by `fill`; `None` when it gave no rows.
+    pub fn pixel_image(
+        &mut self,
+        fill: &mut dyn FnMut(&mut dyn RowSink) -> io::Result<()>,
+    ) -> io::Result<Option<ImageObject>> {
+        let mut image = PdfPage {
+            document: self,
+            state: None,
+            density: None,
+            as_page: false,
+            made: None,
+        };
+        fill(&mut image)?;
+        image.finish()?;
+        Ok(image.made)
     }
 
     /// A page of a JPEG, embedded unchanged (`/DCTDecode`).
     pub fn jpeg_page(&mut self, jpeg: &[u8]) -> Result<(), PdfError> {
+        let image = self.jpeg_image(jpeg)?;
+        self.page(image.number, (image.width, image.height), image.density)
+            .map_err(|error| PdfError(format!("writing the PDF: {error}")))
+    }
+
+    /// A JPEG as an image for pages to show, embedded unchanged
+    /// (`/DCTDecode`).
+    pub fn jpeg_image(&mut self, jpeg: &[u8]) -> Result<ImageObject, PdfError> {
         let info = jpeg_info(jpeg)?;
         let color_space = match info.components {
             1 => "/DeviceGray",
@@ -208,8 +248,12 @@ impl<'a> PdfDocument<'a> {
             Some(jpeg),
         )
         .map_err(io)?;
-        self.page(image, (info.width, info.height), info.density)
-            .map_err(io)
+        Ok(ImageObject {
+            number: image,
+            width: info.width,
+            height: info.height,
+            density: info.density,
+        })
     }
 
     /// Closes the document: the page tree, the catalog, the cross
@@ -437,6 +481,14 @@ impl<'a> PdfDocument<'a> {
             )?;
             annotations.push(format!("{number} 0 R"));
         }
+        let mut xobjects = String::new();
+        if !page.images.is_empty() {
+            xobjects.push_str(" /XObject << ");
+            for (index, number) in page.images.iter().enumerate() {
+                xobjects.push_str(&format!("/I{} {number} 0 R ", index + 1));
+            }
+            xobjects.push_str(">>");
+        }
         let annots = if annotations.is_empty() {
             String::new()
         } else {
@@ -446,7 +498,7 @@ impl<'a> PdfDocument<'a> {
         self.object(
             page_number,
             &format!(
-                "<< /Type /Page /Parent {PAGES} 0 R /MediaBox [0 0 {} {}] /Resources << /Font << {resources}>> >> /Contents {content} 0 R{annots} >>",
+                "<< /Type /Page /Parent {PAGES} 0 R /MediaBox [0 0 {} {}] /Resources << /Font << {resources}>>{xobjects} >> /Contents {content} 0 R{annots} >>",
                 number_text(page.width),
                 number_text(page.height)
             ),
@@ -485,6 +537,10 @@ pub struct PdfPage<'d, 'a> {
     state: Option<Streaming>,
     /// Pixels per inch the image records, when it records them.
     density: Option<(f64, f64)>,
+    /// A page of the image, or the image alone for text pages to show.
+    as_page: bool,
+    /// The image written, when it is not a page.
+    made: Option<ImageObject>,
 }
 
 impl PdfPage<'_, '_> {
@@ -512,6 +568,15 @@ impl PdfPage<'_, '_> {
                 ),
                 Some(&bytes),
             )?;
+        }
+        if !self.as_page {
+            self.made = Some(ImageObject {
+                number: state.image,
+                width: state.width,
+                height: state.height,
+                density: self.density,
+            });
+            return Ok(());
         }
         self.document
             .page(state.image, (state.width, state.height), self.density)

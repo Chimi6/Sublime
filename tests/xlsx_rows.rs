@@ -21,6 +21,7 @@ fn convert_with(
         sheet: sheet.map(str::to_string),
         quality: None,
         delimiter: None,
+        base: None,
         page: None,
         font: None,
     };

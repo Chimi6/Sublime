@@ -4,9 +4,8 @@ The Portable Document Format. Sublime writes PDFs of images (a page of
 each image, at the image's own size) and reads a page's image back out
 (`src/io/pdf`), and reads its text as plain text, Markdown, HTML, and
 Word, and writes PDF from Markdown, HTML, text, Word, and Pages, in the
-standard fonts with the machine's own fonts embedded for other scripts.
-Images in written documents are next; rendering vector pages is not
-planned.
+standard fonts with the machine's own fonts embedded for other scripts,
+with the documents' pictures. Rendering vector pages is not planned.
 
 ## Status
 
@@ -70,6 +69,7 @@ pixels from our PDFs, and `pdfinfo` reads their pages.
 | Text | paragraphs 11/15 pt, broken first fit on real widths (a word wider than the line is split by characters); headings 20, 16, 13 pt bold (4 to 6 at 11), kept with the two lines after them; soft breaks are spaces, hard breaks end the line |
 | Inline | bold, italic, and code change the font; links are blue and carry a URI annotation over each piece; footnote references as `[n]`; task markers as `[x]`/`[ ]` |
 | Blocks | lists indented 18 pt a level with `•` or `n.`, tight ones close; block quotes indented 16 pt with a gray bar; code 9.5 pt Courier on a gray band, lines kept, long ones wrapped; rules; tables sized from their content (natural widths when they fit, else the longest word plus a share of the rest), cells wrapped and aligned, header bold, a grid, rows kept whole across pages |
+| Images | each picture a block of its own at its size, scaled down to the text width and the page, on a new page when it does not fit: Word, Pages, and RTF pictures from the document, at the size it shows each (a picture shown twice at two sizes takes each); Markdown and HTML pictures by path from the input's folder (on the command line; `ConvertOptions::base`) or by `data:` URI, at their recorded resolution or 96 pixels to the inch. A JPEG is embedded unchanged (`/DCTDecode`); PNG, WebP, BMP, TIFF, QOI, and ICO are read whole first (a picture that fails leaves nothing behind) and deflated with PNG predictors, alpha as a soft mask. A picture not found, unreadable (GIF has no reader yet), in a table cell, or by web address (not fetched) keeps its alt text in brackets, and is counted |
 | Document | the first heading is the `/Title` in the information dictionary, `/Producer` Sublime |
 
 The font reader (`src/io/font`): table directories of fonts and
@@ -86,7 +86,9 @@ inside the margins; a link is a URI annotation; a character outside
 WinAnsi that no font has reads as `?`; a font given with `--font` is
 subset and embedded (Greek and Cyrillic read back as written, the file
 under a quarter of the font); HTML, text, Word, and Pages all reach
-PDF. Greek, Cyrillic, Hebrew, Arabic, Chinese, Japanese, Hindi, Thai,
+PDF; a Pages document's three pictures are set at their sizes, and a
+Markdown document's JPEG by path (embedded unchanged) and PNG by `data:`
+URI (with its alpha), a missing one keeping its alt text. Greek, Cyrillic, Hebrew, Arabic, Chinese, Japanese, Hindi, Thai,
 and symbols set from this machine's fonts read back through pdftotext
 as written. Every
 Pages and Word fixture converts, and poppler's pdfinfo, pdftotext, and
@@ -134,7 +136,10 @@ Markdown.
 
 ## Known deviations
 
-- Writing: images show their alt text; no hyphenation, page numbers,
+- Writing: a picture is a block of its own (one inline with text breaks
+  the line around it), its crop is not applied, and a floating one sits
+  where it is anchored, not beside the text; pictures in table cells
+  show their alt text; no hyphenation, page numbers,
   headers, or footers. Complex scripts are set glyph by glyph in logical
   order: Hebrew and Arabic read left to right (no bidirectional
   reordering), Arabic letters take their isolated forms, and Indic

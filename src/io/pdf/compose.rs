@@ -17,7 +17,41 @@ use crate::io::font::Font;
 use crate::io::font::system::SystemFonts;
 use crate::io::markdown::{Alignment, Event, EventSink, Tag, TagEnd};
 use crate::io::pdf::tables::{self, Widths};
-use crate::io::pdf::writer::{PdfDocument, StandardFont, TextPage, literal, number_text};
+use crate::io::pdf::writer::{
+    ImageObject, PdfDocument, StandardFont, TextPage, literal, number_text,
+};
+use crate::io::png::reader::RowSink;
+
+/// A picture's bytes and, when the document states it, its size in points.
+pub type Picture = (Vec<u8>, Option<(f64, f64)>);
+
+/// Where a document's images come from. `resolve` turns an image's
+/// destination (a media file name, a path, a `data:` URI) into the
+/// picture's bytes and, when the document states it, its size in points;
+/// `decode` reads a picture that is not a JPEG into rows.
+pub trait ImageSource {
+    fn resolve(&mut self, destination: &str) -> Option<Picture>;
+    fn decode(&mut self, bytes: &[u8], sink: &mut dyn RowSink) -> io::Result<()>;
+}
+
+/// An image's size in points: by the resolution it records, else at 96
+/// pixels to the inch.
+fn natural_size(object: &ImageObject) -> (f64, f64) {
+    match object.density {
+        Some((across, down)) => (
+            f64::from(object.width) * 72.0 / across,
+            f64::from(object.height) * 72.0 / down,
+        ),
+        None => (
+            f64::from(object.width) * POINTS_PER_PIXEL,
+            f64::from(object.height) * POINTS_PER_PIXEL,
+        ),
+    }
+}
+
+/// Points per pixel for an image that records no resolution: 96 pixels
+/// to the inch, as a browser shows it.
+const POINTS_PER_PIXEL: f64 = 0.75;
 
 /// A page and its margins, in points.
 #[derive(Debug, Clone, Copy)]
@@ -44,8 +78,10 @@ pub struct ComposeNotes {
     pub pages: usize,
     /// Characters outside WinAnsi, set as `?`.
     pub unset_characters: usize,
-    /// Images, shown by their alt text.
+    /// Images shown by their alt text: not found, or not readable.
     pub images: usize,
+    /// Images set on the page.
+    pub images_placed: usize,
     /// Raw HTML, dropped.
     pub html: usize,
 }
@@ -255,6 +291,12 @@ pub struct Composer<'w, 'a> {
     code: Option<String>,
     table: Option<TableBuild>,
     image_depth: usize,
+    /// Images open whose alt text is not set, because the picture is.
+    placed_depth: usize,
+    /// Where the document's images come from, when it has a source.
+    images: Option<&'w mut dyn ImageSource>,
+    /// Image objects the page being set shows, as `/I1`, `/I2`, ...
+    page_images: Vec<u32>,
     pub notes: ComposeNotes,
     error: Option<io::Error>,
     faces: Faces,
@@ -290,11 +332,21 @@ impl<'w, 'a> Composer<'w, 'a> {
             code: None,
             table: None,
             image_depth: 0,
+            placed_depth: 0,
+            images: None,
+            page_images: Vec::new(),
             notes: ComposeNotes::default(),
             error: None,
             faces,
             page_embedded: Vec::new(),
         }
+    }
+
+    /// Sets the document's images from `source`; without one, images are
+    /// shown by their alt text.
+    pub fn with_images(mut self, source: &'w mut dyn ImageSource) -> Composer<'w, 'a> {
+        self.images = Some(source);
+        self
     }
 
     /// Writes the last page (an empty document still gets one).
@@ -319,6 +371,9 @@ impl<'w, 'a> Composer<'w, 'a> {
     }
 
     fn push_text(&mut self, text: &str, code: bool) {
+        if self.placed_depth > 0 {
+            return;
+        }
         let mut style = self.style();
         style.code = code;
         if let Some(table) = &mut self.table {
@@ -365,6 +420,7 @@ impl<'w, 'a> Composer<'w, 'a> {
             fonts: &self.fonts,
             embedded: &self.page_embedded,
             links: &self.links,
+            images: &self.page_images,
         };
         if let Err(error) = self.document.text_page(&page) {
             self.error = Some(error);
@@ -373,6 +429,7 @@ impl<'w, 'a> Composer<'w, 'a> {
         self.content.clear();
         self.fonts.clear();
         self.page_embedded.clear();
+        self.page_images.clear();
         self.links.clear();
         self.top = self.setup.height - self.setup.margin;
         self.page_has_content = false;
@@ -394,6 +451,71 @@ impl<'w, 'a> Composer<'w, 'a> {
         }
         self.top -= spacing;
         self.pending_space = 0.0;
+    }
+
+    /// Sets an image from the document's source as a block of its own,
+    /// at its size (scaled down to the text width and the page), on a new
+    /// page when it does not fit. False when there is no source, the
+    /// picture is not found, or it does not read.
+    fn place_image(&mut self, destination: &str) -> bool {
+        let Some(source) = self.images.as_deref_mut() else {
+            return false;
+        };
+        let Some((bytes, size)) = source.resolve(destination) else {
+            return false;
+        };
+        let object = if bytes.starts_with(&[0xFF, 0xD8]) {
+            self.document.jpeg_image(&bytes).ok()
+        } else {
+            // Read whole first: a picture that fails partway leaves no
+            // half-written object behind.
+            let mut collect = crate::io::png::reader::Collect::default();
+            if source.decode(&bytes, &mut collect).is_err() || collect.image.height == 0 {
+                return false;
+            }
+            let image = collect.image;
+            let mut fill = |sink: &mut dyn RowSink| -> io::Result<()> {
+                sink.start(image.width, image.height, image.color)?;
+                for y in 0..image.height {
+                    sink.row(image.row(y))?;
+                }
+                Ok(())
+            };
+            match self.document.pixel_image(&mut fill) {
+                Ok(object) => object,
+                Err(error) => {
+                    self.error = Some(error);
+                    return false;
+                }
+            }
+        };
+        let Some(object) = object else {
+            return false;
+        };
+        self.flush_runs();
+        let (mut width, mut height) = size.unwrap_or_else(|| natural_size(&object));
+        let room_width = self.right() - self.left();
+        let room_height = self.setup.height - 2.0 * self.setup.margin;
+        let scale = (room_width / width).min(room_height / height).min(1.0);
+        if scale.is_finite() && scale > 0.0 {
+            width *= scale;
+            height *= scale;
+        }
+        self.room(height);
+        self.page_images.push(object.number);
+        self.content.push_str(&format!(
+            "q {} 0 0 {} {} {} cm /I{} Do Q\n",
+            number_text(width),
+            number_text(height),
+            number_text(self.left()),
+            number_text(self.top - height),
+            self.page_images.len()
+        ));
+        self.top -= height;
+        self.page_has_content = true;
+        self.pending_space = BLOCK_SPACE;
+        self.notes.images_placed += 1;
+        true
     }
 
     fn use_font(&mut self, font: StandardFont) {
@@ -844,10 +966,18 @@ impl<'a> EventSink<'a> for Composer<'_, '_> {
                 Tag::Strong => self.bold += 1,
                 Tag::Strikethrough => {}
                 Tag::Link { destination, .. } => self.links_open.push(destination.into_owned()),
-                Tag::Image { .. } => {
+                Tag::Image { destination, .. } => {
                     self.image_depth += 1;
-                    self.notes.images += 1;
-                    self.push_text("[", false);
+                    // A picture is set as a block of its own; in a table or
+                    // inside another image it is its alt text.
+                    if self.placed_depth > 0
+                        || (self.table.is_none() && self.place_image(&destination))
+                    {
+                        self.placed_depth += 1;
+                    } else {
+                        self.notes.images += 1;
+                        self.push_text("[", false);
+                    }
                 }
                 Tag::HtmlBlock => {}
             },
@@ -895,7 +1025,11 @@ impl<'a> EventSink<'a> for Composer<'_, '_> {
                     self.links_open.pop();
                 }
                 TagEnd::Image => {
-                    self.push_text("]", false);
+                    if self.placed_depth > 0 {
+                        self.placed_depth -= 1;
+                    } else {
+                        self.push_text("]", false);
+                    }
                     self.image_depth = self.image_depth.saturating_sub(1);
                 }
             },
