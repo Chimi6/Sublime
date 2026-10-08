@@ -15,7 +15,7 @@ pub use writer::CsvWriter;
 /// spreadsheet, its decimals written with commas, reads as semicolons; a
 /// file no delimiter fits reads as commas.
 pub fn sniff_delimiter(head: &[u8], whole: bool) -> u8 {
-    const CANDIDATES: [u8; 4] = [b',', b';', b'\t', b'|'];
+    const CANDIDATES: [u8; 4] = *b",;\t|";
     const RECORDS: usize = 10;
     let mut records: Vec<[usize; 4]> = Vec::new();
     let mut counts = [0usize; 4];
