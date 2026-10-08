@@ -44,7 +44,7 @@ pub struct NumbersTable {
 
 /// Writes `sheets` as a Numbers package into `sink`.
 pub fn write_numbers_to(
-    sheets: &[NumbersSheet],
+    mut sheets: Vec<NumbersSheet>,
     sink: &mut dyn std::io::Write,
 ) -> Result<(), PackageError> {
     // Identities vary with the content, as the Pages writer's do.
@@ -61,7 +61,6 @@ pub fn write_numbers_to(
     let mut package = Package::read(NUMBERS_TEMPLATE)?;
 
     // Every sheet holds at least one table, and the document one sheet.
-    let mut sheets: Vec<NumbersSheet> = sheets.to_vec();
     if sheets.is_empty() {
         sheets.push(NumbersSheet {
             name: "Sheet 1".to_string(),
@@ -113,16 +112,17 @@ pub fn write_numbers_to(
     // Fill each table and place it on its sheet.
     let mut assigned = infos.iter();
     let mut sheet_tables: Vec<Vec<u64>> = Vec::new();
-    for (sheet, &sheet_id) in sheets.iter().zip(&sheet_ids) {
+    for (sheet, &sheet_id) in sheets.iter_mut().zip(&sheet_ids) {
         let mut ids = Vec::new();
         let mut top: Option<f32> = None;
-        for table in &sheet.tables {
+        for table in &mut sheet.tables {
             let Some(&info) = assigned.next() else {
                 break;
             };
             let template = template_table(&package, info, info)
                 .ok_or_else(|| malformed("cloned table is incomplete"))?;
-            let mark = data_mark(&package, &template, table);
+            // The table's rows move into its mark, and go with it.
+            let mark = data_mark(&package, &template, std::mem::take(&mut table.rows));
             reuse_table(
                 &mut package,
                 &template,
@@ -163,9 +163,13 @@ pub fn write_numbers_to(
 
 /// A table's cells as a data table mark: typed where the text reads back
 /// as a number, a date, or a boolean; the first row the header.
-fn data_mark(package: &Package, template: &TemplateTable, table: &NumbersTable) -> TableMark {
-    let rows = table.rows.len().max(1);
-    let columns = table.rows.iter().map(Vec::len).max().unwrap_or(0).max(1);
+fn data_mark(
+    package: &Package,
+    template: &TemplateTable,
+    mut source: Vec<Vec<String>>,
+) -> TableMark {
+    let rows = source.len().max(1);
+    let columns = source.iter().map(Vec::len).max().unwrap_or(0).max(1);
     let width = object_message(package, template.model_id)
         .and_then(
             |(tree, first)| match field_value(tree, first, "default_column_width") {
@@ -176,25 +180,23 @@ fn data_mark(package: &Package, template: &TemplateTable, table: &NumbersTable) 
         )
         .unwrap_or(100.0);
     let count = rows * columns;
-    let mut cells = Vec::with_capacity(count);
-    let mut typed = Vec::with_capacity(count);
+    let mut data = Vec::with_capacity(count);
     for row in 0..rows {
         for column in 0..columns {
-            let text = table
-                .rows
-                .get(row)
-                .and_then(|cells| cells.get(column))
-                .cloned()
+            let text = source
+                .get_mut(row)
+                .and_then(|cells| cells.get_mut(column))
+                .map(std::mem::take)
                 .unwrap_or_default();
-            typed.push(typed_value(&text));
-            cells.push(CellContent {
-                text,
-                marks: Vec::new(),
-                fields: Vec::new(),
-                paragraphs: Vec::new(),
-                lists: Vec::new(),
-                list_styles: Vec::new(),
+            data.push(match typed_value(&text) {
+                Some(value) => DataCell::Value(value),
+                None if text.is_empty() => DataCell::Empty,
+                None => DataCell::Text(text),
             });
+        }
+        // Each source row goes as it is read.
+        if let Some(cells) = source.get_mut(row) {
+            *cells = Vec::new();
         }
     }
     TableMark {
@@ -202,16 +204,18 @@ fn data_mark(package: &Package, template: &TemplateTable, table: &NumbersTable) 
         rows,
         columns,
         header_rows: u32::from(rows > 1),
-        cells,
+        // A data table's cells are `data`.
+        cells: Vec::new(),
         widths: vec![width; columns],
         heights: vec![DEFAULT_ROW_HEIGHT; rows],
         merges: Vec::new(),
-        backgrounds: vec![None; count],
-        alignments: vec![0; count],
-        paddings: vec![[0.0; 4]; count],
+        // A data table has no per-cell look: styled tables alone read these.
+        backgrounds: Vec::new(),
+        alignments: Vec::new(),
+        paddings: Vec::new(),
         borders: None,
-        cell_borders: vec![crate::document::CellBorders::default(); count],
-        typed,
+        cell_borders: Vec::new(),
+        data,
     }
 }
 

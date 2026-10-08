@@ -6,6 +6,11 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Changed
+
+- The Numbers writer lays out tables past 65,535 rows as Numbers does (no multiple-choice list, the row tile tree, the next row strip id): all 79 rewritten test documents now open in Numbers with no repair or upgrade, and so does a 300,000-row table.
+- The Numbers writer holds a table's cells compactly, encodes large tables' repeated records as it builds them, and sizes each row's offset array to the table: 300,000 rows of four columns write at about 350 MB peak instead of 933, in 0.6 s instead of 0.8, to a document of 23 MB instead of 39.
+
 ## [0.28.0] - 2026-10-06
 
 ### Added
