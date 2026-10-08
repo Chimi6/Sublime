@@ -44,6 +44,7 @@ describes.
 
 ## Next
 
+- 2026-10-08, the v1 plan (decided with the user; full list in `ROADMAP.md`, v1): release the Numbers work as 0.29.0; the Pages reader's memory on large tables; CSV delimiters; images in documents to PDF; HEIC read, then HEIC write, native and measured against libheif/x265 and `sips`; ODT, then EPUB; ODS; the wrap-up. SQLite and the niche formats (MessagePack, CBOR, INI, subtitles, notebooks, ICNS, GIF) come after v1, and N64 ROMs (`z64`, `v64`, `n64`) are the first novelty after it.
 
 The document category's one-way streets are closed (0.8.0 to 0.10.0) and the data category's planned set is in (0.11.0 to 0.16.0). What follows, in order:
 
