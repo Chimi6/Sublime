@@ -38,6 +38,15 @@ impl std::io::Read for InputSource {
             InputSource::Package(bytes) => bytes.read(buffer),
         }
     }
+
+    /// Forwarded so a file sizes the buffer from its length instead of
+    /// growing it by doubling (a whole HEIC is read this way).
+    fn read_to_end(&mut self, buffer: &mut Vec<u8>) -> std::io::Result<usize> {
+        match self {
+            InputSource::File(file) => file.read_to_end(buffer),
+            InputSource::Package(bytes) => bytes.read_to_end(buffer),
+        }
+    }
 }
 
 impl crate::converter::RewindableRead for InputSource {

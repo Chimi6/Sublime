@@ -101,9 +101,34 @@ pub struct TextPage<'c> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImageObject {
     pub number: u32,
+    /// The size shown: the stored size, turned when the orientation
+    /// turns it.
     pub width: u32,
     pub height: u32,
     pub density: Option<(f64, f64)>,
+    /// The Exif orientation (1 to 8) the image is drawn in: a JPEG
+    /// embedded unchanged is turned upright by the drawing, not its pixels.
+    pub orientation: u16,
+}
+
+impl ImageObject {
+    /// The `cm` operands that draw the image upright in the box at
+    /// (`x`, `y`), `width` by `height`: the image's unit square, its first
+    /// row at the top, mapped into the box as its orientation says.
+    pub fn matrix(&self, x: f64, y: f64, width: f64, height: f64) -> [f64; 6] {
+        let (w, h) = (width, height);
+        let [a, b, c, d, e, f] = match self.orientation {
+            2 => [-w, 0.0, 0.0, h, w, 0.0],
+            3 => [-w, 0.0, 0.0, -h, w, h],
+            4 => [w, 0.0, 0.0, -h, 0.0, h],
+            5 => [0.0, -h, -w, 0.0, w, h],
+            6 => [0.0, -h, w, 0.0, 0.0, h],
+            7 => [0.0, h, w, 0.0, 0.0, 0.0],
+            8 => [0.0, h, -w, 0.0, w, 0.0],
+            _ => [w, 0.0, 0.0, h, 0.0, 0.0],
+        };
+        [a, b, c, d, e + x, f + y]
+    }
 }
 
 impl<'a> PdfDocument<'a> {
@@ -152,22 +177,21 @@ impl<'a> PdfDocument<'a> {
 
     /// The page object and its content for an image object already
     /// written: the image fills a page of its own size.
-    fn page(
-        &mut self,
-        image: u32,
-        (width, height): (u32, u32),
-        density: Option<(f64, f64)>,
-    ) -> io::Result<()> {
+    fn page(&mut self, object: &ImageObject) -> io::Result<()> {
         let content_number = self.allocate();
         let page_number = self.allocate();
-        let (width, height) = match density {
-            Some((across, down)) => (
-                points(f64::from(width) * 72.0 / across),
-                points(f64::from(height) * 72.0 / down),
-            ),
-            None => (width.to_string(), height.to_string()),
-        };
-        let content = format!("q {width} 0 0 {height} 0 0 cm /Im0 Do Q");
+        let image = object.number;
+        let (across, down) = object.density.unwrap_or((72.0, 72.0));
+        let (shown_width, shown_height) = (
+            f64::from(object.width) * 72.0 / across,
+            f64::from(object.height) * 72.0 / down,
+        );
+        let (width, height) = (points(shown_width), points(shown_height));
+        let matrix = object
+            .matrix(0.0, 0.0, shown_width, shown_height)
+            .map(points)
+            .join(" ");
+        let content = format!("q {matrix} cm /Im0 Do Q");
         self.object(
             content_number,
             &format!("<< /Length {} >>", content.len()),
@@ -216,7 +240,7 @@ impl<'a> PdfDocument<'a> {
     /// A page of a JPEG, embedded unchanged (`/DCTDecode`).
     pub fn jpeg_page(&mut self, jpeg: &[u8]) -> Result<(), PdfError> {
         let image = self.jpeg_image(jpeg)?;
-        self.page(image.number, (image.width, image.height), image.density)
+        self.page(&image)
             .map_err(|error| PdfError(format!("writing the PDF: {error}")))
     }
 
@@ -248,11 +272,20 @@ impl<'a> PdfDocument<'a> {
             Some(jpeg),
         )
         .map_err(io)?;
+        // A quarter turn trades the width and height shown.
+        let turned = info.orientation >= 5;
         Ok(ImageObject {
             number: image,
-            width: info.width,
-            height: info.height,
-            density: info.density,
+            width: if turned { info.height } else { info.width },
+            height: if turned { info.width } else { info.height },
+            density: info.density.map(|(across, down)| {
+                if turned {
+                    (down, across)
+                } else {
+                    (across, down)
+                }
+            }),
+            orientation: info.orientation,
         })
     }
 
@@ -575,11 +608,17 @@ impl PdfPage<'_, '_> {
                 width: state.width,
                 height: state.height,
                 density: self.density,
+                orientation: 1,
             });
             return Ok(());
         }
-        self.document
-            .page(state.image, (state.width, state.height), self.density)
+        self.document.page(&ImageObject {
+            number: state.image,
+            width: state.width,
+            height: state.height,
+            density: self.density,
+            orientation: 1,
+        })
     }
 
     /// The soft mask's number: allocated right after the image's length.
@@ -693,6 +732,8 @@ pub struct JpegInfo {
     pub adobe: bool,
     /// Pixels per inch from the JFIF header, when it gives them.
     pub density: Option<(f64, f64)>,
+    /// The Exif orientation, 1 when there is none.
+    pub orientation: u16,
 }
 
 /// A subset font's name: six capital letters from the glyphs it holds,
@@ -770,6 +811,7 @@ pub fn jpeg_info(jpeg: &[u8]) -> Result<JpegInfo, PdfError> {
     let mut at = 2;
     let mut adobe = false;
     let mut density = None;
+    let mut orientation = 1;
     loop {
         while at < jpeg.len() && jpeg[at] != 0xff {
             at += 1;
@@ -793,6 +835,11 @@ pub fn jpeg_info(jpeg: &[u8]) -> Result<JpegInfo, PdfError> {
             .ok_or_else(|| fail("JPEG cut short"))?;
         match marker {
             0xee if segment.starts_with(b"Adobe") => adobe = true,
+            0xe1 if segment.starts_with(b"Exif\0\0") => {
+                orientation = crate::io::orient::exif_orientation(&segment[6..])
+                    .filter(|value| (1..=8).contains(value))
+                    .unwrap_or(1);
+            }
             // JFIF: units (1 per inch, 2 per centimetre), then densities.
             0xe0 if segment.starts_with(b"JFIF\0") && segment.len() >= 12 => {
                 let across = f64::from(u16::from_be_bytes([segment[8], segment[9]]));
@@ -824,6 +871,7 @@ pub fn jpeg_info(jpeg: &[u8]) -> Result<JpegInfo, PdfError> {
                     components,
                     adobe,
                     density,
+                    orientation,
                 });
             }
             0xda | 0xd9 => return Err(fail("JPEG has no frame header")),

@@ -36,6 +36,14 @@ check(fromWord.status === "converted-with-loss", `docx -> markdown status ${from
 check(new TextDecoder().decode(fromWord.bytes).startsWith("# Lists"), "docx -> markdown starts with the title");
 check(new TextDecoder().decode(fromWord.bytes).includes("  - Nested bullet under the second\n"), "docx -> markdown keeps nested lists");
 
+// HEIC: a tiled iPhone-style photo decodes without threads, to PNG and
+// (as its own YCbCr) to JPEG.
+const heic = new Uint8Array(readFileSync("tests/fixtures/heic/apple-photo.heic"));
+const png = sublime.convert(heic, "heic", "png");
+check(png.status.startsWith("converted") && png.bytes[1] === 0x50 && png.bytes.length > 100000, `heic -> png: ${png.status} ${png.message}`);
+const jpg = sublime.convert(heic, "heic", "jpeg");
+check(jpg.status.startsWith("converted") && jpg.bytes[0] === 0xff && jpg.bytes[1] === 0xd8, `heic -> jpeg: ${jpg.status} ${jpg.message}`);
+
 const csv = new TextEncoder().encode("a,b\n1,2\n");
 const json = sublime.convert(csv, "csv", "json");
 check(new TextDecoder().decode(json.bytes).includes("\"a\""), "csv -> json");

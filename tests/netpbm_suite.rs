@@ -118,3 +118,29 @@ fn every_corrupt_file_is_refused() {
         assert!(read_netpbm(&bytes).is_err(), "{name} was accepted");
     }
 }
+
+#[test]
+fn samples_over_eight_bits_go_on_at_sixteen() {
+    #[derive(Default)]
+    struct Deep {
+        pixels: Vec<u8>,
+    }
+    impl sublime::io::png::RowSink for Deep {
+        fn accept_deep(&mut self, _color: ColorType) -> bool {
+            true
+        }
+        fn start(&mut self, _: u32, _: u32, _: ColorType) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn row(&mut self, pixels: &[u8]) -> std::io::Result<()> {
+            self.pixels.extend_from_slice(pixels);
+            Ok(())
+        }
+    }
+    // A 10-bit PGM: 1023 is white, 512 just over half.
+    let file = b"P5\n2 1\n1023\n\x03\xff\x02\x00";
+    let mut sink = Deep::default();
+    let notes = sublime::io::netpbm::read_netpbm_rows(&mut &file[..], &mut sink).expect("read");
+    assert!(notes.deep);
+    assert_eq!(sink.pixels, [0xFF, 0xFF, 0x80, 0x20]);
+}

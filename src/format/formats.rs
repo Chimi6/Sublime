@@ -58,6 +58,15 @@ pub static WEBP: Format = Format {
     category: Category::Image,
 };
 
+pub static HEIC: Format = Format {
+    id: "heic",
+    display_name: "HEIC image",
+    extensions: &["heic", "heif", "hif"],
+    // An iPhone's brand; files branded otherwise are known by extension.
+    magic: Some(b"????ftypheic"),
+    category: Category::Image,
+};
+
 pub static PBM: Format = Format {
     id: "pbm",
     display_name: "Netpbm bitmap (PBM)",

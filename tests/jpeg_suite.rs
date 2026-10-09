@@ -182,3 +182,101 @@ fn gray_and_alpha_images_write_as_gray_and_flattened_rgb() {
         "{pixel:?}"
     );
 }
+
+/// A JPEG with an Exif segment saying `orientation` put after its SOI.
+fn with_orientation(jpeg: &[u8], orientation: u16) -> Vec<u8> {
+    let mut tiff = b"MM\0*\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01".to_vec();
+    tiff.extend_from_slice(&orientation.to_be_bytes());
+    tiff.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+    let mut out = jpeg[..2].to_vec();
+    out.extend_from_slice(&[0xFF, 0xE1]);
+    out.extend_from_slice(&((tiff.len() + 8) as u16).to_be_bytes());
+    out.extend_from_slice(b"Exif\0\0");
+    out.extend_from_slice(&tiff);
+    out.extend_from_slice(&jpeg[2..]);
+    out
+}
+
+#[test]
+fn exif_orientation_turns_the_image_upright() {
+    let jpeg = fs::read(fixture_dir("").join("edges-100x75-q100-444.jpg")).expect("fixture");
+    let (stored, _) = read_jpeg(&jpeg).expect("stored");
+    let (w, h) = (stored.width as usize, stored.height as usize);
+    let at = |image: &Image, x: usize, y: usize| {
+        let i = (y * image.width as usize + x) * 3;
+        image.pixels[i..i + 3].to_vec()
+    };
+    // 6: a quarter turn clockwise, the stored left column on top.
+    let (turned, notes) = read_jpeg(&with_orientation(&jpeg, 6)).expect("turned");
+    assert_eq!(notes.orientation, Some(6));
+    assert_eq!((turned.width as usize, turned.height as usize), (h, w));
+    for y in 0..w {
+        for x in 0..h {
+            assert_eq!(at(&turned, x, y), at(&stored, y, h - 1 - x), "({x}, {y})");
+        }
+    }
+    // 3: half a turn.
+    let (half, _) = read_jpeg(&with_orientation(&jpeg, 3)).expect("half");
+    assert_eq!(at(&half, 0, 0), at(&stored, w - 1, h - 1));
+}
+
+#[test]
+fn exif_is_carried_with_its_orientation_reset() {
+    let jpeg = fs::read(fixture_dir("").join("edges-100x75-q100-444.jpg")).expect("fixture");
+    let mut png = Vec::new();
+    let mut rows = sublime::io::png::PngRows::new(&mut png);
+    sublime::io::jpeg::read_jpeg_rows(&mut &with_orientation(&jpeg, 8)[..], &mut rows)
+        .expect("read");
+    let at = png
+        .windows(4)
+        .position(|window| window == b"eXIf")
+        .expect("eXIf");
+    let length = u32::from_be_bytes(png[at - 4..at].try_into().unwrap()) as usize;
+    let exif = &png[at + 4..at + 4 + length];
+    assert_eq!(sublime::io::orient::exif_orientation(exif), Some(1));
+}
+
+#[test]
+fn ycbcr_rows_encode_as_they_come() {
+    use sublime::io::png::RowSink;
+    // A 37 by 21 gradient (odd sizes, partial blocks) with neutral chroma
+    // on the left half and blue-ish on the right.
+    let (width, height) = (37usize, 21usize);
+    let mut jpeg = Vec::new();
+    {
+        let mut rows = sublime::io::jpeg::JpegRows::new(&mut jpeg, 95);
+        assert!(rows.accept_ycbcr());
+        rows.start(width as u32, height as u32, ColorType::Rgb)
+            .expect("start");
+        let chroma_width = width.div_ceil(2);
+        let blue: Vec<u8> = (0..chroma_width)
+            .map(|x| if x < chroma_width / 2 { 128 } else { 180 })
+            .collect();
+        let red = vec![128u8; chroma_width];
+        for y in 0..height {
+            let luma: Vec<u8> = (0..width).map(|x| (x * 3 + y * 2) as u8).collect();
+            let chroma = (y % 2 == 0).then_some((&blue[..], &red[..]));
+            rows.ycbcr_row(&luma, chroma).expect("row");
+        }
+    }
+    let (image, _) = read_jpeg(&jpeg).expect("decodes");
+    assert_eq!(
+        (image.width as usize, image.height as usize),
+        (width, height)
+    );
+    // Neutral chroma decodes gray at the luma; blue-ish chroma raises blue.
+    for y in 0..height {
+        let at = |x: usize| &image.pixels[(y * width + x) * 3..(y * width + x) * 3 + 3];
+        let left = at(2);
+        let expected = (2 * 3 + y * 2) as i32;
+        assert!(
+            left.iter().all(|&v| (i32::from(v) - expected).abs() <= 3),
+            "row {y}: {left:?}"
+        );
+        let right = at(width - 2);
+        assert!(
+            i32::from(right[2]) > i32::from(right[0]) + 40,
+            "row {y}: {right:?}"
+        );
+    }
+}

@@ -11,10 +11,13 @@ writer handle, tied to the tests that prove it.
 ## Status
 
 - `jpeg -> png`, `jpeg -> bmp`: shipped, conditional (the pixels as
-  decoded; the Exif orientation tag is reported, not applied; Exif,
-  ICC profiles, XMP, and comments are dropped and reported by name).
-  Streams: rows go out one MCU row at a time and no image is held
-  (6 MB peak on a 46 MB image).
+  decoded, turned upright by the Exif orientation; the ICC profile and
+  Exif go into PNG and JPEG output, the Exif's orientation set to 1;
+  XMP and comments are dropped and reported by name). Streams: rows go
+  out one MCU row at a time and no image is held (6 MB peak on a 46 MB
+  image), except that a turned or mirrored image is held whole to be
+  turned. A JPEG embedded in a PDF unchanged is turned by its drawing.
+  All eight orientations match what Quick Look shows.
 - `png -> jpeg`, `bmp -> jpeg`: shipped, lossy (re-encoded at
   `--quality`, 85 by default; alpha flattened onto white; metadata
   dropped). Streams: sixteen rows at a time.
@@ -38,7 +41,7 @@ and PSNR as libjpeg-turbo's.
 | SOI, SOF0, SOF1, SOF2 | baseline, extended sequential, and progressive frames of 8-bit samples with one or three components (grayscale, YCbCr, or RGB when an Adobe segment says so); sampling factors 1 to 4 |
 | DQT, DHT, DRI | quantization tables (8- and 16-bit), Huffman tables (a nine-bit lookahead table and the canonical walk past it), restart intervals with RST markers honored |
 | SOS | an interleaved baseline scan streams MCU row by MCU row; scans of one component and progressive scans (DC first and refinement, AC first and refinement with end-of-band runs) collect into coefficient buffers and decode at the end |
-| APP0, APP1, APP2, APP14, COM | JFIF noted; Exif parsed for the orientation tag and dropped; XMP, ICC, and comments dropped and reported; the Adobe transform flag honored |
+| APP0, APP1, APP2, APP14, COM | JFIF noted; Exif applied for the orientation and handed on; ICC profile parts joined and handed on; XMP and comments dropped and reported; the Adobe transform flag honored |
 | EOI | the end; a truncated file is refused |
 
 Decoding matches libjpeg-turbo, which is what browsers and Pillow
@@ -56,21 +59,25 @@ what it means everywhere; 4:2:0 chroma below quality 90 and 4:4:4 from
 90 up (the jpeg-encoder crate's rule); the standard Huffman tables of
 Annex K, which let the encoder stream; the accurate integer FDCT
 (`jfdctint`) with quantization by reciprocal multiply; libjpeg's
-fixed-point RGB to YCbCr; box downsampling with libjpeg's alternating
-bias; edges padded by replication. Gray input writes one component.
-Alpha is flattened onto white before conversion.
+fixed-point RGB to YCbCr; 4:2:0 chroma from each 2x2 block's summed
+RGB, rounded once, as each pair of rows comes in (a band holds luma and
+the halved chroma, not its RGB); edges padded by replication. An image
+of a megapixel and up has a restart interval each MCU row, so its bands
+encode on every thread (decided by size alone: the bytes do not depend
+on the machine). Gray input writes one component.
+Alpha is flattened onto white before conversion. A source that is
+already JFIF's YCbCr 4:2:0 (an 8-bit BT.601 full-range HEIC) hands its
+planes over instead of RGB rows, and they are encoded as they are, at
+4:2:0 whatever the quality.
 
 ## Known deviations
 
 - Not read: CMYK and YCCK (four-component Adobe files), 12-bit
   samples, arithmetic coding, lossless and hierarchical JPEG, and a
   height given late by a DNL marker.
-- Exif orientation is reported and not applied: rotating needs the
-  whole image, which the streaming path never holds. Applying it is a
-  transform for the image path.
-- The writer offers no progressive output, optimized Huffman tables,
-  or restart intervals; the standard tables cost a few percent of size
-  against optimized ones.
+- The writer offers no progressive output or optimized Huffman
+  tables; the standard tables cost a few percent of size against
+  optimized ones, and the restart markers of a large image 0.02%.
 - Flat graphics with hard color edges lose more to 4:2:0 chroma than
   photographs do; the `image` crate's 4:2:2 default scores far higher
   on them at a larger file. Choosing the subsampling from the chroma's

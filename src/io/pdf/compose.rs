@@ -503,12 +503,12 @@ impl<'w, 'a> Composer<'w, 'a> {
         }
         self.room(height);
         self.page_images.push(object.number);
+        let matrix = object
+            .matrix(self.left(), self.top - height, width, height)
+            .map(number_text)
+            .join(" ");
         self.content.push_str(&format!(
-            "q {} 0 0 {} {} {} cm /I{} Do Q\n",
-            number_text(width),
-            number_text(height),
-            number_text(self.left()),
-            number_text(self.top - height),
+            "q {matrix} cm /I{} Do Q\n",
             self.page_images.len()
         ));
         self.top -= height;

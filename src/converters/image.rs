@@ -11,6 +11,7 @@ use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
 use crate::io::bmp::{BmpError, BmpRows, BmpRowsError, read_bmp_rows, read_bmp_rows_seekable};
+use crate::io::heif::{HeifNotes, HeifRowsError, read_heif_rows, read_heif_rows_from};
 use crate::io::ico::{IcoNotes, IcoRows, read_ico_rows};
 use crate::io::jpeg::{DEFAULT_QUALITY, JpegError, JpegNotes, JpegRows, read_jpeg_rows};
 use crate::io::netpbm::{Kind, NetpbmNotes, NetpbmRows, read_netpbm_rows};
@@ -33,6 +34,7 @@ pub enum ImageFormat {
     Ico,
     Tiff,
     Pdf,
+    Heic,
 }
 
 pub struct ImagePair {
@@ -150,6 +152,9 @@ impl Converter for ImagePair {
                 document.finish()?;
                 Ok(())
             }
+            ImageFormat::Heic => Err(ConvertError::Unsupported(
+                "HEIC is read, not written".to_string(),
+            )),
         }
     }
 }
@@ -229,6 +234,33 @@ fn read_rows(
             let notes = read_netpbm_rows(input, sink).map_err(rows_error)?;
             report_netpbm_notes(notes, name, context);
         }
+        ImageFormat::Heic => {
+            // The container's items sit anywhere in the file: a file is
+            // read an item at a time, a stream whole.
+            let read = match input {
+                Input::Rewindable(reader) => read_heif_rows_from(&mut **reader, sink),
+                Input::Stream(stream) => {
+                    let mut file = Vec::new();
+                    stream.read_to_end(&mut file)?;
+                    read_heif_rows(&file, sink)
+                }
+            };
+            let notes = read.map_err(|error| match error {
+                HeifRowsError::Heif(error) => {
+                    let unsupported = error.0.contains("not supported") || error.0.contains("only");
+                    if unsupported {
+                        ConvertError::Unsupported(error.to_string())
+                    } else {
+                        ConvertError::Malformed {
+                            location: Location::default(),
+                            message: error.to_string(),
+                        }
+                    }
+                }
+                HeifRowsError::Io(error) => error.into(),
+            })?;
+            report_heif_notes(notes, name, context);
+        }
     }
     Ok(())
 }
@@ -251,15 +283,10 @@ fn report_jpeg_notes(notes: JpegNotes, context: &mut Context<'_>) {
     for name in notes.dropped {
         context.warning(format!("{name} segment dropped (metadata is not carried)"));
     }
-    if let Some(orientation) = notes.orientation {
-        context.warning(format!(
-            "Exif orientation {orientation} is not applied: the pixels are as stored, and a viewer would rotate them"
-        ));
-    }
 }
 
 fn report_netpbm_notes(notes: NetpbmNotes, name: &'static str, context: &mut Context<'_>) {
-    if notes.maxval > 255 {
+    if notes.maxval > 255 && !notes.deep {
         context.loss(
             name,
             Location::default(),
@@ -332,6 +359,32 @@ fn report_pdf_notes(notes: PdfNotes, name: &'static str, context: &mut Context<'
     }
 }
 
+fn report_heif_notes(notes: HeifNotes, name: &'static str, context: &mut Context<'_>) {
+    if let Some(depth) = notes.deep {
+        context.loss(
+            name,
+            Location::default(),
+            format!("{depth}-bit samples reduced to 8 bits"),
+        );
+    }
+    if notes.profile_dropped {
+        context.warning(
+            "the color profile is dropped (the output format does not carry one here)".to_string(),
+        );
+    }
+    if notes.exif_dropped {
+        context.warning(
+            "the Exif metadata is dropped (the output format does not carry it here)".to_string(),
+        );
+    }
+    if notes.other_images > 0 {
+        context.warning(format!(
+            "the primary image is read and {} other images are dropped",
+            notes.other_images
+        ));
+    }
+}
+
 fn report_webp_notes(notes: WebpNotes, context: &mut Context<'_>) {
     for name in notes.dropped {
         context.warning(format!("{name} chunk dropped (metadata is not carried)"));
@@ -395,12 +448,12 @@ struct Codec {
 
 const JPEG_LOSS: &str = "JPEG is lossy: the image is re-encoded at the quality given (85 by default, 4:2:0 chroma below 90) and alpha is flattened onto white";
 
-static CODECS: [Codec; 14] = [
+static CODECS: [Codec; 15] = [
     Codec {
         format: &formats::PNG,
         kind: ImageFormat::Png,
         read: Some(Fidelity::Conditional(
-            "16-bit samples become 8-bit, and metadata (gamma, color profile, text) is dropped",
+            "16-bit samples stay 16-bit into PNG, TIFF, and Netpbm and become 8-bit elsewhere (and from interlaced files); metadata (gamma, color profile, text) is dropped",
         )),
         write: Some(Fidelity::Lossless),
     },
@@ -414,7 +467,7 @@ static CODECS: [Codec; 14] = [
         format: &formats::JPEG,
         kind: ImageFormat::Jpeg,
         read: Some(Fidelity::Conditional(
-            "pixels as decoded (Exif orientation is reported, not applied); metadata (Exif, ICC, comments) is dropped",
+            "pixels as decoded, turned upright by their Exif orientation; the color profile and Exif are carried into PNG and JPEG and dropped elsewhere, as are XMP and comments",
         )),
         write: Some(Fidelity::Lossy(JPEG_LOSS)),
     },
@@ -472,7 +525,7 @@ static CODECS: [Codec; 14] = [
         format: &formats::TIFF,
         kind: ImageFormat::Tiff,
         read: Some(Fidelity::Conditional(
-            "the first page is read; 16-bit samples become 8-bit, CMYK becomes RGB, and metadata (resolution, EXIF, ICC, XMP) is dropped",
+            "the first page is read; 16-bit gray and RGB stay 16-bit into PNG, TIFF, and Netpbm and become 8-bit elsewhere; CMYK becomes RGB, and metadata (resolution, EXIF, ICC, XMP) is dropped",
         )),
         write: Some(Fidelity::Lossless),
     },
@@ -495,6 +548,14 @@ static CODECS: [Codec; 14] = [
         write: Some(Fidelity::Lossless),
     },
     Codec {
+        format: &formats::HEIC,
+        kind: ImageFormat::Heic,
+        read: Some(Fidelity::Conditional(
+            "the primary image is read with its crop, rotation, mirroring, and alpha applied; 10-bit samples become 16-bit in PNG, TIFF, and Netpbm and 8-bit elsewhere; the color profile and Exif are carried into PNG and JPEG and dropped elsewhere",
+        )),
+        write: None,
+    },
+    Codec {
         format: &formats::CUR,
         kind: ImageFormat::Ico,
         read: Some(Fidelity::Conditional(
@@ -504,7 +565,7 @@ static CODECS: [Codec; 14] = [
     },
 ];
 
-const NETPBM_READ: &str = "samples wider than 8 bits (maxval over 255) are scaled to 8 bits";
+const NETPBM_READ: &str = "samples wider than 8 bits (maxval over 255) are scaled to 16 bits into PNG, TIFF, and Netpbm and to 8 bits elsewhere";
 
 /// The worse of two fidelities, carrying both texts when both lose.
 fn combine(read: &Fidelity, write: &Fidelity) -> Fidelity {
@@ -587,7 +648,7 @@ pub fn pair(from: &str, to: &str) -> &'static ImagePair {
 }
 
 /// Reads a picture held in memory into `sink`, its format told by its
-/// first bytes (PNG, JPEG, WebP, BMP, TIFF, QOI, ICO): the pictures a
+/// first bytes (PNG, JPEG, WebP, BMP, TIFF, QOI, ICO, HEIC): the pictures a
 /// document carries, set into a PDF.
 pub fn decode_image(bytes: &[u8], sink: &mut dyn RowSink) -> std::io::Result<()> {
     let format = if bytes.starts_with(b"\x89PNG") {
@@ -604,6 +665,15 @@ pub fn decode_image(bytes: &[u8], sink: &mut dyn RowSink) -> std::io::Result<()>
         ImageFormat::Qoi
     } else if bytes.starts_with(&[0, 0, 1, 0]) {
         ImageFormat::Ico
+    } else if bytes.get(4..8) == Some(b"ftyp")
+        && bytes.get(8..12).is_some_and(|brand| {
+            matches!(
+                brand,
+                b"heic" | b"heix" | b"heim" | b"heis" | b"hevc" | b"hevx" | b"mif1" | b"msf1"
+            )
+        })
+    {
+        ImageFormat::Heic
     } else {
         return Err(std::io::Error::other(
             "an image format there is no reader for",

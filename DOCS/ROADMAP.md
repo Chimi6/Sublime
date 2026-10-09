@@ -18,7 +18,7 @@ and from WebP and PNG) or not at all. SQLite is out of v1. In order:
    large tables (2.2 GB on 100,000 rows against the 64 MB goal).
 2. Semicolon and pipe delimiters for CSV on the command line.
 3. Images in documents to PDF (Word, Pages, Markdown, HTML).
-4. HEIC read: an HEVC still-image decoder written here, pixel-exact with
+4. HEIC read (done): an HEVC still-image decoder written here, pixel-exact with
    libheif, with grid tiles (iPhone photos are 512 by 512 tiles), 10-bit
    sources, alpha, Exif orientation applied (which also turns phone JPEGs
    upright), and Exif and the colour profile carried to the output.
