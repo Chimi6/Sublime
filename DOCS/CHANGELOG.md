@@ -26,6 +26,7 @@ section under a version heading.
 
 ### Changed
 
+- `DOCS/FORMATS.md` keeps the formats and the map; every converter and every path, with what each loses, move to their own `DOCS/CONVERSIONS.md` (`sublime paths --conversions`), so the formats page stays short as the paths grow.
 - JPEG output holds a band's 4:2:0 chroma, not its RGB, until the band encodes (256 to 96 KB a band of a 4000-pixel image); the bytes are unchanged.
 
 ### Fixed

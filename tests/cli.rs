@@ -339,9 +339,16 @@ fn formats_and_paths_list_the_registry() {
     );
 
     let markdown = run(&["paths", "--markdown"]);
-    assert!(stdout(&markdown).starts_with("# Formats and Conversion Paths"));
+    assert!(stdout(&markdown).starts_with("# Formats\n"));
+    assert!(!stdout(&markdown).contains("## Paths"));
     assert!(stdout(&markdown).contains("```mermaid\ngraph LR\n"));
     assert!(stdout(&markdown).contains("  pages --- docx\n"));
+
+    let conversions = run(&["paths", "--conversions"]);
+    assert_eq!(code(&conversions), 0);
+    assert!(stdout(&conversions).starts_with("# Conversions\n"));
+    assert!(stdout(&conversions).contains("## Converters\n"));
+    assert!(stdout(&conversions).contains("| csv | json | lossless | csv-to-json |"));
 }
 
 #[test]

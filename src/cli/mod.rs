@@ -142,9 +142,10 @@ pub fn run(args: Vec<String>, env_log: Option<String>) -> ExitCode {
             commands::check::run(check_args, log_format, &mut stdout_lock)
         }
         Command::Formats => commands::formats::run(log_format, &mut stdout_lock),
-        Command::Paths { markdown } => {
-            commands::paths::run(*markdown, log_format, &mut stdout_lock)
-        }
+        Command::Paths {
+            markdown,
+            conversions,
+        } => commands::paths::run(*markdown, *conversions, log_format, &mut stdout_lock),
         Command::Inspect(inspect_args) => commands::inspect::run(inspect_args, &mut stdout_lock),
     };
     let flushed = stdout_lock.flush();
