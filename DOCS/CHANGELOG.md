@@ -8,6 +8,8 @@ section under a version heading.
 
 ### Added
 
+- Pictures in documents written to PDF: Word, Pages, and RTF pictures at the size the document shows each, Markdown and HTML pictures by path from the input's folder or by `data:` URI; JPEGs embedded unchanged, other formats deflated with their alpha. A picture not found, unreadable (GIF), in a table, or by web address keeps its alt text.
+
 - Semicolon and pipe CSV: a CSV input's delimiter is read from its first records (a European spreadsheet's semicolon export, decimal commas and all, reads as semicolons), and `--delimiter` sets the one read and written (`;`, `|`, `tab`). Notes in `DOCS/formats/csv.md`.
 
 ### Fixed

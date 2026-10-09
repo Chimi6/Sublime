@@ -279,6 +279,9 @@ pub struct ConvertOptions {
     /// semicolon or pipe; read input's own (from its first records) and a
     /// comma when absent.
     pub delimiter: Option<u8>,
+    /// The folder the input is in, when it is a file: where a document's
+    /// images given by path (Markdown, HTML) are found.
+    pub base: Option<std::path::PathBuf>,
 }
 
 /// One edge in the format graph. Implement this and add one line to

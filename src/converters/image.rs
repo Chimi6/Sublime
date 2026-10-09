@@ -586,6 +586,43 @@ pub fn pair(from: &str, to: &str) -> &'static ImagePair {
         .unwrap_or_else(|| panic!("no image pair {from} -> {to}"))
 }
 
+/// Reads a picture held in memory into `sink`, its format told by its
+/// first bytes (PNG, JPEG, WebP, BMP, TIFF, QOI, ICO): the pictures a
+/// document carries, set into a PDF.
+pub fn decode_image(bytes: &[u8], sink: &mut dyn RowSink) -> std::io::Result<()> {
+    let format = if bytes.starts_with(b"\x89PNG") {
+        ImageFormat::Png
+    } else if bytes.starts_with(&[0xFF, 0xD8]) {
+        ImageFormat::Jpeg
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        ImageFormat::Webp
+    } else if bytes.starts_with(b"BM") {
+        ImageFormat::Bmp
+    } else if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
+        ImageFormat::Tiff
+    } else if bytes.starts_with(b"qoif") {
+        ImageFormat::Qoi
+    } else if bytes.starts_with(&[0, 0, 1, 0]) {
+        ImageFormat::Ico
+    } else {
+        return Err(std::io::Error::other(
+            "an image format there is no reader for",
+        ));
+    };
+    let options = crate::converter::ConvertOptions::default();
+    let mut events = crate::event::NullSink;
+    let mut context = Context::new(&mut events, &options);
+    let mut source: &[u8] = bytes;
+    read_rows(
+        format,
+        &mut Input::Stream(&mut source),
+        sink,
+        "image",
+        &mut context,
+    )
+    .map_err(|error| std::io::Error::other(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -53,6 +53,7 @@ pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliE
         sheet: args.sheet.clone(),
         quality: args.quality,
         delimiter: args.delimiter,
+        base: None,
         page: args.page,
         font: crate::cli::commands::font_option(args.font.as_deref())?,
     };
