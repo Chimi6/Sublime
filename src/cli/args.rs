@@ -21,7 +21,8 @@ COMMANDS
             Several images followed by a .pdf merge into one PDF, a page each.
   check     Show the path and fidelity between two formats without converting.
   formats   List every known format.
-  paths     List every conversion path. --markdown emits DOCS/FORMATS.md.
+  paths     List every conversion path. --markdown emits DOCS/FORMATS.md,
+            --conversions DOCS/CONVERSIONS.md.
   inspect   Dump an iWork package's object graph (dev-tools builds only).
   version   Print the version.
 
@@ -137,6 +138,7 @@ pub enum Command {
     Formats,
     Paths {
         markdown: bool,
+        conversions: bool,
     },
     /// `inspect <package> [--stream name] [--object id] [--type id] [--depth n]`;
     /// only does anything in a `dev-tools` build.
@@ -509,14 +511,19 @@ fn flag_value(
 
 fn parse_paths(rest: Vec<String>) -> Result<Command, ArgsError> {
     let mut markdown = false;
+    let mut conversions = false;
     for arg in rest {
         match arg.as_str() {
             "--markdown" => markdown = true,
+            "--conversions" => conversions = true,
             other if is_flag(other) => return Err(ArgsError::UnknownFlag(other.to_string())),
             other => return Err(ArgsError::TooManyPositionals(other.to_string())),
         }
     }
-    Ok(Command::Paths { markdown })
+    Ok(Command::Paths {
+        markdown,
+        conversions,
+    })
 }
 
 fn reject_extra(rest: Vec<String>) -> Result<(), ArgsError> {
@@ -668,11 +675,24 @@ mod tests {
         ));
         assert!(matches!(
             parse_strs(&["paths"]).unwrap().command,
-            Command::Paths { markdown: false }
+            Command::Paths {
+                markdown: false,
+                conversions: false
+            }
         ));
         assert!(matches!(
             parse_strs(&["paths", "--markdown"]).unwrap().command,
-            Command::Paths { markdown: true }
+            Command::Paths {
+                markdown: true,
+                conversions: false
+            }
+        ));
+        assert!(matches!(
+            parse_strs(&["paths", "--conversions"]).unwrap().command,
+            Command::Paths {
+                markdown: false,
+                conversions: true
+            }
         ));
         assert!(matches!(
             parse_strs(&["version"]).unwrap().command,
