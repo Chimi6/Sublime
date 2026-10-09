@@ -275,6 +275,10 @@ pub struct ConvertOptions {
     /// text in (PDF); the standard fonts, with the machine's fonts for
     /// other scripts, when absent.
     pub font: Option<std::sync::Arc<Vec<u8>>>,
+    /// The delimiter of comma-separated text (CSV) read and written: a
+    /// semicolon or pipe; read input's own (from its first records) and a
+    /// comma when absent.
+    pub delimiter: Option<u8>,
 }
 
 /// One edge in the format graph. Implement this and add one line to

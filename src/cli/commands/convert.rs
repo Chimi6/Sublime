@@ -47,6 +47,7 @@ pub fn run(
         strict: args.strict,
         sheet: args.sheet.clone(),
         quality: args.quality,
+        delimiter: args.delimiter,
         page: args.page,
         font: crate::cli::commands::font_option(args.font.as_deref())?,
     };

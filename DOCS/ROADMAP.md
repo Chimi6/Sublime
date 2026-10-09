@@ -86,7 +86,7 @@ formats.
 |---|---|---|---|---|---|
 | CSV | csv | [x] | — | — | Shipped: CSV <-> JSON. |
 | JSON | json | [x] | — | — | Shipped. Hub for all data formats. |
-| TSV and delimited variants | tsv, psv | [~] | A | S | TSV shipped (0.15.0): the CSV reader and writer with a tab separator, every row path. Semicolon and pipe variants need a delimiter option on the command line. |
+| TSV and delimited variants | tsv, psv | [x] | A | S | TSV shipped (0.15.0); semicolon and pipe CSV read by detection and written with `--delimiter` (`formats/csv.md`). |
 | JSON Lines | jsonl, ndjson | [x] | — | — | Shipped (0.15.0): to and from JSON, CSV, and TSV, all streamed. |
 | YAML | yaml, yml | [x] | — | — | Shipped both ways (0.12.0): YAML 1.2 core schema, anchors, merge keys, multi-document, through the value hub. Notes in `formats/yaml.md`. |
 | TOML | toml | [x] | — | — | Shipped both ways (0.11.0): TOML <-> JSON through the value hub. Notes in `formats/toml.md`. |
