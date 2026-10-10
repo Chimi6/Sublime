@@ -105,6 +105,59 @@ impl<'a> HeicRows<'a> {
         )
     }
 
+    /// One row's luma, alpha, and chroma sums, sample by sample.
+    fn general_row(&mut self, pixels: &[u8], line: usize, max: i64, sums: &mut [[i64; 3]]) {
+        for x in 0..self.width {
+            let (rgb, alpha) = self.pixel(pixels, x);
+            let luma = (KR * rgb[0] + KG * rgb[1] + KB * rgb[2] + (1 << 31)) >> 32;
+            self.planes[0][line + x] = luma.clamp(0, max) as u16;
+            if let (Some(plane), Some(alpha)) = (self.alpha.as_mut(), alpha) {
+                let value = if self.deep {
+                    (u64::from(alpha) * 1023 + 32767) / 65535
+                } else {
+                    u64::from(alpha)
+                };
+                plane[line + x] = value as u16;
+            }
+            let sum = &mut sums[x / 2];
+            for (total, &value) in sum.iter_mut().zip(&rgb) {
+                // An odd width's last pixel counts twice.
+                *total += if x + 1 == self.width && x % 2 == 0 {
+                    2 * value
+                } else {
+                    value
+                };
+            }
+        }
+    }
+
+    /// Chroma from this row's sums and the pending row's, every second row.
+    fn chroma_row(&mut self, sums: Vec<[i64; 3]>, stride: usize, mid: i64, max: i64) {
+        let last = self.row + 1 == self.height;
+        if self.row % 2 == 0 && !last {
+            self.pending = sums;
+        } else {
+            if self.row % 2 == 0 {
+                // An odd height's last row pairs with itself.
+                self.pending = sums.clone();
+            }
+            let chroma_row = self.row / 2;
+            for (x, (pair, upper)) in sums.iter().zip(&self.pending).enumerate() {
+                let total = [pair[0] + upper[0], pair[1] + upper[1], pair[2] + upper[2]];
+                let chroma = |weights: &[i64; 3]| -> u16 {
+                    let value = (weights[0] * total[0]
+                        + weights[1] * total[1]
+                        + weights[2] * total[2]
+                        + (1 << 33))
+                        >> 34;
+                    (value + mid).clamp(0, max) as u16
+                };
+                self.planes[1][chroma_row * stride / 2 + x] = chroma(&CB);
+                self.planes[2][chroma_row * stride / 2 + x] = chroma(&CR);
+            }
+        }
+    }
+
     fn finish(&mut self) -> std::io::Result<()> {
         let Some(settings) = self.settings.clone() else {
             return Ok(());
@@ -245,51 +298,34 @@ impl RowSink for HeicRows<'_> {
             .map_or(0, |settings| settings.coded_width);
         let line = self.row * stride;
         let mut sums = vec![[0i64; 3]; chroma_width];
-        for x in 0..self.width {
-            let (rgb, alpha) = self.pixel(pixels, x);
-            let luma = (KR * rgb[0] + KG * rgb[1] + KB * rgb[2] + (1 << 31)) >> 32;
-            self.planes[0][line + x] = luma.clamp(0, max) as u16;
-            if let (Some(plane), Some(alpha)) = (self.alpha.as_mut(), alpha) {
-                let value = if self.deep {
-                    (u64::from(alpha) * 1023 + 32767) / 65535
-                } else {
-                    u64::from(alpha)
-                };
-                plane[line + x] = value as u16;
+        if !self.deep && matches!(self.color, ColorType::Rgb) {
+            // 8-bit RGB, the common case, by whole pixels: the same sums
+            // as the general path below, without its per-sample choices.
+            let pixels = &pixels[..self.width * 3];
+            for (out, pixel) in self.planes[0][line..line + self.width]
+                .iter_mut()
+                .zip(pixels.chunks_exact(3))
+            {
+                let (r, g, b) = (
+                    i64::from(pixel[0]) << 16,
+                    i64::from(pixel[1]) << 16,
+                    i64::from(pixel[2]) << 16,
+                );
+                let luma = (KR * r + KG * g + KB * b + (1 << 31)) >> 32;
+                *out = luma.clamp(0, max) as u16;
             }
-            let sum = &mut sums[x / 2];
-            for (total, &value) in sum.iter_mut().zip(&rgb) {
-                // An odd width's last pixel counts twice.
-                *total += if x + 1 == self.width && x % 2 == 0 {
-                    2 * value
+            for (sum, pair) in sums.iter_mut().zip(pixels.chunks(6)) {
+                *sum = if pair.len() == 6 {
+                    std::array::from_fn(|c| (i64::from(pair[c]) + i64::from(pair[3 + c])) << 16)
                 } else {
-                    value
+                    // An odd width's last pixel counts twice.
+                    std::array::from_fn(|c| (2 * i64::from(pair[c])) << 16)
                 };
             }
-        }
-        let last = self.row + 1 == self.height;
-        if self.row % 2 == 0 && !last {
-            self.pending = sums;
         } else {
-            if self.row % 2 == 0 {
-                // An odd height's last row pairs with itself.
-                self.pending = sums.clone();
-            }
-            let chroma_row = self.row / 2;
-            for (x, (pair, upper)) in sums.iter().zip(&self.pending).enumerate() {
-                let total = [pair[0] + upper[0], pair[1] + upper[1], pair[2] + upper[2]];
-                let chroma = |weights: &[i64; 3]| -> u16 {
-                    let value = (weights[0] * total[0]
-                        + weights[1] * total[1]
-                        + weights[2] * total[2]
-                        + (1 << 33))
-                        >> 34;
-                    (value + mid).clamp(0, max) as u16
-                };
-                self.planes[1][chroma_row * stride / 2 + x] = chroma(&CB);
-                self.planes[2][chroma_row * stride / 2 + x] = chroma(&CR);
-            }
+            self.general_row(pixels, line, max, &mut sums);
         }
+        self.chroma_row(sums, stride, mid, max);
         self.row += 1;
         if self.row == self.height {
             self.finish()?;

@@ -10,6 +10,7 @@ use super::super::transform::{self, DCT32, DST4, LEVEL_SCALE};
 pub const QUANT_SCALE: [i64; 6] = [26214, 23302, 20560, 18396, 16384, 14564];
 
 /// The DCT matrix's rows for each size, widened: `DCT[log2 - 2][k][x]`.
+#[cfg(test)]
 fn dct(log2: u32) -> &'static [[i32; 32]; 32] {
     static TABLES: std::sync::OnceLock<[[[i32; 32]; 32]; 4]> = std::sync::OnceLock::new();
     &TABLES.get_or_init(|| {
@@ -28,38 +29,60 @@ fn dct(log2: u32) -> &'static [[i32; 32]; 32] {
     })[log2 as usize - 2]
 }
 
-/// One dimension of the forward DCT of `n` samples (`n` from 4 to 32):
-/// the even outputs are the half-size DCT of the sums of mirrored
-/// samples, the odd ones the differences against the odd rows, so a
-/// size takes a third of a matrix product's multiplies. Sums are exact:
-/// the same as the matrix product.
-fn dct_1d(input: &[i32], output: &mut [i32], n: usize) {
-    let log2 = n.trailing_zeros();
-    let matrix = dct(log2);
-    if n == 4 {
-        for (k, out) in output.iter_mut().take(4).enumerate() {
-            *out = (0..4).map(|x| matrix[k][x] * input[x]).sum();
+/// The DCT matrix's rows for an `N`-point transform.
+fn matrix<const N: usize>() -> [[i32; N]; N] {
+    let step = 32 / N;
+    std::array::from_fn(|k| std::array::from_fn(|x| i32::from(DCT32[k * step][x])))
+}
+
+/// One dimension of the forward transform along the rows of `block`
+/// (`N` by `N`, row-major): `out[k]` is the sum over `x` of the matrix's
+/// `[k][x]` times row `x`, every column at once, so the inner loops run
+/// along a row and vectorize. The DCT's even outputs take the sums of
+/// mirrored rows and its odd ones their differences, halving the
+/// multiplies. Integer sums: the same as the matrix product.
+fn transform_rows<const N: usize>(block: &[[i32; N]; N], dst: bool) -> [[i32; N]; N] {
+    let mut out = [[0i32; N]; N];
+    if dst || N == 4 {
+        let rows: [[i32; N]; N] = if dst {
+            std::array::from_fn(|k| std::array::from_fn(|x| DST4[k % 4][x % 4]))
+        } else {
+            matrix::<N>()
+        };
+        for (k, target) in out.iter_mut().enumerate() {
+            for (x, source) in block.iter().enumerate() {
+                let weight = rows[k][x];
+                for (sum, &value) in target.iter_mut().zip(source) {
+                    *sum += weight * value;
+                }
+            }
         }
-        return;
+        return out;
     }
-    let half = n / 2;
-    let mut even = [0i32; 16];
-    let mut odd = [0i32; 16];
+    let m = matrix::<N>();
+    let half = N / 2;
+    let mut even = [[0i32; N]; N];
+    let mut odd = [[0i32; N]; N];
     for x in 0..half {
-        even[x] = input[x] + input[n - 1 - x];
-        odd[x] = input[x] - input[n - 1 - x];
-    }
-    let mut even_out = [0i32; 16];
-    dct_1d(&even[..half], &mut even_out[..half], half);
-    for k in 0..half {
-        output[2 * k] = even_out[k];
-        let row = &matrix[2 * k + 1];
-        let mut sum = 0;
-        for x in 0..half {
-            sum += row[x] * odd[x];
+        for j in 0..N {
+            even[x][j] = block[x][j] + block[N - 1 - x][j];
+            odd[x][j] = block[x][j] - block[N - 1 - x][j];
         }
-        output[2 * k + 1] = sum;
     }
+    for k in 0..N {
+        let (sources, target) = if k % 2 == 0 {
+            (&even, &mut out[k])
+        } else {
+            (&odd, &mut out[k])
+        };
+        for x in 0..half {
+            let weight = m[k][x];
+            for (sum, &value) in target.iter_mut().zip(&sources[x]) {
+                *sum += weight * value;
+            }
+        }
+    }
+    out
 }
 
 /// The forward transform of an `n` by `n` residual, row-major, into
@@ -79,53 +102,166 @@ pub fn forward(residual: &[i32], coefficients: &mut [i32], log2: u32, dst: bool,
     );
 }
 
-/// `forward`, its intermediate in `middle` (`n * n` long).
+/// `forward`; `middle` is unused scratch, kept for the callers.
 pub fn forward_with(
     residual: &[i32],
     coefficients: &mut [i32],
-    middle: &mut [i32],
+    _middle: &mut [i32],
     log2: u32,
     dst: bool,
     bit_depth: u32,
 ) {
-    let n = 1usize << log2;
-    let shift1 = log2 as i32 + bit_depth as i32 - 9;
-    let shift2 = log2 as i32 + 6;
+    match log2 {
+        2 => forward_sized::<4>(residual, coefficients, dst, bit_depth),
+        3 => forward_sized::<8>(residual, coefficients, false, bit_depth),
+        4 => forward_sized::<16>(residual, coefficients, false, bit_depth),
+        _ => forward_sized::<32>(residual, coefficients, false, bit_depth),
+    }
+}
+
+/// The forward transform at size `N`: the residual's rows transformed
+/// (as the rows of its transpose), rounded, then its columns.
+fn forward_sized<const N: usize>(
+    residual: &[i32],
+    coefficients: &mut [i32],
+    dst: bool,
+    bit_depth: u32,
+) {
+    let log2 = N.trailing_zeros() as i32;
+    let shift1 = log2 + bit_depth as i32 - 9;
+    let shift2 = log2 + 6;
     let round1 = 1i32 << (shift1 - 1).max(0);
     let round2 = 1i32 << (shift2 - 1);
-    let mut line = [0i32; 32];
-    let mut out = [0i32; 32];
-    // First stage: each row's horizontal frequencies, kept transposed
-    // (frequency by row) for the second stage.
-    for y in 0..n {
-        let row = &residual[y * n..(y + 1) * n];
-        if dst {
-            for (u, value) in out.iter_mut().take(4).enumerate() {
-                *value = (0..4).map(|x| DST4[u][x] * row[x]).sum();
-            }
+    // Rows first: the transpose's rows are the residual's columns, so
+    // transforming them gives each row's horizontal frequencies, as
+    // `middle[u][y]`.
+    let transposed: [[i32; N]; N] =
+        std::array::from_fn(|x| std::array::from_fn(|y| residual[y * N + x]));
+    let mut middle = transform_rows(&transposed, dst);
+    for value in middle.iter_mut().flatten() {
+        *value = if shift1 > 0 {
+            (*value + round1) >> shift1
         } else {
-            dct_1d(row, &mut out, n);
-        }
-        for u in 0..n {
-            middle[u * n + y] = if shift1 > 0 {
-                (out[u] + round1) >> shift1
-            } else {
-                out[u] << -shift1
-            };
+            *value << -shift1
+        };
+    }
+    // Then columns: rows of `middle` transposed back (`[y][u]`).
+    let columns: [[i32; N]; N] = std::array::from_fn(|y| std::array::from_fn(|u| middle[u][y]));
+    let out = transform_rows(&columns, dst);
+    for (v, row) in out.iter().enumerate() {
+        for (u, &value) in row.iter().enumerate() {
+            coefficients[v * N + u] = (value + round2) >> shift2;
         }
     }
-    // Second stage: each column's vertical frequencies.
-    for u in 0..n {
-        line[..n].copy_from_slice(&middle[u * n..(u + 1) * n]);
-        if dst {
-            for (v, value) in out.iter_mut().take(4).enumerate() {
-                *value = (0..4).map(|y| DST4[v][y] * line[y]).sum();
+}
+
+#[cfg(test)]
+mod reference {
+    use super::*;
+    /// One dimension of the forward DCT of `n` samples (`n` from 4 to 32):
+    /// the even outputs are the half-size DCT of the sums of mirrored
+    /// samples, the odd ones the differences against the odd rows, so a
+    /// size takes a third of a matrix product's multiplies. Sums are exact:
+    /// the same as the matrix product.
+    fn dct_1d_reference(input: &[i32], output: &mut [i32], n: usize) {
+        let log2 = n.trailing_zeros();
+        let matrix = dct(log2);
+        if n == 4 {
+            for (k, out) in output.iter_mut().take(4).enumerate() {
+                *out = (0..4).map(|x| matrix[k][x] * input[x]).sum();
             }
-        } else {
-            dct_1d(&line[..n], &mut out, n);
+            return;
         }
-        for v in 0..n {
-            coefficients[v * n + u] = (out[v] + round2) >> shift2;
+        let half = n / 2;
+        let mut even = [0i32; 16];
+        let mut odd = [0i32; 16];
+        for x in 0..half {
+            even[x] = input[x] + input[n - 1 - x];
+            odd[x] = input[x] - input[n - 1 - x];
+        }
+        let mut even_out = [0i32; 16];
+        dct_1d_reference(&even[..half], &mut even_out[..half], half);
+        for k in 0..half {
+            output[2 * k] = even_out[k];
+            let row = &matrix[2 * k + 1];
+            let mut sum = 0;
+            for x in 0..half {
+                sum += row[x] * odd[x];
+            }
+            output[2 * k + 1] = sum;
+        }
+    }
+
+    /// The forward transform of an `n` by `n` residual, row-major, into
+    /// coefficients (vertical frequency by row): rows first, then columns,
+    /// with HM's shifts.
+    pub fn forward_reference(
+        residual: &[i32],
+        coefficients: &mut [i32],
+        log2: u32,
+        dst: bool,
+        bit_depth: u32,
+    ) {
+        let mut middle = [0i32; 32 * 32];
+        let n = 1usize << log2;
+        forward_with_reference(
+            residual,
+            coefficients,
+            &mut middle[..n * n],
+            log2,
+            dst,
+            bit_depth,
+        );
+    }
+
+    /// `forward`, its intermediate in `middle` (`n * n` long).
+    fn forward_with_reference(
+        residual: &[i32],
+        coefficients: &mut [i32],
+        middle: &mut [i32],
+        log2: u32,
+        dst: bool,
+        bit_depth: u32,
+    ) {
+        let n = 1usize << log2;
+        let shift1 = log2 as i32 + bit_depth as i32 - 9;
+        let shift2 = log2 as i32 + 6;
+        let round1 = 1i32 << (shift1 - 1).max(0);
+        let round2 = 1i32 << (shift2 - 1);
+        let mut line = [0i32; 32];
+        let mut out = [0i32; 32];
+        // First stage: each row's horizontal frequencies, kept transposed
+        // (frequency by row) for the second stage.
+        for y in 0..n {
+            let row = &residual[y * n..(y + 1) * n];
+            if dst {
+                for (u, value) in out.iter_mut().take(4).enumerate() {
+                    *value = (0..4).map(|x| DST4[u][x] * row[x]).sum();
+                }
+            } else {
+                dct_1d_reference(row, &mut out, n);
+            }
+            for u in 0..n {
+                middle[u * n + y] = if shift1 > 0 {
+                    (out[u] + round1) >> shift1
+                } else {
+                    out[u] << -shift1
+                };
+            }
+        }
+        // Second stage: each column's vertical frequencies.
+        for u in 0..n {
+            line[..n].copy_from_slice(&middle[u * n..(u + 1) * n]);
+            if dst {
+                for (v, value) in out.iter_mut().take(4).enumerate() {
+                    *value = (0..4).map(|y| DST4[v][y] * line[y]).sum();
+                }
+            } else {
+                dct_1d_reference(&line[..n], &mut out, n);
+            }
+            for v in 0..n {
+                coefficients[v * n + u] = (out[v] + round2) >> shift2;
+            }
         }
     }
 }
@@ -233,6 +369,35 @@ mod tests {
 
     /// A residual through the forward transform, fine quantization, and
     /// the decoder's inverse comes back within a step.
+    #[test]
+    fn the_transform_matches_its_reference() {
+        let mut seed = 99u32;
+        for bit_depth in [8u32, 10] {
+            let max = (1i32 << bit_depth) - 1;
+            for log2 in 2..=5u32 {
+                for dst in [false, true] {
+                    if dst && log2 != 2 {
+                        continue;
+                    }
+                    let n = 1usize << log2;
+                    for _ in 0..200 {
+                        let residual: Vec<i32> = (0..n * n)
+                            .map(|_| {
+                                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                                ((seed >> 8) as i32 % (2 * max + 1)) - max
+                            })
+                            .collect();
+                        let mut fast = vec![0i32; n * n];
+                        let mut slow = vec![0i32; n * n];
+                        forward(&residual, &mut fast, log2, dst, bit_depth);
+                        reference::forward_reference(&residual, &mut slow, log2, dst, bit_depth);
+                        assert_eq!(fast, slow, "{n}x{n} dst {dst} at {bit_depth} bits");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn transforms_round_trip() {
         for log2 in 2..=5u32 {

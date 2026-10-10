@@ -338,7 +338,8 @@ impl Neighbours {
             top: plain.top,
             left: plain.left,
         };
-        if component == 0 {
+        // Only luma above 4x4 is ever predicted from filtered samples.
+        if component == 0 && n > 4 {
             filtered.filter(n, true, picture.settings.bit_depth);
         }
         Neighbours { plain, filtered }
@@ -606,12 +607,12 @@ impl Picture<'_> {
         let source = &self.source[component];
         for row in 0..n {
             let start = (y + row) * source.width + x;
-            for (column, (out, &sample)) in scratch.residual[row * n..(row + 1) * n]
+            for ((out, &sample), &predicted) in scratch.residual[row * n..(row + 1) * n]
                 .iter_mut()
                 .zip(&source.samples[start..start + n])
-                .enumerate()
+                .zip(&scratch.prediction[row * n..(row + 1) * n])
             {
-                *out = i32::from(sample) - scratch.prediction[row * n + column];
+                *out = i32::from(sample) - predicted;
             }
         }
         let quantizer = if component == 0 {
@@ -666,11 +667,17 @@ impl Picture<'_> {
                 scratch.back[..area].fill(0);
             }
             let mut distortion = 0u64;
-            for index in 0..area {
-                let value = (scratch.prediction[index] + scratch.back[index]).clamp(0, max);
-                scratch.recon[index] = value;
-                let d = i64::from(scratch.residual[index] + scratch.prediction[index] - value);
-                distortion += (d * d) as u64;
+            for (((recon, &predicted), &back), &residual) in scratch.recon[..area]
+                .iter_mut()
+                .zip(&scratch.prediction[..area])
+                .zip(&scratch.back[..area])
+                .zip(&scratch.residual[..area])
+            {
+                let value = (predicted + back).clamp(0, max);
+                *recon = value;
+                // Under 2^16 in magnitude: its square fits 32 bits unsigned.
+                let d = residual + predicted - value;
+                distortion += u64::from((d * d) as u32);
             }
             // Bits matter here only to choose between transform skip and
             // not; otherwise the caller prices the levels.

@@ -216,6 +216,11 @@ impl Coding {
     }
 }
 
+/// Rounding to nearest at `qbits`.
+fn rounding_of(qbits: i32) -> i64 {
+    1i64 << (qbits - 1)
+}
+
 /// A block to quantize.
 pub struct Block<'a> {
     pub coefficients: &'a [i32],
@@ -267,12 +272,22 @@ pub fn quantize(block: &Block<'_>, rates: &Rates, work: &mut Work, levels: &mut 
     // Scan index to position in the block.
     let table = positions(log2, block.kind);
     let position = |s: usize| -> usize { usize::from(table[s]) };
+    // Most trial blocks round to nothing: found in raster order, which
+    // vectorizes, before any scan-order work.
+    let threshold = ((1i64 << qbits) - rounding_of(qbits) + scale - 1) / scale;
+    if block.coefficients[..area]
+        .iter()
+        .all(|&coefficient| i64::from(coefficient.unsigned_abs()) < threshold)
+    {
+        levels[..area].fill(0);
+        return;
+    }
     let mut last = None;
     for s in 0..area {
         let coefficient = block.coefficients[position(s)];
         let value = i64::from(coefficient.unsigned_abs()) * scale;
         scaled[s] = value;
-        let level = ((value + (1i64 << (qbits - 1))) >> qbits).min(32767) as u32;
+        let level = ((value + rounding_of(qbits)) >> qbits).min(32767) as u32;
         nearest[s] = level;
         if level > 0 {
             last = Some(s);
