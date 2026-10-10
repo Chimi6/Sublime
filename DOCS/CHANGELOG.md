@@ -8,6 +8,12 @@ section under a version heading.
 
 ### Added
 
+- `--effort fast|balanced|max`, one scale for every writer that trades work for size at the same fidelity (balanced by default). HEIC: fast matches x265's speed on 12-megapixel photographs and is still smaller than it on held-out photographs; max is the full search; balanced searches small pictures in full and large ones in 58% of max's work for 0.5 to 0.9% more bytes. WebP lossless: its three predictor searches. In the browser too: `sublime.convert(bytes, from, to, { quality, effort, ... })`.
+
+- Every format declares the options it honours when read and when written; `sublime formats`, `sublime check`, and `DOCS/FORMATS.md` list them, and a flag a conversion does not use is warned about (refused under `--strict`) instead of silently ignored.
+
+- HEIC write, natively: an HEVC intra encoder and HEIF writer written here, from every image format, at `--quality` (50 by default, as `heif-enc`), with alpha, the colour profile, and Exif; 16-bit sources at 10 bits, and a JPEG's own YCbCr taken as it is. Against libheif's `heif-enc` (x265, slow preset), smaller at equal quality by every measure on real and held-out photographs (1 to 2.5%) and on the Kodak photographs by PSNR and SSIM (not SSIMULACRA2, +1.0%); at `--effort fast` as fast as it on 12-megapixel photographs; a fifth to a quarter of its memory; against Apple's hardware `sips`, 12 to 17% smaller. Read back by libheif, `sips`, and Quick Look. Notes in `DOCS/formats/heic.md`, numbers in `DOCS/benchmarks/png-heic.md`.
+
 - HEIC read, natively: an HEVC still-picture decoder and HEIF parser written here, bit-exact with libheif on Apple's and x265's files (grids, odd sizes, 10-bit, 4:4:4, alpha), to every image format and PDF. Crop, rotation, mirroring, and alpha are applied, and the colour profile and Exif carried into PNG and JPEG. Chroma is interpolated rather than repeated, closer to the original than libheif or `sips`; grid tiles decode in parallel (Apple's 6016-pixel wallpaper to JPEG in 0.3 s against libheif's 1.4). Notes in `DOCS/formats/heic.md`.
 
 - HEIC decoding beats libheif everywhere it is measured (`DOCS/benchmarks/heic-png.md`): to PNG 8 to 34 times faster, to JPEG 2.8 to 10 times, at 15 to 57% of its memory; grids stream by bands of tiles, and JPEG output takes the picture's own YCbCr. Bit-exact with libheif on 41 reference files; where three multi-slice streams differ, libde265 is wrong and Apple's decoder agrees with ours.
@@ -25,6 +31,8 @@ section under a version heading.
 - Semicolon and pipe CSV: a CSV input's delimiter is read from its first records (a European spreadsheet's semicolon export, decimal commas and all, reads as semicolons), and `--delimiter` sets the one read and written (`;`, `|`, `tab`). Notes in `DOCS/formats/csv.md`.
 
 ### Changed
+
+- Breaking: lossless WebP takes `--effort`, not `--quality` (which now does nothing for WebP and warns).
 
 - `DOCS/FORMATS.md` keeps the formats and the map; every converter and every path, with what each loses, move to their own `DOCS/CONVERSIONS.md` (`sublime paths --conversions`), so the formats page stays short as the paths grow.
 - JPEG output holds a band's 4:2:0 chroma, not its RGB, until the band encodes (256 to 96 KB a band of a 4000-pixel image); the bytes are unchanged.

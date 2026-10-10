@@ -48,15 +48,9 @@ pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliE
     let mut part = output.as_os_str().to_owned();
     part.push(".part");
     let part = PathBuf::from(part);
-    let options = ConvertOptions {
-        strict: args.strict,
-        sheet: args.sheet.clone(),
-        quality: args.quality,
-        delimiter: args.delimiter,
-        base: None,
-        page: args.page,
-        font: crate::cli::commands::font_option(args.font.as_deref())?,
-    };
+    // Images set on PDF pages as they are: no option changes them.
+    super::check_unused_options(args, &[], "images merged into a PDF", renderer)?;
+    let options = super::convert_options(args, None)?;
     let mut collector = CollectingSink::new();
     let written = write_pages(&inputs, &part, &output, &options, renderer, &mut collector);
     if let Err(error) = written {

@@ -25,12 +25,26 @@ fn render_human() -> String {
     let mut text = String::new();
     for format in registry::all_formats() {
         let extensions = format.extensions.join(", ");
-        let line = format!(
-            "{:<14} {:<10} {:<32} extensions: {extensions}\n",
+        let mut line = format!(
+            "{:<14} {:<10} {:<32} extensions: {extensions}",
             format.id,
             format.category.label(),
             format.display_name
         );
+        let labels = |options: &[crate::format::Setting]| -> String {
+            options
+                .iter()
+                .map(|option| option.label())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        if !format.read_options.is_empty() {
+            line.push_str(&format!("; read: {}", labels(format.read_options)));
+        }
+        if !format.write_options.is_empty() {
+            line.push_str(&format!("; written: {}", labels(format.write_options)));
+        }
+        line.push('\n');
         text.push_str(&line);
     }
     text
@@ -55,6 +69,17 @@ fn render_json() -> String {
                 let _ = writer.string(extension);
             }
             let _ = writer.end_array();
+            for (key, options) in [
+                ("read_options", format.read_options),
+                ("write_options", format.write_options),
+            ] {
+                let _ = writer.key(key);
+                let _ = writer.begin_array();
+                for option in options {
+                    let _ = writer.string(option.flag());
+                }
+                let _ = writer.end_array();
+            }
             let _ = writer.end_object();
         }
         let _ = writer.end_array();

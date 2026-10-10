@@ -264,10 +264,11 @@ pub struct ConvertOptions {
     /// The worksheet to read or the name to give the one written: a sheet
     /// name or a 1-based number; the first sheet when absent.
     pub sheet: Option<String>,
-    /// 1 to 100: the quality a lossy image writer encodes at (85 for
-    /// JPEG when absent), or a lossless writer's effort (WebP: 50 and
-    /// under fastest, 90 and up smallest).
+    /// 1 to 100: the fidelity a lossy writer keeps; each format's own
+    /// default when absent (`Setting::Quality`).
     pub quality: Option<u8>,
+    /// The work a writer spends on size; balanced when absent.
+    pub effort: Option<crate::format::Effort>,
     /// The page to read from a paged document (PDF): 1-based, the first
     /// when absent.
     pub page: Option<u32>,
@@ -306,6 +307,15 @@ pub trait Converter: Sync {
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError>;
+
+    /// The options this conversion honours: by default what its input
+    /// format honours read and its output format written. A pair that
+    /// ignores one of them says so here.
+    fn options(&self) -> Vec<crate::format::Setting> {
+        let mut options = self.from().read_options.to_vec();
+        options.extend_from_slice(self.to().write_options);
+        options
+    }
 
     /// Whether `convert_parts` writes each part of a many-part input (every
     /// sheet, table, or page) as its own output, where `convert` writes

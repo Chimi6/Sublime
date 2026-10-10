@@ -73,7 +73,7 @@ pub struct Dequant<'s> {
 /// Each significance context table, once: by block size (4x4, 8x8, 16x16
 /// and up), component, scan, the pattern of coded neighbours, and whether
 /// the sub-block is the block's first (which holds the DC).
-fn significance_table(
+pub(super) fn significance_table(
     log2: u32,
     luma: bool,
     kind: Scan,

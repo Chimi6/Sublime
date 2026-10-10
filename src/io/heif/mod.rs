@@ -6,6 +6,7 @@
 pub mod boxes;
 pub mod rgb;
 mod stream;
+pub mod write;
 
 use boxes::{Colour, Item, Meta, Property, Source};
 

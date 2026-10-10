@@ -198,6 +198,11 @@ impl Converter for MarkdownToXlsx {
         "markdown-to-xlsx"
     }
 
+    /// Sheets are named after the headings, not `--sheet`.
+    fn options(&self) -> Vec<crate::format::Setting> {
+        Vec::new()
+    }
+
     fn from(&self) -> &'static Format {
         &formats::MARKDOWN
     }

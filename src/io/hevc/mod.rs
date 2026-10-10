@@ -7,6 +7,7 @@
 mod bits;
 mod cabac;
 mod decode;
+pub mod encode;
 mod filter;
 mod intra;
 mod params;

@@ -661,28 +661,12 @@ fn mode_residuals(mode: u32, row: &[u8], above: &[u8], out: &mut [u8], start: us
     }
 }
 
-/// How hard the encoder works, from `--quality` as cwebp reads it for
-/// lossless output: 50 and under writes with one predictor (the
-/// gradient clamp, the best single mode on real images) and no
-/// search, 90 and over chooses predictors by an entropy estimate on
-/// every row, and anything else (or no quality) scores four predictors
-/// on every other row by residual magnitude.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Effort {
-    Fast,
-    Default,
-    Best,
-}
-
-impl Effort {
-    pub fn from_quality(quality: Option<u8>) -> Effort {
-        match quality {
-            Some(quality) if quality <= 50 => Effort::Fast,
-            Some(quality) if quality >= 90 => Effort::Best,
-            _ => Effort::Default,
-        }
-    }
-}
+/// How hard the encoder works (`--effort`, the shared scale): fast
+/// writes with one predictor (the gradient clamp, the best single mode on
+/// real images) and no search; balanced scores four predictors on every
+/// other row by residual magnitude; max chooses predictors by an entropy
+/// estimate on every row.
+pub use crate::format::Effort;
 
 /// The byte span of each predictor tile in a row, the first pixel left
 /// out (it predicts from the pixel above whatever the mode).
@@ -879,8 +863,8 @@ fn predictor_residuals(
     let tiles = Tiles::new(width, height);
     let modes = match effort {
         Effort::Fast => vec![12u32; tiles.wide * tiles.high],
-        Effort::Default => magnitude_modes(pixels, width, height, &tiles),
-        Effort::Best => entropy_modes(pixels, width, height, &tiles),
+        Effort::Balanced => magnitude_modes(pixels, width, height, &tiles),
+        Effort::Max => entropy_modes(pixels, width, height, &tiles),
     };
     let spans = &tiles.spans;
     let first_tile = tiles.first;
@@ -1085,11 +1069,11 @@ impl<'a> WebpRows<'a> {
             scratch: Vec::new(),
             pixels: Vec::new(),
             has_alpha: false,
-            effort: Effort::Default,
+            effort: Effort::Balanced,
         }
     }
 
-    /// Sets how hard the encoder works (`Effort::from_quality`).
+    /// Sets how hard the encoder works.
     pub fn with_effort(mut self, effort: Effort) -> WebpRows<'a> {
         self.effort = effort;
         self
@@ -1255,7 +1239,7 @@ impl RowSink for WebpRows<'_> {
 
 /// Writes a whole image as lossless WebP.
 pub fn write_webp(image: &crate::image::Image, sink: &mut dyn Write) -> io::Result<()> {
-    write_webp_with(image, sink, Effort::Default)
+    write_webp_with(image, sink, Effort::Balanced)
 }
 
 /// Writes a whole image as lossless WebP at `effort`.

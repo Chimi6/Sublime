@@ -2,12 +2,13 @@
 
 Apple's photo format since iOS 11: an HEVC (H.265) still image in the
 HEIF container (ISO/IEC 23008-12, over the ISO base media file format).
-Sublime reads it with an HEVC decoder and a HEIF parser written here
-(`src/io/hevc`, `src/io/heif`), no libde265 or libheif. This is the
-living map of what the reader handles, tied to the tests that prove it.
+Sublime reads and writes it with an HEVC decoder and encoder and a HEIF
+parser and writer written here (`src/io/hevc`, `src/io/heif`), no
+libde265, x265, or libheif. This is the living map of what the reader
+and the writer handle, tied to the tests that prove it.
 
-HEVC is covered by patent pools (Access Advance, Via LA). Decoding it
-in software may need a licence where those patents hold.
+HEVC is covered by patent pools (Access Advance, Via LA). Decoding or
+encoding it in software may need a licence where those patents hold.
 
 ## Status
 
@@ -24,7 +25,10 @@ in software may need a licence where those patents hold.
 - Extensions `heic`, `heif`, `hif`; a file branded `heic` is known by
   its first bytes too. Pictures in documents set into a PDF read HEIC
   by its brand.
-- Writing HEIC is next (v1).
+- Every image format `-> heic`: shipped, lossy (an HEVC picture at the
+  quality given, 50 by default as `heif-enc`; 4:2:0 chroma; 16-bit
+  samples at 10 bits; alpha, the ICC profile, and Exif carried). A
+  JPEG source hands over its own YCbCr, so its chroma is not resampled.
 
 Oracles (`tests/heic_suite.rs`, fixtures in `tests/fixtures/heic`, all
 of them synthetic images written by macOS `sips` or by libheif 1.20
@@ -95,13 +99,113 @@ Conversion is exact to 0.5 of a step: at 8 bits 0.23% of samples sit one
 off float rounding, all on exact halves; at 16 bits 3 samples in half a
 million.
 
+## What the writer does
+
+The rows become YCbCr 4:2:0 as libheif makes them by default: BT.601 at
+full range, chroma from each 2x2 block's average, signalled by an `nclx`
+box and in the stream's VUI. An odd width or height is coded one longer
+(4:2:0 crops to even sizes) and a `clap` takes the extra column or row
+off. The file is libheif's layout: `ftyp` (`heic`, `mif1`, `miaf`), then
+`meta` (`hdlr`, `pitm`, `iloc`, `iinf`, `iref`, and `iprp` with `hvcC`,
+`colr`, `ispe`, `pixi`, and `clap`), then `mdat`. Alpha is an auxiliary
+picture (`auxC` with the HEVC alpha URN, `auxl` to the primary), coded
+4:2:0 with flat chroma so every Main decoder takes it; the ICC profile a
+second `colr`; Exif an item described by `cdsc`.
+
+The picture is one IDR of Main (or Main 10 for 16-bit sources), one
+slice of wavefront rows: each row starts from the row above's contexts
+after its second CTB and runs two CTBs behind it, and every thread
+takes whichever row can go on next, the earliest first. Each row owns
+its band of the reconstruction and hears the row above's last lines as
+it goes, so a picture's memory is its source and a few rows.
+
+CTBs are 32 pixels, or 16 for a small picture: one whose 32-pixel CTBs,
+shared among eight workers, number fewer than the wavefront's diagonal
+(W/32 + 2H/32 CTBs long) would leave the workers waiting on it. On
+large photographs 32-pixel CTBs code 9 to 24% smaller than 16-pixel
+ones; on the Kodak photographs (768 by 512, under the line) 16-pixel
+CTBs cost 0.1 to 1.1% and code in about two thirds of the time. The rule reads
+the picture alone, so a file is the same on every machine.
+
+The decisions, by rate and distortion (lambda 0.57 * 2^((QP - 12) / 3),
+as HM's), at `--effort max`:
+
+- CUs from the CTB's size down to 8, an 8x8 CU also as four 4x4
+  prediction blocks; a CU that codes no levels is not tried smaller.
+- Luma modes: all 35 by SATD and their bits, then the best 8 (4x4 and
+  8x8 blocks) or 6 (16x16 and 32x32), with the most probable modes,
+  each coded in full with its transform tree (whole or split once)
+  searched; a split is given up as soon as it costs more than the block
+  whole or the best mode so far.
+- Chroma: all five modes coded along the chosen tree.
+- Levels by rate-distortion optimized quantization (HM's: each level
+  among nearest, one less, and zero by its bits at the current context
+  states, groups dropped and the last position moved where cheaper, the
+  whole block dropped), signs hidden in the same pass (where a group's
+  parity is wrong, the level whose change costs least in error and bits
+  moves); transform skip on 4x4 blocks, tried for the chosen mode.
+- Every choice priced by the syntax that will be written, through a
+  CABAC estimator over the same context states as the encoder.
+- Adaptive quantization: a QP for each CTB from its detail (busy areas
+  coarser, flat ones finer; strength 0.95 with 32-pixel CTBs, 0.7 with
+  16, each measured on Kodak against x265), sent as `cu_qp_delta`.
+- The deblocking filter on, its offsets at -1 (measured kinder to
+  detail: 0.2% at equal SSIM and RGB PSNR); no SAO (it gains x265 0.2%
+  on the photographs measured, and costs a filter pass in the encoder).
+
+`--effort` cuts the search where it buys the least, each cut measured
+on 21 CLIC photographs and then checked on 32 held out (the other 20 of
+CLIC's validation set and 12 photographs of 4032 pixels):
+
+| Effort | Search | Work | Bytes against max (held out) |
+|---|---|---|---|
+| `max` | as above | 100% | 0 |
+| `balanced` (default) | 6, 6, 3, 3 candidates, each first coded whole and the best one's transform tree searched; 8x8 CUs' transforms not split (their 4x4 prediction blocks still tried); the SATD pass over every fourth angle and refined around the best | 58% | +0.5 to +0.9% |
+| `fast` | as balanced with 4, 4, 3, 3 candidates, and flat 16x16 and 32x32 CUs (cost per sample under 15000 and 12000 lambdas) not tried smaller | 41% | +0.8 to +1.6% |
+
+A small picture (16-pixel CTBs) codes faster than x265 at max already,
+so balanced searches it in full; fast cuts it as it does a large one.
+
+Measured against the alternatives and not kept: quantization groups of
+16 within 32-pixel CTBs, AQ by variance alone, SSIM-weighted lambda,
+plain quantization while comparing modes (12% faster, 1.3% larger at
+equal SSIM), fewer candidates or a cheap first pass over them (10 to 20%
+faster, 0.1 to 0.4% larger), and leaving 8x8 CUs' transforms unsplit
+(13% faster, 0.3% larger).
+
+The encoder's reconstruction is made by the decoder's own prediction and
+inverse transforms, so it is what every decoder produces: the tests
+decode each test picture with the decoder here and require it to equal
+the encoder's reconstruction sample for sample, at 8 and 10 bits, odd
+sizes, QPs 12 to 40, both CTB sizes, and QP changes per CTB and per
+quarter CTB; and a picture coded over and over by encoders racing for
+the cores comes out the same each time.
+
+Oracles for the writer: `src/io/hevc/encode` (CABAC bins decode back,
+transforms round trip, the reconstruction equals the decoder's output)
+and `tests/heic_write.rs` (pictures of 1x1 to 200x136, odd sizes,
+alpha, gray, 16 bits at 10, the profile and Exif, smaller files at lower
+qualities). By hand: libheif and macOS `sips` and Quick Look read odd
+sizes, alpha, gray, 10-bit, and a 12000-pixel-wide picture to the same
+samples as our reader.
+
 ## Measured
 
-`DOCS/benchmarks/heic-png.md` has the pair: every line passes against
+Reading: `DOCS/benchmarks/heic-png.md` has the pair: every line passes against
 libheif's `heif-dec`, PNG output 8 to 34 times faster and JPEG output 2.8
 to 10 times faster at 15 to 57% of its memory. Apple's `sips`, on the
 hardware decoder, is behind on every line but the 36-megapixel stock
 grid to JPEG (430 against 529 MB/s, 66 against 42 MB).
+
+Writing: `DOCS/benchmarks/png-heic.md` has the pair, against libheif's
+`heif-enc` (x265, slow preset). At the default effort files are smaller
+at equal quality by every measure (PSNR of luma and of RGB, SSIM,
+SSIMULACRA2) on 12 photographs of 4032 pixels and on 32 held out from
+the tuning (1 to 2.5%), and by PSNR and SSIM on Kodak's 24, but larger
+by SSIMULACRA2 there (+1.0%). `--effort fast` codes the 12 photographs at
+x265's speed, still smaller; balanced takes 17% longer, max 1.9 times.
+Memory is a fifth to a quarter of x265's. Apple's `sips`, on the
+hardware encoder, is 2 to 15 times faster and 12 to 17% larger.
 
 ## Known deviations
 
@@ -124,3 +228,7 @@ grid to JPEG (430 against 529 MB/s, 66 against 42 MB).
 - Not read: AVIF (`av01`), JPEG items, overlays (`iovl`), image
   sequences, and derived `iden` items; the stream's inter frames (a
   HEIF holds intra pictures).
+- Written: 4:2:0 only (no 4:4:4 or 4:0:0 output, so a gray image is
+  4:2:0 with flat chroma), no lossless mode, no SAO, and one picture,
+  not a grid, up to 16384 pixels a side (macOS reads 12000 wide; older
+  hardware decoders may want a grid).

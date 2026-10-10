@@ -2,7 +2,7 @@
 //! to residuals, through the inverse DCT (4 to 32 points), the 4x4 DST of
 //! intra luma, transform skip, or neither (transquant bypass).
 
-const DST4: [[i32; 4]; 4] = [
+pub(super) const DST4: [[i32; 4]; 4] = [
     [29, 55, 74, 84],
     [74, 74, 0, -74],
     [84, -29, -74, 55],
@@ -54,13 +54,33 @@ pub fn inverse_transform(
         dst_transform(block, last_row, last_column, shift);
         return;
     }
+    // The intermediate sized to the block: most blocks are 4x4 and 8x8,
+    // and clearing a 32x32 one for each would cost more than the sums.
+    match log2 {
+        2 => dct_transform::<16>(block, log2, last_row, last_column, shift),
+        3 => dct_transform::<64>(block, log2, last_row, last_column, shift),
+        4 => dct_transform::<256>(block, log2, last_row, last_column, shift),
+        _ => dct_transform::<1024>(block, log2, last_row, last_column, shift),
+    }
+}
+
+/// The DCT's two passes, over an intermediate of `AREA` samples.
+fn dct_transform<const AREA: usize>(
+    block: &mut [i32],
+    log2: u32,
+    last_row: usize,
+    last_column: usize,
+    shift: i32,
+) {
+    let n = 1usize << log2;
+    let round = 1i32 << (shift - 1);
     let step = 32 >> log2;
     let half = n / 2;
     // Columns, a whole row of the intermediate at a time so the inner
     // loops run along x. M[j][n-1-y] is M[j][y] for even j and its
     // negative for odd j, so rows y and n-1-y come from the same two
     // sums, their even and odd parts.
-    let mut intermediate = [0i32; 32 * 32];
+    let mut intermediate = [0i32; AREA];
     let mut even = [0i32; 32];
     let mut odd = [0i32; 32];
     for y in 0..half {
