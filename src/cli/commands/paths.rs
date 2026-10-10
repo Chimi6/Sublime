@@ -116,6 +116,8 @@ pub fn render_markdown() -> String {
     text.push_str("## Map\n\n");
     text.push_str(&format!("One graph per category and one for the crossings between them. A line joins two formats with a direct converter between them, in either direction. The grid under each graph gives every pair (rows from, columns to): {} lossless, {} conditional, {} lossy, with the number of steps (1 is a direct converter), blank for no path. [CONVERSIONS.md](CONVERSIONS.md) has each path and what it loses.\n\n", kind_mark(FidelityKind::Lossless), kind_mark(FidelityKind::Conditional), kind_mark(FidelityKind::Lossy)));
     text.push_str(&render_mermaid());
+    text.push_str("\n## Options\n\n");
+    text.push_str("Two flags tune what a writer makes, each with one meaning everywhere. `--quality` (1 to 100) is the fidelity a lossy format keeps, with each format's own default. `--effort` (`fast`, `balanced`, or `max`; `balanced` when absent) is how much work a writer spends on smaller output at the same fidelity. The other options pick what is read or name what is written. The tables below give the options each format honours when read and when written; a flag the conversion does not use is warned about, and refused under `--strict`. `sublime check <from> <to>` lists a path's.\n");
     text.push_str("\n## Formats\n\n");
     let mut formats = registry::all_formats();
     formats.sort_by(|left, right| (left.category, left.id).cmp(&(right.category, right.id)));
@@ -125,7 +127,7 @@ pub fn render_markdown() -> String {
         text.push_str("### ");
         text.push_str(category.label());
         text.push_str(
-            " formats\n\n| Id | Name | Extensions | Produced by | Consumed by |\n|---|---|---|---|---|\n",
+            " formats\n\n| Id | Name | Extensions | Options read | Options written | Produced by | Consumed by |\n|---|---|---|---|---|---|---|\n",
         );
         for format in formats.iter().filter(|format| format.category == category) {
             let mut produced_by: Vec<&str> = Vec::new();
@@ -139,10 +141,12 @@ pub fn render_markdown() -> String {
                 }
             }
             let line = format!(
-                "| {} | {} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} |\n",
                 format.id,
                 format.display_name,
                 format.extensions.join(", "),
+                option_labels(format.read_options),
+                option_labels(format.write_options),
                 or_dash(&produced_by),
                 or_dash(&consumed_by)
             );
@@ -362,6 +366,18 @@ fn push_mermaid_id(text: &mut String, format_id: &str) {
 /// GitHub reads `<root>` as an HTML tag and drops it.
 fn cell(text: &str) -> String {
     text.replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Options as the docs list them (`--quality (default 85)`), or a dash.
+pub fn option_labels(options: &[crate::format::Setting]) -> String {
+    if options.is_empty() {
+        return "-".to_string();
+    }
+    options
+        .iter()
+        .map(|option| format!("`{}`", option.label()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn or_dash(names: &[&str]) -> String {

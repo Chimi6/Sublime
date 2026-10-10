@@ -1,6 +1,6 @@
 //! Static format declarations. Add one `pub static` per format.
 
-use super::{Category, Format};
+use super::{Category, Format, Setting};
 
 pub static CSV: Format = Format {
     id: "csv",
@@ -8,6 +8,8 @@ pub static CSV: Format = Format {
     extensions: &["csv"],
     magic: None,
     category: Category::Data,
+    read_options: &[Setting::Delimiter],
+    write_options: &[Setting::Delimiter],
 };
 
 pub static TSV: Format = Format {
@@ -16,6 +18,8 @@ pub static TSV: Format = Format {
     extensions: &["tsv", "tab"],
     magic: None,
     category: Category::Data,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static JSONL: Format = Format {
@@ -24,6 +28,8 @@ pub static JSONL: Format = Format {
     extensions: &["jsonl", "ndjson"],
     magic: None,
     category: Category::Data,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static XLSX: Format = Format {
@@ -32,6 +38,8 @@ pub static XLSX: Format = Format {
     extensions: &["xlsx"],
     magic: None,
     category: Category::Data,
+    read_options: &[Setting::Sheet],
+    write_options: &[Setting::Sheet],
 };
 
 pub static PNG: Format = Format {
@@ -40,6 +48,8 @@ pub static PNG: Format = Format {
     extensions: &["png"],
     magic: Some(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']),
     category: Category::Image,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static JPEG: Format = Format {
@@ -48,6 +58,8 @@ pub static JPEG: Format = Format {
     extensions: &["jpg", "jpeg", "jpe"],
     magic: Some(&[0xFF, 0xD8, 0xFF]),
     category: Category::Image,
+    read_options: &[],
+    write_options: &[Setting::Quality { default: 85 }],
 };
 
 pub static WEBP: Format = Format {
@@ -56,6 +68,8 @@ pub static WEBP: Format = Format {
     extensions: &["webp"],
     magic: Some(b"RIFF????WEBP"),
     category: Category::Image,
+    read_options: &[],
+    write_options: &[Setting::Effort],
 };
 
 pub static HEIC: Format = Format {
@@ -65,6 +79,8 @@ pub static HEIC: Format = Format {
     // An iPhone's brand; files branded otherwise are known by extension.
     magic: Some(b"????ftypheic"),
     category: Category::Image,
+    read_options: &[],
+    write_options: &[Setting::Quality { default: 50 }, Setting::Effort],
 };
 
 pub static PBM: Format = Format {
@@ -73,6 +89,8 @@ pub static PBM: Format = Format {
     extensions: &["pbm"],
     magic: Some(b"P4"),
     category: Category::Image,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static PGM: Format = Format {
@@ -81,6 +99,8 @@ pub static PGM: Format = Format {
     extensions: &["pgm"],
     magic: Some(b"P5"),
     category: Category::Image,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static PPM: Format = Format {
@@ -89,6 +109,8 @@ pub static PPM: Format = Format {
     extensions: &["ppm", "pnm"],
     magic: Some(b"P6"),
     category: Category::Image,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static PAM: Format = Format {
@@ -97,6 +119,8 @@ pub static PAM: Format = Format {
     extensions: &["pam"],
     magic: Some(b"P7"),
     category: Category::Image,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static TGA: Format = Format {
@@ -106,6 +130,8 @@ pub static TGA: Format = Format {
     // No signature at the start; a TGA 2.0 file ends in one.
     magic: None,
     category: Category::Image,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static ICO: Format = Format {
@@ -114,6 +140,8 @@ pub static ICO: Format = Format {
     extensions: &["ico"],
     magic: Some(b"\0\0\x01\0"),
     category: Category::Image,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static CUR: Format = Format {
@@ -122,6 +150,8 @@ pub static CUR: Format = Format {
     extensions: &["cur"],
     magic: Some(b"\0\0\x02\0"),
     category: Category::Image,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static TIFF: Format = Format {
@@ -131,6 +161,8 @@ pub static TIFF: Format = Format {
     // Little-endian; a big-endian file ("MM\0*") is known by extension.
     magic: Some(b"II*\0"),
     category: Category::Image,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static PDF: Format = Format {
@@ -139,6 +171,8 @@ pub static PDF: Format = Format {
     extensions: &["pdf"],
     magic: Some(b"%PDF-"),
     category: Category::Document,
+    read_options: &[Setting::Page],
+    write_options: &[Setting::Font],
 };
 
 pub static QOI: Format = Format {
@@ -147,6 +181,8 @@ pub static QOI: Format = Format {
     extensions: &["qoi"],
     magic: Some(b"qoif"),
     category: Category::Image,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static BMP: Format = Format {
@@ -155,6 +191,8 @@ pub static BMP: Format = Format {
     extensions: &["bmp", "dib"],
     magic: Some(b"BM"),
     category: Category::Image,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static JSON: Format = Format {
@@ -163,6 +201,8 @@ pub static JSON: Format = Format {
     extensions: &["json"],
     magic: None,
     category: Category::Data,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static TOML: Format = Format {
@@ -171,6 +211,8 @@ pub static TOML: Format = Format {
     extensions: &["toml"],
     magic: None,
     category: Category::Data,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static YAML: Format = Format {
@@ -179,6 +221,8 @@ pub static YAML: Format = Format {
     extensions: &["yaml", "yml"],
     magic: None,
     category: Category::Data,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static XML: Format = Format {
@@ -187,6 +231,8 @@ pub static XML: Format = Format {
     extensions: &["xml"],
     magic: None,
     category: Category::Data,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static MARKDOWN: Format = Format {
@@ -195,6 +241,8 @@ pub static MARKDOWN: Format = Format {
     extensions: &["md", "markdown"],
     magic: None,
     category: Category::Document,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static HTML: Format = Format {
@@ -203,6 +251,8 @@ pub static HTML: Format = Format {
     extensions: &["html", "htm"],
     magic: None,
     category: Category::Document,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static TEXT: Format = Format {
@@ -211,6 +261,8 @@ pub static TEXT: Format = Format {
     extensions: &["txt"],
     magic: None,
     category: Category::Document,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static DOCX: Format = Format {
@@ -219,6 +271,8 @@ pub static DOCX: Format = Format {
     extensions: &["docx"],
     magic: None,
     category: Category::Document,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static RTF: Format = Format {
@@ -227,6 +281,8 @@ pub static RTF: Format = Format {
     extensions: &["rtf"],
     magic: Some(b"{\\rtf"),
     category: Category::Document,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static PAGES: Format = Format {
@@ -235,6 +291,8 @@ pub static PAGES: Format = Format {
     extensions: &["pages"],
     magic: None,
     category: Category::Document,
+    read_options: &[],
+    write_options: &[],
 };
 
 pub static NUMBERS: Format = Format {
@@ -243,6 +301,8 @@ pub static NUMBERS: Format = Format {
     extensions: &["numbers"],
     magic: None,
     category: Category::Data,
+    read_options: &[Setting::Sheet],
+    write_options: &[],
 };
 
 /// A Pages package as JSON (see `io::pages::json`). No extension of its
@@ -253,6 +313,8 @@ pub static PAGES_JSON: Format = Format {
     extensions: &[],
     magic: None,
     category: Category::Document,
+    read_options: &[],
+    write_options: &[],
 };
 
 /// The Markdown event stream as JSON (see `io::markdown::events_json`).
@@ -263,4 +325,6 @@ pub static MARKDOWN_JSON: Format = Format {
     extensions: &[],
     magic: None,
     category: Category::Document,
+    read_options: &[],
+    write_options: &[],
 };

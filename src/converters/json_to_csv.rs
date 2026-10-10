@@ -214,6 +214,11 @@ impl Converter for JsonToXlsx {
         "json-to-xlsx"
     }
 
+    /// Sheets are named after the JSON's members, not `--sheet`.
+    fn options(&self) -> Vec<crate::format::Setting> {
+        Vec::new()
+    }
+
     fn from(&self) -> &'static Format {
         &formats::JSON
     }

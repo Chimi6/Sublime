@@ -28,7 +28,13 @@ read it.
 The API (`sublime.js`):
 
 - `Sublime.load(source)`: `source` is a URL, a `Response`, or the bytes.
-- `sublime.convert(bytes, from, to)` returns `{ status, bytes, message }`.
+- `sublime.convert(bytes, from, to, options)` returns
+  `{ status, bytes, message, parts, warnings }`. `options` is optional and
+  takes the command line's flags without their dashes, with the same
+  meanings: `{ quality: 60, effort: "fast", sheet: "Data", page: 2,
+  delimiter: ";" }` (`DOCS/FORMATS.md` lists which formats honour which).
+  An option the conversion does not use comes back in `warnings`; a value
+  out of range fails the conversion.
   `status` is `converted`, `converted-with-loss` (the message says what
   was dropped), `failed` (the message is the error), `no-path`, or
   `unknown-format`. `bytes` is a `Uint8Array` you own. `parts` is how
@@ -36,7 +42,8 @@ The API (`sublime.js`):
   tables) into a one-table format such as CSV give one file per part,
   returned together as a ZIP (`parts` above 1), named as the command line
   names them (`Sales.csv`, `Costs.csv`).
-- `sublime.formats()`: `[{ id, name, extensions, category }]`.
+- `sublime.formats()`: `[{ id, name, extensions, category, read_options,
+  write_options }]`, the options as their flags (`--quality`).
 - `sublime.paths()`: `[{ from, to, fidelity }]`.
 - `sublime.formatFor(fileName)`: a format id from the extension, or null.
 
@@ -65,8 +72,9 @@ the binaries.
 ## How it works
 
 The crate (`src/lib.rs`) exports a few C-ABI functions over the module's
-linear memory: `alloc`/`dealloc` for the host's buffers, `convert`, and
-readers for the output and message buffers. It calls the library's
+linear memory: `alloc`/`dealloc` for the host's buffers, `convert` and
+`convert_with` (the same with options as `key=value` lines), and readers
+for the output, message, and warning buffers. It calls the library's
 planner and converters directly; multi-step paths run one step at a time
 through in-memory buffers, since the browser offers no threads to the
 module. It is the one place in Sublime with `unsafe`: the lines that turn

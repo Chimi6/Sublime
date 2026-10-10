@@ -524,10 +524,6 @@ impl Bound {
     };
 }
 
-/// Modes taken to the full coding after the SATD pass, by block size 4
-/// to 32 (more than HM's 8, 8, 3, 3 for the larger blocks).
-const CANDIDATES: [usize; 4] = [8, 8, 6, 6];
-
 /// The search's constants: each QP's level.
 pub struct Rd {
     levels: Vec<Level>,
@@ -829,7 +825,18 @@ impl Picture<'_> {
         // A CU that codes nothing whole is not tried split: finer CUs
         // have little to gain where prediction alone does.
         let empty_leaf = leaf.as_ref().is_some_and(|(_, cu, _)| tree_empty(&cu.tree));
-        if !can_split || empty_leaf {
+        // Nor, below the effort's line, one whose cost per sample (in
+        // lambdas) says it is flat: finer CUs seldom pay there.
+        let flat = match log2 {
+            4 | 5 => {
+                let line = self.settings.search.flat_cost[log2 as usize - 4];
+                leaf.as_ref().is_some_and(|(cost, _, _)| {
+                    *cost < line * self.level.lambda * (size * size) as f64
+                })
+            }
+            _ => false,
+        };
+        if !can_split || empty_leaf || flat {
             let (cost, cu, after) = leaf.expect("an 8x8 CU is coded whole");
             if split_coded {
                 decisions.splits.push(false);
@@ -1123,16 +1130,50 @@ impl Picture<'_> {
             }
         }
         let mut prediction = [0i32; 32 * 32];
-        let mut rough: Vec<(f64, u32)> = (0..MODES)
-            .map(|mode| {
-                neighbours.predict(0, mode, n, bit_depth, &mut prediction[..n * n]);
-                let cost = f64::from(satd(&source[..n * n], &prediction[..n * n], n))
-                    + self.level.lambda_satd * mode_bits(mode);
-                (cost, mode)
-            })
-            .collect();
+        let mut score = |mode: u32| -> (f64, u32) {
+            neighbours.predict(0, mode, n, bit_depth, &mut prediction[..n * n]);
+            let cost = f64::from(satd(&source[..n * n], &prediction[..n * n], n))
+                + self.level.lambda_satd * mode_bits(mode);
+            (cost, mode)
+        };
+        let mut rough: Vec<(f64, u32)> = match self.settings.search.coarse_modes {
+            None => (0..MODES).map(&mut score).collect(),
+            Some(seeds) => {
+                // Planar, DC, every fourth angle, and the most probable
+                // modes; then two and one either side of the best angles.
+                let mut seen = [false; MODES as usize];
+                let mut rough = Vec::with_capacity(20);
+                let first = [0u32, 1]
+                    .into_iter()
+                    .chain((2..MODES).step_by(4))
+                    .chain(mpm.iter().copied());
+                for mode in first {
+                    if !std::mem::replace(&mut seen[mode as usize], true) {
+                        rough.push(score(mode));
+                    }
+                }
+                for step in [2i32, 1] {
+                    let mut angles: Vec<(f64, u32)> = rough
+                        .iter()
+                        .copied()
+                        .filter(|&(_, mode)| mode >= 2)
+                        .collect();
+                    angles.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    for &(_, mode) in angles.iter().take(seeds) {
+                        for next in [mode as i32 - step, mode as i32 + step] {
+                            if (2..MODES as i32).contains(&next)
+                                && !std::mem::replace(&mut seen[next as usize], true)
+                            {
+                                rough.push(score(next as u32));
+                            }
+                        }
+                    }
+                }
+                rough
+            }
+        };
         rough.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let count = CANDIDATES[log2 as usize - 2];
+        let count = self.settings.search.candidates[log2 as usize - 2];
         let mut candidates: Vec<u32> = rough.iter().take(count).map(|&(_, mode)| mode).collect();
         for &mode in &mpm {
             if !candidates.contains(&mode) && candidates.len() < count + 1 {
@@ -1146,6 +1187,33 @@ impl Picture<'_> {
             self.skip_trials = false;
         }
         let saved = self.save(0, x, y, n);
+        // The effort's first pass: each candidate coded whole, and only
+        // the best few have their transform trees searched.
+        let keep = self.settings.search.first_pass;
+        let searches_tree = self.settings.transform_depth > tree_depth && log2 > 2;
+        if keep > 0 && searches_tree && candidates.len() > keep {
+            let mut ranked: Vec<(f64, u32)> = Vec::with_capacity(candidates.len());
+            for &mode in &candidates {
+                let mut after = contexts.clone();
+                let mut estimator = Estimator::default();
+                self.write_luma_mode(&mut estimator, &mut after, x, y, mode);
+                let (_, distortion, bits) = self.search_luma_tree(
+                    rd,
+                    &after,
+                    x,
+                    y,
+                    log2,
+                    tree_depth,
+                    tree_depth,
+                    mode,
+                    Bound::NONE,
+                );
+                ranked.push((self.level.cost(distortion, estimator.bits + bits), mode));
+                self.restore(0, x, y, n, &saved);
+            }
+            ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
+            candidates = ranked.iter().take(keep).map(|&(_, mode)| mode).collect();
+        }
         type Best = (f64, u32, Tree, u64, Saved, Contexts, u64);
         let mut best: Option<Best> = None;
         for &mode in &candidates {
@@ -1167,7 +1235,11 @@ impl Picture<'_> {
                 y,
                 log2,
                 tree_depth,
-                self.settings.transform_depth,
+                if log2 == 3 && !self.settings.search.split_small_transforms {
+                    tree_depth
+                } else {
+                    self.settings.transform_depth
+                },
                 mode,
                 bound,
             );

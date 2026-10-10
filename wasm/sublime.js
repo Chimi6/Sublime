@@ -35,17 +35,29 @@ export class Sublime {
     this.exports = instance.exports;
   }
 
-  /** Converts `input` (Uint8Array) from one format id to another. */
-  convert(input, from, to) {
+  /**
+   * Converts `input` (Uint8Array) from one format id to another. `options`
+   * takes the command line's flags without their dashes:
+   * `{ quality: 60, effort: "fast", sheet: "Data", page: 2, delimiter: ";" }`.
+   * One the conversion does not use comes back in `warnings`.
+   */
+  convert(input, from, to, options = {}) {
     const fromBytes = new TextEncoder().encode(from);
     const toBytes = new TextEncoder().encode(to);
+    const optionBytes = new TextEncoder().encode(
+      Object.entries(options).map(([key, value]) => `${key}=${value}`).join("\n"),
+    );
     const fromPtr = this.#place(fromBytes);
     const toPtr = this.#place(toBytes);
     const inputPtr = this.#place(input);
+    const optionsPtr = this.#place(optionBytes);
     let code;
     try {
-      code = this.exports.convert(fromPtr, fromBytes.length, toPtr, toBytes.length, inputPtr, input.length);
+      code = this.exports.convert_with(
+        fromPtr, fromBytes.length, toPtr, toBytes.length, inputPtr, input.length, optionsPtr, optionBytes.length,
+      );
     } finally {
+      this.exports.dealloc(optionsPtr, optionBytes.length);
       this.exports.dealloc(inputPtr, input.length);
       this.exports.dealloc(toPtr, toBytes.length);
       this.exports.dealloc(fromPtr, fromBytes.length);
@@ -54,7 +66,11 @@ export class Sublime {
     const bytes = status === "converted" || status === "converted-with-loss" ? this.#output() : new Uint8Array(0);
     // More than one part: `bytes` is a ZIP holding a file per part.
     const parts = status === "converted" || status === "converted-with-loss" ? this.exports.output_parts() : 0;
-    return { status, bytes, message: this.#message(), parts };
+    const warningText = new TextDecoder().decode(
+      new Uint8Array(this.exports.memory.buffer, this.exports.warnings_ptr(), this.exports.warnings_len()),
+    );
+    const warnings = warningText ? warningText.split("\n") : [];
+    return { status, bytes, message: this.#message(), parts, warnings };
   }
 
   /** Every format: `[{id, name, extensions, category}]`. */

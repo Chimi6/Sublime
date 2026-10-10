@@ -15,8 +15,71 @@ mod search;
 mod syntax;
 
 use super::cabac::{Contexts, SPLIT_CU};
+use crate::format::Effort;
 use cabac::{Coder, Encoder};
 use search::{CtbDecisions, Picture, Plane, Rd, Units};
+
+/// How thoroughly the encoder searches (`--effort`). Max tries every
+/// candidate in full; the others give up a little size for speed, each
+/// cut measured on held-out photographs (CLIC, 2020) against max.
+#[derive(Clone, Debug)]
+pub struct Search {
+    /// Luma modes taken from the SATD pass to full coding, by block size
+    /// 4 to 32 (the most probable modes join them).
+    pub candidates: [usize; 4],
+    /// When not 0, each candidate is first coded whole and only this many
+    /// of the best have their transform trees searched.
+    pub first_pass: usize,
+    /// Whether an 8x8 CU's transform is tried split into 4x4 blocks (its
+    /// four 4x4 prediction blocks are tried either way).
+    pub split_small_transforms: bool,
+    /// When set, the SATD pass scores planar, DC, every fourth angular
+    /// mode, and the most probable modes, then refines around this many
+    /// best angles; otherwise all 35 modes.
+    pub coarse_modes: Option<usize>,
+    /// A 16x16 or 32x32 CU whose cost per sample, in lambdas, is under
+    /// these is not tried smaller (0: always tried).
+    pub flat_cost: [f64; 2],
+}
+
+impl Search {
+    /// Measured against max on photographs held out from the tuning (20
+    /// from CLIC 2020, 12 of 4032 pixels; BD-rate over luma PSNR, SSIM,
+    /// RGB PSNR, SSIMULACRA2): balanced 0.5 to 0.9% larger in 58% of the
+    /// work, fast 0.8 to 1.6% larger in 41% (x265's speed, as heif-enc
+    /// runs it, on 12-megapixel photographs). A small picture (16-pixel
+    /// CTBs) codes in less time than x265's at max already, so balanced
+    /// searches it in full.
+    pub fn for_effort(effort: Effort, small: bool) -> Search {
+        let effort = match effort {
+            Effort::Balanced if small => Effort::Max,
+            other => other,
+        };
+        match effort {
+            Effort::Max => Search {
+                candidates: [8, 8, 6, 6],
+                first_pass: 0,
+                split_small_transforms: true,
+                coarse_modes: None,
+                flat_cost: [0.0, 0.0],
+            },
+            Effort::Balanced => Search {
+                candidates: [6, 6, 3, 3],
+                first_pass: 1,
+                split_small_transforms: false,
+                coarse_modes: Some(1),
+                flat_cost: [0.0, 0.0],
+            },
+            Effort::Fast => Search {
+                candidates: [4, 4, 3, 3],
+                first_pass: 1,
+                split_small_transforms: false,
+                coarse_modes: Some(1),
+                flat_cost: [15000.0, 12000.0],
+            },
+        }
+    }
+}
 
 /// How a picture is coded.
 #[derive(Clone, Debug)]
@@ -45,6 +108,7 @@ pub struct Settings {
     pub full_range: bool,
     /// Colour primaries, transfer characteristics, matrix coefficients.
     pub colour: (u8, u8, u8),
+    pub search: Search,
 }
 
 impl Settings {
@@ -82,6 +146,7 @@ impl Settings {
             aq_strength: if small { 0.7 } else { 0.95 },
             full_range: true,
             colour: (1, 13, 6),
+            search: Search::for_effort(Effort::Balanced, small),
         }
     }
 
@@ -583,16 +648,18 @@ mod tests {
     }
 
     fn round_trip(width: usize, height: usize, bit_depth: u32, qp: i32, deblocking: bool) {
-        for ctb_log2 in [4, 5] {
-            for group_depth in [0, 1] {
-                round_trip_with(
-                    width,
-                    height,
-                    bit_depth,
-                    qp,
-                    deblocking,
-                    (ctb_log2, group_depth),
-                );
+        for effort in [Effort::Fast, Effort::Balanced, Effort::Max] {
+            for ctb_log2 in [4, 5] {
+                for group_depth in [0, 1] {
+                    round_trip_with(
+                        width,
+                        height,
+                        bit_depth,
+                        qp,
+                        deblocking,
+                        (ctb_log2, group_depth, effort),
+                    );
+                }
             }
         }
     }
@@ -603,10 +670,11 @@ mod tests {
         bit_depth: u32,
         qp: i32,
         deblocking: bool,
-        (ctb_log2, group_depth): (u32, u32),
+        (ctb_log2, group_depth, effort): (u32, u32, Effort),
     ) {
         let mut settings = Settings::new(width, height, bit_depth, qp);
         settings.ctb_log2 = ctb_log2;
+        settings.search = Search::for_effort(effort, ctb_log2 == 4);
         settings.deblocking = deblocking;
         settings.qp_delta_depth = Some(group_depth);
         settings.aq_strength = 2.0;

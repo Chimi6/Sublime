@@ -21,7 +21,9 @@ writer handle, tied to the tests that prove it.
 - `png -> jpeg`, `bmp -> jpeg`: shipped, lossy (re-encoded at
   `--quality`, 85 by default; alpha flattened onto white; metadata
   dropped). Streams: sixteen rows at a time.
-- `--quality <1-100>` on `convert` and batch conversion.
+- `--quality <1-100>` on `convert` and batch conversion. `--effort`
+  does nothing for JPEG yet (warned of, as any option a path does not
+  use).
 
 Oracles (`tests/jpeg_suite.rs`, fixtures in `tests/fixtures/jpeg`
 written by Pillow's libjpeg-turbo with the pixels it decodes beside

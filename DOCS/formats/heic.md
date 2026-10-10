@@ -128,7 +128,7 @@ CTBs cost 0.1 to 1.1% and code in about two thirds of the time. The rule reads
 the picture alone, so a file is the same on every machine.
 
 The decisions, by rate and distortion (lambda 0.57 * 2^((QP - 12) / 3),
-as HM's):
+as HM's), at `--effort max`:
 
 - CUs from the CTB's size down to 8, an 8x8 CU also as four 4x4
   prediction blocks; a CU that codes no levels is not tried smaller.
@@ -152,6 +152,19 @@ as HM's):
 - The deblocking filter on, its offsets at -1 (measured kinder to
   detail: 0.2% at equal SSIM and RGB PSNR); no SAO (it gains x265 0.2%
   on the photographs measured, and costs a filter pass in the encoder).
+
+`--effort` cuts the search where it buys the least, each cut measured
+on 21 CLIC photographs and then checked on 32 held out (the other 20 of
+CLIC's validation set and 12 photographs of 4032 pixels):
+
+| Effort | Search | Work | Bytes against max (held out) |
+|---|---|---|---|
+| `max` | as above | 100% | 0 |
+| `balanced` (default) | 6, 6, 3, 3 candidates, each first coded whole and the best one's transform tree searched; 8x8 CUs' transforms not split (their 4x4 prediction blocks still tried); the SATD pass over every fourth angle and refined around the best | 58% | +0.5 to +0.9% |
+| `fast` | as balanced with 4, 4, 3, 3 candidates, and flat 16x16 and 32x32 CUs (cost per sample under 15000 and 12000 lambdas) not tried smaller | 41% | +0.8 to +1.6% |
+
+A small picture (16-pixel CTBs) codes faster than x265 at max already,
+so balanced searches it in full; fast cuts it as it does a large one.
 
 Measured against the alternatives and not kept: quantization groups of
 16 within 32-pixel CTBs, AQ by variance alone, SSIM-weighted lambda,
@@ -184,13 +197,15 @@ to 10 times faster at 15 to 57% of its memory. Apple's `sips`, on the
 hardware decoder, is behind on every line but the 36-megapixel stock
 grid to JPEG (430 against 529 MB/s, 66 against 42 MB).
 
-Writing: `DOCS/benchmarks/png-heic.md` has the pair: every line passes
-against libheif's `heif-enc` (x265, slow preset): on the 24 Kodak
-photographs files 1.4% smaller at equal luma PSNR and 0.3% at equal SSIM
-and RGB PSNR; 1.2 to 1.6 times its speed on 4000 and 6016 pixel pictures
-at a fifth to a quarter of its memory, and 1.3 times on Kodak. Apple's
-`sips`, on the hardware encoder, is 2 to 15 times faster and 12 to 13%
-larger.
+Writing: `DOCS/benchmarks/png-heic.md` has the pair, against libheif's
+`heif-enc` (x265, slow preset). At the default effort files are smaller
+at equal quality by every measure (PSNR of luma and of RGB, SSIM,
+SSIMULACRA2) on 12 photographs of 4032 pixels and on 32 held out from
+the tuning (1 to 2.5%), and by PSNR and SSIM on Kodak's 24, but larger
+by SSIMULACRA2 there (+1.0%). `--effort fast` codes the 12 photographs at
+x265's speed, still smaller; balanced takes 17% longer, max 1.9 times.
+Memory is a fifth to a quarter of x265's. Apple's `sips`, on the
+hardware encoder, is 2 to 15 times faster and 12 to 17% larger.
 
 ## Known deviations
 

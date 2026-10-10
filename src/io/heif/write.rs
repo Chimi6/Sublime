@@ -25,6 +25,7 @@ pub fn qp_of(quality: u8) -> i32 {
 pub struct HeicRows<'a> {
     sink: &'a mut dyn Write,
     quality: u8,
+    effort: crate::format::Effort,
     width: usize,
     height: usize,
     color: ColorType,
@@ -44,10 +45,17 @@ pub struct HeicRows<'a> {
 }
 
 impl<'a> HeicRows<'a> {
+    /// Sets how thoroughly the encoder searches (balanced by default).
+    pub fn with_effort(mut self, effort: crate::format::Effort) -> HeicRows<'a> {
+        self.effort = effort;
+        self
+    }
+
     pub fn new(sink: &'a mut dyn Write, quality: u8) -> HeicRows<'a> {
         HeicRows {
             sink,
             quality,
+            effort: crate::format::Effort::default(),
             width: 0,
             height: 0,
             color: ColorType::Rgb,
@@ -264,12 +272,13 @@ impl RowSink for HeicRows<'_> {
         self.color = color;
         // 4:2:0 crops to even sizes only: an odd side is coded one longer
         // and the clean aperture takes the extra column or row off.
-        let settings = Settings::new(
+        let mut settings = Settings::new(
             self.width + self.width % 2,
             self.height + self.height % 2,
             self.bit_depth(),
             qp_of(self.quality),
         );
+        settings.search = encode::Search::for_effort(self.effort, settings.ctb_log2 == 4);
         // Planes at the coded size, filled row by row and padded after.
         let (cw, ch) = (settings.coded_width, settings.coded_height);
         self.planes = [

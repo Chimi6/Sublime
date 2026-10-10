@@ -20,7 +20,7 @@ use crate::io::png::{PngError, PngNotes, PngRows, RowSink, RowsError, read_png_r
 use crate::io::qoi::{QoiRows, read_qoi_rows};
 use crate::io::tga::{TgaRows, read_tga_rows};
 use crate::io::tiff::{TiffNotes, TiffRows, read_tiff_rows};
-use crate::io::webp::{Effort, WebpNotes, WebpRows, read_webp_rows};
+use crate::io::webp::{WebpNotes, WebpRows, read_webp_rows};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ImageFormat {
@@ -59,6 +59,15 @@ impl Converter for ImagePair {
         self.to
     }
 
+    /// Images set on a PDF page have no text, so no `--font`.
+    fn options(&self) -> Vec<crate::format::Setting> {
+        let mut options = self.from.read_options.to_vec();
+        if self.to.id != "pdf" {
+            options.extend_from_slice(self.to.write_options);
+        }
+        options
+    }
+
     fn fidelity(&self) -> Fidelity {
         self.fidelity.clone()
     }
@@ -74,7 +83,7 @@ impl Converter for ImagePair {
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
         let quality = context.options.quality.unwrap_or(DEFAULT_QUALITY);
-        let effort = Effort::from_quality(context.options.quality);
+        let effort = context.options.effort.unwrap_or_default();
         // Every pair streams: the reader hands rows to the writer and no
         // image is held beyond what a format itself needs (a bottom-up
         // BMP's pixel data, a WebP's bitstream, an interlaced PNG).
@@ -157,7 +166,8 @@ impl Converter for ImagePair {
                     .options
                     .quality
                     .unwrap_or(crate::io::heif::write::DEFAULT_QUALITY);
-                let mut rows = crate::io::heif::write::HeicRows::new(output, quality);
+                let mut rows = crate::io::heif::write::HeicRows::new(output, quality)
+                    .with_effort(context.options.effort.unwrap_or_default());
                 read_rows(self.read, &mut input, &mut rows, self.name, context)
             }
         }

@@ -38,6 +38,19 @@ impl Plan {
         self.hops[last_index].to()
     }
 
+    /// The options some hop honours (`Converter::options`).
+    pub fn options(&self) -> Vec<crate::format::Setting> {
+        let mut options: Vec<crate::format::Setting> = Vec::new();
+        for hop in &self.hops {
+            for option in hop.options() {
+                if !options.contains(&option) {
+                    options.push(option);
+                }
+            }
+        }
+        options
+    }
+
     pub fn worst_fidelity(&self) -> FidelityKind {
         let mut worst = FidelityKind::Lossless;
         for hop in &self.hops {
@@ -347,6 +360,8 @@ mod tests {
         extensions: &["a"],
         magic: None,
         category: Category::Data,
+        read_options: &[],
+        write_options: &[],
     };
     static B: Format = Format {
         id: "b",
@@ -354,6 +369,8 @@ mod tests {
         extensions: &["b"],
         magic: None,
         category: Category::Data,
+        read_options: &[],
+        write_options: &[],
     };
     static C: Format = Format {
         id: "c",
@@ -361,6 +378,8 @@ mod tests {
         extensions: &["c"],
         magic: None,
         category: Category::Data,
+        read_options: &[],
+        write_options: &[],
     };
     static D: Format = Format {
         id: "d",
@@ -368,6 +387,8 @@ mod tests {
         extensions: &["d"],
         magic: None,
         category: Category::Data,
+        read_options: &[],
+        write_options: &[],
     };
 
     struct Fake {

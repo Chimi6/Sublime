@@ -44,7 +44,7 @@ check(png.status.startsWith("converted") && png.bytes[1] === 0x50 && png.bytes.l
 const jpg = sublime.convert(heic, "heic", "jpeg");
 check(jpg.status.startsWith("converted") && jpg.bytes[0] === 0xff && jpg.bytes[1] === 0xd8, `heic -> jpeg: ${jpg.status} ${jpg.message}`);
 // And written back without threads: the encoder's rows on one worker.
-const again = sublime.convert(png.bytes, "png", "heic");
+const again = sublime.convert(png.bytes, "png", "heic", { quality: 60, effort: "fast" });
 const brand = new TextDecoder().decode(again.bytes.slice(4, 12));
 check(again.status.startsWith("converted") && brand === "ftypheic", `png -> heic: ${again.status} ${again.message}`);
 const back = sublime.convert(again.bytes, "heic", "png");
@@ -53,6 +53,12 @@ check(back.status.startsWith("converted") && back.bytes[1] === 0x50, `heic -> pn
 const csv = new TextEncoder().encode("a,b\n1,2\n");
 const json = sublime.convert(csv, "csv", "json");
 check(new TextDecoder().decode(json.bytes).includes("\"a\""), "csv -> json");
+// Options: one the conversion does not use is a warning; a bad value fails.
+const unused = sublime.convert(csv, "csv", "json", { quality: 50 });
+check(unused.status === "converted" && unused.warnings.length === 1 && unused.warnings[0].includes("quality"), `unused option warns: ${unused.warnings}`);
+check(json.warnings.length === 0, "no options, no warnings");
+const bad = sublime.convert(csv, "csv", "json", { effort: "turbo" });
+check(bad.status === "failed" && bad.message.includes("effort"), `bad effort fails: ${bad.message}`);
 check(sublime.convert(csv, "csv", "nope").status === "unknown-format", "unknown format id");
 // Every format now reaches every other: rows reach Pages as a table.
 const table = sublime.convert(csv, "csv", "pages");

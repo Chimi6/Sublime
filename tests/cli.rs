@@ -296,7 +296,7 @@ fn check_reports_fidelity_and_exit_codes() {
     assert_eq!(code(&lossless), 0);
     assert_eq!(
         stdout(&lossless),
-        "csv -> json\n  1. csv-to-json (native, lossless)\nfidelity: lossless\n"
+        "csv -> json\n  1. csv-to-json (native, lossless)\nfidelity: lossless\noptions: --delimiter\n"
     );
 
     let conditional = run(&["check", "json", "csv"]);
@@ -320,7 +320,7 @@ fn check_json_output() {
     assert_eq!(code(&output), 0);
     assert_eq!(
         stdout(&output),
-        "{\"from\":\"csv\",\"to\":\"json\",\"fidelity\":\"lossless\",\"hops\":[{\"converter\":\"csv-to-json\",\"from\":\"csv\",\"to\":\"json\",\"tier\":\"native\",\"fidelity\":\"lossless\",\"description\":null}]}\n"
+        "{\"from\":\"csv\",\"to\":\"json\",\"fidelity\":\"lossless\",\"options\":[\"--delimiter\"],\"hops\":[{\"converter\":\"csv-to-json\",\"from\":\"csv\",\"to\":\"json\",\"tier\":\"native\",\"fidelity\":\"lossless\",\"description\":null}]}\n"
     );
 }
 
@@ -394,7 +394,7 @@ fn markdown_to_html_via_extension() {
     assert_eq!(code(&check), 0);
     assert_eq!(
         stdout(&check),
-        "markdown -> html\n  1. markdown-to-html (native, lossless)\nfidelity: lossless\n"
+        "markdown -> html\n  1. markdown-to-html (native, lossless)\nfidelity: lossless\noptions: none\n"
     );
 }
 
@@ -786,4 +786,68 @@ fn a_package_saved_as_a_folder_is_one_document() {
     assert_eq!(code(&batch), 0, "stderr: {}", stderr(&batch));
     assert!(out_dir.join("sheets.json").is_file());
     let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn an_option_the_conversion_does_not_use_warns_and_strict_refuses_it() {
+    let input = fixture("csv/simple.csv");
+    let input = input.to_str().unwrap();
+    let warned = run(&["convert", input, "--to", "json", "--quality", "50"]);
+    assert_eq!(code(&warned), 0, "stderr: {}", stderr(&warned));
+    assert!(stderr(&warned).contains("--quality has no effect on csv -> json"));
+    let refused = run(&[
+        "convert",
+        input,
+        "--to",
+        "json",
+        "--quality",
+        "50",
+        "--strict",
+    ]);
+    assert_eq!(code(&refused), 4);
+    assert!(stderr(&refused).contains("--quality has no effect"));
+    assert!(stdout(&refused).is_empty(), "nothing written when refused");
+    // One the path does use is not mentioned.
+    let used = run(&["convert", input, "--to", "json", "--delimiter", ","]);
+    assert!(!stderr(&used).contains("no effect"), "{}", stderr(&used));
+}
+
+#[test]
+fn effort_takes_three_levels() {
+    let input = fixture("png/basn2c08.png");
+    let input = input.to_str().unwrap();
+    for level in ["fast", "balanced", "max"] {
+        let output = run(&["convert", input, "--to", "heic", "--effort", level]);
+        assert_ne!(code(&output), 4, "{level}: {}", stderr(&output));
+        assert!(
+            !stderr(&output).contains("no effect"),
+            "{level}: {}",
+            stderr(&output)
+        );
+        assert_eq!(&stdout_bytes(&output)[4..12], b"ftypheic", "{level}");
+    }
+    let bad = run(&["convert", input, "--to", "heic", "--effort", "turbo"]);
+    assert_eq!(code(&bad), 4);
+    assert!(stderr(&bad).contains("fast, balanced, or max"));
+    // Lossless WebP takes effort, not quality.
+    let webp = run(&["convert", input, "--to", "webp", "--quality", "90"]);
+    assert!(stderr(&webp).contains("--quality has no effect on png -> webp"));
+}
+
+#[test]
+fn check_and_formats_list_the_options_honoured() {
+    let check = run(&["check", "png", "heic"]);
+    assert!(
+        stdout(&check).contains("options: --quality (default 50), --effort (default balanced)"),
+        "{}",
+        stdout(&check)
+    );
+    let none = run(&["check", "json", "yaml"]);
+    assert!(stdout(&none).contains("options: none"));
+    let formats = run(&["formats"]);
+    assert!(stdout(&formats).contains("read: --page; written: --font"));
+}
+
+fn stdout_bytes(output: &Output) -> &[u8] {
+    &output.stdout
 }
