@@ -161,6 +161,8 @@ struct Point {
     psnr_rgb: f64,
     psnr_y: f64,
     ssim_db: f64,
+    /// SSIMULACRA2, when the line has it.
+    ssimulacra2: Option<f64>,
 }
 
 /// The mean log-rate difference of `curve` against `reference` over the
@@ -200,20 +202,27 @@ fn bd_rate(reference: &[(f64, f64)], curve: &[(f64, f64)]) -> Option<f64> {
 }
 
 /// Prints the BD-rates of encoder `ours` against `other` at equal PSNR
-/// over luma, SSIM (in dB), and PSNR over RGB, each the mean over the
-/// images both coded, from a file of `encoder image bytes psnr_rgb
-/// psnr_y ssim` lines.
+/// over luma, SSIM (in dB), PSNR over RGB, and, when every line has it,
+/// SSIMULACRA2, each the mean over the images both coded, from a file of
+/// `encoder image bytes psnr_rgb psnr_y ssim [ssimulacra2]` lines.
 fn bd(points: &str, ours: &str, other: &str) -> Result<(), String> {
     let text = std::fs::read_to_string(points).map_err(|error| error.to_string())?;
     let mut curves: std::collections::BTreeMap<(String, String), Vec<Point>> =
         std::collections::BTreeMap::new();
     for line in text.lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        let [encoder, image, bytes, psnr_rgb, psnr_y, ssim] = fields[..] else {
-            continue;
+        let (encoder, image, bytes, psnr_rgb, psnr_y, ssim, ssimulacra2) = match fields[..] {
+            [encoder, image, bytes, psnr_rgb, psnr_y, ssim] => {
+                (encoder, image, bytes, psnr_rgb, psnr_y, ssim, None)
+            }
+            [encoder, image, bytes, psnr_rgb, psnr_y, ssim, s2] => {
+                (encoder, image, bytes, psnr_rgb, psnr_y, ssim, Some(s2))
+            }
+            _ => continue,
         };
         let number = |text: &str| text.parse::<f64>().map_err(|error| error.to_string());
         let ssim = number(ssim)?;
+        let ssimulacra2 = ssimulacra2.map(number).transpose()?;
         curves
             .entry((encoder.to_string(), image.to_string()))
             .or_default()
@@ -222,6 +231,7 @@ fn bd(points: &str, ours: &str, other: &str) -> Result<(), String> {
                 psnr_rgb: number(psnr_rgb)?,
                 psnr_y: number(psnr_y)?,
                 ssim_db: -10.0 * (1.0 - ssim).max(1e-12).log10(),
+                ssimulacra2,
             });
     }
     let images: Vec<String> = curves
@@ -230,11 +240,16 @@ fn bd(points: &str, ours: &str, other: &str) -> Result<(), String> {
         .map(|(_, image)| image.clone())
         .collect();
     let mut out = Vec::new();
-    for metric in [
+    let perceptual = curves.values().flatten().all(|point| point.ssimulacra2.is_some());
+    let mut metrics: Vec<fn(&Point) -> f64> = vec![
         |p: &Point| p.psnr_y,
         |p: &Point| p.ssim_db,
         |p: &Point| p.psnr_rgb,
-    ] {
+    ];
+    if perceptual {
+        metrics.push(|p: &Point| p.ssimulacra2.unwrap_or(0.0));
+    }
+    for metric in metrics {
         let mut values = Vec::new();
         for image in &images {
             let (Some(a), Some(b)) = (
@@ -255,6 +270,7 @@ fn bd(points: &str, ours: &str, other: &str) -> Result<(), String> {
         }
         out.push(100.0 * values.iter().sum::<f64>() / values.len() as f64);
     }
-    println!("{:+.1} {:+.1} {:+.1}", out[0], out[1], out[2]);
+    let text: Vec<String> = out.iter().map(|value| format!("{value:+.1}")).collect();
+    println!("{}", text.join(" "));
     Ok(())
 }
