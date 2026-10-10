@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-10-10
+
 ### Added
 
 - `--effort fast|balanced|max`, one scale for every writer that trades work for size at the same fidelity (balanced by default). HEIC: fast matches x265's speed on 12-megapixel photographs and is still smaller than it on held-out photographs; max is the full search; balanced searches small pictures in full and large ones in 58% of max's work for 0.5 to 0.9% more bytes. WebP lossless: its three predictor searches. In the browser too: `sublime.convert(bytes, from, to, { quality, effort, ... })`.
