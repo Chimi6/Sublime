@@ -8,6 +8,8 @@ section under a version heading.
 
 ### Added
 
+- HEIC write, natively: an HEVC intra encoder and HEIF writer written here, from every image format, at `--quality` (50 by default, as `heif-enc`), with alpha, the colour profile, and Exif; 16-bit sources at 10 bits, and a JPEG's own YCbCr taken as it is. Against libheif's `heif-enc` (x265, slow preset), files 1.4% smaller at equal luma PSNR and 0.3% at equal SSIM and RGB PSNR on the Kodak photographs, faster on every input, at a fifth to a quarter of its memory; against Apple's hardware `sips`, 12 to 13% smaller. Read back by libheif, `sips`, and Quick Look. Notes in `DOCS/formats/heic.md`, numbers in `DOCS/benchmarks/png-heic.md`.
+
 - HEIC read, natively: an HEVC still-picture decoder and HEIF parser written here, bit-exact with libheif on Apple's and x265's files (grids, odd sizes, 10-bit, 4:4:4, alpha), to every image format and PDF. Crop, rotation, mirroring, and alpha are applied, and the colour profile and Exif carried into PNG and JPEG. Chroma is interpolated rather than repeated, closer to the original than libheif or `sips`; grid tiles decode in parallel (Apple's 6016-pixel wallpaper to JPEG in 0.3 s against libheif's 1.4). Notes in `DOCS/formats/heic.md`.
 
 - HEIC decoding beats libheif everywhere it is measured (`DOCS/benchmarks/heic-png.md`): to PNG 8 to 34 times faster, to JPEG 2.8 to 10 times, at 15 to 57% of its memory; grids stream by bands of tiles, and JPEG output takes the picture's own YCbCr. Bit-exact with libheif on 41 reference files; where three multi-slice streams differ, libde265 is wrong and Apple's decoder agrees with ours.

@@ -22,18 +22,19 @@ and from WebP and PNG) or not at all. SQLite is out of v1. In order:
    libheif, with grid tiles (iPhone photos are 512 by 512 tiles), 10-bit
    sources, alpha, Exif orientation applied (which also turns phone JPEGs
    upright), and Exif and the colour profile carried to the output.
-5. HEIC write, native: an intra HEVC encoder with rate-distortion
+5. HEIC write (done), native: an intra HEVC encoder with rate-distortion
    decisions, checked by a pair against libheif/x265 and macOS `sips` on
    size at matched quality (SSIM, PSNR) and opened cleanly by Photos. As
    always, the goal is to beat the existing tools. HEVC is covered by
    patent pools; the docs say so.
 6. ODT, then EPUB.
 7. ODS.
-8. Wrap-up: every benchmark pair re-run, size budgets settled (HEIC
+8. N64 ROMs between `z64`, `v64`, and `n64` (decided 2026-10-09: in v1).
+9. Wrap-up: every benchmark pair re-run, size budgets settled (HEIC
    grows the binary and the WebAssembly module), this document current.
 
-After v1, the first of the novelty formats: N64 ROMs between `z64`, `v64`,
-and `n64` (Games and consoles below).
+N64 ROMs between `z64`, `v64`, and `n64` come before v1 (item 8 above);
+the other novelty formats wait until after it (Games and consoles below).
 
 ## How to read this
 
@@ -173,7 +174,7 @@ lossless and universal.
 | BMP | bmp | [x] | A | S | Shipped 0.19.0 (`DOCS/formats/bmp.md`): 1 to 32 bits with masks read; 24-bit and 32-bit with alpha written. RLE is refused. |
 | TIFF | tif, tiff | [x] | A | M | Shipped 0.22.0 (`DOCS/formats/tiff.md`): the first page read in the common layouts, deflate strips written. Also the base of DNG and GeoTIFF. |
 | WebP | webp | [x] | S | L | Shipped 0.21.0 (`DOCS/formats/webp.md`): lossless and lossy decode bit-exact with libwebp, lossless encode. Lossy encode and animation are not written. |
-| HEIC | heic, heif | [ ] | S | XL | v1, native both ways: an HEVC still-image decoder and an intra encoder written here, ISO base media boxes, grid tiles, 10-bit, alpha, orientation, Exif and colour profile carried (see v1 above). |
+| HEIC | heic, heif | [x] | S | XL | v1, native both ways: an HEVC still-image decoder and an intra encoder written here, ISO base media boxes, grid tiles, 10-bit, alpha, orientation, Exif and colour profile carried (see v1 above). |
 | AVIF, JPEG XL | avif, jxl | [ ] | D | XL | AV1 and JXL codecs; AVIF reuses HEIC's boxes. |
 | Netpbm | ppm, pgm, pbm, pam | [x] | A | S | Shipped 0.22.0 (`DOCS/formats/netpbm.md`): every form read, each kind written. |
 | QOI | qoi | [x] | B | S | Shipped 0.22.0 (`DOCS/formats/qoi.md`): both ways, streaming, `qoi.h`'s bytes. |

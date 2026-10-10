@@ -43,6 +43,12 @@ const png = sublime.convert(heic, "heic", "png");
 check(png.status.startsWith("converted") && png.bytes[1] === 0x50 && png.bytes.length > 100000, `heic -> png: ${png.status} ${png.message}`);
 const jpg = sublime.convert(heic, "heic", "jpeg");
 check(jpg.status.startsWith("converted") && jpg.bytes[0] === 0xff && jpg.bytes[1] === 0xd8, `heic -> jpeg: ${jpg.status} ${jpg.message}`);
+// And written back without threads: the encoder's rows on one worker.
+const again = sublime.convert(png.bytes, "png", "heic");
+const brand = new TextDecoder().decode(again.bytes.slice(4, 12));
+check(again.status.startsWith("converted") && brand === "ftypheic", `png -> heic: ${again.status} ${again.message}`);
+const back = sublime.convert(again.bytes, "heic", "png");
+check(back.status.startsWith("converted") && back.bytes[1] === 0x50, `heic -> png of our own file: ${back.status} ${back.message}`);
 
 const csv = new TextEncoder().encode("a,b\n1,2\n");
 const json = sublime.convert(csv, "csv", "json");

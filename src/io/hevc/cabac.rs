@@ -9,7 +9,7 @@
 /// probable symbol.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Context {
-    packed: u8,
+    pub(super) packed: u8,
 }
 
 impl Context {
@@ -143,7 +143,7 @@ impl Contexts {
     }
 }
 
-const LPS_RANGE: [[u8; 4]; 64] = [
+pub(super) const LPS_RANGE: [[u8; 4]; 64] = [
     [128, 176, 208, 240],
     [128, 167, 197, 227],
     [128, 158, 187, 216],
@@ -248,7 +248,7 @@ const NORM_SHIFT: [u8; 512] = {
 
 /// A packed state's next value, at `128 + packed` after its MPS and at
 /// `127 - packed` after its LPS (the packed state's complement).
-const NEXT_STATE: [u8; 256] = {
+pub(super) const NEXT_STATE: [u8; 256] = {
     let mut table = [0u8; 256];
     let mut packed = 0;
     while packed < 128 {

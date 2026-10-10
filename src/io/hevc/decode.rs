@@ -1497,7 +1497,7 @@ const CHROMA_422: [u8; 35] = [
 /// QpC of 4:2:0 for qPi from 30 to 43 (Table 8-10).
 const CHROMA_QP: [i32; 14] = [29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37];
 
-fn chroma_qp(qpi: i32, chroma_format: u32) -> i32 {
+pub(super) fn chroma_qp(qpi: i32, chroma_format: u32) -> i32 {
     if chroma_format != 1 {
         return qpi.min(51);
     }

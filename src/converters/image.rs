@@ -152,9 +152,14 @@ impl Converter for ImagePair {
                 document.finish()?;
                 Ok(())
             }
-            ImageFormat::Heic => Err(ConvertError::Unsupported(
-                "HEIC is read, not written".to_string(),
-            )),
+            ImageFormat::Heic => {
+                let quality = context
+                    .options
+                    .quality
+                    .unwrap_or(crate::io::heif::write::DEFAULT_QUALITY);
+                let mut rows = crate::io::heif::write::HeicRows::new(output, quality);
+                read_rows(self.read, &mut input, &mut rows, self.name, context)
+            }
         }
     }
 }
@@ -551,9 +556,11 @@ static CODECS: [Codec; 15] = [
         format: &formats::HEIC,
         kind: ImageFormat::Heic,
         read: Some(Fidelity::Conditional(
-            "the primary image is read with its crop, rotation, mirroring, and alpha applied; 10-bit samples become 16-bit in PNG, TIFF, and Netpbm and 8-bit elsewhere; the color profile and Exif are carried into PNG and JPEG and dropped elsewhere",
+            "the primary image is read with its crop, rotation, mirroring, and alpha applied; 10-bit samples become 16-bit in PNG, TIFF, and Netpbm and 8-bit elsewhere; the color profile and Exif are carried into PNG, JPEG, and HEIC and dropped elsewhere",
         )),
-        write: None,
+        write: Some(Fidelity::Lossy(
+            "HEIC is lossy: the image is coded with HEVC at the quality given (50 by default, as heif-enc), 4:2:0 chroma, 16-bit samples at 10 bits; the color profile and Exif are carried",
+        )),
     },
     Codec {
         format: &formats::CUR,
