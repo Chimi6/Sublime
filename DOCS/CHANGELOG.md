@@ -10,6 +10,74 @@ section under a version heading.
 
 - Numbers -> Excel is its own benchmark pair, `numbers-xlsx` (`DOCS/benchmarks/numbers-xlsx.md`), split out of `numbers-csv` and rerun at 0.27.1 with typed dates and booleans: every line passes (144 to 146 MB/s of input plus uncompressed output at 127 to 147 MB, against numbers-parser with openpyxl's 2.3 to 2.4 at 4.2 GB).
 
+## [0.30.0] - 2026-10-10
+
+### Added
+
+- `--effort fast|balanced|max`, one scale for every writer that trades work for size at the same fidelity (balanced by default). HEIC: fast matches x265's speed on 12-megapixel photographs and is still smaller than it on held-out photographs; max is the full search; balanced searches small pictures in full and large ones in 58% of max's work for 0.5 to 0.9% more bytes. WebP lossless: its three predictor searches. In the browser too: `sublime.convert(bytes, from, to, { quality, effort, ... })`.
+
+- Every format declares the options it honours when read and when written; `sublime formats`, `sublime check`, and `DOCS/FORMATS.md` list them, and a flag a conversion does not use is warned about (refused under `--strict`) instead of silently ignored.
+
+- HEIC write, natively: an HEVC intra encoder and HEIF writer written here, from every image format, at `--quality` (50 by default, as `heif-enc`), with alpha, the colour profile, and Exif; 16-bit sources at 10 bits, and a JPEG's own YCbCr taken as it is. Against libheif's `heif-enc` (x265, slow preset), smaller at equal quality by every measure on real and held-out photographs (1 to 2.5%) and on the Kodak photographs by PSNR and SSIM (not SSIMULACRA2, +1.0%); at `--effort fast` as fast as it on 12-megapixel photographs; a fifth to a quarter of its memory; against Apple's hardware `sips`, 12 to 17% smaller. Read back by libheif, `sips`, and Quick Look. Notes in `DOCS/formats/heic.md`, numbers in `DOCS/benchmarks/png-heic.md`.
+
+- HEIC read, natively: an HEVC still-picture decoder and HEIF parser written here, bit-exact with libheif on Apple's and x265's files (grids, odd sizes, 10-bit, 4:4:4, alpha), to every image format and PDF. Crop, rotation, mirroring, and alpha are applied, and the colour profile and Exif carried into PNG and JPEG. Chroma is interpolated rather than repeated, closer to the original than libheif or `sips`; grid tiles decode in parallel (Apple's 6016-pixel wallpaper to JPEG in 0.3 s against libheif's 1.4). Notes in `DOCS/formats/heic.md`.
+
+- HEIC decoding beats libheif everywhere it is measured (`DOCS/benchmarks/heic-png.md`): to PNG 8 to 34 times faster, to JPEG 2.8 to 10 times, at 15 to 57% of its memory; grids stream by bands of tiles, and JPEG output takes the picture's own YCbCr. Bit-exact with libheif on 41 reference files; where three multi-slice streams differ, libde265 is wrong and Apple's decoder agrees with ours.
+
+- A single HEIC picture's wavefront rows decode on every core, and so do its loop filters and a megapixel JPEG's bands (restart intervals, decoded pixels unchanged): the 4000-pixel quality-50 photo to JPEG in 0.09 s, against libheif's 0.87 and Apple's hardware `sips` at 0.16.
+
+- HEIC to JPEG and PNG in a fraction of the memory, and faster: a single picture streams by bands as its rows decode (the loop filters on a thread of their own), a file is read an item at a time instead of whole, and a grid hands each row of tiles on as soon as it is in. Against Apple's hardware `sips`, ahead in speed and memory on every measured line but the 36-megapixel stock grid to JPEG; the 4000-pixel quality-50 photo to JPEG in 0.08 s and 20 MB (libheif: 0.85 s, 67 MB; `sips`: 0.16 s, 33 MB).
+
+- 16-bit images stay 16-bit: 10-bit HEIC, 16-bit PNG and TIFF, and Netpbm over 8 bits go to PNG, TIFF, and Netpbm at 16 bits (16-bit PNG to PAM and back is identical) instead of losing their low byte.
+
+- JPEGs come out upright: the Exif orientation is applied (all eight, as Quick Look shows them), in PDF by the drawing so the JPEG stays embedded unchanged, and the ICC profile and Exif are carried into PNG and JPEG output.
+
+- Pictures in documents written to PDF: Word, Pages, and RTF pictures at the size the document shows each, Markdown and HTML pictures by path from the input's folder or by `data:` URI; JPEGs embedded unchanged, other formats deflated with their alpha. A picture not found, unreadable (GIF), in a table, or by web address keeps its alt text.
+
+- Semicolon and pipe CSV: a CSV input's delimiter is read from its first records (a European spreadsheet's semicolon export, decimal commas and all, reads as semicolons), and `--delimiter` sets the one read and written (`;`, `|`, `tab`). Notes in `DOCS/formats/csv.md`.
+
+### Changed
+
+- Breaking: lossless WebP takes `--effort`, not `--quality` (which now does nothing for WebP and warns).
+
+- `DOCS/FORMATS.md` keeps the formats and the map; every converter and every path, with what each loses, move to their own `DOCS/CONVERSIONS.md` (`sublime paths --conversions`), so the formats page stays short as the paths grow.
+- JPEG output holds a band's 4:2:0 chroma, not its RGB, until the band encodes (256 to 96 KB a band of a 4000-pixel image); the bytes are unchanged.
+
+### Fixed
+
+- An input read whole was read into a buffer grown by doubling, up to twice the file and a copy; the file's length sizes it now.
+- The CSV reader only ever split on commas and tabs; any other delimiter now works.
+- An invalid value for `--page`, `--quality`, or `--jobs` said "expected human or json"; each flag now names what it takes.
+
+## [0.29.0] - 2026-10-08
+
+### Added
+
+- Numbers categorised tables read as Numbers shows them: a row per category above its rows, labelled with the group's text, number, date (by year, quarter, week, month, day, or weekday), or `Is “Column”` / `Not “Column”`, nested categories in turn, and hidden columns left out. Every categorised table of numbers-parser's test documents matches Numbers' own export.
+
+- Numbers to Excel keeps merged cells, and Numbers and Pages tables read merges from every place Numbers keeps them (the merge owner's formulas, the calculation engine's dependencies, and an older document's merge region map): every merged range numbers-parser reads in its 11 test documents that have them, from 2 before.
+
+- Numbers pivot tables read as Numbers shows them: rows and columns in the view's order, with the grand total row and column from the table's summary (72 of 79 test documents exact against Numbers' export, from 70; through Excel 65, from 63).
+- Excel to Numbers keeps each cell's number format where Numbers has the same (decimals with separators and red or parenthesised negatives, currency by symbol or locale, percent, scientific, fractions, and date and time patterns) and the sheet's merged cells; formats Numbers' built-in ones cannot say (padding, optional decimals, scaling, elapsed time) leave the value unformatted. The Excel reader gives each cell's format code and the sheet's merges (`Workbook::read_sheet`), and the Numbers reader a table's merges (`WorkbookReader::merges`).
+
+### Changed
+
+- Numbers cells: a cell naming both a number and a currency format shows the one its record says it shows (a percentage was shown as currency), and a rich text cell that ends in a line break keeps it. Against Numbers' own export of 79 test documents: 75 exact, 99.9% of cells (from 72 and 98.8%); through Excel 67, 99.8%.
+
+- The Numbers writer's large tables take about half the memory and a sixth less space: every row in wide offsets with Numbers' placeholder in its legacy fields (as Numbers writes its own large tables) instead of a second copy of its records, repeated records run together in one tree entry, and source rows held in one text buffer. 300,000 rows of four columns peak at about 175 MB (from 350) in a 19.8 MB document (from 23); 1,000,000 rows at about 500 MB (from 900), 2.1 s (from 2.8), 70 MB (from 81), and open in Numbers with an export identical to the source. A table past Numbers' 1,000,000 rows or 1,000 columns is written with a warning.
+
+- Numbers cells: the narrow no-break space before AM and PM is for a formula's result under Numbers' automatic format only, as Numbers shows it; a time format the cell chose keeps its space (70 of 79 test documents exact against Numbers' export, from 69).
+- The Numbers writer lays out tables past 65,535 rows as Numbers does (no multiple-choice list, the row tile tree, the next row strip id): all 79 rewritten test documents now open in Numbers with no repair or upgrade, and so does a 300,000-row table.
+- The Numbers writer holds a table's cells compactly, encodes large tables' repeated records as it builds them, and sizes each row's offset array to the table: 300,000 rows of four columns write at about 350 MB peak instead of 933, in 0.6 s instead of 0.8, to a document of 23 MB instead of 39.
+
+## [0.28.0] - 2026-10-06
+
+### Added
+
+- Writing Apple Numbers: `csv-to-numbers`, `tsv-to-numbers`, `xlsx-to-numbers` (a sheet per worksheet), `json-to-numbers` (a sheet per table), and `markdown-to-numbers` (a document's tables as tables of one sheet, named after their headings; Word, Pages, HTML, RTF, and PDF through it). Cells are typed by their text under the workbook writer's read-back rule (numbers as decimal128, ISO dates as dates shown as written, `TRUE` and `FALSE` as booleans). Built from a blank document Numbers saved, its table and sheet cloned for more; checked in Numbers itself (`scripts/numbers-check/write.sh`): 78 of 79 rewritten test documents open with no repair, upgrade, or assertion and export what we read, none crash.
+- Numbers cells as Numbers shows them in text outputs: number, currency, percent, scientific, fraction, base, date, duration, checkbox, rating, and custom formats with their padding and conditions (`src/io/pages/format.rs`). Against Numbers' own CSV export of 79 test documents: 69 exact and 98.8% of cells (from 45 and 96.7%), the rest categorised and pivot views and recalculated formulas (`scripts/numbers-check/check.sh`).
+- Numbers to Excel as typed cells with the Excel number format that shows each as Numbers does (`XlsxWriter::write_cells`); through LibreOffice, 98.7% of cells as Numbers shows them.
+
 ## [0.27.1] - 2026-10-06
 
 ### Added
@@ -23,6 +91,10 @@ section under a version heading.
 
 ### Changed
 
+- Tables written to Pages (and Numbers) past 256 rows are stored in tiles of 256 rows, listed in the row tile tree, as Numbers and Pages store them; they were one tile.
+- The embedded Pages and Numbers templates are deflated (58 KB smaller binary).
+- The binary size budget is raised 4.10 -> 4.30 MB and the WebAssembly budget 2.25 -> 2.40 MB for Numbers display formats and the Numbers writer (about 120 KB of the binary after the trims; the Linux binary measures 4.10 MB, the module 2.24 MB).
+- Excel to JSON and Excel to Markdown share one converter, the Excel writer one cell writer, and the Numbers reader one non-generic row reader (13 KB smaller).
 - The workbook writer types ISO 8601 dates, dates and times, and times as dates (shown in the same form: `yyyy-mm-dd`, `yyyy-mm-dd"T"hh:mm:ss`, `[hh]:mm:ss`) and `TRUE` and `FALSE` as booleans, under the rule it already kept for numbers: a cell is typed only when reading it back gives the same text. Dates and booleans from Excel and Numbers now reach Excel as dates and booleans instead of text, and CSV's ISO dates do too; locale dates, partial dates, and lowercase `true` stay text. About 4 KB of code; converting a CSV whose columns are half dates and booleans is 3 to 6% slower, others unchanged.
 - Numbers dates with a time read as `2024-08-08T14:35:09` (the Excel reader's form) instead of `2024-08-08 14:35`.
 - `DOCS/formats/xlsx.md` and `DOCS/STATE.md` no longer list one sheet per conversion as a limit (0.27.0 writes every sheet).

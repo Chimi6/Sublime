@@ -3,19 +3,20 @@
 A Numbers document is an iWork package like Pages: a ZIP of IWA streams
 (Snappy-framed protobuf objects). It is read through the Pages package
 reader (`src/io/pages/package.rs`) and the Pages table reader, which shares
-the table archives (TST) with Numbers. `io::pages::read_workbook` walks the
+the table archives (TST) with Numbers. `io::pages::WorkbookReader` walks the
 document's sheets (`TN.DocumentArchive`, `TN.SheetArchive`, read by field
 number because the Pages registry leaves Numbers' own types out), each
 sheet's drawables to its tables (`TST.TableInfoArchive`, through groups),
-and each table's cells as text.
+and each table's cells, a tile at a time. `io::pages::write_numbers_to`
+writes tables back as a Numbers document.
 
 ## Status
 
 - `numbers -> csv`, `tsv`, `json`, `markdown`, `xlsx`: shipped, and every
   format those reach (JSON Lines, YAML, TOML, XML, Word, Pages, HTML, RTF,
   PDF).
-- Writing Numbers: not yet. A writer needs the object-graph work the Pages
-  writer did, for Numbers' archives.
+- `csv`, `tsv`, `xlsx`, `json`, `markdown` `-> numbers`: shipped, and every
+  document format through Markdown (a document's tables).
 
 ## A workbook of tables
 
@@ -29,23 +30,140 @@ names worksheets when it exports to Excel.
 | CSV, TSV, JSON Lines | a folder named after the output, a file per table; one table is one file |
 | JSON | one object of arrays keyed by table name; one table stays the plain array |
 | Markdown and the documents through it | a table under a heading of its name per table |
-| Excel | a worksheet per table; numbers, dates, and booleans as cells of their type |
+| Excel | a worksheet per table; numbers, dates, durations, and booleans as cells of their type, with the Excel format that shows them as Numbers does; merged cells merged |
 | standard output | the first table, the rest reported as a loss |
 
 `--sheet` picks a sheet (its every table), a table by its name, or a table
 by its number from 1.
 
-## Cells
+## Cells as Numbers shows them
 
-A cell is written as its stored value, as Excel cells are: numbers in full
-(far from 1, in scientific notation: `1.234E-300`), dates in ISO 8601
-(`2024-08-08`, or `2024-08-08T14:35:09` with a time, the Excel reader's
-forms, so the workbook writer makes them dates again),
-booleans as `TRUE` and `FALSE`, durations as Numbers' units (`1w 3d 2h`),
-rich text as its lines. Number formats (currency, percentages, thousands
-separators, custom date formats) are not applied. A table keeps its full
-grid, empty rows and columns included; a merged range keeps its text in
-its first cell and leaves the rest empty.
+Text outputs (CSV, TSV, JSON Lines, JSON, Markdown and the documents
+through it) carry each cell as Numbers shows it, through its format
+(`src/io/pages/format.rs`): a table's format table, by kind (number,
+currency, date, duration, text, boolean), and the document's custom
+formats with their conditions.
+
+| Format | Shown as |
+|---|---|
+| decimal, currency, percent | places (or as many as the number needs, at fifteen significant digits), thousands separators, the currency's symbol (`£1,877`), negatives with a minus, in red (no sign), or in parentheses |
+| scientific, fraction, base | `1.23456E+03`; `2 1/3` to the stated accuracy or denominator; any base from 2 to 36, two's complement for negatives in 2, 8, and 16 |
+| date | the format's pattern (`EEE, d MMM yyyy`, `'Day #'DDD`), with week fields; a formula's result under Numbers' automatic format in the system's short time shows AM and PM after a narrow no-break space, as macOS does (a cell's record marks the format kinds it chose, byte 6: 0x01 number, 0x02 currency, 0x04 duration, 0x08 date, 0x80 text) |
+| duration | Numbers' units and styles (`1w 1d 1h`, `1 week`, `0:01:05`), automatic units included |
+| checkbox, rating | `TRUE` or `FALSE`, and the number of stars, as Numbers' own CSV export writes them |
+| custom number | Numbers' rules for its custom formats: integer digits padded with zeros or spaces, optional decimals trimmed, the width unused decimals leave turned into leading zeros, conditions, currency symbols, quoted text |
+| custom text, custom date | the cell's text in its string; the date in its pattern |
+| none | the stored value: numbers at fifteen significant digits, dates in ISO 8601 |
+
+Numbers formats a stored decimal through a double (`123456789012345.12345`
+shows as `...345.12`), and ties round to even; both are kept.
+
+Excel output keeps each value's type and gives it the Excel number format
+that shows it the same (`"£"#,##0`, `0.0%`, `# ?/?`, `ddd, d mmm yyyy`,
+`[h]:mm:ss`, a custom format's `?` placeholders for Numbers' space
+padding). What Excel cannot express is shown its nearest way, its value
+kept: day of year and week fields (a date in ISO 8601), base formats and
+custom formats with conditions (text), the zeros Numbers adds from unused
+decimals, and accounting style's tab.
+
+Pivot and categorised tables read as Numbers shows them, through the
+table's view (`view_column_row_uids` on `TST.TableInfoArchive`, which only
+they have): it orders every row and column by uid and leaves hidden
+columns out. A shown row or column is a stored one (the model's uid map),
+one of the summary model's (`TST.SummaryModelArchive`, its own
+`data_store` and uid map: a pivot's grand total row and column), or a
+category's (a group of `TST.GroupByArchive`, by the info's
+`group_by_uuid`). Each shown cell is the summary's if it has one there,
+else the stored cell; a category's row holds its label in the view's own
+column: the group's text, its number under its format, its date under the
+grouping's pattern (`yyyy`, `LLLL yyyy`, `yyyy-QQQ`, `yyyy'-W'w`,
+`d/M/yyyy`, `EEEE`), or, for a boolean, `Is “Column”` or `Not “Column”`.
+Numbers' export leaves a category's summary cells empty, and so do we.
+The workbook read keeps these maps, summary models, and group-by trees for
+tables with a view alone (found by the references in the objects'
+headers), and reads such a table's grids whole.
+
+Not shown as Numbers does: formulas are their last value (Numbers
+recalculates some when it opens a document, `NOW()` among them, and
+functions that format text in the locale of the Mac that opens it).
+
+Merged cells are read from the first source that has them, in the order
+numbers-parser reads them: the table's merge owner's formulas (a range
+each, as a colon tract, node type 67), the calculation engine's
+dependencies on the merge owner, and an older document's merge region map
+(`merge_region_map`, origin and size packed column high, row low). The
+cells a region covers read empty, as Numbers exports them; Excel output
+merges the region. The same reading serves Pages tables. Against
+numbers-parser on its test documents: every merged range of the 11 that
+have them.
+
+## Writing
+
+`write_numbers_to` starts from a blank document Numbers saved
+(`src/io/pages/numbers_template.numbers`, its previews removed, its entries
+deflated): one sheet with one table. Further tables are clones of the
+table's cluster (model, tiles, data lists, header buckets, and formula
+engine owners, registered with the engine and the package metadata) as the
+Pages writer clones tables; further sheets are clones of the sheet with its
+header, footer, and guide storages (its references are raw bytes, mapped by
+hand). The document's sheet list and the sidebar tree (a node per sheet,
+under it a node per table) are rebuilt.
+
+| Source | Becomes |
+|---|---|
+| CSV, TSV | one sheet, one table |
+| Excel | a sheet per worksheet, one table each, with its number formats and merged cells |
+| JSON | a sheet per table (an object of arrays a sheet per member) |
+| Markdown, and Word, Pages, HTML, RTF, PDF through it | one sheet holding the document's tables, each named after the heading before it |
+
+Cells are typed by their text under the workbook writer's read-back rule
+(`xlsx.md`): plain decimals (no exponent: `1e3` would read back as `1000`)
+are decimal128 numbers; ISO 8601 dates and dates with times are dates with
+a `yyyy-MM-dd` or `yyyy-MM-dd'T'HH:mm:ss` format, so they show as written;
+`TRUE` and `FALSE` are booleans; everything else is text. The first row is
+the header row; the table has Numbers' default style, no header column, and
+default column widths. Styling is not written.
+
+From Excel, each cell's number format becomes the Numbers format that
+shows it the same (`format::from_excel`), written to the table's format
+list with the fields Numbers writes for its kind, and named by the cell
+record (the format kind it shows at `0x1000`, the key at `0x2000` for a
+number, `0x4000` and record kind 10 for a currency, `0x8000` for a date),
+and marked as chosen rather than automatic (byte 6, as Numbers marks a
+format picked in its inspector):
+
+| Excel | Numbers |
+|---|---|
+| `0.00`, `#,##0`, red or parenthesised negatives | decimal: places, thousands separator, negative style |
+| `"£"#,##0.00`, `[$€-407]#,##0.00`, accounting | currency by its ISO code |
+| `0.0%`, `0.00E+00`, `# ?/?`, `# ?/8` | percent, scientific, fraction to digits or a denominator |
+| date and time codes (`d mmm yyyy`, `h:mm AM/PM`) | the date pattern in ICU (`d MMM yyyy`, `h:mm a`); a time alone on Excel's day zero |
+| General, text, elapsed time (`[h]:mm`), padding (`000`, `??`), optional decimals beside fixed ones, scaling, engineering notation, text around the digits | none: the value as it is |
+
+Under a number format a cell is a number whatever its digits (the
+workbook says so). Merged ranges are written as the Pages writer writes
+them; the cells they cover are left empty.
+
+The table layout follows Numbers': a tile per 256 rows, listed in the row
+tile tree with the next row strip id after them; no record for an empty
+cell and no row record for an empty row; a row's offset array a slot per
+column; every row in wide offsets (4-byte units, `has_wide_offsets`), its
+tile marked `should_use_wide_rows` and its legacy (pre-BNC) fields holding
+Numbers' placeholder, as Numbers writes its own large tables (a narrow
+row would need a copy of its records there, which Numbers checks); a
+table past 65,535 rows without the multiple-choice list Numbers drops at
+that size. The same tiles serve the Pages writer's tables (narrow, with
+their copy).
+
+Memory: the source rows are held compactly (every cell's text in one
+buffer, `NumbersRows`), a large table's repeated records (tile rows,
+strings, row headers, row identifiers) are encoded as they are built and
+run together into one tree entry each (an entry written verbatim), and the
+tiles' bytes are sized once. 300,000 rows of four columns write in 0.6 s at
+about 175 MB peak (350 MB before, 933 MB before that) to a 19.8 MB
+document; 1,000,000 rows in 2.1 s at about 500 MB (900 MB before) to 70 MB.
+Numbers opens tables of up to 1,000,000 rows and 1,000 columns; a larger
+table is written with a warning.
 
 ## Packages
 
@@ -59,26 +177,39 @@ its first cell and leaves the rest empty.
   shared document) hold nothing the reader uses and are kept as bytes.
 - Password-protected documents are not read; the error says so.
 
-Only what a cell's text needs is decoded: the formula engine's cell
-records, reference tracking, name caches, row and column identity maps,
-row sizes, and the tables' layout caches are skipped. Each stream is
-decoded and freed in turn, tile rows are kept as their bytes, and a table
-is read a tile (256 rows) at a time straight to the writer, never held
-whole.
+Only what a cell needs is decoded: the formula engine's cell records,
+reference tracking, name caches, row and column identity maps, row sizes,
+and the tables' layout caches are skipped. Each stream is decoded and freed
+in turn, tile rows are kept as their bytes, and a table is read a tile (256
+rows) at a time straight to the writer, never held whole.
 
 ## Checked
 
-`scripts/numbers-check/check.sh` converts numbers-parser's test documents
-(https://github.com/masaccio/numbers-parser, MIT) to CSV and compares every
-cell with the value numbers-parser reads. On 84 readable documents: 74
-match exactly, and 131,713 of 132,206 non-empty cells (99.6%). The rest:
+Against Numbers itself (`scripts/numbers-check`, macOS with Numbers and
+LibreOffice), on numbers-parser's test documents
+(<https://github.com/masaccio/numbers-parser>, MIT):
 
-- durations, which we write in Numbers' units and numbers-parser as
-  seconds (8 documents);
-- `issue-66-collab`, where numbers-parser maps stored rows to table rows
-  by the order of the row headers and so moves a block of rows up one; the
-  document's preview shows the empty row we keep;
-- one rich text cell whose trailing line break we drop.
+- `check.sh` exports each document to CSV with Numbers and compares every
+  cell we read. As text: 75 of 79 documents exact, 131,455 of 131,593
+  non-empty cells (99.9%). Through Excel (our workbook shown by
+  LibreOffice): 67 of 79 exact, 99.8% of cells. The rest are formulas
+  Numbers recalculates on opening (`NOW()`, and text a function formats
+  in the opening Mac's locale: `$` where the document's British locale
+  stored `£`), and, through Excel, what Excel formats cannot express
+  (above).
+- `write.sh` rewrites each document through our writer (Numbers, Excel,
+  Numbers), opens it in Numbers, and reads Numbers' log and export: all 79
+  open with no repair, upgrade, or assertion and export what our reader
+  reads; no crashes. So do tables of 65,534, 65,537, 300,000, 600,000,
+  and 1,000,000 rows, Numbers' export of each the source exactly (the
+  largest opens in about three minutes).
+- Formats and merges from Excel: each test document through our workbook
+  and back (Numbers, Excel, Numbers) opens in Numbers cleanly, and
+  Numbers' export of it matches LibreOffice's view of the workbook in 67
+  of 79 documents and 99.1% of cells; the rest are Excel formats Numbers'
+  built-in ones cannot say (padding, optional decimals), left
+  unformatted. A workbook of every mapped format and three merges
+  (`tests/fixtures/xlsx/formats.xlsx`) shows in Numbers as in Excel.
 
 Speed and memory are the `numbers-csv` and `numbers-xlsx` benchmark pairs
 (`DOCS/benchmarks/numbers-csv.md`, `numbers-xlsx.md`); into CSV: 37 MB/s on 200,000-row documents at
@@ -87,6 +218,7 @@ real 65,000-row document 68 MB/s at 54 MB, against numbers-parser's 2.4 at
 353 MB and LibreOffice's 0.9 at 1.4 GB.
 
 Fixtures (`tests/fixtures/numbers`, from numbers-parser's test data): two
-sheets with three tables, a zipped package folder with an LZFSE stream, and
-an older document whose object headers leave references out (so the
-workbook reads every object rather than walking from the root).
+sheets with three tables, a zipped package folder with an LZFSE stream, an
+older document whose object headers leave references out, and two
+documents of formats, a pivot table, and categorised tables with Numbers'
+own CSV export of each (`reference/`) as the expected text.

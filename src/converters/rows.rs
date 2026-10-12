@@ -67,8 +67,18 @@ impl Converter for Delimited {
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
-        let mut reader = CsvReader::with_delimiter(input, self.read_delimiter);
-        let mut writer = CsvWriter::with_delimiter(output, self.write_delimiter);
+        let mut rest = None;
+        let (delimiter, input) = crate::converters::input::delimited_input(
+            input,
+            self.read_delimiter,
+            context,
+            &mut rest,
+        )?;
+        let mut reader = CsvReader::with_delimiter(input, delimiter);
+        let mut writer = CsvWriter::with_delimiter(
+            output,
+            crate::converters::input::written_delimiter(self.write_delimiter, context),
+        );
         let mut record = Record::new();
         let mut count: u64 = 0;
         while reader.read_record(&mut record)? {

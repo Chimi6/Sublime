@@ -32,8 +32,8 @@ pub struct JpegNotes {
     /// Metadata segments left out, one name per kind (Exif, ICC, XMP,
     /// comment, and so on).
     pub dropped: Vec<String>,
-    /// The Exif orientation tag when it is not 1: the pixels are as
-    /// stored, and a viewer would rotate them.
+    /// The Exif orientation tag when it is not 1: the image is turned or
+    /// mirrored upright as it is read, and the Exif carried says 1.
     pub orientation: Option<u16>,
     pub progressive: bool,
 }
@@ -63,11 +63,41 @@ pub fn read_jpeg_rows(
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes).map_err(RowsError::Io)?;
     let mut decoder = Decoder::new(&bytes);
-    decoder.run(sink).map_err(|error| match error {
+    // The orientation is known before the pixels: the image goes to the
+    // sink upright.
+    let orientation = orientation_before_scan(&bytes);
+    let mut oriented = crate::io::orient::Oriented::new(sink, orientation.unwrap_or(1));
+    decoder.run(&mut oriented).map_err(|error| match error {
         Failure::Jpeg(error) => RowsError::Png(crate::io::png::PngError(error.0)),
         Failure::Io(error) => RowsError::Io(error),
     })?;
     Ok(decoder.notes)
+}
+
+/// The Exif orientation in the segments before the first scan, if any.
+fn orientation_before_scan(bytes: &[u8]) -> Option<u16> {
+    let mut at = 2;
+    while at + 4 <= bytes.len() && bytes[at] == 0xFF {
+        let marker = bytes[at + 1];
+        if marker == 0xFF {
+            at += 1;
+            continue;
+        }
+        if marker == 0xD8 || marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+            at += 2;
+            continue;
+        }
+        if marker == 0xDA || marker == 0xD9 {
+            return None;
+        }
+        let length = usize::from(u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]));
+        let payload = bytes.get(at + 4..(at + 2 + length).max(at + 4))?;
+        if marker == 0xE1 && payload.starts_with(b"Exif\0\0") {
+            return crate::io::orient::exif_orientation(&payload[6..]);
+        }
+        at += 2 + length;
+    }
+    None
 }
 
 enum Failure {
@@ -414,6 +444,9 @@ struct Decoder<'a> {
     /// The end-of-band run carried between blocks of a progressive AC
     /// scan.
     eob_run: u32,
+    /// The Exif TIFF structure, and the ICC profile's parts by number.
+    exif: Option<&'a [u8]>,
+    profile_parts: Vec<(u8, u8, &'a [u8])>,
 }
 
 impl<'a> Decoder<'a> {
@@ -431,6 +464,37 @@ impl<'a> Decoder<'a> {
             notes: JpegNotes::default(),
             coefficients: Vec::new(),
             eob_run: 0,
+            exif: None,
+            profile_parts: Vec::new(),
+        }
+    }
+
+    /// Hands the sink the colour profile and Exif before the pixels,
+    /// noting what it does not keep.
+    fn metadata(&mut self, sink: &mut dyn RowSink) {
+        if !self.profile_parts.is_empty() {
+            let mut parts = std::mem::take(&mut self.profile_parts);
+            parts.sort_by_key(|&(number, _, _)| number);
+            let whole = parts
+                .iter()
+                .enumerate()
+                .all(|(index, &(number, count, _))| {
+                    usize::from(number) == index + 1 && usize::from(count) == parts.len()
+                });
+            let profile: Vec<u8> = parts
+                .iter()
+                .flat_map(|&(_, _, part)| part.iter().copied())
+                .collect();
+            if !whole || !sink.icc_profile(&profile) {
+                self.drop("ICC profile");
+            }
+        }
+        if let Some(tiff) = self.exif.take() {
+            let mut tiff = tiff.to_vec();
+            crate::io::orient::reset_exif_orientation(&mut tiff);
+            if !sink.exif(&tiff) {
+                self.drop("Exif");
+            }
         }
     }
 
@@ -520,8 +584,8 @@ impl<'a> Decoder<'a> {
                 }
                 0xE1 => {
                     if payload.starts_with(b"Exif\0\0") {
-                        self.exif(&payload[6..]);
-                        self.drop("Exif");
+                        self.exif_orientation(&payload[6..]);
+                        self.exif = Some(&payload[6..]);
                     } else if payload.starts_with(b"http://ns.adobe.com/xap/1.0/\0") {
                         self.drop("XMP");
                     } else {
@@ -529,8 +593,9 @@ impl<'a> Decoder<'a> {
                     }
                 }
                 0xE2 => {
-                    if payload.starts_with(b"ICC_PROFILE\0") {
-                        self.drop("ICC profile");
+                    if payload.starts_with(b"ICC_PROFILE\0") && payload.len() >= 14 {
+                        self.profile_parts
+                            .push((payload[12], payload[13], &payload[14..]));
                     } else {
                         self.drop("APP2");
                     }
@@ -555,7 +620,7 @@ impl<'a> Decoder<'a> {
     }
 
     /// The orientation tag out of an Exif TIFF header, when present.
-    fn exif(&mut self, tiff: &[u8]) {
+    fn exif_orientation(&mut self, tiff: &[u8]) {
         if tiff.len() < 8 {
             return;
         }
@@ -806,6 +871,7 @@ impl<'a> Decoder<'a> {
         } else {
             ColorType::Rgb
         };
+        self.metadata(sink);
         sink.start(frame.width, frame.height, color)?;
         let mut bits = Bits::new(self.bytes, self.at);
         let mut predictions = [0i32; 4];
@@ -1412,6 +1478,7 @@ impl Decoder<'_> {
     /// and transform each block into MCU-row planes, upsample, convert,
     /// and hand rows over, as the streaming path does as it decodes.
     fn finish_buffered(&mut self, sink: &mut dyn RowSink) -> Result<(), Failure> {
+        self.metadata(sink);
         let frame = self
             .frame
             .as_ref()

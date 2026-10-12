@@ -147,3 +147,39 @@ fn a_given_font_is_subset_and_embedded() {
         words("Καλημέρα Привет, мир. Plain Latin too.")
     );
 }
+
+/// A Pages document's pictures are set on the page at the size the
+/// document shows each (one shown at twice the size takes twice the
+/// room); a Markdown image by path, from the input's folder, and by a
+/// `data:` URI too, a JPEG embedded unchanged; one that is not found keeps
+/// its alt text.
+#[test]
+fn images_are_set_on_the_page() {
+    let pdf = convert(&PAGES_TO_PDF, &fixture("tests/fixtures/pages/images.pages"));
+    let raw = String::from_utf8_lossy(&pdf);
+    assert_eq!(raw.matches("/Subtype /Image").count(), 3);
+    // The page names all three (its content is compressed).
+    assert!(raw.contains("/XObject << /I1 3 0 R /I2 5 0 R /I3 7 0 R >>"));
+
+    let folder = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let mut png = Vec::new();
+    sublime::io::base64::encode_into(&fixture("tests/fixtures/png/basn6a08.png"), &mut png);
+    let markdown = format!(
+        "# Pictures\n\n![a photo](jpeg/edges-100x75-prog-q75-420.jpg)\n\n![inline](data:image/png;base64,{})\n\n![gone](no-such.png)\n",
+        String::from_utf8(png).unwrap()
+    );
+    let options = ConvertOptions {
+        base: Some(folder),
+        ..ConvertOptions::default()
+    };
+    let pdf = convert_with(&MARKDOWN_TO_PDF, markdown.as_bytes(), options);
+    let raw = String::from_utf8_lossy(&pdf);
+    assert!(raw.contains("/Filter /DCTDecode"));
+    assert!(raw.contains("/SMask"));
+    assert!(raw.contains("/I2 ") && !raw.contains("/I3 "));
+    let mut text = Vec::new();
+    write_pdf_text(&pdf, None, &mut text).expect("reads back");
+    let text = String::from_utf8(text).unwrap();
+    assert!(text.contains("[gone]"), "{text}");
+    assert!(!text.contains("[a photo]"), "{text}");
+}

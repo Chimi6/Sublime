@@ -153,7 +153,7 @@ fn every_image_survives_our_lossless_writer_and_reader() {
     let mut checked = 0;
     for (name, webp) in fixtures("") {
         let (image, _) = read_webp(&webp).unwrap_or_else(|error| panic!("{name}: {error}"));
-        for effort in [Effort::Fast, Effort::Default, Effort::Best] {
+        for effort in [Effort::Fast, Effort::Balanced, Effort::Max] {
             let name = format!("{name} at {effort:?}");
             let mut encoded = Vec::new();
             write_webp_with(&image, &mut encoded, effort)
@@ -203,16 +203,4 @@ fn every_image_survives_our_lossless_writer_and_reader() {
         }
     }
     assert!(checked > 600);
-}
-
-#[test]
-fn quality_reads_as_lossless_effort_as_cwebp_reads_it() {
-    use sublime::io::webp::Effort;
-    assert_eq!(Effort::from_quality(None), Effort::Default);
-    assert_eq!(Effort::from_quality(Some(1)), Effort::Fast);
-    assert_eq!(Effort::from_quality(Some(50)), Effort::Fast);
-    assert_eq!(Effort::from_quality(Some(51)), Effort::Default);
-    assert_eq!(Effort::from_quality(Some(89)), Effort::Default);
-    assert_eq!(Effort::from_quality(Some(90)), Effort::Best);
-    assert_eq!(Effort::from_quality(Some(100)), Effort::Best);
 }

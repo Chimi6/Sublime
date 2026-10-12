@@ -66,6 +66,9 @@ pub struct Entry {
 
 const FLAG_PACKED: u8 = 1;
 const FLAG_SINT: u8 = 2;
+/// A `RawBytes` value that is whole encoded fields, tags included, written
+/// as it is: a writer's run of repeated records in one entry.
+const FLAG_VERBATIM: u8 = 4;
 
 impl Entry {
     fn unknown(number: u32, value: Node) -> Entry {
@@ -103,6 +106,23 @@ impl Entry {
 
     fn is_sint(&self) -> bool {
         self.flags & FLAG_SINT != 0
+    }
+
+    /// The bytes of the run this entry writes as they are, when it is one.
+    pub fn verbatim(&self) -> Option<Span> {
+        match self.value {
+            Node::RawBytes(span) if self.flags & FLAG_VERBATIM != 0 => Some(span),
+            _ => None,
+        }
+    }
+
+    /// Lengthens a verbatim run by `length` bytes that follow it.
+    pub fn extend_verbatim(&mut self, length: u32) {
+        if let Node::RawBytes(span) = &mut self.value
+            && self.flags & FLAG_VERBATIM != 0
+        {
+            span.length += length;
+        }
     }
 }
 
@@ -243,6 +263,19 @@ impl Tree {
         value: Node,
     ) -> Result<u32, TreeError> {
         self.push(chain, Entry::unknown(number, value))
+    }
+
+    /// Appends whole encoded fields of `number` (tags included), written as
+    /// they are.
+    pub fn push_verbatim(
+        &mut self,
+        chain: &mut Chain,
+        number: u32,
+        span: Span,
+    ) -> Result<u32, TreeError> {
+        let mut entry = Entry::unknown(number, Node::RawBytes(span));
+        entry.flags = FLAG_VERBATIM;
+        self.push(chain, entry)
     }
 
     /// Builds a known-field entry for a chain being read from JSON.
@@ -421,7 +454,10 @@ impl Tree {
                 cursor = run_end;
                 continue;
             }
-            total += tag_size(entry.number) + self.value_size(entry);
+            total += match entry.verbatim() {
+                Some(span) => span.length as usize,
+                None => tag_size(entry.number) + self.value_size(entry),
+            };
             cursor = entry.next;
         }
         total
@@ -494,6 +530,10 @@ impl Tree {
     }
 
     fn encode_entry(&self, entry: &Entry, out: &mut Vec<u8>) -> Result<(), TreeError> {
+        if let Some(span) = entry.verbatim() {
+            out.extend_from_slice(self.bytes(span));
+            return Ok(());
+        }
         let number = entry.number;
         match entry.value {
             Node::Str(span) | Node::Bytes(span) | Node::RawBytes(span) | Node::Deferred(span) => {
@@ -609,7 +649,7 @@ pub fn write_varint(out: &mut Vec<u8>, mut value: u64) {
     out.push(value as u8);
 }
 
-fn write_tag(out: &mut Vec<u8>, number: u32, wire_type: u8) {
+pub fn write_tag(out: &mut Vec<u8>, number: u32, wire_type: u8) {
     write_varint(out, (u64::from(number) << 3) | u64::from(wire_type));
 }
 

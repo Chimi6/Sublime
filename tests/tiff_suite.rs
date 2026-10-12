@@ -105,3 +105,62 @@ fn every_corrupt_file_is_refused() {
         assert!(read_tiff(&bytes).is_err(), "{name} was accepted");
     }
 }
+
+/// A sink taking 16-bit rows, keeping them.
+#[derive(Default)]
+struct Deep {
+    deep: bool,
+    pixels: Vec<u8>,
+}
+
+impl sublime::io::png::RowSink for Deep {
+    fn accept_deep(&mut self, _color: ColorType) -> bool {
+        self.deep = true;
+        true
+    }
+
+    fn start(&mut self, _width: u32, _height: u32, _color: ColorType) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn row(&mut self, pixels: &[u8]) -> std::io::Result<()> {
+        self.pixels.extend_from_slice(pixels);
+        Ok(())
+    }
+}
+
+#[test]
+fn sixteen_bit_files_go_on_at_sixteen_bits() {
+    for name in ["L-16bit", "RGB-16bit", "RGBA-16bit"] {
+        let bytes = fs::read(dir("").join(format!("{name}.tif"))).expect("fixture");
+        let mut sink = Deep::default();
+        let notes = sublime::io::tiff::read_tiff_rows(&mut &bytes[..], &mut sink).expect(name);
+        assert!(sink.deep && !notes.sixteen_bit, "{name}");
+        let eight = pix(dir("").join(format!("{name}.pix")));
+        let high: Vec<u8> = sink.pixels.iter().step_by(2).copied().collect();
+        assert_eq!(high, eight.pixels, "{name}");
+        assert!(
+            sink.pixels.iter().skip(1).step_by(2).any(|&low| low != 0),
+            "{name}"
+        );
+    }
+    // Written at 16 bits and read back unchanged.
+    let bytes = fs::read(dir("").join("RGB-16bit.tif")).expect("fixture");
+    let mut first = Deep::default();
+    sublime::io::tiff::read_tiff_rows(&mut &bytes[..], &mut first).expect("read");
+    let image = read_tiff(&bytes).expect("eight-bit read");
+    let mut written = Vec::new();
+    {
+        use sublime::io::png::RowSink;
+        let mut rows = sublime::io::tiff::TiffRows::new(&mut written);
+        assert!(rows.accept_deep(ColorType::Rgb));
+        rows.start(image.width, image.height, ColorType::Rgb)
+            .expect("start");
+        for row in first.pixels.chunks_exact(image.width as usize * 6) {
+            rows.row(row).expect("row");
+        }
+    }
+    let mut second = Deep::default();
+    sublime::io::tiff::read_tiff_rows(&mut &written[..], &mut second).expect("read back");
+    assert_eq!(first.pixels, second.pixels);
+}

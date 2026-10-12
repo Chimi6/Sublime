@@ -31,6 +31,84 @@ impl Category {
     }
 }
 
+/// How much work a writer spends on making its output small, at the
+/// same fidelity: one scale for every format that has the trade
+/// (`--effort`). A format without it ignores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum Effort {
+    Fast,
+    #[default]
+    Balanced,
+    Max,
+}
+
+impl Effort {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Effort::Fast => "fast",
+            Effort::Balanced => "balanced",
+            Effort::Max => "max",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Effort> {
+        match text {
+            "fast" => Some(Effort::Fast),
+            "balanced" => Some(Effort::Balanced),
+            "max" => Some(Effort::Max),
+            _ => None,
+        }
+    }
+}
+
+/// A conversion option a format honours when it is read or written: the
+/// one place that says which flags mean something for which formats.
+/// Help, `sublime paths`, the docs, and the warning for a flag that does
+/// nothing are all drawn from these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Setting {
+    /// `--quality`: the fidelity a lossy writer keeps, 1 to 100, and its
+    /// default.
+    Quality { default: u8 },
+    /// `--effort`: the work a writer spends on size (`Effort`).
+    Effort,
+    /// `--sheet`: the worksheet read, or the name of the one written.
+    Sheet,
+    /// `--page`: the page read.
+    Page,
+    /// `--font`: the font a document is set in.
+    Font,
+    /// `--delimiter`: the field delimiter read and written.
+    Delimiter,
+}
+
+impl Setting {
+    pub fn flag(&self) -> &'static str {
+        match self {
+            Setting::Quality { .. } => "--quality",
+            Setting::Effort => "--effort",
+            Setting::Sheet => "--sheet",
+            Setting::Page => "--page",
+            Setting::Font => "--font",
+            Setting::Delimiter => "--delimiter",
+        }
+    }
+
+    /// The flag with its default, as the docs list it.
+    pub fn label(&self) -> String {
+        match self {
+            Setting::Quality { default } => format!("--quality (default {default})"),
+            Setting::Effort => "--effort (default balanced)".to_string(),
+            other => other.flag().to_string(),
+        }
+    }
+
+    /// Whether `self` is the same option as `other`, whatever its default.
+    pub fn same(&self, other: &Setting) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
 /// A file format. Declared once as a `static`, referenced by pointer.
 #[derive(Debug)]
 pub struct Format {
@@ -39,6 +117,10 @@ pub struct Format {
     pub extensions: &'static [&'static str],
     pub magic: Option<&'static [u8]>,
     pub category: Category,
+    /// The options that mean something when this format is read.
+    pub read_options: &'static [Setting],
+    /// The options that mean something when this format is written.
+    pub write_options: &'static [Setting],
 }
 
 impl Format {
@@ -176,6 +258,8 @@ mod tests {
         extensions: &["pngish", "pgi"],
         magic: Some(&[0x89, b'P', b'N', b'G']),
         category: Category::Image,
+        read_options: &[],
+        write_options: &[],
     };
 
     fn known() -> Vec<&'static Format> {
@@ -252,6 +336,8 @@ mod tests {
             extensions: &[],
             magic: None,
             category: Category::Document,
+            read_options: &[],
+            write_options: &[],
         };
         assert_eq!(&formats::CSV, &clone);
     }

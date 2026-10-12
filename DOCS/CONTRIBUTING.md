@@ -49,7 +49,9 @@ Six places, and the compiler or a test catches anything you miss.
 3. `src/converters/mod.rs`: one `pub mod` line.
 4. `src/registry.rs`: one entry in `CONVERTERS` and bump the array length.
 5. `tests/fixtures/<format>/`: real sample files, including nasty ones.
-6. `cargo run --release -- paths --markdown > DOCS/FORMATS.md` and commit it.
+6. `cargo run --release -- paths --markdown > DOCS/FORMATS.md` and
+   `cargo run --release -- paths --conversions > DOCS/CONVERSIONS.md`, and
+   commit both.
 
 Then add a line to `CHANGELOG.md` and, if the work changes direction, to
 `STATE.md`.
@@ -135,7 +137,9 @@ commit as the code.
 
 - `DOCS/` is committed project documentation.
 - `temp/` is gitignored working space for plans, specs, and notes.
-- `DOCS/FORMATS.md` is generated. CI fails if it is stale.
+- `DOCS/FORMATS.md` (formats and the map) and `DOCS/CONVERSIONS.md` (every
+  converter and path, with what each loses) are generated. CI fails if
+  either is stale.
 - `DOCS/formats/<name>.md` holds reverse-engineering notes for a format.
 
 ## Releasing

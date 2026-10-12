@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use super::format::{self as cell_format, CustomFormat, Format};
 use super::package::{Entry, Package, Stream};
 use crate::document::{
     Alignment, Anchor, AnchorBase, Baseline, Block, Caps, Cell, CharacterStyle, Color, Document,
@@ -589,6 +590,8 @@ impl<'p> Reader<'p> {
 const DOCUMENT_ARCHIVE: u32 = 10000;
 const STORAGE_ARCHIVE: u32 = 2001;
 const CALCULATION_ENGINE: u32 = 4000;
+/// `TSCE.ASTNodeArrayArchive` node type of a range (`A1:B2`).
+const COLON_TRACT_NODE: i64 = 67;
 const PACKAGE_METADATA: u32 = 11006;
 
 /// Cell storage: the flag bits of the fields a cell record carries, in
@@ -629,6 +632,19 @@ struct CellRecord {
     rich_text: Option<u32>,
     cell_style: Option<u32>,
     text_style: Option<u32>,
+    /// A formula's result whose date format is Numbers' automatic one (the
+    /// record's explicit-format mask, byte 6, leaves out dates: 0x08).
+    automatic_date: bool,
+    /// The format kind the cell shows (`0x1000`): 1 a number, 2 a
+    /// currency, 3 a date, 5 text.
+    shown_kind: Option<u32>,
+    /// Keys into the table's format table, by kind.
+    number_format: Option<u32>,
+    currency_format: Option<u32>,
+    date_format: Option<u32>,
+    duration_format: Option<u32>,
+    text_format: Option<u32>,
+    bool_format: Option<u32>,
 }
 
 /// The text of a cell that holds a value: a string, a number, a boolean,
@@ -661,6 +677,7 @@ fn cell_record(bytes: &[u8]) -> Option<CellRecord> {
     let flags = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
     let mut record = CellRecord {
         kind: bytes[1],
+        automatic_date: flags & 0x200 != 0 && bytes[6] & 0x08 == 0,
         ..CellRecord::default()
     };
     let mut offset = 12usize;
@@ -677,6 +694,13 @@ fn cell_record(bytes: &[u8]) -> Option<CellRecord> {
             0x10 => record.rich_text = Some(u32::from_le_bytes(field.try_into().ok()?)),
             0x20 => record.cell_style = Some(u32::from_le_bytes(field.try_into().ok()?)),
             0x40 => record.text_style = Some(u32::from_le_bytes(field.try_into().ok()?)),
+            0x1000 => record.shown_kind = Some(u32::from_le_bytes(field.try_into().ok()?)),
+            0x2000 => record.number_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
+            0x4000 => record.currency_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
+            0x8000 => record.date_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
+            0x10000 => record.duration_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
+            0x20000 => record.text_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
+            0x40000 => record.bool_format = Some(u32::from_le_bytes(field.try_into().ok()?)),
             _ => {}
         }
         offset += size;
@@ -686,7 +710,7 @@ fn cell_record(bytes: &[u8]) -> Option<CellRecord> {
 
 /// A cell's decimal128 number (as Pages stores it: a binary mantissa and a
 /// biased power of ten) as exact decimal text, e.g. `42.5` or `-3`.
-fn decimal128_text(bytes: &[u8]) -> Option<String> {
+pub(crate) fn decimal128_text(bytes: &[u8]) -> Option<String> {
     let bytes: [u8; 16] = bytes.try_into().ok()?;
     let negative = bytes[15] & 0x80 != 0;
     let exponent = ((i32::from(bytes[15] & 0x7F) << 7) | i32::from(bytes[14] >> 1)) - 0x1820;
@@ -740,6 +764,9 @@ struct TableLists {
     rich_text: HashMap<u32, u64>,
     /// Style id -> the style object (a cell style or a paragraph style).
     styles: HashMap<u32, u64>,
+    /// Format id -> the format (read for workbooks, which show cells as
+    /// Numbers does), with the custom format it stands for.
+    formats: HashMap<u32, std::rc::Rc<CellFormat>>,
 }
 
 impl Reader<'_> {
@@ -2341,6 +2368,7 @@ impl Reader<'_> {
             rich_text: self
                 .data_list_references(store.reference("rich_text_table"), "rich_text_payload"),
             styles: self.data_list_references(store.reference("styleTable"), "reference"),
+            formats: HashMap::new(),
         };
         let header_text_style = view.reference("header_row_text_style");
         let body_text_style = view.reference("body_text_style");
@@ -2407,14 +2435,8 @@ impl Reader<'_> {
                 }
             }
         }
-        if let Some(owner) = view
-            .message("merge_owner")
-            .and_then(|owner| owner.message("owner_id"))
-            .and_then(uuid)
-        {
-            for region in self.merge_regions(owner) {
-                apply_merge(&mut rows, region);
-            }
+        for region in self.table_merges(view) {
+            apply_merge(&mut rows, region);
         }
         Some(Table {
             rows,
@@ -2639,9 +2661,119 @@ impl Reader<'_> {
         references
     }
 
+    /// A format table's formats by key.
+    fn data_list_formats(
+        &self,
+        list: Option<u64>,
+        customs: &HashMap<(u64, u64), CustomFormat>,
+    ) -> HashMap<u32, std::rc::Rc<CellFormat>> {
+        let mut formats = HashMap::new();
+        let Some(message) = list.and_then(|id| self.graph.object(id)) else {
+            return formats;
+        };
+        for entry in View::of(message).messages("entries") {
+            if let Some(key) = entry.integer("key")
+                && let Some(format) = entry.message("format")
+            {
+                let format = format_of(format);
+                let custom = format.custom_uid.and_then(|uid| customs.get(&uid)).cloned();
+                formats.insert(key as u32, std::rc::Rc::new(CellFormat { format, custom }));
+            }
+        }
+        formats
+    }
+
     /// The merged regions a merge owner records, from the calculation
     /// engine's dependency tracker, where the owner's range dependencies
     /// are the regions.
+    /// A table's merged regions (`model` its `TST.TableModelArchive`), from
+    /// the first source that has any, in the order numbers-parser reads
+    /// them: the merge owner's formulas (each a range, as a colon tract),
+    /// the calculation engine's dependencies on the merge owner, and an
+    /// older document's merge region map.
+    fn table_merges(&mut self, model: View<'_>) -> Vec<Region> {
+        let owner = model.message("merge_owner");
+        let mut regions = Vec::new();
+        let formulas = owner
+            .and_then(|owner| owner.message("formula_store"))
+            .map(|store| store.messages("formulas"))
+            .unwrap_or_default();
+        for formula in formulas {
+            let Some(node) = formula
+                .message("formula")
+                .and_then(|formula| formula.message("AST_node_array"))
+                .and_then(|array| array.messages("AST_node").into_iter().next())
+            else {
+                continue;
+            };
+            if node.integer("AST_node_type") != Some(COLON_TRACT_NODE) {
+                continue;
+            }
+            let Some(tract) = node.message("AST_colon_tract") else {
+                continue;
+            };
+            // The first and last row (or column); a range of one leaves
+            // its end out.
+            let span = |name: &str| {
+                let range = tract.messages(name).into_iter().next()?;
+                let begin = range.integer("range_begin")?.max(0) as usize;
+                let end = range
+                    .integer("range_end")
+                    .map_or(begin, |end| end.max(0) as usize);
+                (end >= begin).then(|| (begin, end - begin + 1))
+            };
+            if let (Some((row, rows)), Some((column, columns))) =
+                (span("absolute_row"), span("absolute_column"))
+            {
+                regions.push(Region {
+                    row,
+                    column,
+                    rows,
+                    columns,
+                });
+            }
+        }
+        if !regions.is_empty() {
+            return regions;
+        }
+        if let Some(owner) = owner
+            .and_then(|owner| owner.message("owner_id"))
+            .and_then(uuid)
+        {
+            regions = self.merge_regions(owner);
+            if !regions.is_empty() {
+                return regions;
+            }
+        }
+        let map = model
+            .message("base_data_store")
+            .and_then(|store| store.reference("merge_region_map"))
+            .and_then(|map| self.graph.object(map));
+        let packed = |view: Option<View<'_>>| match view?.node("packedData")? {
+            Node::Fixed32(value) => Some(u64::from(value)),
+            Node::Uint(value) => Some(value),
+            _ => None,
+        };
+        for range in map
+            .map(|map| View::of(map).messages("cell_range"))
+            .unwrap_or_default()
+        {
+            // Each packs the column in its high half and the row in its low.
+            if let (Some(origin), Some(size)) = (
+                packed(range.message("origin")),
+                packed(range.message("size")),
+            ) {
+                regions.push(Region {
+                    row: (origin & 0xFFFF) as usize,
+                    column: (origin >> 16) as usize,
+                    rows: (size & 0xFFFF) as usize,
+                    columns: (size >> 16) as usize,
+                });
+            }
+        }
+        regions
+    }
+
     fn merge_regions(&mut self, owner: [u64; 4]) -> Vec<Region> {
         if self.merges.is_none() {
             self.merges = Some(self.read_merges());
@@ -3402,13 +3534,114 @@ pub struct WorkbookSheet {
     pub tables: Vec<WorkbookTable>,
 }
 
-/// A Numbers table: its name and its size.
+/// A Numbers table: its name and its size (as Numbers shows it).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkbookTable {
     pub name: String,
     pub rows: usize,
     pub columns: usize,
     model: u64,
+    /// A pivot table's layout, which places its stored cells and its
+    /// summary's (the grand totals) as Numbers shows them.
+    view: Option<std::rc::Rc<TableLayout>>,
+}
+
+/// A table laid out by its view (`TST.TableInfoArchive`
+/// `view_column_row_uids`), which orders every row and column by its uid:
+/// the model's stored grid and the summary model's (`data_store`) each map
+/// a uid to their own row or column (`TST.ColumnRowUIDMapArchive`).
+#[derive(Debug, PartialEq)]
+struct TableLayout {
+    /// The stored grid's rows and columns.
+    base: (usize, usize),
+    /// The summary model, and its grid's rows and columns.
+    summary: u64,
+    summary_size: (usize, usize),
+    /// Per view row, its row in the stored grid and in the summary's.
+    rows: Vec<(Option<usize>, Option<usize>)>,
+    /// Per view column, likewise.
+    columns: Vec<(Option<usize>, Option<usize>)>,
+    /// Per view row, the category it heads, when it is a category's row
+    /// (a group of a categorised table, no stored row of its own).
+    groups: Vec<Option<Group>>,
+    /// Per category level, the stored column it groups by.
+    group_columns: Vec<Option<usize>>,
+}
+
+/// A categorised table's categories, by their uid.
+type GroupsByUid = HashMap<(u64, u64), Group>;
+
+/// A category of a categorised table: its level (0 the outermost) and the
+/// value its rows share.
+#[derive(Debug, Clone, PartialEq)]
+struct Group {
+    level: usize,
+    value: GroupValue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum GroupValue {
+    Text(String),
+    Number(f64, Format),
+    /// Seconds since 2001 and the pattern the grouping shows (`yyyy`,
+    /// `LLLL yyyy`, `yyyy-QQQ`, `EEEE`).
+    Date(f64, String),
+    Boolean(bool),
+}
+
+impl Group {
+    /// The category's label, as Numbers shows it: a boolean grouping is
+    /// named by its column (`Is “Edible”`, `Not “Edible”`).
+    fn label(&self, column: &str) -> String {
+        match &self.value {
+            GroupValue::Text(text) => text.clone(),
+            GroupValue::Number(value, format) => cell_format::number(*value, None, format, None),
+            GroupValue::Date(seconds, pattern) => cell_format::date(*seconds, pattern, false),
+            GroupValue::Boolean(true) => format!("Is \u{201c}{column}\u{201d}"),
+            GroupValue::Boolean(false) => format!("Not \u{201c}{column}\u{201d}"),
+        }
+    }
+}
+
+/// A `TST.ColumnRowUIDMapArchive`: each uid's index, and the uids in
+/// index order, of the rows and of the columns.
+struct UidMap {
+    row_index: HashMap<(u64, u64), usize>,
+    column_index: HashMap<(u64, u64), usize>,
+    rows: Vec<(u64, u64)>,
+    columns: Vec<(u64, u64)>,
+}
+
+impl UidMap {
+    fn of(view: View<'_>) -> UidMap {
+        let side = |uids: &str, index_for: &str, for_index: &str| {
+            let sorted: Vec<(u64, u64)> =
+                view.messages(uids).into_iter().filter_map(uid_of).collect();
+            let index: HashMap<(u64, u64), usize> = sorted
+                .iter()
+                .zip(view.integers(index_for))
+                .map(|(uid, index)| (*uid, index.max(0) as usize))
+                .collect();
+            let ordered: Vec<(u64, u64)> = view
+                .integers(for_index)
+                .into_iter()
+                .filter_map(|at| sorted.get(at.max(0) as usize).copied())
+                .collect();
+            (index, ordered)
+        };
+        let (row_index, rows) = side("sorted_row_uids", "row_index_for_uid", "row_uid_for_index");
+        let (column_index, columns) = side(
+            "sorted_column_uids",
+            "column_index_for_uid",
+            "column_uid_for_index",
+        );
+        UidMap {
+            row_index,
+            column_index,
+            rows,
+            columns,
+        }
+    }
 }
 
 /// `TN.DocumentArchive` and `TN.SheetArchive`: Numbers' own types, which
@@ -3416,6 +3649,8 @@ pub struct WorkbookTable {
 const NUMBERS_DOCUMENT: u32 = 1;
 const NUMBERS_SHEET: u32 = 2;
 const TABLE_INFO: u32 = 6000;
+/// `TST.GroupByArchive`: a table's categories.
+const GROUP_BY: u32 = 6373;
 
 /// A Numbers document's sheets and tables, in the order the document
 /// lists them, with each table's cells read on request a tile at a time
@@ -3424,7 +3659,43 @@ const TABLE_INFO: u32 = 6000;
 pub struct WorkbookReader<'p> {
     reader: Reader<'p>,
     sheets: Vec<WorkbookSheet>,
+    /// The document's custom formats by their list uuid.
+    customs: HashMap<(u64, u64), CustomFormat>,
 }
+
+/// A cell's format: the format the cell names and, when that stands for a
+/// custom format, the custom format.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CellFormat {
+    pub format: Format,
+    pub custom: Option<CustomFormat>,
+}
+
+/// A cell's value by type.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum CellValue {
+    #[default]
+    Empty,
+    Text,
+    Number(f64),
+    Boolean(bool),
+    /// Seconds since 2001-01-01.
+    Date(f64),
+    /// Seconds.
+    Duration(f64),
+}
+
+/// A workbook cell: its text as Numbers shows it, its value, and the
+/// format the text came from.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WorkbookCell {
+    pub text: String,
+    pub value: CellValue,
+    pub format: Option<std::rc::Rc<CellFormat>>,
+}
+
+/// `TSK.CustomFormatListArchive`: the document's custom formats.
+const CUSTOM_FORMAT_LIST: u32 = 222;
 
 impl<'p> WorkbookReader<'p> {
     pub fn new(package: &'p Package) -> WorkbookReader<'p> {
@@ -3463,33 +3734,111 @@ impl<'p> WorkbookReader<'p> {
             }
             let tables = models
                 .into_iter()
-                .filter_map(|model| {
+                .filter_map(|(info, model)| {
                     let view = View::of(reader.graph.object(model)?);
+                    let rows = view.integer("number_of_rows")?.clamp(0, 1 << 20) as usize;
+                    let columns = view.integer("number_of_columns")?.clamp(0, 1 << 16) as usize;
+                    let layout = reader.pivot_layout(info, view, (rows, columns));
                     Some(WorkbookTable {
                         name: view.string("table_name").unwrap_or_default().to_string(),
-                        rows: view.integer("number_of_rows")?.clamp(0, 1 << 20) as usize,
-                        columns: view.integer("number_of_columns")?.clamp(0, 1 << 16) as usize,
+                        rows: layout.as_ref().map_or(rows, |layout| layout.rows.len()),
+                        columns: layout
+                            .as_ref()
+                            .map_or(columns, |layout| layout.columns.len()),
                         model,
+                        view: layout.map(std::rc::Rc::new),
                     })
                 })
                 .collect();
             sheets.push(WorkbookSheet { name, tables });
         }
-        WorkbookReader { reader, sheets }
+        let mut customs = HashMap::new();
+        for (_, list) in reader.graph.objects_of_type(CUSTOM_FORMAT_LIST) {
+            let list = View::of(list);
+            for (uid, custom) in list
+                .messages("uuids")
+                .into_iter()
+                .zip(list.messages("custom_formats"))
+            {
+                let Some(uid) = uid_of(uid) else {
+                    continue;
+                };
+                let Some(default) = custom.message("default_format") else {
+                    continue;
+                };
+                let conditions = custom
+                    .messages("conditions")
+                    .into_iter()
+                    .filter_map(|condition| {
+                        Some(cell_format::Condition {
+                            kind: condition.integer("condition_type").unwrap_or(-1) as u32,
+                            value: condition
+                                .double("condition_value_dbl")
+                                .or_else(|| condition.float("condition_value").map(f64::from))
+                                .unwrap_or(0.0),
+                            format: format_of(condition.message("condition_format")?),
+                        })
+                    })
+                    .collect();
+                customs.insert(
+                    uid,
+                    CustomFormat {
+                        format: format_of(default),
+                        conditions,
+                    },
+                );
+            }
+        }
+        WorkbookReader {
+            reader,
+            sheets,
+            customs,
+        }
     }
 
     pub fn sheets(&self) -> &[WorkbookSheet] {
         &self.sheets
     }
 
+    /// A table's merged ranges as (row, column, rows, columns) from 0,
+    /// from the calculation engine: none when the package was read without
+    /// it (`Scope::Workbook` skips it).
+    pub fn merges(&mut self, sheet: usize, table: usize) -> Vec<(usize, usize, usize, usize)> {
+        let Some((model, size)) = self
+            .sheets
+            .get(sheet)
+            .and_then(|sheet| sheet.tables.get(table))
+            .filter(|table| table.view.is_none())
+            .map(|table| (table.model, (table.rows, table.columns)))
+        else {
+            return Vec::new();
+        };
+        let Some(message) = self.reader.graph.object(model) else {
+            return Vec::new();
+        };
+        self.reader
+            .table_merges(View::of(message))
+            .into_iter()
+            // Regions past the table's edges are left alone, as `rows`
+            // leaves them.
+            .filter(|region| {
+                region.rows > 0
+                    && region.columns > 0
+                    && region.row + region.rows <= size.0
+                    && region.column + region.columns <= size.1
+            })
+            .map(|region| (region.row, region.column, region.rows, region.columns))
+            .collect()
+    }
+
     /// Every row of a table on its full grid, in order: each cell as it
     /// reads, empty rows and cells empty, merged-over cells empty.
-    pub fn rows<E>(
+    pub fn rows(
         &mut self,
         sheet: usize,
         table: usize,
-        mut each: impl FnMut(&[String]) -> Result<(), E>,
-    ) -> Result<(), E> {
+        each: &mut dyn FnMut(&[WorkbookCell]) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         let Some(table) = self
             .sheets
             .get(sheet)
@@ -3498,12 +3847,109 @@ impl<'p> WorkbookReader<'p> {
         else {
             return Ok(());
         };
+        let Some(layout) = table.view.as_deref() else {
+            return self.store_rows(table.model, true, table.rows, table.columns, each);
+        };
+        // A pivot table as Numbers shows it: its stored cells and its
+        // summary's (the grand totals), each placed by its row and column
+        // in the view. The stores are read whole; a pivot is a summary.
+        let mut base: Vec<Vec<WorkbookCell>> = Vec::new();
+        self.store_rows(
+            table.model,
+            true,
+            layout.base.0,
+            layout.base.1,
+            &mut |cells| {
+                base.push(cells.to_vec());
+                Ok(())
+            },
+        )?;
+        let mut summary: Vec<Vec<WorkbookCell>> = Vec::new();
+        self.store_rows(
+            layout.summary,
+            false,
+            layout.summary_size.0,
+            layout.summary_size.1,
+            &mut |cells| {
+                summary.push(cells.to_vec());
+                Ok(())
+            },
+        )?;
+        let at = |grid: &[Vec<WorkbookCell>], row: Option<usize>, column: Option<usize>| {
+            grid.get(row?)?
+                .get(column?)
+                .filter(|cell| !matches!(cell.value, CellValue::Empty) || !cell.text.is_empty())
+                .cloned()
+        };
+        // A category's label goes in the view's own column (one with no
+        // stored column), where Numbers shows it; a boolean grouping is
+        // named by its column's header.
+        let label_column = layout
+            .columns
+            .iter()
+            .position(|(base_column, summary_column)| {
+                base_column.is_none() && summary_column.is_none()
+            })
+            .or_else(|| {
+                layout
+                    .columns
+                    .iter()
+                    .position(|(base_column, _)| base_column.is_none())
+            });
+        let mut row = Vec::with_capacity(layout.columns.len());
+        for (index, &(base_row, summary_row)) in layout.rows.iter().enumerate() {
+            row.clear();
+            for &(base_column, summary_column) in &layout.columns {
+                row.push(
+                    at(&summary, summary_row, summary_column)
+                        .or_else(|| at(&base, base_row, base_column))
+                        .unwrap_or_default(),
+                );
+            }
+            if let (Some(group), Some(column)) = (
+                layout.groups.get(index).and_then(Option::as_ref),
+                label_column,
+            ) {
+                let header = layout
+                    .group_columns
+                    .get(group.level)
+                    .copied()
+                    .flatten()
+                    .and_then(|column| base.first()?.get(column))
+                    .map(|cell| cell.text.as_str())
+                    .unwrap_or_default();
+                row[column] = WorkbookCell {
+                    text: group.label(header),
+                    value: CellValue::Text,
+                    format: None,
+                };
+            }
+            each(&row)?;
+        }
+        Ok(())
+    }
+
+    /// The rows of a table's data store, tile by tile: the model's
+    /// (`base_data_store`, its merges applied) or a summary model's
+    /// (`data_store`), on a grid of `rows` by `columns`.
+    fn store_rows(
+        &mut self,
+        object: u64,
+        base: bool,
+        rows: usize,
+        columns: usize,
+        each: &mut dyn FnMut(&[WorkbookCell]) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         let reader = &mut self.reader;
-        let Some(message) = reader.graph.object(table.model) else {
+        let Some(message) = reader.graph.object(object) else {
             return Ok(());
         };
         let view = View::of(message);
-        let Some(store) = view.message("base_data_store") else {
+        let Some(store) = view.message(if base {
+            "base_data_store"
+        } else {
+            "data_store"
+        }) else {
             return Ok(());
         };
         let lists = TableLists {
@@ -3511,21 +3957,22 @@ impl<'p> WorkbookReader<'p> {
             rich_text: reader
                 .data_list_references(store.reference("rich_text_table"), "rich_text_payload"),
             styles: HashMap::new(),
+            formats: reader.data_list_formats(store.reference("format_table"), &self.customs),
         };
-        let merges: Vec<Region> = view
-            .message("merge_owner")
-            .and_then(|owner| owner.message("owner_id"))
-            .and_then(uuid)
-            .map(|owner| reader.merge_regions(owner))
-            .unwrap_or_default()
+        let merges: Vec<Region> = if base {
+            reader.table_merges(view)
+        } else {
+            Vec::new()
+        };
+        let merges: Vec<Region> = merges
             .into_iter()
             // Regions past the table's edges are left alone, as
             // `apply_merge` leaves them.
             .filter(|region| {
                 region.rows > 0
                     && region.columns > 0
-                    && region.row + region.rows <= table.rows
-                    && region.column + region.columns <= table.columns
+                    && region.row + region.rows <= rows
+                    && region.column + region.columns <= columns
             })
             .collect();
         let mut tiles: Vec<(usize, u64)> = Vec::new();
@@ -3540,11 +3987,11 @@ impl<'p> WorkbookReader<'p> {
             }
         }
         tiles.sort_unstable();
-        let empty = vec![String::new(); table.columns];
+        let empty = vec![WorkbookCell::default(); columns];
         let mut next = 0;
-        let mut block: Vec<Vec<String>> = Vec::new();
+        let mut block: Vec<Vec<WorkbookCell>> = Vec::new();
         for (base, tile) in tiles {
-            if base < next || base >= table.rows {
+            if base < next || base >= rows {
                 continue;
             }
             while next < base {
@@ -3559,12 +4006,12 @@ impl<'p> WorkbookReader<'p> {
             // in one tile, so the block spans the rows the tile holds.
             let infos = tile_rows(View::of(tile));
             let held = infos.iter().map(|info| info.index + 1).max().unwrap_or(0);
-            let height = tile_size.max(held).min(table.rows - base);
+            let height = tile_size.max(held).min(rows - base);
             block.clear();
             block.resize(height, empty.clone());
             for info in infos {
                 if let Some(cells) = block.get_mut(info.index) {
-                    reader.tile_row_text(&info, cells, &lists);
+                    reader.tile_row_cells(&info, cells, &lists);
                 }
             }
             for region in &merges {
@@ -3580,7 +4027,7 @@ impl<'p> WorkbookReader<'p> {
                         .take(region.columns)
                     {
                         if row != region.row || column != region.column {
-                            cell.clear();
+                            *cell = WorkbookCell::default();
                         }
                     }
                 }
@@ -3590,7 +4037,7 @@ impl<'p> WorkbookReader<'p> {
             }
             next = base + height;
         }
-        while next < table.rows {
+        while next < rows {
             each(&empty)?;
             next += 1;
         }
@@ -3599,8 +4046,14 @@ impl<'p> WorkbookReader<'p> {
 }
 
 impl Reader<'_> {
-    /// One tile row's cells as text.
-    fn tile_row_text(&mut self, info: &TileRow<'_>, cells: &mut [String], lists: &TableLists) {
+    /// One tile row's cells: their text as Numbers shows it, their values,
+    /// and their formats.
+    fn tile_row_cells(
+        &mut self,
+        info: &TileRow<'_>,
+        cells: &mut [WorkbookCell],
+        lists: &TableLists,
+    ) {
         let (offsets, buffer, wide) = (info.offsets, info.buffer, info.wide);
         for (column, cell) in cells.iter_mut().enumerate() {
             let Some(pair) = offsets.get(column * 2..column * 2 + 2) else {
@@ -3614,15 +4067,18 @@ impl Reader<'_> {
             let Some(record) = buffer.get(offset..).and_then(cell_record) else {
                 continue;
             };
-            let text = match record.kind {
-                9 => self.rich_cell_text(&record, lists),
-                // Dates in the form the Excel reader writes, which the
-                // workbook writer types back into dates.
-                5 => record.seconds.map(format_iso_datetime),
-                _ => record_text(&record, lists),
-            };
-            if let Some(text) = text {
-                *cell = text;
+            if record.kind == 9 {
+                if let Some(text) = self.rich_cell_text(&record, lists) {
+                    *cell = WorkbookCell {
+                        text,
+                        value: CellValue::Text,
+                        format: None,
+                    };
+                }
+                continue;
+            }
+            if let Some(shown) = shown_cell(&record, lists) {
+                *cell = shown;
             }
         }
     }
@@ -3636,19 +4092,26 @@ impl Reader<'_> {
             .and_then(|payload| View::of(payload).reference("storage"))
             .and_then(|storage| self.graph.object(storage))?;
         let blocks = self.nested_blocks(View::of(storage));
-        Some(cell_text(&self.document, &blocks))
+        let mut text = cell_text(&self.document, &blocks);
+        // A cell's text that ends in a line break keeps it, as Numbers
+        // shows it: the paragraphs leave the empty last one out.
+        let raw = View::of(storage).strings("text").concat();
+        if raw.ends_with(['\n', '\u{2029}']) && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        Some(text)
     }
 
     /// The table models a sheet's drawable holds: a table, or the tables
     /// in a group.
-    fn collect_table_models(&self, drawable: u64, models: &mut Vec<u64>, depth: u32) {
+    fn collect_table_models(&self, drawable: u64, models: &mut Vec<(u64, u64)>, depth: u32) {
         let Some(message) = self.graph.object(drawable) else {
             return;
         };
         let view = View::of(message);
         if self.graph.object_type(drawable) == Some(TABLE_INFO) {
             if let Some(model) = view.reference("tableModel") {
-                models.push(model);
+                models.push((drawable, model));
             }
             return;
         }
@@ -3658,6 +4121,314 @@ impl Reader<'_> {
             }
         }
     }
+
+    /// A pivot table's layout as Numbers shows it, from its view's uid map
+    /// and its stored and summary grids' maps; `None` for any other table,
+    /// or when a map is missing (the stored cells are read as they are).
+    fn pivot_layout(
+        &self,
+        info: u64,
+        model: View<'_>,
+        base: (usize, usize),
+    ) -> Option<TableLayout> {
+        let info = View::of(self.graph.object(info)?);
+        let map = |id: Option<u64>| Some(UidMap::of(View::of(self.graph.object(id?)?)));
+        let shown = map(info.reference("view_column_row_uids"))?;
+        let stored = map(model.reference("base_column_row_uids"))?;
+        let summary = info.reference("summary_model")?;
+        let summed = map(View::of(self.graph.object(summary)?).reference("column_row_uids"))?;
+        let place = |uids: &[(u64, u64)],
+                     stored: &HashMap<(u64, u64), usize>,
+                     summed: &HashMap<(u64, u64), usize>,
+                     limit: usize| {
+            uids.iter()
+                .map(|uid| {
+                    (
+                        stored.get(uid).copied().filter(|index| *index < limit),
+                        summed.get(uid).copied(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let rows = place(&shown.rows, &stored.row_index, &summed.row_index, base.0);
+        let columns = place(
+            &shown.columns,
+            &stored.column_index,
+            &summed.column_index,
+            base.1,
+        );
+        if rows.is_empty() || columns.is_empty() {
+            return None;
+        }
+        // A categorised table's categories: the rows its view adds, each
+        // headed by its group's value.
+        let (nodes, group_by_columns) = self.groups(info);
+        let groups = shown
+            .rows
+            .iter()
+            .zip(&rows)
+            .map(|(uid, (stored_row, _))| match stored_row {
+                Some(_) => None,
+                None => nodes.get(uid).cloned(),
+            })
+            .collect();
+        let group_columns = group_by_columns
+            .iter()
+            .map(|uid| stored.column_index.get(uid).copied())
+            .collect();
+        Some(TableLayout {
+            base,
+            summary,
+            summary_size: (summed.rows.len(), summed.columns.len()),
+            rows,
+            columns,
+            groups,
+            group_columns,
+        })
+    }
+
+    /// A table's categories by their uid (`TST.GroupByArchive`, by the
+    /// table info's `group_by_uuid`), and the columns it groups by, by
+    /// level. Empty when the table is not categorised.
+    fn groups(&self, info: View<'_>) -> (GroupsByUid, Vec<(u64, u64)>) {
+        let mut nodes = HashMap::new();
+        let Some(wanted) = info.message("group_by_uuid").and_then(uid_of) else {
+            return (nodes, Vec::new());
+        };
+        let Some(group_by) = self
+            .graph
+            .objects_of_type(GROUP_BY)
+            .into_iter()
+            .map(|(_, message)| View::of(message))
+            .find(|view| view.message("group_by_uid").and_then(uid_of) == Some(wanted))
+        else {
+            return (nodes, Vec::new());
+        };
+        if group_by.boolean("is_enabled") != Some(true) {
+            return (nodes, Vec::new());
+        }
+        let columns = group_by
+            .messages("group_column")
+            .into_iter()
+            .filter_map(|column| column.message("column_uid").and_then(uid_of))
+            .collect();
+        let root = group_by.message("group_node_root").or_else(|| {
+            group_by
+                .reference("group_node_root_ref")
+                .and_then(|id| self.graph.object(id))
+                .map(View::of)
+        });
+        if let Some(root) = root {
+            self.collect_groups(root, 0, &mut nodes);
+        }
+        (nodes, columns)
+    }
+
+    /// A group node's children, and theirs, by uid with their level.
+    fn collect_groups(&self, node: View<'_>, level: usize, nodes: &mut HashMap<(u64, u64), Group>) {
+        if level > 16 {
+            return;
+        }
+        let mut children = node.messages("child");
+        if children.is_empty() {
+            children = node
+                .references("child_ref")
+                .into_iter()
+                .filter_map(|id| self.graph.object(id))
+                .map(View::of)
+                .collect();
+        }
+        for child in children {
+            if let (Some(uid), Some(value)) = (
+                child.message("group_uid").and_then(uid_of),
+                child.message("group_cell_value").and_then(group_value),
+            ) {
+                nodes.insert(uid, Group { level, value });
+            }
+            self.collect_groups(child, level + 1, nodes);
+        }
+    }
+}
+
+/// A group's value (`TSCE.CellValueArchive`): text, a number under its
+/// format, a date under the grouping's pattern, or a boolean.
+fn group_value(value: View<'_>) -> Option<GroupValue> {
+    if let Some(text) = value.message("string_value") {
+        return Some(GroupValue::Text(text.string("value")?.to_string()));
+    }
+    if let Some(number) = value.message("number_value") {
+        let format = number.message("format").map(format_of).unwrap_or_default();
+        return Some(GroupValue::Number(number.double("value")?, format));
+    }
+    if let Some(date) = value.message("date_value") {
+        let pattern = date
+            .message("format")
+            .and_then(|format| format.string("date_time_format"))
+            .unwrap_or("yyyy-MM-dd");
+        return Some(GroupValue::Date(date.double("value")?, pattern.to_string()));
+    }
+    let boolean = value.message("boolean_value")?;
+    Some(GroupValue::Boolean(boolean.boolean("value")?))
+}
+
+/// A cell as Numbers shows it: the duration, date, text, currency,
+/// boolean, or number format the cell names, in that order, applied to its
+/// value; a cell without one as its plain value.
+fn shown_cell(record: &CellRecord, lists: &TableLists) -> Option<WorkbookCell> {
+    let format = |id: Option<u32>| id.and_then(|id| lists.formats.get(&id)).cloned();
+    let number = record
+        .decimal
+        .as_deref()
+        .and_then(|text| text.parse::<f64>().ok())
+        .or(record.double);
+    match record.kind {
+        // Text, under a custom text format when it names one.
+        3 => {
+            let text = record
+                .string
+                .and_then(|id| lists.strings.get(&id))
+                .cloned()?;
+            let named = format(record.text_format);
+            let text = match named.as_deref() {
+                Some(CellFormat {
+                    custom: Some(custom),
+                    ..
+                }) if custom.format.kind == cell_format::CUSTOM_TEXT => {
+                    cell_format::custom_text(&text, custom)
+                }
+                _ => text,
+            };
+            Some(WorkbookCell {
+                text,
+                value: CellValue::Text,
+                format: named,
+            })
+        }
+        5 => {
+            let seconds = record.seconds?;
+            let named = format(record.date_format);
+            let pattern = named.as_deref().map(|named| match &named.custom {
+                Some(custom) if custom.format.kind == cell_format::CUSTOM_DATE => {
+                    custom.format.custom_format_string.as_str()
+                }
+                _ => named.format.date_time_format.as_str(),
+            });
+            let text = match pattern {
+                Some(pattern) if !pattern.is_empty() => {
+                    cell_format::date(seconds, pattern, record.automatic_date)
+                }
+                // No pattern: the Excel reader's form, which the workbook
+                // writer types back into a date.
+                _ => format_iso_datetime(seconds),
+            };
+            Some(WorkbookCell {
+                text,
+                value: CellValue::Date(seconds),
+                format: named,
+            })
+        }
+        7 => {
+            let seconds = record.double?;
+            let named = format(record.duration_format);
+            let text = match named.as_deref() {
+                Some(named) => cell_format::duration(seconds, &named.format),
+                None => format_duration(seconds),
+            };
+            Some(WorkbookCell {
+                text,
+                value: CellValue::Duration(seconds),
+                format: named,
+            })
+        }
+        6 => {
+            let value = record.double? != 0.0;
+            let named = format(record.bool_format).or_else(|| format(record.number_format));
+            let text = match named.as_deref() {
+                Some(named) => cell_format::number(
+                    f64::from(u8::from(value)),
+                    None,
+                    &named.format,
+                    named.custom.as_ref(),
+                ),
+                None => (if value { "TRUE" } else { "FALSE" }).to_string(),
+            };
+            Some(WorkbookCell {
+                text,
+                value: CellValue::Boolean(value),
+                format: named,
+            })
+        }
+        2 | 10 => {
+            let value = number?;
+            // The format kind the cell shows (`0x1000`: 1 a number, 2 a
+            // currency) picks between the two it may name.
+            let (first, second) = match record.shown_kind {
+                Some(1) => (record.number_format, record.currency_format),
+                _ => (record.currency_format, record.number_format),
+            };
+            let named = format(first).or_else(|| format(second));
+            let text = match named.as_deref() {
+                Some(named) => cell_format::number(
+                    value,
+                    record.decimal.as_deref(),
+                    &named.format,
+                    named.custom.as_ref(),
+                ),
+                // Fifteen significant digits, as Numbers shows a number.
+                None => cell_format::plain(value, record.decimal.as_deref()),
+            };
+            Some(WorkbookCell {
+                text,
+                value: CellValue::Number(value),
+                format: named,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// A `TSK.FormatStructArchive`.
+fn format_of(view: View<'_>) -> Format {
+    let unsigned = |name: &str| view.integer(name).unwrap_or(0).max(0) as u32;
+    let flag = |name: &str| view.boolean(name).unwrap_or(false);
+    Format {
+        kind: unsigned("format_type"),
+        decimal_places: unsigned("decimal_places"),
+        currency_code: view.string("currency_code").unwrap_or_default().to_string(),
+        negative_style: unsigned("negative_style"),
+        show_thousands_separator: flag("show_thousands_separator"),
+        use_accounting_style: flag("use_accounting_style"),
+        duration_style: unsigned("duration_style"),
+        base: unsigned("base"),
+        base_places: unsigned("base_places"),
+        base_use_minus_sign: flag("base_use_minus_sign"),
+        fraction_accuracy: view.integer("fraction_accuracy").unwrap_or(0) as u32,
+        date_time_format: view
+            .string("date_time_format")
+            .unwrap_or_default()
+            .to_string(),
+        duration_unit_largest: unsigned("duration_unit_largest"),
+        duration_unit_smallest: unsigned("duration_unit_smallest"),
+        use_automatic_duration_units: flag("use_automatic_duration_units"),
+        custom_uid: view.message("custom_uid").and_then(uid_of),
+        custom_format_string: view
+            .string("custom_format_string")
+            .unwrap_or_default()
+            .to_string(),
+        scale_factor: view.double("scale_factor").unwrap_or(1.0),
+        requires_fraction_replacement: flag("requires_fraction_replacement"),
+        num_nonspace_integer_digits: unsigned("num_nonspace_integer_digits"),
+        num_nonspace_decimal_digits: unsigned("num_nonspace_decimal_digits"),
+        is_complex: flag("is_complex"),
+        contains_integer_token: flag("contains_integer_token"),
+        min_integer_width: unsigned("min_integer_width"),
+        decimal_width: unsigned("decimal_width"),
+    }
+}
+
+/// A `TSP.UUID` as its two words.
+fn uid_of(view: View<'_>) -> Option<(u64, u64)> {
+    Some((view.integer("lower")? as u64, view.integer("upper")? as u64))
 }
 
 /// One row of a tile: its index in the tile and its cell records.

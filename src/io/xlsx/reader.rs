@@ -46,6 +46,8 @@ pub struct Workbook<'a> {
     shared: Vec<String>,
     /// Per cell style index: whether its number format is a date.
     date_styles: Vec<bool>,
+    /// Per cell style index: its number format code, `None` for General.
+    style_formats: Vec<Option<String>>,
     date1904: bool,
 }
 
@@ -65,15 +67,16 @@ impl<'a> Workbook<'a> {
             Some(text) => shared_strings(&text),
             None => Vec::new(),
         };
-        let date_styles = match read_text(&archive, "xl/styles.xml") {
-            Some(text) => date_styles(&text),
-            None => Vec::new(),
+        let (date_styles, style_formats) = match read_text(&archive, "xl/styles.xml") {
+            Some(text) => cell_styles(&text),
+            None => (Vec::new(), Vec::new()),
         };
         Ok(Workbook {
             archive,
             sheets,
             shared,
             date_styles,
+            style_formats,
             date1904,
         })
     }
@@ -111,6 +114,30 @@ impl<'a> Workbook<'a> {
     where
         E: From<XlsxError>,
     {
+        self.read_sheet(sheet, &mut |cells, _| on_row(cells))
+            .map(|_| ())
+    }
+
+    /// The number format code of a cell style (`#,##0.00`, `d mmm yyyy`),
+    /// `None` for General.
+    pub fn style_format(&self, style: usize) -> Option<&str> {
+        self.style_formats.get(style)?.as_deref()
+    }
+
+    /// Hands every row of the sheet to `on_row`, as text cells with each
+    /// cell's style (its `cellXfs` index), and returns the sheet's merged
+    /// ranges as (row, column, rows, columns) from 0.
+    pub fn read_sheet<E>(
+        &self,
+        sheet: usize,
+        on_row: &mut StyledRow<'_, E>,
+    ) -> Result<Vec<(usize, usize, usize, usize)>, E>
+    where
+        E: From<XlsxError>,
+    {
+        let mut merges = Vec::new();
+        let mut styles: Vec<Option<usize>> = Vec::new();
+        let mut no_styles: Vec<Option<usize>> = Vec::new();
         let part = &self.sheets[sheet].1;
         let xml = read_text(&self.archive, part).ok_or(XlsxError::Part("worksheet part"))?;
         let reader = XmlReader::new(&xml);
@@ -141,13 +168,16 @@ impl<'a> Workbook<'a> {
                             .and_then(|text| text.parse::<u64>().ok())
                             .unwrap_or(next_row);
                         while next_row < number {
-                            on_row(&gap)?;
+                            no_styles.resize(gap.len(), None);
+                            on_row(&gap, &no_styles)?;
                             next_row += 1;
                         }
                         cells.clear();
+                        styles.clear();
                         if self_closing {
                             pad(&mut cells, width);
-                            on_row(&cells)?;
+                            styles.resize(cells.len(), None);
+                            on_row(&cells, &styles)?;
                             next_row = number + 1;
                         }
                     }
@@ -162,6 +192,12 @@ impl<'a> Workbook<'a> {
                         };
                         if self_closing {
                             self.place(&mut cells, &current);
+                            place_style(&mut styles, &current);
+                        }
+                    }
+                    "mergeCell" => {
+                        if let Some(range) = attribute(&attributes, "ref").and_then(merge_range) {
+                            merges.push(range);
                         }
                     }
                     "v" | "t" if in_sheet_data => {
@@ -179,10 +215,14 @@ impl<'a> Workbook<'a> {
                 }
                 XmlEvent::End { name } => match name {
                     "v" | "t" => text_target = TextTarget::None,
-                    "c" if in_sheet_data => self.place(&mut cells, &current),
+                    "c" if in_sheet_data => {
+                        self.place(&mut cells, &current);
+                        place_style(&mut styles, &current);
+                    }
                     "row" if in_sheet_data => {
                         pad(&mut cells, width);
-                        on_row(&cells)?;
+                        styles.resize(cells.len(), None);
+                        on_row(&cells, &styles)?;
                         next_row += 1;
                     }
                     "sheetData" => in_sheet_data = false,
@@ -190,7 +230,7 @@ impl<'a> Workbook<'a> {
                 },
             }
         }
-        Ok(())
+        Ok(merges)
     }
 
     /// Puts the cell's text at its column, filling the gap with empties.
@@ -248,6 +288,30 @@ struct Cell {
 enum TextTarget {
     None,
     Value,
+}
+
+/// A handler of a row's cells and their styles (`Workbook::read_sheet`).
+pub type StyledRow<'a, E> = dyn FnMut(&[String], &[Option<usize>]) -> Result<(), E> + 'a;
+
+/// Puts the cell's style at its column, as `place` puts its text.
+fn place_style(styles: &mut Vec<Option<usize>>, cell: &Cell) {
+    if styles.len() <= cell.column {
+        styles.resize(cell.column + 1, None);
+    }
+    styles[cell.column] = cell.style;
+}
+
+/// `B2:C4` as (row, column, rows, columns) from 0.
+fn merge_range(reference: &str) -> Option<(usize, usize, usize, usize)> {
+    let (start, end) = reference.split_once(':')?;
+    let point = |cell: &str| -> Option<(usize, usize)> {
+        let split = cell.find(|c: char| c.is_ascii_digit())?;
+        let row: usize = cell[split..].parse().ok()?;
+        Some((row.checked_sub(1)?, column_index(&cell[..split])))
+    };
+    let (top, left) = point(start)?;
+    let (bottom, right) = point(end)?;
+    (bottom >= top && right >= left).then(|| (top, left, bottom - top + 1, right - left + 1))
 }
 
 fn pad(cells: &mut Vec<String>, width: usize) {
@@ -356,10 +420,13 @@ fn shared_strings(xml: &str) -> Vec<String> {
     strings
 }
 
-/// Per `cellXfs` entry, whether its number format shows a date or time.
-fn date_styles(xml: &str) -> Vec<bool> {
+/// Per `cellXfs` entry, whether its number format shows a date or time, and
+/// its format code (`None` for General).
+fn cell_styles(xml: &str) -> (Vec<bool>, Vec<Option<String>>) {
     let mut custom_dates: Vec<u32> = Vec::new();
+    let mut custom_codes: Vec<(u32, String)> = Vec::new();
     let mut styles = Vec::new();
+    let mut formats = Vec::new();
     let mut in_cell_xfs = false;
     for event in XmlReader::new(xml) {
         match event {
@@ -376,6 +443,7 @@ fn date_styles(xml: &str) -> Vec<bool> {
                         if format_code_is_date(code) {
                             custom_dates.push(id);
                         }
+                        custom_codes.push((id, code.to_string()));
                     }
                 }
                 "cellXfs" => in_cell_xfs = !self_closing,
@@ -384,6 +452,14 @@ fn date_styles(xml: &str) -> Vec<bool> {
                         .and_then(|text| text.parse::<u32>().ok())
                         .unwrap_or(0);
                     styles.push(builtin_is_date(id) || custom_dates.contains(&id));
+                    formats.push(
+                        custom_codes
+                            .iter()
+                            .find(|(known, _)| *known == id)
+                            .map(|(_, code)| code.clone())
+                            .or_else(|| builtin_code(id).map(str::to_string))
+                            .filter(|code| !code.eq_ignore_ascii_case("general")),
+                    );
                 }
                 _ => {}
             },
@@ -391,7 +467,42 @@ fn date_styles(xml: &str) -> Vec<bool> {
             _ => {}
         }
     }
-    styles
+    (styles, formats)
+}
+
+/// The code of a built-in number format (ECMA-376 18.8.30), as Excel shows
+/// it in the en-US locale.
+fn builtin_code(id: u32) -> Option<&'static str> {
+    Some(match id {
+        1 => "0",
+        2 => "0.00",
+        3 => "#,##0",
+        4 => "#,##0.00",
+        9 => "0%",
+        10 => "0.00%",
+        11 => "0.00E+00",
+        12 => "# ?/?",
+        13 => "# ??/??",
+        14 => "m/d/yyyy",
+        15 => "d-mmm-yy",
+        16 => "d-mmm",
+        17 => "mmm-yy",
+        18 => "h:mm AM/PM",
+        19 => "h:mm:ss AM/PM",
+        20 => "h:mm",
+        21 => "h:mm:ss",
+        22 => "m/d/yyyy h:mm",
+        37 => "#,##0 ;(#,##0)",
+        38 => "#,##0 ;[Red](#,##0)",
+        39 => "#,##0.00;(#,##0.00)",
+        40 => "#,##0.00;[Red](#,##0.00)",
+        45 => "mm:ss",
+        46 => "[h]:mm:ss",
+        47 => "mmss.0",
+        48 => "##0.0E+0",
+        49 => "@",
+        _ => return None,
+    })
 }
 
 fn builtin_is_date(id: u32) -> bool {
@@ -525,5 +636,24 @@ mod tests {
         assert!(!format_code_is_date("#,##0 \"dollars\""));
         assert!(!format_code_is_date("[Red]0"));
         assert!(!format_code_is_date("General"));
+    }
+
+    #[test]
+    fn merged_ranges_and_style_formats() {
+        assert_eq!(merge_range("B2:C4"), Some((1, 1, 3, 2)));
+        assert_eq!(merge_range("A1:A1"), Some((0, 0, 1, 1)));
+        assert_eq!(merge_range("C1:A1"), None);
+        let styles = r#"<styleSheet><numFmts count="1"><numFmt numFmtId="164" formatCode="&quot;£&quot;#,##0"/></numFmts><cellXfs count="4"><xf numFmtId="0"/><xf numFmtId="164"/><xf numFmtId="10"/><xf numFmtId="14"/></cellXfs></styleSheet>"#;
+        let (dates, formats) = cell_styles(styles);
+        assert_eq!(dates, [false, false, false, true]);
+        assert_eq!(
+            formats,
+            [
+                None,
+                Some("\"£\"#,##0".to_string()),
+                Some("0.00%".to_string()),
+                Some("m/d/yyyy".to_string())
+            ]
+        );
     }
 }

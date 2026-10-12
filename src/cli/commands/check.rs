@@ -56,6 +56,13 @@ pub fn render_human(plan: &Plan) -> String {
     }
     let fidelity_line = format!("fidelity: {}\n", plan.worst_fidelity().label());
     text.push_str(&fidelity_line);
+    let options: Vec<String> = plan.options().iter().map(|option| option.label()).collect();
+    let options_line = if options.is_empty() {
+        "options: none\n".to_string()
+    } else {
+        format!("options: {}\n", options.join(", "))
+    };
+    text.push_str(&options_line);
     text
 }
 
@@ -70,6 +77,12 @@ pub fn render_json(plan: &Plan) -> String {
         let _ = writer.string(plan.to().id);
         let _ = writer.key("fidelity");
         let _ = writer.string(plan.worst_fidelity().label());
+        let _ = writer.key("options");
+        let _ = writer.begin_array();
+        for option in plan.options() {
+            let _ = writer.string(option.flag());
+        }
+        let _ = writer.end_array();
         let _ = writer.key("hops");
         let _ = writer.begin_array();
         for hop in plan.describe() {

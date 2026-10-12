@@ -6,7 +6,7 @@ use std::path::Path;
 use super::InputSource;
 use crate::cli::args::ConvertArgs;
 use crate::cli::{CliError, ExitCode};
-use crate::converter::{ConvertOptions, Input};
+use crate::converter::Input;
 use crate::event::{CollectingSink, Context, Event, MultiSink, Sink};
 use crate::format::{self, Format};
 use crate::planner::{self, PlanOptions};
@@ -43,13 +43,22 @@ pub fn run(
     };
     let plan = planner::plan(registry::all_converters(), from, to, &plan_options)?;
 
-    let convert_options = ConvertOptions {
-        strict: args.strict,
-        sheet: args.sheet.clone(),
-        quality: args.quality,
-        page: args.page,
-        font: crate::cli::commands::font_option(args.font.as_deref())?,
-    };
+    super::check_unused_options(
+        args,
+        &plan.options(),
+        &format!("{} -> {}", from.id, to.id),
+        renderer,
+    )?;
+    let convert_options = super::convert_options(
+        args,
+        (!reads_stdin)
+            .then(|| {
+                std::path::Path::new(&input_name)
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+            })
+            .flatten(),
+    )?;
     let mut collector = CollectingSink::new();
     let mut multi = MultiSink::new(vec![renderer, &mut collector]);
     let mut context = Context::new(&mut multi, &convert_options);

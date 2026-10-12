@@ -6,4 +6,4 @@ pub mod reader;
 pub mod writer;
 
 pub use reader::{Workbook, XlsxError};
-pub use writer::XlsxWriter;
+pub use writer::{Cell as XlsxCell, XlsxWriter};

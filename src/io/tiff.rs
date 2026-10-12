@@ -486,6 +486,50 @@ fn convert(layout: &Layout, stored: &[u8], row: &mut [u8]) {
     }
 }
 
+/// A stored 16-bit gray or RGB row (chunky) as big-endian 16-bit pixels:
+/// white-is-zero inverted, associated alpha divided out.
+fn convert_deep(layout: &Layout, stored: &[u8], row: &mut [u8]) {
+    let sample = |index: usize| -> u32 {
+        let pair = [stored[index * 2], stored[index * 2 + 1]];
+        u32::from(if layout.big {
+            u16::from_be_bytes(pair)
+        } else {
+            u16::from_le_bytes(pair)
+        })
+    };
+    let channels = layout.color.channels();
+    let colours = channels - usize::from(layout.alpha.is_some());
+    let mut values = [0u32; 4];
+    for (x, target) in row.chunks_exact_mut(channels * 2).enumerate() {
+        let base = x * layout.samples;
+        for (channel, value) in values[..colours].iter_mut().enumerate() {
+            let stored = sample(base + channel);
+            *value = if layout.photometric == 0 {
+                65_535 - stored
+            } else {
+                stored
+            };
+        }
+        if let Some(at) = layout.alpha {
+            let alpha = sample(base + at);
+            if layout.associated {
+                for value in &mut values[..colours] {
+                    *value = if alpha == 0 {
+                        0
+                    } else {
+                        ((u64::from(*value) * 65_535 + u64::from(alpha) / 2) / u64::from(alpha))
+                            .min(65_535) as u32
+                    };
+                }
+            }
+            values[colours] = alpha;
+        }
+        for (channel, out) in target.chunks_exact_mut(2).enumerate() {
+            out.copy_from_slice(&(values[channel] as u16).to_be_bytes());
+        }
+    }
+}
+
 /// Decodes the first page into `sink`, a band of rows (a strip, or a row
 /// of tiles) at a time. The file itself is held: its data can lie
 /// anywhere in it.
@@ -503,6 +547,9 @@ fn decode(bytes: &[u8], sink: &mut dyn RowSink) -> Result<TiffNotes, RowsError> 
             sink.density(across * scale, down * scale);
         }
     }
+    // 16-bit gray and RGB go on at 16 bits to a sink that holds them.
+    let deep =
+        layout.bits == 16 && matches!(layout.photometric, 0..=2) && sink.accept_deep(layout.color);
     sink.start(layout.width as u32, layout.height as u32, layout.color)
         .map_err(RowsError::Io)?;
     let planar = tags.planar == 2 && layout.samples > 1;
@@ -549,7 +596,7 @@ fn decode(bytes: &[u8], sink: &mut dyn RowSink) -> Result<TiffNotes, RowsError> 
     };
     let stored_row_bytes = (layout.width * layout.samples * bits).div_ceil(8);
     let mut stored = vec![0u8; stored_row_bytes];
-    let mut row = vec![0u8; layout.width * layout.color.channels()];
+    let mut row = vec![0u8; layout.width * layout.color.channels() * if deep { 2 } else { 1 }];
     let sample_bytes = bits / 8;
     for band in 0..down {
         // Each chunk of the band, for each plane: [plane][column].
@@ -595,13 +642,17 @@ fn decode(bytes: &[u8], sink: &mut dyn RowSink) -> Result<TiffNotes, RowsError> 
                     }
                 }
             }
-            convert(&layout, &stored, &mut row);
+            if deep {
+                convert_deep(&layout, &stored, &mut row);
+            } else {
+                convert(&layout, &stored, &mut row);
+            }
             sink.row(&row).map_err(RowsError::Io)?;
         }
     }
     Ok(TiffNotes {
         other_pages,
-        sixteen_bit: layout.bits == 16,
+        sixteen_bit: layout.bits == 16 && !deep,
         cmyk: layout.photometric == 5,
     })
 }
@@ -644,6 +695,9 @@ pub struct TiffRows<'a> {
     pending: Vec<u8>,
     strips: Vec<Vec<u8>>,
     rows_seen: usize,
+    /// 16-bit samples: rows arrive big-endian and are stored in the
+    /// file's little-endian order.
+    deep: bool,
 }
 
 impl<'a> TiffRows<'a> {
@@ -657,6 +711,7 @@ impl<'a> TiffRows<'a> {
             pending: Vec::new(),
             strips: Vec::new(),
             rows_seen: 0,
+            deep: false,
         }
     }
 
@@ -681,7 +736,11 @@ impl<'a> TiffRows<'a> {
         let mut entries: Vec<(u16, u16, Vec<u32>)> = vec![
             (256, 4, vec![self.width]),
             (257, 4, vec![self.height]),
-            (258, 3, vec![8; samples as usize]),
+            (
+                258,
+                3,
+                vec![if self.deep { 16 } else { 8 }; samples as usize],
+            ),
             (259, 3, vec![8]),
             (262, 3, vec![photometric]),
             (273, 4, vec![0; strip_count as usize]),
@@ -783,24 +842,45 @@ impl RowSink for TiffRows<'_> {
         self.width = width;
         self.height = height;
         self.color = color;
-        let row_bytes = width as usize * color.channels();
+        let row_bytes = width as usize * color.channels() * if self.deep { 2 } else { 1 };
         self.rows_per_strip = (STRIP_BYTES / row_bytes.max(1)).clamp(1, height as usize);
         self.pending = Vec::with_capacity(self.rows_per_strip * row_bytes);
         Ok(())
     }
 
+    fn accept_deep(&mut self, _color: ColorType) -> bool {
+        self.deep = true;
+        true
+    }
+
     fn row(&mut self, pixels: &[u8]) -> io::Result<()> {
         let samples = self.color.channels();
-        // The horizontal predictor, each sample less its left neighbor,
-        // read from the source row so the loop runs forward (in place it
-        // had to run backward and did not vectorize).
         let start = self.pending.len();
         self.pending.resize(start + pixels.len(), 0);
         let row = &mut self.pending[start..];
-        let head = samples.min(pixels.len());
-        row[..head].copy_from_slice(&pixels[..head]);
-        for ((target, current), left) in row[head..].iter_mut().zip(&pixels[head..]).zip(pixels) {
-            *target = current.wrapping_sub(*left);
+        if self.deep {
+            // The predictor on 16-bit samples, stored little-endian.
+            let value =
+                |index: usize| u16::from_be_bytes([pixels[2 * index], pixels[2 * index + 1]]);
+            for index in 0..pixels.len() / 2 {
+                let left = if index >= samples {
+                    value(index - samples)
+                } else {
+                    0
+                };
+                row[2 * index..2 * index + 2]
+                    .copy_from_slice(&value(index).wrapping_sub(left).to_le_bytes());
+            }
+        } else {
+            // The horizontal predictor, each sample less its left neighbor,
+            // read from the source row so the loop runs forward (in place it
+            // had to run backward and did not vectorize).
+            let head = samples.min(pixels.len());
+            row[..head].copy_from_slice(&pixels[..head]);
+            for ((target, current), left) in row[head..].iter_mut().zip(&pixels[head..]).zip(pixels)
+            {
+                *target = current.wrapping_sub(*left);
+            }
         }
         self.rows_seen += 1;
         if self.rows_seen % self.rows_per_strip == 0 || self.rows_seen == self.height as usize {

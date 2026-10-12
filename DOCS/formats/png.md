@@ -52,7 +52,10 @@ interleaved streams joined by zlib's combine, and the Adler-32 as
 lane sums over 64-byte blocks, all in safe scalar code.
 
 Samples: 1, 2, and 4 bits scale to 8 (`0..3` to `0..255`); 16-bit
-samples keep their high byte, reported as a loss; palette indexes
+samples go on whole to a writer that holds them (PNG, TIFF, Netpbm),
+straight from the unfiltered row, and elsewhere keep their high byte,
+reported as a loss (so do interlaced 16-bit files and those with a
+palette or transparency key); palette indexes
 expand through the palette, with alpha from tRNS when present, so a
 palette image becomes RGB or RGBA. A transparency key makes gray
 gray+alpha and RGB RGBA. Adam7 interlaced images are decoded pass by
@@ -72,14 +75,19 @@ winner is kept for the rows between (image statistics change slowly
 down the rows; the trials cost four extra passes a row and the choice
 moved sizes by at most 1.4% on the benchmark inputs); a trial tries
 Sub first, stops any filter whose running sum passes the best, and
-stops trying once a filter's residuals average under a sixteenth. No
-text, gamma, or color profile chunks are written.
+stops trying once a filter's residuals average under a sixteenth. An
+ICC profile (`iCCP`) and Exif (`eXIf`) are written when the source
+carries them (JPEG and HEIC); no text or gamma chunks are written.
 
 ## Known deviations
 
-- 16-bit images lose their low byte; the hub is 8-bit.
-- Metadata (gamma, sRGB, ICC profiles, text, physical size, time) is
-  not carried in either direction.
+- 16-bit images lose their low byte on the way to an 8-bit format
+  (JPEG, WebP, BMP, QOI), and from an interlaced file. The writer writes
+  16 bits when its source hands them (16-bit PNG, TIFF, and Netpbm, and
+  10-bit HEIC).
+- Metadata a PNG holds (gamma, sRGB, ICC profiles, text, physical
+  size, time) is not read; the writer carries a JPEG's or HEIC's
+  profile and Exif.
 - APNG frames are not read; the first image is what the still PNG
   holds.
 - On noise-like images the filter heuristic can choose Average where a

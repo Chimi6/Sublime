@@ -4,7 +4,7 @@
 //! exact bytes of the streams they came from (the ZIP and Snappy layers
 //! are rebuilt, so those bytes differ, their contents do not).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use super::schema::SCHEMA;
@@ -141,6 +141,77 @@ const SKIPPED_TYPES: [u32; 11] = [
     4003, 4004, 4009, 6220, 6267, 6316, 6317, 6365, 6366, 6373, 6383,
 ];
 
+/// `TST.TableModelArchive`, `TST.TableInfoArchive`, `TST.SummaryModelArchive`,
+/// `TST.ColumnRowUIDMapArchive`, and `TST.GroupByArchive`.
+const TABLE_MODEL: u32 = 6001;
+const TABLE_INFO: u32 = 6000;
+const SUMMARY_MODEL: u32 = 6316;
+const UID_MAP: u32 = 6267;
+const GROUP_BY: u32 = 6373;
+
+/// The objects of skipped types a table's view needs, among a stream's
+/// objects (Numbers keeps a table's model, info, and maps in one stream):
+/// for each table whose info names a view (`view_column_row_uids`, which
+/// only pivot and categorised tables have), the uid maps of its info,
+/// model, and summary model, and the summary model, which holds a pivot's
+/// grand totals; and, when any does, the stream's categories
+/// (`TST.GroupByArchive`, small for a table without them). Found by the
+/// references each object's header lists.
+fn view_objects(objects: &[crate::io::iwa::IwaObject<'_>]) -> HashSet<u64> {
+    let types: HashMap<u64, u32> = objects
+        .iter()
+        .map(|object| (object.identifier, object.message_type().unwrap_or(0)))
+        .collect();
+    let of_type =
+        |id: &u64, wanted: &[u32]| types.get(id).is_some_and(|kind| wanted.contains(kind));
+    let references = |object: &crate::io::iwa::IwaObject<'_>| -> Vec<u64> {
+        object
+            .messages
+            .iter()
+            .flat_map(|message| message.object_references.iter().copied())
+            .collect()
+    };
+    let mut keep = HashSet::new();
+    let mut models = HashSet::new();
+    for object in objects {
+        if object.message_type() != Some(TABLE_INFO) {
+            continue;
+        }
+        let refs = references(object);
+        if !refs.iter().any(|id| of_type(id, &[UID_MAP])) {
+            continue;
+        }
+        models.extend(
+            refs.iter()
+                .copied()
+                .filter(|id| of_type(id, &[TABLE_MODEL])),
+        );
+        keep.extend(
+            refs.into_iter()
+                .filter(|id| of_type(id, &[UID_MAP, SUMMARY_MODEL])),
+        );
+    }
+    if keep.is_empty() {
+        return keep;
+    }
+    for object in objects {
+        let message_type = object.message_type();
+        if message_type == Some(GROUP_BY) {
+            keep.insert(object.identifier);
+        }
+        let named = models.contains(&object.identifier)
+            || (message_type == Some(SUMMARY_MODEL) && keep.contains(&object.identifier));
+        if named {
+            keep.extend(
+                references(object)
+                    .into_iter()
+                    .filter(|id| of_type(id, &[UID_MAP])),
+            );
+        }
+    }
+    keep
+}
+
 impl Package {
     pub fn read(bytes: &[u8]) -> Result<Package, PackageError> {
         Package::read_scope(bytes, Scope::Everything)
@@ -262,11 +333,13 @@ impl Package {
                 stream: entry.name.clone(),
                 error,
             })?;
+            let views = view_objects(&objects);
             let skipped: Vec<u64> = objects
                 .iter()
                 .filter(|object| {
                     let message_type = object.message_type().unwrap_or(0);
-                    SKIPPED_TYPES.contains(&message_type) || message_type == ROW_HEADERS
+                    (SKIPPED_TYPES.contains(&message_type) || message_type == ROW_HEADERS)
+                        && !views.contains(&object.identifier)
                 })
                 .map(|object| object.identifier)
                 .collect();

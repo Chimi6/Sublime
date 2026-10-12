@@ -11,7 +11,8 @@ it (`src/io/netpbm.rs`), streaming rows both ways.
 - `pbm`, `pgm`, `ppm` (also `.pnm`), `pam` to and from `png`, `bmp`,
   `jpeg`, `webp`, `qoi`, and each other: shipped.
 - Reading loses nothing at 8 bits; wider samples (maxval over 255) are
-  scaled to 8 bits and reported. Writing PAM loses nothing; PPM
+  scaled to 16 bits into PNG, TIFF, and Netpbm, and elsewhere to 8 bits
+  and reported. Writing PAM loses nothing; PPM
   flattens alpha onto white; PGM also takes luma; PBM thresholds luma
   at half, black below.
 
@@ -36,7 +37,7 @@ files are refused.
 
 | Kind | Writes |
 |---|---|
-| PAM | P7 at maxval 255 with the tuple type of the image (GRAYSCALE, GRAYSCALE_ALPHA, RGB, RGB_ALPHA) |
+| PAM | P7 at maxval 255 (65535 for a 16-bit source) with the tuple type of the image (GRAYSCALE, GRAYSCALE_ALPHA, RGB, RGB_ALPHA) |
 | PPM | P6; gray repeated into RGB, alpha flattened onto white |
 | PGM | P5; color as luma (libjpeg's and Pillow's weights), alpha flattened onto white |
 | PBM | P4; luma below 128 is black, no dithering |
