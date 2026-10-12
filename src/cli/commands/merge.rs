@@ -48,8 +48,14 @@ pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliE
     let mut part = output.as_os_str().to_owned();
     part.push(".part");
     let part = PathBuf::from(part);
-    // Images set on PDF pages as they are: no option changes them.
-    super::check_unused_options(args, &[], "images merged into a PDF", renderer)?;
+    // Images set on PDF pages as they are: only how hard their streams
+    // are deflated changes.
+    super::check_unused_options(
+        args,
+        &[crate::format::Setting::Effort],
+        "images merged into a PDF",
+        renderer,
+    )?;
     let options = super::convert_options(args, None)?;
     let mut collector = CollectingSink::new();
     let written = write_pages(&inputs, &part, &output, &options, renderer, &mut collector);
@@ -85,8 +91,9 @@ fn write_pages(
     })?;
     let mut writer = BufWriter::new(file);
     let io = |action: String| move |error: std::io::Error| CliError::Io { action, error };
-    let mut document =
-        PdfDocument::new(&mut writer).map_err(io(format!("writing '{}'", part.display())))?;
+    let mut document = PdfDocument::new(&mut writer)
+        .map_err(io(format!("writing '{}'", part.display())))?
+        .with_effort(options.effort.unwrap_or_default());
     let mut multi = MultiSink::new(vec![renderer, collector]);
     let mut context = Context::new(&mut multi, options);
     for (path, format_id, kind) in inputs {

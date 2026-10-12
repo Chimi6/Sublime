@@ -45,6 +45,8 @@ pub struct ZipWriter<W: Write> {
     open: Option<Open>,
     /// Compressed output of one part, reused.
     part: Vec<u8>,
+    /// Applied to each part's level (`--effort`).
+    effort: crate::format::Effort,
 }
 
 impl<W: Write> ZipWriter<W> {
@@ -55,7 +57,15 @@ impl<W: Write> ZipWriter<W> {
             entries: Vec::new(),
             open: None,
             part: Vec::new(),
+            effort: crate::format::Effort::default(),
         }
+    }
+
+    /// Sets the effort parts are deflated at: each part's own level is
+    /// what balanced writes (`Level::for_effort`).
+    pub fn with_effort(mut self, effort: crate::format::Effort) -> ZipWriter<W> {
+        self.effort = effort;
+        self
     }
 
     /// Starts a deflated entry whose data arrives in parts, so a large
@@ -99,6 +109,7 @@ impl<W: Write> ZipWriter<W> {
             return Ok(());
         }
         self.part.clear();
+        let level = Level::for_effort(level, self.effort);
         deflate_part(data, &mut self.part, level, false);
         self.sink.write_all(&self.part)?;
         open.crc = crc32_update(open.crc, data);

@@ -16,7 +16,16 @@ const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
 const PART_SIZE: usize = 256 * 1024;
 
 pub fn write_png(image: &Image, sink: &mut dyn Write) -> io::Result<()> {
-    let mut rows = PngRows::new(sink);
+    write_png_with(image, sink, crate::format::Effort::default())
+}
+
+/// `write_png` at an effort.
+pub fn write_png_with(
+    image: &Image,
+    sink: &mut dyn Write,
+    effort: crate::format::Effort,
+) -> io::Result<()> {
+    let mut rows = PngRows::new(sink).with_effort(effort);
     rows.start(image.width, image.height, image.color)?;
     for y in 0..image.height {
         rows.row(image.row(y))?;
@@ -38,6 +47,9 @@ pub(crate) struct FilteredZlib {
     first_part: bool,
     rows_seen: u32,
     last_filter: u8,
+    /// Rows between filter trials, and the deflate level (`--effort`).
+    trial_every: u32,
+    level: Level,
 }
 
 impl FilteredZlib {
@@ -54,16 +66,30 @@ impl FilteredZlib {
             first_part: true,
             rows_seen: 0,
             last_filter: 1,
+            trial_every: 4,
+            level: Level::Default,
         }
+    }
+
+    /// Sets how hard the rows are filtered and deflated: max tries
+    /// filters on every row (balanced and fast every fourth) and takes
+    /// deflate's longest search.
+    pub(crate) fn with_effort(mut self, effort: crate::format::Effort) -> FilteredZlib {
+        self.trial_every = match effort {
+            crate::format::Effort::Max => 1,
+            crate::format::Effort::Fast | crate::format::Effort::Balanced => 4,
+        };
+        self.level = Level::for_effort(Level::Default, effort);
+        self
     }
 
     /// Filters a row into the pending part.
     #[inline]
     pub(crate) fn row(&mut self, pixels: &[u8]) {
-        // The filter is chosen by trial on every fourth row and kept for
-        // the rows between: image statistics change slowly down the
-        // rows, and the trials cost four passes a row.
-        let keep = if self.rows_seen % 4 == 0 {
+        // The filter is chosen by trial every few rows (four at balanced
+        // effort) and kept for the rows between: image statistics change
+        // slowly down the rows, and the trials cost four passes a row.
+        let keep = if self.rows_seen % self.trial_every == 0 {
             None
         } else {
             Some(self.last_filter)
@@ -104,7 +130,7 @@ impl FilteredZlib {
             self.deflated.extend_from_slice(&[0x78, 0x9c]);
             self.first_part = false;
         }
-        deflate_part(&self.filtered, &mut self.deflated, Level::Default, is_final);
+        deflate_part(&self.filtered, &mut self.deflated, self.level, is_final);
         if is_final {
             self.deflated.extend_from_slice(&self.adler.to_be_bytes());
         }
@@ -123,9 +149,16 @@ pub struct PngRows<'a> {
     exif: Option<Vec<u8>>,
     /// Rows of 16-bit samples, as a deep reader hands them.
     deep: bool,
+    effort: crate::format::Effort,
 }
 
 impl<'a> PngRows<'a> {
+    /// Sets how hard rows are filtered and deflated (balanced by default).
+    pub fn with_effort(mut self, effort: crate::format::Effort) -> PngRows<'a> {
+        self.effort = effort;
+        self
+    }
+
     pub fn new(sink: &'a mut dyn Write) -> PngRows<'a> {
         PngRows {
             sink,
@@ -134,6 +167,7 @@ impl<'a> PngRows<'a> {
             icc_profile: None,
             exif: None,
             deep: false,
+            effort: crate::format::Effort::default(),
         }
     }
 
@@ -189,7 +223,8 @@ impl RowSink for PngRows<'_> {
         }
         let bytes = if self.deep { 2 } else { 1 };
         let stride = width as usize * color.channels() * bytes;
-        self.stream = Some(FilteredZlib::new(stride, color.channels() * bytes));
+        self.stream =
+            Some(FilteredZlib::new(stride, color.channels() * bytes).with_effort(self.effort));
         self.rows_left = height;
         if height == 0 {
             self.finish()?;

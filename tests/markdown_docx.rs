@@ -114,7 +114,8 @@ fn bridged_html(markdown: &str) -> String {
 /// Through a Word file as well.
 fn through_word(markdown: &str) -> String {
     let document = build(markdown);
-    let docx = write_docx(&document, Vec::new()).expect("docx writes");
+    let docx =
+        write_docx(&document, Vec::new(), sublime::format::Effort::default()).expect("docx writes");
     let read_back = read_docx(&docx).expect("docx reads");
     let mut output = Vec::new();
     let mut writer = MarkdownWriter::streaming(&mut output);
@@ -347,7 +348,8 @@ fn the_word_file_carries_the_named_styles() {
     let mut builder = DocumentBuilder::new();
     parse_into(EVERYTHING, Options::default(), &mut builder);
     let document = builder.finish();
-    let docx = write_docx(&document, Vec::new()).expect("docx writes");
+    let docx =
+        write_docx(&document, Vec::new(), sublime::format::Effort::default()).expect("docx writes");
     let read_back = read_docx(&docx).expect("docx reads");
     let names: Vec<&str> = read_back
         .styles

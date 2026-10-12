@@ -79,6 +79,13 @@ stops trying once a filter's residuals average under a sixteenth. An
 ICC profile (`iCCP`) and Exif (`eXIf`) are written when the source
 carries them (JPEG and HEIC); no text or gamma chunks are written.
 
+`--effort max` tries filters on every row (balanced every fourth) and
+deflates each part three ways (the longest search, the default, greedy
+matching), keeping the smallest: 6% smaller on a smooth wallpaper and
+10% on a screenshot of text, no change on a noise photograph, in 3 to 8
+times the time; never larger but by a few bytes on images of a few
+pixels. fast is the same as balanced (deflate's default is near the fast end already: a shorter search saved under a tenth of the time for 1 to 4% more bytes).
+
 ## Known deviations
 
 - 16-bit images lose their low byte on the way to an 8-bit format

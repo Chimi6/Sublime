@@ -9,7 +9,7 @@ use std::io::{self, Read, Write};
 
 use crate::image::resize::Downscale;
 use crate::image::{ColorType, Image};
-use crate::io::png::{PngError, RowSink, RowsError, read_png, write_png};
+use crate::io::png::{PngError, RowSink, RowsError, read_png, write_png_with};
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 /// The sizes an icon holds, as Windows and Pillow use them.
@@ -288,6 +288,7 @@ pub struct IcoRows<'a> {
     sizes: Vec<(u32, u32)>,
     largest: Option<Largest>,
     rows_left: u32,
+    effort: crate::format::Effort,
 }
 
 impl<'a> IcoRows<'a> {
@@ -297,7 +298,14 @@ impl<'a> IcoRows<'a> {
             sizes: Vec::new(),
             largest: None,
             rows_left: 0,
+            effort: crate::format::Effort::default(),
         }
+    }
+
+    /// Sets how hard each entry's PNG is compressed.
+    pub fn with_effort(mut self, effort: crate::format::Effort) -> IcoRows<'a> {
+        self.effort = effort;
+        self
     }
 
     fn finish(&mut self) -> io::Result<()> {
@@ -309,9 +317,9 @@ impl<'a> IcoRows<'a> {
         for (width, height) in &self.sizes {
             let mut png = Vec::new();
             if (*width, *height) == (largest.width, largest.height) {
-                write_png(&largest, &mut png)?;
+                write_png_with(&largest, &mut png, self.effort)?;
             } else {
-                write_png(&scaled(&largest, *width, *height), &mut png)?;
+                write_png_with(&scaled(&largest, *width, *height), &mut png, self.effort)?;
             }
             encoded.push((*width, *height, png));
         }

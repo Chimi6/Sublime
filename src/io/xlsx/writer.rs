@@ -71,8 +71,12 @@ const FIRST_CUSTOM_FORMAT: usize = 167;
 
 impl<W: Write> XlsxWriter<W> {
     /// Writes the fixed parts and opens the first worksheet for rows.
-    pub fn new(sink: W, sheet_name: &str) -> io::Result<XlsxWriter<W>> {
-        let mut zip = ZipWriter::new(sink);
+    pub fn new(
+        sink: W,
+        sheet_name: &str,
+        effort: crate::format::Effort,
+    ) -> io::Result<XlsxWriter<W>> {
+        let mut zip = ZipWriter::new(sink).with_effort(effort);
         zip.add_deflated("_rels/.rels", PACKAGE_RELS.as_bytes())?;
         let mut writer = XlsxWriter {
             zip,
@@ -587,7 +591,8 @@ mod tests {
             "1.5",
             "42",
         ];
-        let mut writer = XlsxWriter::new(Vec::new(), "Sheet1").expect("opens");
+        let mut writer =
+            XlsxWriter::new(Vec::new(), "Sheet1", crate::format::Effort::default()).expect("opens");
         writer.write_row(texts).expect("writes");
         let bytes = writer.finish().expect("finishes");
         let workbook = crate::io::xlsx::Workbook::open(&bytes).expect("reads");

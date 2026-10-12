@@ -8,7 +8,7 @@
 use std::io::{self, Read, Write};
 
 use crate::image::{ColorType, Image, MAX_PIXELS};
-use crate::io::deflate::{deflate, inflate};
+use crate::io::deflate::inflate;
 use crate::io::png::{Collect, PngError, RowSink, RowsError, adler32};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -698,6 +698,7 @@ pub struct TiffRows<'a> {
     /// 16-bit samples: rows arrive big-endian and are stored in the
     /// file's little-endian order.
     deep: bool,
+    effort: crate::format::Effort,
 }
 
 impl<'a> TiffRows<'a> {
@@ -712,12 +713,24 @@ impl<'a> TiffRows<'a> {
             strips: Vec::new(),
             rows_seen: 0,
             deep: false,
+            effort: crate::format::Effort::default(),
         }
     }
 
+    /// Sets how hard strips are deflated (balanced by default).
+    pub fn with_effort(mut self, effort: crate::format::Effort) -> TiffRows<'a> {
+        self.effort = effort;
+        self
+    }
+
     fn close_strip(&mut self) {
+        use crate::io::deflate::compress::{Level, deflate_with};
         let mut out = vec![0x78, 0x9c];
-        deflate(&self.pending, &mut out);
+        deflate_with(
+            &self.pending,
+            &mut out,
+            Level::for_effort(Level::Default, self.effort),
+        );
         out.extend_from_slice(&adler32(&self.pending).to_be_bytes());
         self.strips.push(out);
         self.pending.clear();

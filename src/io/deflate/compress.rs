@@ -19,11 +19,67 @@ const END_OF_BLOCK: u16 = 256;
 
 /// How hard the matcher looks: `Default` is lazy matching over chains of
 /// up to 32 positions; `Fast` is greedy on the first candidate, for
-/// output nobody keeps compressed long (a Word body a reader re-saves).
+/// output nobody keeps compressed long (a Word body a reader re-saves);
+/// `Max` searches far longer (`--effort max`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Level {
     Fast,
     Default,
+    Max,
+}
+
+impl Level {
+    /// The level for a writer's `--effort`, from the one it uses by
+    /// default (balanced): max takes the longest search; fast is
+    /// balanced, which is near the fast end already (a shorter walk
+    /// saved under a tenth of a conversion's time for 1 to 4% more
+    /// bytes, measured on PNG, TIFF, and PDF).
+    pub fn for_effort(balanced: Level, effort: crate::format::Effort) -> Level {
+        match effort {
+            crate::format::Effort::Max => Level::Max,
+            crate::format::Effort::Fast | crate::format::Effort::Balanced => balanced,
+        }
+    }
+}
+
+/// The limits of the lazy matcher's search.
+#[derive(Clone, Copy)]
+struct Search {
+    lazy_length: usize,
+    nice_length: usize,
+    lazy_chain: usize,
+    short_chain: usize,
+    noise_stride: usize,
+}
+
+impl Search {
+    const DEFAULT: Search = Search {
+        lazy_length: LAZY_LENGTH,
+        nice_length: NICE_LENGTH,
+        lazy_chain: LAZY_CHAIN,
+        short_chain: SHORT_CHAIN,
+        noise_stride: NOISE_STRIDE,
+    };
+
+    /// Measured on PNG rows: 3 to 9% smaller than `DEFAULT` on
+    /// screenshots, graphics, and a stock photograph, in 2 to 8 times the
+    /// time; past these, 2048-long chains bought 1 to 2% more for twice
+    /// that again.
+    const MAX: Search = Search {
+        lazy_length: 32,
+        nice_length: MAX_MATCH,
+        lazy_chain: 512,
+        short_chain: 64,
+        noise_stride: NOISE_STRIDE,
+    };
+}
+
+/// `deflate` at `level`.
+pub fn deflate_with(input: &[u8], out: &mut Vec<u8>, level: Level) {
+    if input.is_empty() {
+        return deflate(input, out);
+    }
+    deflate_part(input, out, level, true);
 }
 
 /// Compresses `input` as a raw deflate stream, appending to `out`.
@@ -52,9 +108,29 @@ pub fn deflate_part(input: &[u8], out: &mut Vec<u8>, level: Level, is_final: boo
         }
         return;
     }
-    if level == Level::Default {
-        deflate_lazy(input, out, is_final);
-        return;
+    match level {
+        Level::Default => return deflate_lazy(input, out, is_final, Search::DEFAULT),
+        Level::Max => {
+            // No one search wins everywhere: the long one on smooth
+            // images and text in XML, the default where it does not,
+            // and greedy matching on screenshots and some photographs,
+            // where the lazy matcher's price check refuses matches that
+            // would have paid (greedy is 2 to 9% smaller there). All
+            // three run and the smallest part is kept, so max is never
+            // larger than fast or balanced.
+            let mut best = Vec::new();
+            deflate_lazy(input, &mut best, is_final, Search::MAX);
+            for other in [Level::Default, Level::Fast] {
+                let mut candidate = Vec::new();
+                deflate_part(input, &mut candidate, other, is_final);
+                if candidate.len() < best.len() {
+                    best = candidate;
+                }
+            }
+            out.extend_from_slice(&best);
+            return;
+        }
+        Level::Fast => {}
     }
     let mut writer = BitWriter::new(out);
     let mut matcher = Matcher::new();
@@ -186,7 +262,7 @@ impl Costs {
 /// The default level: zlib's lazy evaluation (`deflate_slow`). Every
 /// position is indexed; each match found is held while the next position
 /// is searched for a longer one.
-fn deflate_lazy(input: &[u8], out: &mut Vec<u8>, is_final: bool) {
+fn deflate_lazy(input: &[u8], out: &mut Vec<u8>, is_final: bool, search: Search) {
     let mut accepted = NOISE;
     let mut costs = Costs::new();
     let mut writer = BitWriter::new(out);
@@ -205,7 +281,7 @@ fn deflate_lazy(input: &[u8], out: &mut Vec<u8>, is_final: bool) {
         // as literals without a search: a search every `NOISE_STRIDE`
         // positions keeps the average current, so matching resumes when
         // the data turns compressible.
-        if accepted < NOISE && previous_length < MIN_MATCH && position % NOISE_STRIDE != 0 {
+        if accepted < NOISE && previous_length < MIN_MATCH && position % search.noise_stride != 0 {
             if pending {
                 symbols.push(Symbol::Literal(input[position - 1]));
                 pending = false;
@@ -233,13 +309,13 @@ fn deflate_lazy(input: &[u8], out: &mut Vec<u8>, is_final: bool) {
         };
         let mut length = 0;
         let mut distance = 0;
-        if previous_length < LAZY_LENGTH {
+        if previous_length < search.lazy_length {
             let chain = if accepted < NOISE {
                 1
             } else if accepted < SHORT {
-                SHORT_CHAIN
+                search.short_chain
             } else {
-                LAZY_CHAIN
+                search.lazy_chain
             };
             (length, distance) = matcher.longest(
                 input,
@@ -247,7 +323,7 @@ fn deflate_lazy(input: &[u8], out: &mut Vec<u8>, is_final: bool) {
                 candidate,
                 previous_length,
                 chain,
-                NICE_LENGTH,
+                search.nice_length,
             );
             if length == MIN_MATCH && distance > TOO_FAR {
                 length = 0;
@@ -960,6 +1036,38 @@ mod tests {
             elapsed.as_secs_f64() * 1000.0,
             data.len() as f64 / 1_048_576.0 / elapsed.as_secs_f64()
         );
+    }
+
+    #[test]
+    fn every_level_round_trips_and_max_is_smallest() {
+        // Text, a smooth ramp, noise, runs, and nothing: each level's
+        // stream inflates to the input, and max is never the largest.
+        let mut state = 7u32;
+        let mut noise = || {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            (state >> 16) as u8
+        };
+        let inputs: Vec<Vec<u8>> = vec![
+            b"the quick brown fox jumps over the lazy dog ".repeat(2000),
+            (0..200_000u32).map(|i| (i / 300) as u8).collect(),
+            (0..100_000).map(|_| noise()).collect(),
+            [vec![0u8; 50_000], vec![255u8; 70_000]].concat(),
+            Vec::new(),
+            vec![42],
+        ];
+        for data in &inputs {
+            let mut sizes = Vec::new();
+            for level in [Level::Fast, Level::Default, Level::Max] {
+                let mut compressed = Vec::new();
+                deflate_with(data, &mut compressed, level);
+                let mut back = Vec::new();
+                inflate(&compressed, &mut back, 1 << 26).unwrap();
+                assert_eq!(&back, data, "{} bytes", data.len());
+                sizes.push(compressed.len());
+            }
+            let max = sizes[2];
+            assert!(sizes.iter().all(|&size| max <= size), "{sizes:?}");
+        }
     }
 
     #[test]

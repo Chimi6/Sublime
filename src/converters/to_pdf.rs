@@ -118,7 +118,8 @@ impl Converter for ToPdf {
             });
         }
         let faces = Faces::new(forced, true);
-        let mut document = PdfDocument::new(&mut *output)?;
+        let mut document =
+            PdfDocument::new(&mut *output)?.with_effort(context.options.effort.unwrap_or_default());
         let notes = match self.source {
             Source::Markdown | Source::Html | Source::Text => {
                 let text = read_text_document(&mut input)?;

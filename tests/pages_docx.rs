@@ -91,7 +91,7 @@ fn ours(name: &str) -> Vec<u8> {
     // attribute tables parsed directly.
     let package = Package::read_scope(&bytes, Scope::Document).expect("package reads");
     let document = read_document(&package);
-    write_docx(&document, Vec::new()).expect("docx writes")
+    write_docx(&document, Vec::new(), sublime::format::Effort::default()).expect("docx writes")
 }
 
 /// Reports the first paragraph that differs rather than both whole lists.

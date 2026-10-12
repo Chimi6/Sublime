@@ -41,6 +41,9 @@ sizes are scaled from it by area averaging, color weighted by alpha
 (`src/image/resize.rs`). Entries are PNG at our default deflate level,
 smallest first.
 
+`--effort` reaches each entry's PNG (`DOCS/formats/png.md`): max is
+about 1% smaller on a photograph's icon.
+
 ## Known deviations
 
 - Pillow writes BMP-entry AND masks without row padding and misreads

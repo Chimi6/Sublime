@@ -62,7 +62,11 @@ impl Converter for CsvToXlsx {
             crate::converters::input::delimited_input(input, self.delimiter, context, &mut rest)?;
         let mut reader = CsvReader::with_delimiter(input, delimiter);
         let sheet_name = context.options.sheet.as_deref().unwrap_or("Sheet1");
-        let mut writer = XlsxWriter::new(output, sheet_name)?;
+        let mut writer = XlsxWriter::new(
+            output,
+            sheet_name,
+            context.options.effort.unwrap_or_default(),
+        )?;
         let mut record = Record::new();
         let mut count: u64 = 0;
         while reader.read_record(&mut record)? {
