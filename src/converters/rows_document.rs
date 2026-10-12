@@ -200,7 +200,7 @@ impl Converter for MarkdownToXlsx {
 
     /// Sheets are named after the headings, not `--sheet`.
     fn options(&self) -> Vec<crate::format::Setting> {
-        Vec::new()
+        vec![crate::format::Setting::Effort]
     }
 
     fn from(&self) -> &'static Format {
@@ -235,7 +235,11 @@ impl Converter for MarkdownToXlsx {
             .tables
             .first()
             .map_or("Sheet1", |(name, _)| name.as_str());
-        let mut writer = crate::io::xlsx::XlsxWriter::new(&mut *output, first)?;
+        let mut writer = crate::io::xlsx::XlsxWriter::new(
+            &mut *output,
+            first,
+            context.options.effort.unwrap_or_default(),
+        )?;
         for (index, (name, rows)) in tables.tables.iter().enumerate() {
             if index > 0 {
                 writer.next_sheet(name)?;

@@ -44,10 +44,10 @@ impl Converter for MarkdownToDocx {
         &self,
         mut input: Input<'_>,
         output: &mut dyn Write,
-        _context: &mut Context<'_>,
+        context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
         let text = read_text_document(&mut input)?;
-        let mut stream = DocxStream::new(&mut *output)?;
+        let mut stream = DocxStream::new(&mut *output, context.options.effort.unwrap_or_default())?;
         let mut builder = DocumentBuilder::streaming(&mut stream);
         builder.reserve_text(text.len());
         parse_into(&text, Options::default(), &mut builder);

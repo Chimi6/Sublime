@@ -42,13 +42,17 @@ impl Converter for PagesToDocx {
         &self,
         mut input: Input<'_>,
         output: &mut dyn Write,
-        _context: &mut Context<'_>,
+        context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
         let mut bytes = Vec::new();
         input.read_to_end(&mut bytes)?;
         let package = Package::read_scope(&bytes, Scope::Document).map_err(package_error)?;
         let document = read_document(&package);
-        write_docx(&document, &mut *output)?;
+        write_docx(
+            &document,
+            &mut *output,
+            context.options.effort.unwrap_or_default(),
+        )?;
         output.flush()?;
         Ok(())
     }

@@ -39,7 +39,7 @@ pub static XLSX: Format = Format {
     magic: None,
     category: Category::Data,
     read_options: &[Setting::Sheet],
-    write_options: &[Setting::Sheet],
+    write_options: &[Setting::Sheet, Setting::Effort],
 };
 
 pub static PNG: Format = Format {
@@ -49,7 +49,7 @@ pub static PNG: Format = Format {
     magic: Some(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']),
     category: Category::Image,
     read_options: &[],
-    write_options: &[],
+    write_options: &[Setting::Effort],
 };
 
 pub static JPEG: Format = Format {
@@ -141,7 +141,7 @@ pub static ICO: Format = Format {
     magic: Some(b"\0\0\x01\0"),
     category: Category::Image,
     read_options: &[],
-    write_options: &[],
+    write_options: &[Setting::Effort],
 };
 
 pub static CUR: Format = Format {
@@ -162,7 +162,7 @@ pub static TIFF: Format = Format {
     magic: Some(b"II*\0"),
     category: Category::Image,
     read_options: &[],
-    write_options: &[],
+    write_options: &[Setting::Effort],
 };
 
 pub static PDF: Format = Format {
@@ -172,7 +172,7 @@ pub static PDF: Format = Format {
     magic: Some(b"%PDF-"),
     category: Category::Document,
     read_options: &[Setting::Page],
-    write_options: &[Setting::Font],
+    write_options: &[Setting::Font, Setting::Effort],
 };
 
 pub static QOI: Format = Format {
@@ -272,7 +272,7 @@ pub static DOCX: Format = Format {
     magic: None,
     category: Category::Document,
     read_options: &[],
-    write_options: &[],
+    write_options: &[Setting::Effort],
 };
 
 pub static RTF: Format = Format {

@@ -111,12 +111,16 @@ impl Converter for FromRtf {
         &self,
         mut input: Input<'_>,
         output: &mut dyn Write,
-        _context: &mut Context<'_>,
+        context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
         let document = read_input(&mut input)?;
         match self.target {
             Target::Docx => {
-                write_docx(&document, &mut *output)?;
+                write_docx(
+                    &document,
+                    &mut *output,
+                    context.options.effort.unwrap_or_default(),
+                )?;
             }
             Target::Pages => {
                 let mut sink = std::io::BufWriter::with_capacity(64 * 1024, &mut *output);

@@ -216,7 +216,7 @@ impl Converter for JsonToXlsx {
 
     /// Sheets are named after the JSON's members, not `--sheet`.
     fn options(&self) -> Vec<crate::format::Setting> {
-        Vec::new()
+        vec![crate::format::Setting::Effort]
     }
 
     fn from(&self) -> &'static Format {
@@ -249,7 +249,11 @@ impl Converter for JsonToXlsx {
             .map(|(name, _)| name.as_str())
             .filter(|name| !name.is_empty())
             .unwrap_or("Sheet1");
-        let mut writer = crate::io::xlsx::XlsxWriter::new(&mut *output, first)?;
+        let mut writer = crate::io::xlsx::XlsxWriter::new(
+            &mut *output,
+            first,
+            context.options.effort.unwrap_or_default(),
+        )?;
         for (index, (name, csv)) in sheets.parts.iter().enumerate() {
             if index > 0 {
                 writer.next_sheet(name)?;

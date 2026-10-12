@@ -7,8 +7,9 @@
 use std::fs;
 use std::path::PathBuf;
 
+use sublime::format::Effort;
 use sublime::image::{ColorType, Image};
-use sublime::io::png::{read_png, write_png};
+use sublime::io::png::{read_png, write_png, write_png_with};
 
 fn fixture_dir(sub: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -102,6 +103,19 @@ fn every_suite_image_survives_our_writer_and_reader() {
         let (again, _) = read_png(&encoded)
             .unwrap_or_else(|error| panic!("{name}: our PNG does not read back: {error}"));
         assert_eq!(again, image, "{name}");
+        // Every effort writes the same pixels.
+        let mut sizes = Vec::new();
+        for effort in [Effort::Fast, Effort::Balanced, Effort::Max] {
+            let mut encoded = Vec::new();
+            write_png_with(&image, &mut encoded, effort).unwrap();
+            let (again, _) = read_png(&encoded).unwrap();
+            assert_eq!(again, image, "{name} at {}", effort.name());
+            sizes.push(encoded.len());
+        }
+        // Max is the smallest but on images of a few pixels, where its
+        // filter choices can cost a few bytes of a hundred.
+        let best = sizes[0].min(sizes[1]);
+        assert!(sizes[2] <= best + 16, "{name}: {sizes:?}");
     }
 }
 

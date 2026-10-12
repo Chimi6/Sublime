@@ -59,6 +59,12 @@ pixels from our PDFs, and `pdfinfo` reads their pages.
 | JPEG | the file itself; gray, RGB, or CMYK from its frame header, `/Decode [1 0 1 0 1 0 1 0]` for Adobe's inverted CMYK |
 | Structure | objects in file order, offsets recorded; a stream's `/Length` an indirect object written after it, so no stream is held; the page tree, the catalog, a cross-reference table, the trailer |
 
+`--effort max` deflates the content streams, fonts, and non-JPEG images
+three ways and keeps the smallest: 2.5 to 3% smaller on long documents
+and image pages in 1.3 to 2 times the time (JPEGs are embedded as they
+are at any effort). Fast is the same as balanced (deflate's default is near the fast end already: a shorter search saved under a tenth of the time for 1 to 4% more bytes).
+
+
 ## What the document writer does
 
 | Part | Handling |

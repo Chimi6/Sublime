@@ -62,9 +62,11 @@ impl Converter for ImagePair {
     /// Images set on a PDF page have no text, so no `--font`.
     fn options(&self) -> Vec<crate::format::Setting> {
         let mut options = self.from.read_options.to_vec();
-        if self.to.id != "pdf" {
-            options.extend_from_slice(self.to.write_options);
-        }
+        options.extend(
+            self.to.write_options.iter().filter(|option| {
+                !(self.to.id == "pdf" && **option == crate::format::Setting::Font)
+            }),
+        );
         options
     }
 
@@ -89,7 +91,7 @@ impl Converter for ImagePair {
         // BMP's pixel data, a WebP's bitstream, an interlaced PNG).
         match self.write {
             ImageFormat::Png => {
-                let mut rows = PngRows::new(output);
+                let mut rows = PngRows::new(output).with_effort(effort);
                 read_rows(self.read, &mut input, &mut rows, self.name, context)
             }
             ImageFormat::Bmp => {
@@ -136,15 +138,15 @@ impl Converter for ImagePair {
                 read_rows(self.read, &mut input, &mut rows, self.name, context)
             }
             ImageFormat::Ico => {
-                let mut rows = IcoRows::new(output);
+                let mut rows = IcoRows::new(output).with_effort(effort);
                 read_rows(self.read, &mut input, &mut rows, self.name, context)
             }
             ImageFormat::Tiff => {
-                let mut rows = TiffRows::new(output);
+                let mut rows = TiffRows::new(output).with_effort(effort);
                 read_rows(self.read, &mut input, &mut rows, self.name, context)
             }
             ImageFormat::Pdf => {
-                let mut document = PdfDocument::new(output)?;
+                let mut document = PdfDocument::new(output)?.with_effort(effort);
                 if self.read == ImageFormat::Jpeg {
                     let mut jpeg = Vec::new();
                     input.read_to_end(&mut jpeg)?;

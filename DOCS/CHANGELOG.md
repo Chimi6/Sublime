@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- `--effort max` for every deflate writer: PNG (6 to 10% smaller on graphics and screenshots), TIFF (10% on a stock photograph), ICO, PDF (2.5 to 3%), Word (39 to 40% on long documents), and Excel (29 to 30% on large sheets), at 1.3 to 8 times the time; each part deflated three ways and the smallest kept, so max is never larger. `--effort fast` is the same as balanced for these (deflate's default is near the fast end already). Balanced output is unchanged byte for byte.
+
 ### Changed
 
 - The Pages and Numbers readers hold large tables in less memory: a Pages document's streams are read twice instead of held decompressed together, tables' data lists and rows are kept as bytes until read, and a row's legacy copy of its cells is skipped. A Pages document of 100,000 table rows to Excel peaks at 1.8 GB instead of 2.2 (Numbers to CSV: 43 MB instead of 53 on numbers-parser's largest test document).

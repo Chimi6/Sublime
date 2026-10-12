@@ -851,3 +851,41 @@ fn check_and_formats_list_the_options_honoured() {
 fn stdout_bytes(output: &Output) -> &[u8] {
     &output.stdout
 }
+
+#[test]
+fn max_effort_documents_and_images_read_back_as_balanced_ones() {
+    // Smaller or not, a max-effort file holds what the balanced one does.
+    let markdown = fixture("markdown/report.md");
+    let csv = fixture("csv/simple.csv");
+    let png = fixture("png/basn2c08.png");
+    for (input, to, back) in [
+        (&markdown, "docx", "markdown"),
+        (&csv, "xlsx", "csv"),
+        (&png, "tiff", "png"),
+    ] {
+        let mut read = Vec::new();
+        for effort in ["balanced", "max", "fast"] {
+            let written = temp_path(&format!("effort-{effort}.{to}"));
+            let output = run(&[
+                "convert",
+                input.to_str().unwrap(),
+                written.to_str().unwrap(),
+                "--effort",
+                effort,
+            ]);
+            assert!(
+                code(&output) != 1 && code(&output) != 4,
+                "{to} {effort}: {}",
+                stderr(&output)
+            );
+            assert!(
+                !stderr(&output).contains("no effect"),
+                "{}",
+                stderr(&output)
+            );
+            let again = run(&["convert", written.to_str().unwrap(), "--to", back]);
+            read.push(again.stdout);
+        }
+        assert!(read.windows(2).all(|pair| pair[0] == pair[1]), "{to}");
+    }
+}

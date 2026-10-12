@@ -136,7 +136,11 @@ impl Converter for NumbersTo {
                     context.warning("the document has no table; the workbook has one empty sheet");
                 }
                 let first = tables.first().map_or("Sheet1", |table| table.name.as_str());
-                let mut writer = crate::io::xlsx::XlsxWriter::new(&mut *output, first)?;
+                let mut writer = crate::io::xlsx::XlsxWriter::new(
+                    &mut *output,
+                    first,
+                    context.options.effort.unwrap_or_default(),
+                )?;
                 for (index, table) in tables.iter().enumerate() {
                     if index > 0 {
                         writer.next_sheet(&table.name)?;

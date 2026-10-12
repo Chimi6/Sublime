@@ -36,9 +36,13 @@ const PACKAGE_REL: &str = "http://schemas.openxmlformats.org/package/2006/relati
 const PICTURE: &str = "http://schemas.openxmlformats.org/drawingml/2006/picture";
 
 /// Writes `document` as a `.docx` to `sink`.
-pub fn write_docx<W: io::Write>(document: &Document, sink: W) -> io::Result<W> {
+pub fn write_docx<W: io::Write>(
+    document: &Document,
+    sink: W,
+    effort: crate::format::Effort,
+) -> io::Result<W> {
     let mut writer = DocxWriter::new(document);
-    let mut zip = ZipWriter::new(sink);
+    let mut zip = ZipWriter::new(sink).with_effort(effort);
     // The body goes first, streamed; the parts it discovers (media,
     // headers, relationships) follow it. Entry order in a package is free.
     zip.begin_deflated("word/document.xml")?;
@@ -60,8 +64,8 @@ pub struct DocxStream<W: io::Write> {
 }
 
 impl<W: io::Write> DocxStream<W> {
-    pub fn new(sink: W) -> io::Result<DocxStream<W>> {
-        let mut zip = ZipWriter::new(sink);
+    pub fn new(sink: W, effort: crate::format::Effort) -> io::Result<DocxStream<W>> {
+        let mut zip = ZipWriter::new(sink).with_effort(effort);
         zip.begin_deflated("word/document.xml")?;
         let mut body = String::with_capacity(BODY_PART + 4096);
         body.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");

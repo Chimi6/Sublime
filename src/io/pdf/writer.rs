@@ -10,7 +10,6 @@ use std::io::{self, Write};
 use std::sync::Arc;
 
 use crate::image::ColorType;
-use crate::io::deflate::deflate;
 use crate::io::font::{Font, FontError};
 use crate::io::pdf::PdfError;
 use crate::io::png::writer::FilteredZlib;
@@ -34,6 +33,8 @@ pub struct PdfDocument<'a> {
     title: Option<String>,
     /// Fonts embedded for text the standard fonts cannot set.
     embedded: Vec<Embedded>,
+    /// How hard streams are deflated (`--effort`).
+    effort: crate::format::Effort,
 }
 
 /// An embedded font: its Type0 object number (reserved when first used,
@@ -142,9 +143,22 @@ impl<'a> PdfDocument<'a> {
             fonts: Vec::new(),
             title: None,
             embedded: Vec::new(),
+            effort: crate::format::Effort::default(),
         };
         document.put(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")?;
         Ok(document)
+    }
+
+    /// Sets how hard the document's streams are deflated (balanced by
+    /// default; JPEGs are embedded as they are whatever the effort).
+    pub fn with_effort(mut self, effort: crate::format::Effort) -> PdfDocument<'a> {
+        self.effort = effort;
+        self
+    }
+
+    fn deflate(&self, input: &[u8], out: &mut Vec<u8>) {
+        use crate::io::deflate::compress::{Level, deflate_with};
+        deflate_with(input, out, Level::for_effort(Level::Default, self.effort));
     }
 
     fn put(&mut self, bytes: &[u8]) -> io::Result<()> {
@@ -373,7 +387,7 @@ impl<'a> PdfDocument<'a> {
         let program = font.subset(&glyphs).map_err(invalid)?;
         let name = subset_name(&font.family, &glyphs);
         let mut compressed = vec![0x78, 0x9c];
-        deflate(&program, &mut compressed);
+        self.deflate(&program, &mut compressed);
         compressed.extend_from_slice(&adler32(&program).to_be_bytes());
         let file = self.allocate();
         self.object(
@@ -489,7 +503,7 @@ impl<'a> PdfDocument<'a> {
             }
         }
         let mut compressed = vec![0x78, 0x9c];
-        deflate(page.content, &mut compressed);
+        self.deflate(page.content, &mut compressed);
         compressed.extend_from_slice(&adler32(page.content).to_be_bytes());
         let content = self.allocate();
         self.object(
@@ -660,6 +674,7 @@ impl RowSink for PdfPage<'_, '_> {
             .as_bytes(),
         )?;
         let width_usize = width as usize;
+        let effort = self.document.effort;
         self.state = Some(Streaming {
             width,
             height,
@@ -667,8 +682,13 @@ impl RowSink for PdfPage<'_, '_> {
             image,
             length,
             written: 0,
-            stream: FilteredZlib::new(width_usize * colors, colors),
-            alpha: alpha.then(|| (FilteredZlib::new(width_usize, 1), Vec::new())),
+            stream: FilteredZlib::new(width_usize * colors, colors).with_effort(effort),
+            alpha: alpha.then(|| {
+                (
+                    FilteredZlib::new(width_usize, 1).with_effort(effort),
+                    Vec::new(),
+                )
+            }),
             color_row: vec![0; width_usize * colors],
             alpha_row: vec![0; width_usize],
             rows_left: height,

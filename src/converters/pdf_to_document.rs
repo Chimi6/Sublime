@@ -99,7 +99,8 @@ impl Converter for PdfToDocument {
                 notes
             }
             Target::Docx => {
-                let mut stream = DocxStream::new(&mut *output)?;
+                let mut stream =
+                    DocxStream::new(&mut *output, context.options.effort.unwrap_or_default())?;
                 let mut builder = DocumentBuilder::streaming(&mut stream);
                 let notes = pdf_events(&bytes, page, &mut builder as &mut dyn EventSink<'_>)
                     .map_err(malformed)?;

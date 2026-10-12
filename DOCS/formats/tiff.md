@@ -41,6 +41,10 @@ predictor, 72 dpi, the directory ahead of the data. The compressed
 strips are held until the last row, since their offsets go in the
 directory.
 
+`--effort max` deflates each strip three ways and keeps the smallest
+(as PNG): 10% smaller on the stock photograph in 7 times the time.
+Fast is the same as balanced (deflate's default is near the fast end already: a shorter search saved under a tenth of the time for 1 to 4% more bytes).
+
 ## Known deviations
 
 - Not read: JPEG and old-JPEG compression, CCITT fax, JPEG 2000,

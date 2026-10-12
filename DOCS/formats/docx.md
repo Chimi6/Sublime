@@ -72,6 +72,12 @@ in as text).
 Units: twentieths of a point to points, half points to points, EMU to
 points, hex colors.
 
+`--effort max` deflates every part with the longest search: 39 to 40%
+smaller on long documents in twice the time, since the body is
+otherwise written with greedy matching for speed (a reader re-saves
+it). Fast is the same as balanced.
+
+
 ## Known deviations
 
 Into Word from Markdown (`markdown -> docx`, declared conditional):

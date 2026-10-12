@@ -149,7 +149,8 @@ fn our_word_output_reads_back_to_the_same_markdown() {
             media.name = format!("image{}.{extension}", index + 1);
         }
         let direct = markdown(&document);
-        let docx = write_docx(&document, Vec::new()).expect("docx writes");
+        let docx = write_docx(&document, Vec::new(), sublime::format::Effort::default())
+            .expect("docx writes");
         let read_back = read_docx(&docx).expect("our docx reads");
         let through_word = markdown(&read_back);
         assert_eq!(
@@ -346,7 +347,8 @@ fn comments_round_trip_through_word() {
     let markers = comment_markers(&document);
     assert_eq!(markers, [(true, 0), (false, 0), (true, 1), (false, 1)]);
 
-    let written = write_docx(&document, Vec::new()).expect("writes");
+    let written =
+        write_docx(&document, Vec::new(), sublime::format::Effort::default()).expect("writes");
     let round = read_docx(&written).expect("our Word output reads");
     assert_eq!(round.comments, document.comments);
     assert_eq!(comment_markers(&round), markers);
@@ -401,7 +403,8 @@ fn pages_comments_read_with_their_ranges() {
     assert_eq!(covered[0].1, "commented");
     assert_eq!(covered[1].1, "This whole sentence carries a comment.");
 
-    let written = write_docx(&document, Vec::new()).expect("writes");
+    let written =
+        write_docx(&document, Vec::new(), sublime::format::Effort::default()).expect("writes");
     let round = read_docx(&written).expect("our Word output reads");
     assert_eq!(round.comments.len(), 2);
     assert_eq!(commented_text(&round), covered);
@@ -534,7 +537,8 @@ fn page_color_reaches_both_formats() {
     let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
     let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
     assert_eq!(read_document(&package).page_color, Some(yellow));
-    let word = write_docx(&document, Vec::new()).expect("writes Word");
+    let word =
+        write_docx(&document, Vec::new(), sublime::format::Effort::default()).expect("writes Word");
     assert_eq!(read_docx(&word).expect("reads").page_color, Some(yellow));
 }
 
@@ -575,7 +579,8 @@ fn header_drawings_stay_in_their_header() {
         repeats: Some(part),
         behind: false,
     });
-    let written = write_docx(&document, Vec::new()).expect("writes");
+    let written =
+        write_docx(&document, Vec::new(), sublime::format::Effort::default()).expect("writes");
     let round = read_docx(&written).expect("reads");
     let repeated: Vec<_> = round
         .floating
@@ -661,7 +666,8 @@ fn behind_text_drawings_stay_behind() {
     let pages = sublime::io::pages::write_package(&document).expect("writes Pages");
     let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
     assert_eq!(flags(&read_document(&package)), [false, true]);
-    let word = write_docx(&document, Vec::new()).expect("writes Word");
+    let word =
+        write_docx(&document, Vec::new(), sublime::format::Effort::default()).expect("writes Word");
     assert_eq!(flags(&read_docx(&word).expect("reads")), [false, true]);
 }
 
@@ -695,6 +701,7 @@ fn comment_threads_survive_both_ways() {
     let package = Package::read_scope(&pages, Scope::Document).expect("our package reads");
     let round = read_document(&package);
     assert_eq!(thread(&round), thread(&document));
-    let word = write_docx(&round, Vec::new()).expect("writes Word");
+    let word =
+        write_docx(&round, Vec::new(), sublime::format::Effort::default()).expect("writes Word");
     assert_eq!(thread(&read_docx(&word).expect("reads")), thread(&document));
 }
