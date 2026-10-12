@@ -399,7 +399,11 @@ impl Tree {
             (Kind::Message(nested_index), Value::Bytes(bytes))
                 if !self.deferred.is_empty() && self.deferred.contains(&(index, number)) =>
             {
-                if self.stripped.iter().any(|(message, _)| *message == nested_index) {
+                if self
+                    .stripped
+                    .iter()
+                    .any(|(message, _)| *message == nested_index)
+                {
                     let kept = self.without_stripped(nested_index, bytes);
                     Node::Deferred(self.push_bytes(&kept)?)
                 } else {
