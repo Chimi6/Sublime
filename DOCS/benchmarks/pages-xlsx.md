@@ -1,6 +1,6 @@
 # Pages -> Excel
 
-**Latest** (2026-10-06, 0.27.1: 14.0 and 17.2 MB/s of input against the 50 MB/s goal, and 2,231 and 736 MB peak against 64 MB; every line FAILS, on table-heavy documents the Pages pairs had not measured; the cause is the package decode, below)
+**Latest** (2026-10-08: 14.8 and 18.0 MB/s of input against the 50 MB/s goal, and 1,777 and 618 MB peak against 64 MB, from 2,231 and 736; every line still FAILS; what remains is listed in Conclusions and in `STATE.md` as tech debt)
 
 ## Purpose
 
@@ -68,9 +68,36 @@ document of the same tables will read lighter; the per-table cost remains.
 commit: 38a872d (main before 0.27.1)
 machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
 
+### 2026-10-08, the reader's levers
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> xlsx, tables (57.6 MB): throughput (MB/s of input) | 14.8 | goal: 50 | FAIL |
+| pages -> xlsx, tables: peak memory (MB) | 1777.2 | goal: <= 64.0 | FAIL |
+| pages -> xlsx, tables (57.6 MB in + 27.8 MB out): throughput (MB/s of input plus uncompressed output) [extra] | 21.9 | n/a | n/a |
+| pages -> xlsx, report (21.6 MB): throughput (MB/s of input) | 18.0 | goal: 50 | FAIL |
+| pages -> xlsx, report: peak memory (MB) | 618.0 | goal: <= 64.0 | FAIL |
+| pages -> xlsx, report (21.6 MB in + 7.6 MB out): throughput (MB/s of input plus uncompressed output) [extra] | 24.4 | n/a | n/a |
+
+commit: 1e3bf3a (the reader's levers, before release)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+The document read now walks the streams twice (the objects a reader reaches,
+then those decoded) so no two streams are held decompressed at once; data
+list entries and tile rows are kept as their bytes and decoded as read; a
+tile row's legacy copy of its cells is left out. Most of what remains on
+these inputs is our own writer's: it stores every cell as rich text, a
+payload and a text storage of about 43 tree fields a cell, where Pages keeps
+a plain cell in the string table. Written that way (branch
+`pages-plain-cells`, not yet checked in Pages), `tables` is 23 MB instead of
+60 and `pages -> markdown` takes 0.9 s at 551 MB.
+
 ## Conclusions
 
-The cost is the Pages reader, not the workbook: `pages -> markdown` alone
+2026-10-08: the levers below are taken except streaming; the rest is tech
+debt in `STATE.md` (plain cells in the writer, then streaming tables, the
+only way under 64 MB). As first measured: the cost is the Pages reader, not
+the workbook: `pages -> markdown` alone
 peaks at 2,247 MB in 3.9 s on `tables`, and `markdown -> xlsx` at 62 MB in
 0.2 s. Of the reader's peak, 1.7 GB is the package decode: 31 million
 protobuf fields in the generic tree (957 MB of entries) for 600,000 cells,

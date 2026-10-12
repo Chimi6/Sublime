@@ -8,6 +8,8 @@ section under a version heading.
 
 ### Changed
 
+- The Pages and Numbers readers hold large tables in less memory: a Pages document's streams are read twice instead of held decompressed together, tables' data lists and rows are kept as bytes until read, and a row's legacy copy of its cells is skipped. A Pages document of 100,000 table rows to Excel peaks at 1.8 GB instead of 2.2 (Numbers to CSV: 43 MB instead of 53 on numbers-parser's largest test document).
+
 - Numbers -> Excel is its own benchmark pair, `numbers-xlsx` (`DOCS/benchmarks/numbers-xlsx.md`), split out of `numbers-csv` and rerun at 0.27.1 with typed dates and booleans: every line passes (144 to 146 MB/s of input plus uncompressed output at 127 to 147 MB, against numbers-parser with openpyxl's 2.3 to 2.4 at 4.2 GB).
 
 ## [0.30.0] - 2026-10-10

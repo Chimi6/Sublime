@@ -233,6 +233,9 @@ impl Package {
         if scope == Scope::Workbook {
             return Package::read_workbook(&archive);
         }
+        if scope == Scope::Document {
+            return Package::read_document(&archive);
+        }
         // Every entry is read first; the reachable set needs all streams'
         // object headers before any stream is decoded.
         let mut raw: Vec<(String, Vec<u8>, bool)> = Vec::new();
@@ -268,26 +271,16 @@ impl Package {
                 parsed.push(None);
             }
         }
-        let reachable = match scope {
-            // A workbook was read stream by stream above.
-            Scope::Everything | Scope::Workbook => None,
-            Scope::Document => Some(reachable_objects(&parsed)),
-        };
-        let deferred = match scope {
-            Scope::Everything => Vec::new(),
-            Scope::Document | Scope::Workbook => deferred_fields(),
-        };
         let mut entries = Vec::with_capacity(raw.len());
         for ((name, bytes, _), objects) in raw.iter().zip(parsed) {
             match objects {
                 Some(objects) => {
-                    let keep = |identifier: u64| {
-                        reachable
-                            .as_ref()
-                            .is_none_or(|set| set.contains_key(&identifier))
-                    };
                     entries.push(Entry::Stream(decode_objects(
-                        name, bytes, objects, keep, &deferred,
+                        name,
+                        bytes,
+                        objects,
+                        |_| true,
+                        &[],
                     )?));
                 }
                 None => entries.push(Entry::File {
@@ -299,17 +292,92 @@ impl Package {
         Ok(Package { entries })
     }
 
+    /// `Scope::Document`: the objects a document reader reaches, in two
+    /// passes over the streams so no two are held decompressed at once:
+    /// the first keeps each object's identifier, type, and references for
+    /// the walk; the second decompresses each stream again and decodes the
+    /// reachable objects alone.
+    fn read_document(archive: &ZipArchive<'_>) -> Result<Package, PackageError> {
+        let read_stream = |entry: &crate::io::zip::Entry| -> Result<Option<Vec<u8>>, PackageError> {
+            let mut data = Vec::new();
+            archive.read(entry, &mut data)?;
+            // A stream Apple compressed with LZFSE (`bvxn`, the operation
+            // log of a shared document) is kept as its bytes: nothing the
+            // readers use is in it, and it is written back as it was.
+            if !entry.name.ends_with(".iwa") || data.starts_with(b"bvx") {
+                return Ok(None);
+            }
+            decompress_stream(&data)
+                .map(Some)
+                .map_err(|error| PackageError::Iwa {
+                    stream: entry.name.clone(),
+                    error,
+                })
+        };
+        let mut headers: Vec<ObjectHeader> = Vec::new();
+        for entry in archive.entries() {
+            if entry.is_directory() {
+                continue;
+            }
+            let Some(bytes) = read_stream(entry)? else {
+                continue;
+            };
+            let objects = parse_objects(&bytes).map_err(|error| PackageError::Iwa {
+                stream: entry.name.clone(),
+                error,
+            })?;
+            headers.extend(objects.iter().map(|object| {
+                ObjectHeader {
+                    identifier: object.identifier,
+                    message_type: object.message_type().unwrap_or(0),
+                    references: object
+                        .messages
+                        .iter()
+                        .flat_map(|message| message.object_references.iter().copied())
+                        .collect(),
+                }
+            }));
+        }
+        let reachable = reachable_objects(&headers);
+        drop(headers);
+        let deferred = deferred_fields();
+        let mut entries = Vec::new();
+        for entry in archive.entries() {
+            if entry.is_directory() {
+                continue;
+            }
+            match read_stream(entry)? {
+                Some(bytes) => {
+                    let objects = parse_objects(&bytes).map_err(|error| PackageError::Iwa {
+                        stream: entry.name.clone(),
+                        error,
+                    })?;
+                    entries.push(Entry::Stream(decode_objects(
+                        &entry.name,
+                        &bytes,
+                        objects,
+                        |identifier| reachable.contains(&identifier),
+                        &deferred,
+                    )?));
+                }
+                None => {
+                    let mut bytes = Vec::new();
+                    archive.read(entry, &mut bytes)?;
+                    entries.push(Entry::File {
+                        name: entry.name.clone(),
+                        bytes,
+                    });
+                }
+            }
+        }
+        Ok(Package { entries })
+    }
+
     /// `Scope::Workbook`: each stream decompressed, decoded without the
     /// skipped types and the row headers, and freed before the next, since
     /// the workbook reads every other object and needs no walk.
     fn read_workbook(archive: &ZipArchive<'_>) -> Result<Package, PackageError> {
-        let mut deferred = deferred_fields();
-        // A tile's rows, which the workbook reader parses itself.
-        if let Some(tile) = SCHEMA.message("TST.Tile")
-            && let Some((_, field)) = tile.slot_named("rowInfos")
-        {
-            deferred.push((tile.index(), field.number));
-        }
+        let deferred = deferred_fields();
         let mut entries = Vec::new();
         for entry in archive.entries() {
             if entry.is_directory() {
@@ -437,38 +505,37 @@ impl Package {
     }
 }
 
+/// An object's identifier, type, and references: what the reachability
+/// walk needs of it.
+struct ObjectHeader {
+    identifier: u64,
+    message_type: u32,
+    references: Vec<u64>,
+}
+
 /// The identifiers a document reader reaches (see `Scope::Document`).
-/// The maps use the `u64 -> usize` shape the rest of the crate already
-/// instantiates, so they add no code to the binary.
-fn reachable_objects(streams: &[Option<Vec<IwaObject<'_>>>]) -> HashMap<u64, usize> {
-    let objects: Vec<&IwaObject<'_>> = streams.iter().flatten().flatten().collect();
+fn reachable_objects(objects: &[ObjectHeader]) -> HashSet<u64> {
     let mut index: HashMap<u64, usize> = HashMap::with_capacity(objects.len());
     let mut pending: Vec<u64> = Vec::new();
     for (position, object) in objects.iter().enumerate() {
         index.insert(object.identifier, position);
-        if ROOT_TYPES.contains(&object.message_type().unwrap_or(0)) {
+        if ROOT_TYPES.contains(&object.message_type) {
             pending.push(object.identifier);
         }
     }
-    let mut reachable: HashMap<u64, usize> = HashMap::new();
+    let mut reachable: HashSet<u64> = HashSet::new();
     while let Some(identifier) = pending.pop() {
         let Some(position) = index.get(&identifier) else {
             continue;
         };
-        if reachable.insert(identifier, *position).is_some() {
+        let object = &objects[*position];
+        if SKIPPED_TYPES.contains(&object.message_type) || !reachable.insert(identifier) {
             continue;
         }
-        let object = objects[*position];
-        if SKIPPED_TYPES.contains(&object.message_type().unwrap_or(0)) {
-            reachable.remove(&identifier);
+        if HUB_TYPES.contains(&object.message_type) {
             continue;
         }
-        if HUB_TYPES.contains(&object.message_type().unwrap_or(0)) {
-            continue;
-        }
-        for message in &object.messages {
-            pending.extend(message.object_references.iter().copied());
-        }
+        pending.extend(object.references.iter().copied());
     }
     reachable
 }
@@ -516,7 +583,34 @@ fn deferred_fields() -> Vec<(u16, u32)> {
         info.slot_named("layout_engine")
             .map(|(_, field)| (info.index(), field.number))
     }))
+    // A data list's entries (a table's strings, styles, formats), which the
+    // readers decode one at a time.
+    .chain(SCHEMA.message("TST.TableDataList").and_then(|list| {
+        list.slot_named("entries")
+            .map(|(_, field)| (list.index(), field.number))
+    }))
+    // A tile's rows, which the table readers parse themselves (a row is nine
+    // fields, and a large table has a million rows).
+    .chain(SCHEMA.message("TST.Tile").and_then(|tile| {
+        tile.slot_named("rowInfos")
+            .map(|(_, field)| (tile.index(), field.number))
+    }))
     .collect()
+}
+
+/// Fields a reading scope leaves out of the deferred messages that hold
+/// them: a tile row's legacy (pre-BNC) copy of its cells, which Pages and
+/// Numbers keep beside the current one and no reader opens (half a row's
+/// bytes).
+fn stripped_fields() -> Vec<(u16, u32)> {
+    let Some(row) = SCHEMA.message("TST.TileRowInfo") else {
+        return Vec::new();
+    };
+    ["cell_storage_buffer_pre_bnc", "cell_offsets_pre_bnc"]
+        .iter()
+        .filter_map(|name| row.slot_named(name))
+        .map(|(_, field)| (row.index(), field.number))
+        .collect()
 }
 
 /// Decodes the objects `keep` selects into a stream; the others keep
@@ -532,6 +626,9 @@ fn decode_objects(
     let info_schema = SCHEMA.message("TSP.ArchiveInfo");
     let mut tree = Tree::new(&SCHEMA);
     tree.deferred = deferred.to_vec();
+    if !deferred.is_empty() {
+        tree.stripped = stripped_fields();
+    }
     tree.entries.reserve(bytes.len() / 8);
     tree.text.reserve(bytes.len() / 2);
     let mut objects = Vec::with_capacity(raw_objects.len());
