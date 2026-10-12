@@ -212,7 +212,10 @@ LibreOffice), on numbers-parser's test documents
   (`tests/fixtures/xlsx/formats.xlsx`) shows in Numbers as in Excel.
 
 Speed and memory are the `numbers-csv` and `numbers-xlsx` benchmark pairs
-(`DOCS/benchmarks/numbers-csv.md`, `numbers-xlsx.md`).
+(`DOCS/benchmarks/numbers-csv.md`, `numbers-xlsx.md`); into CSV: 37 MB/s on 200,000-row documents at
+125 to 145 MB, against numbers-parser's 0.5 MB/s at over 4 GB, and on a
+real 65,000-row document 68 MB/s at 54 MB, against numbers-parser's 2.4 at
+353 MB and LibreOffice's 0.9 at 1.4 GB.
 
 Fixtures (`tests/fixtures/numbers`, from numbers-parser's test data): two
 sheets with three tables, a zipped package folder with an LZFSE stream, an
