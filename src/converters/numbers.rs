@@ -118,6 +118,7 @@ impl Converter for NumbersTo {
                     );
                 }
                 if let Some(table) = tables.first() {
+                    let delimiter = crate::converters::input::written_delimiter(delimiter, context);
                     write_rows(&mut workbook, table, delimiter, output)?;
                 }
                 Ok(())
@@ -183,6 +184,7 @@ impl Converter for NumbersTo {
         let package = Package::read_scope(&bytes, Scope::Workbook).map_err(package_error)?;
         let mut workbook = WorkbookReader::new(&package);
         for table in pick_tables(&workbook, context)? {
+            let delimiter = crate::converters::input::written_delimiter(delimiter, context);
             write_rows(&mut workbook, &table, delimiter, parts.part(&table.name)?)?;
         }
         Ok(())

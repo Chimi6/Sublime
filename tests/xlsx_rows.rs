@@ -20,6 +20,9 @@ fn convert_with(
         strict: false,
         sheet: sheet.map(str::to_string),
         quality: None,
+        effort: None,
+        delimiter: None,
+        base: None,
         page: None,
         font: None,
     };

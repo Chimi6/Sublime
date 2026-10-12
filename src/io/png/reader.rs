@@ -77,6 +77,39 @@ pub trait RowSink {
     /// down, when it records one; readers call it before `start`. Only
     /// a sink with a physical size (a PDF page) uses it.
     fn density(&mut self, _across: f64, _down: f64) {}
+    /// The ICC colour profile the image is in, when the file carries
+    /// one; readers call it before `start`. Sinks that can embed a
+    /// profile (PNG, JPEG) keep it, so the colours stay what they were,
+    /// and say so.
+    fn icc_profile(&mut self, _profile: &[u8]) -> bool {
+        false
+    }
+    /// The file's Exif metadata as a TIFF structure (from its byte-order
+    /// mark on), when it carries one; readers call it before `start`.
+    /// True when the sink keeps it.
+    fn exif(&mut self, _exif: &[u8]) -> bool {
+        false
+    }
+    /// A reader's offer, before `start`, of 16-bit samples for an image
+    /// of `color`, made only when its samples are deeper than 8 bits.
+    /// True when the sink takes them: every row then holds big-endian
+    /// 16-bit samples, two bytes each. Sinks that cannot hold them say
+    /// no and get 8-bit rows.
+    fn accept_deep(&mut self, _color: ColorType) -> bool {
+        false
+    }
+    /// A reader's offer, before `start`, of the image as 8-bit YCbCr 4:2:0
+    /// in JFIF's terms (BT.601, full range, chroma centred between its
+    /// luma samples) instead of RGB rows. True when the sink takes it:
+    /// rows then come through `ycbcr_row`, and `start` still names RGB.
+    fn accept_ycbcr(&mut self) -> bool {
+        false
+    }
+    /// One luma row, and on even rows the chroma row (Cb, Cr) that covers
+    /// it and the row below, each half the width rounded up.
+    fn ycbcr_row(&mut self, _luma: &[u8], _chroma: Option<(&[u8], &[u8])>) -> std::io::Result<()> {
+        Err(std::io::Error::other("this sink takes RGB rows"))
+    }
 }
 
 /// A sink that keeps the rows as an image: the whole-image readers
@@ -171,6 +204,7 @@ fn read_png_inner(
     let mut transparency: Vec<u8> = Vec::new();
     let mut notes = PngNotes::default();
     let mut decoder: Option<Decoder> = None;
+    let mut deep_rows = false;
     loop {
         let head = source.exact(8)?;
         let length = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
@@ -227,13 +261,21 @@ fn read_png_inner(
                             .into());
                         }
                         let streams = sink.is_some() && !header.interlaced;
+                        let mut deep = false;
                         if streams {
                             let color = output_color(header, &transparency);
                             if let Some(sink) = sink.as_deref_mut() {
+                                // A 16-bit row with no palette or key colour
+                                // unfilters to big-endian samples as they are.
+                                deep = header.depth == 16
+                                    && header.color != 3
+                                    && transparency.is_empty()
+                                    && sink.accept_deep(color);
                                 sink.start(header.width, header.height, color)?;
                             }
                         }
-                        decoder.insert(Decoder::new(header, &palette, &transparency, streams))
+                        deep_rows = deep;
+                        decoder.insert(Decoder::new(header, &palette, &transparency, streams, deep))
                     }
                 };
                 let mut remaining = length;
@@ -281,7 +323,7 @@ fn read_png_inner(
     let header = header.ok_or_else(|| PngError("no IHDR chunk".to_string()))?;
     let decoder = decoder.ok_or_else(|| PngError("no IDAT chunk".to_string()))?;
     let image = decoder.finish()?;
-    notes.sixteen_bit = header.depth == 16;
+    notes.sixteen_bit = header.depth == 16 && !deep_rows;
     Ok((image, notes))
 }
 
@@ -379,11 +421,17 @@ struct Decoder {
 }
 
 impl Decoder {
-    fn new(header: &Header, palette: &[[u8; 3]], transparency: &[u8], streams: bool) -> Decoder {
+    fn new(
+        header: &Header,
+        palette: &[[u8; 3]],
+        transparency: &[u8],
+        streams: bool,
+        deep: bool,
+    ) -> Decoder {
         Decoder {
             zlib_header: Vec::with_capacity(2),
             inflater: Inflater::new(),
-            rows: Rows::new(header, palette, transparency, streams),
+            rows: Rows::new(header, palette, transparency, streams, deep),
             trailer: Vec::with_capacity(4),
         }
     }
@@ -484,12 +532,22 @@ struct Rows {
 }
 
 impl Rows {
-    fn new(header: &Header, palette: &[[u8; 3]], transparency: &[u8], streams: bool) -> Rows {
+    /// `deep`: 16-bit rows go to the sink as they unfilter.
+    fn new(
+        header: &Header,
+        palette: &[[u8; 3]],
+        transparency: &[u8],
+        streams: bool,
+        deep: bool,
+    ) -> Rows {
         let color = output_color(header, transparency);
         let held_height = if streams { 0 } else { header.height };
         let image = Image::new(header.width, held_height, color);
-        let direct =
-            header.depth == 8 && header.color != 3 && transparency.is_empty() && !header.interlaced;
+        let direct = deep
+            || (header.depth == 8
+                && header.color != 3
+                && transparency.is_empty()
+                && !header.interlaced);
         let mut rows = Rows {
             header: header.clone(),
             palette: palette.to_vec(),

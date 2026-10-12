@@ -14,6 +14,12 @@
 //!   formats, 4 an unknown format id. The result is read through
 //!   `output_ptr()` and `output_len()`, the message through `message_ptr()`
 //!   and `message_len()`.
+//! - `convert_with(from, from_len, to, to_len, input, input_len,
+//!   options, options_len)` is `convert` with options: lines of
+//!   `key=value`, the command line's flags without their dashes (`quality`,
+//!   `effort`, `sheet`, `page`, `delimiter`). An option the conversion does
+//!   not use comes back as a warning, read through `warnings_ptr()` and
+//!   `warnings_len()` (one a line), as the command line warns of it.
 //! - `formats()` and `paths()` write JSON into the message buffer and
 //!   return its length.
 //!
@@ -25,7 +31,7 @@ use std::cell::RefCell;
 
 use sublime::converter::ConvertOptions;
 use sublime::event::{Context, NullSink};
-use sublime::format::find_by_id;
+use sublime::format::{Effort, Setting, find_by_id};
 use sublime::planner::{self, PlanError, PlanOptions};
 use sublime::registry;
 
@@ -34,6 +40,7 @@ thread_local! {
     /// How many files the last result holds (more than one: a ZIP of them).
     static PARTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static MESSAGE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static WARNINGS: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Statuses `convert` returns.
@@ -92,11 +99,96 @@ pub unsafe extern "C" fn convert(
             std::slice::from_raw_parts(input_ptr, input_len),
         )
     };
-    run(from, to, input)
+    run(from, to, input, b"")
 }
 
-fn run(from: &[u8], to: &[u8], input: &[u8]) -> u32 {
+/// `convert`, with options (see the module notes).
+///
+/// # Safety
+///
+/// As `convert`, for all four pointer and length pairs.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn convert_with(
+    from_ptr: *const u8,
+    from_len: usize,
+    to_ptr: *const u8,
+    to_len: usize,
+    input_ptr: *const u8,
+    input_len: usize,
+    options_ptr: *const u8,
+    options_len: usize,
+) -> u32 {
+    // SAFETY: the caller upholds the contract above.
+    let (from, to, input, options) = unsafe {
+        (
+            std::slice::from_raw_parts(from_ptr, from_len),
+            std::slice::from_raw_parts(to_ptr, to_len),
+            std::slice::from_raw_parts(input_ptr, input_len),
+            std::slice::from_raw_parts(options_ptr, options_len),
+        )
+    };
+    run(from, to, input, options)
+}
+
+/// The options text (`key=value` lines) as conversion options and the
+/// settings given, or what is wrong with it.
+fn parse_options(text: &[u8]) -> Result<(ConvertOptions, Vec<Setting>), String> {
+    let text = std::str::from_utf8(text).map_err(|_| "options must be UTF-8".to_string())?;
+    let mut options = ConvertOptions::default();
+    let mut given = Vec::new();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("'{line}' is not key=value"))?;
+        let invalid = |expected: &str| format!("'{value}' is not a valid {key}; expected {expected}");
+        match key {
+            "quality" => {
+                let quality = value
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|quality| (1..=100).contains(quality))
+                    .ok_or_else(|| invalid("a number from 1 to 100"))?;
+                options.quality = Some(quality);
+                given.push(Setting::Quality { default: 0 });
+            }
+            "effort" => {
+                options.effort = Some(Effort::parse(value).ok_or_else(|| invalid("fast, balanced, or max"))?);
+                given.push(Setting::Effort);
+            }
+            "sheet" => {
+                options.sheet = Some(value.to_string());
+                given.push(Setting::Sheet);
+            }
+            "page" => {
+                let page = value
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|page| *page > 0)
+                    .ok_or_else(|| invalid("a page number from 1"))?;
+                options.page = Some(page);
+                given.push(Setting::Page);
+            }
+            "delimiter" => {
+                let delimiter = match value {
+                    "tab" => b'\t',
+                    one if one.len() == 1 && one.is_ascii() && !matches!(one, "\"" | "\n" | "\r") => {
+                        one.as_bytes()[0]
+                    }
+                    _ => return Err(invalid("one character or tab")),
+                };
+                options.delimiter = Some(delimiter);
+                given.push(Setting::Delimiter);
+            }
+            other => return Err(format!("unknown option '{other}'")),
+        }
+    }
+    Ok((options, given))
+}
+
+fn run(from: &[u8], to: &[u8], input: &[u8], options_text: &[u8]) -> u32 {
     set_message("");
+    WARNINGS.with(|warnings| warnings.borrow_mut().clear());
     OUTPUT.with(|output| output.borrow_mut().clear());
     PARTS.with(|parts| parts.set(0));
     let known = registry::all_formats();
@@ -133,7 +225,27 @@ fn run(from: &[u8], to: &[u8], input: &[u8]) -> u32 {
             return FAILED;
         }
     };
-    let options = ConvertOptions::default();
+    let (options, given) = match parse_options(options_text) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            set_message(&message);
+            return FAILED;
+        }
+    };
+    let honoured = plan.options();
+    let unused: Vec<String> = given
+        .iter()
+        .filter(|setting| !honoured.iter().any(|other| other.same(setting)))
+        .map(|setting| {
+            format!(
+                "{} has no effect on {} -> {}",
+                setting.flag().trim_start_matches('-'),
+                from.id,
+                to.id
+            )
+        })
+        .collect();
+    WARNINGS.with(|warnings| *warnings.borrow_mut() = unused.join("\n").into_bytes());
     let mut sink = NullSink;
     let mut context = Context::new(&mut sink, &options);
     let mut source: &[u8] = input;
@@ -192,6 +304,16 @@ pub extern "C" fn output_ptr() -> *const u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn output_len() -> usize {
     OUTPUT.with(|output| output.borrow().len())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn warnings_ptr() -> *const u8 {
+    WARNINGS.with(|warnings| warnings.borrow().as_ptr())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn warnings_len() -> usize {
+    WARNINGS.with(|warnings| warnings.borrow().len())
 }
 
 #[unsafe(no_mangle)]

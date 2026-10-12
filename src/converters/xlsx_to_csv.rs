@@ -62,7 +62,8 @@ impl Converter for XlsxToCsv {
         input.read_to_end(&mut bytes)?;
         let workbook = Workbook::open(&bytes)?;
         let sheet = workbook.select(context.options.sheet.as_deref())?;
-        self.write_sheet(&workbook, sheet, output, context)
+        let delimiter = crate::converters::input::written_delimiter(self.delimiter, context);
+        self.write_sheet(&workbook, sheet, delimiter, output, context)
     }
 
     fn splits(&self) -> bool {
@@ -89,7 +90,8 @@ impl Converter for XlsxToCsv {
         };
         for sheet in sheets {
             let output = parts.part(&names[sheet])?;
-            self.write_sheet(&workbook, sheet, output, context)?;
+            let delimiter = crate::converters::input::written_delimiter(self.delimiter, context);
+            self.write_sheet(&workbook, sheet, delimiter, output, context)?;
         }
         Ok(())
     }
@@ -100,10 +102,11 @@ impl XlsxToCsv {
         &self,
         workbook: &Workbook<'_>,
         sheet: usize,
+        delimiter: u8,
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
-        let mut writer = CsvWriter::with_delimiter(output, self.delimiter);
+        let mut writer = CsvWriter::with_delimiter(output, delimiter);
         let mut count: u64 = 0;
         workbook.read_rows(sheet, |cells| -> Result<(), ConvertError> {
             writer.write_record(cells.iter().map(String::as_str))?;
@@ -193,7 +196,7 @@ impl Converter for XlsxWhole {
         let mut tables: Vec<(String, Vec<u8>)> = Vec::new();
         for sheet in sheets {
             let mut csv = Vec::new();
-            XLSX_TO_CSV.write_sheet(&workbook, sheet, &mut csv, context)?;
+            XLSX_TO_CSV.write_sheet(&workbook, sheet, b',', &mut csv, context)?;
             tables.push((names[sheet].clone(), csv));
         }
         (self.gather)(&tables, output, context)

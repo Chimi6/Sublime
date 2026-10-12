@@ -22,6 +22,7 @@ pub mod pages_markdown;
 pub mod pages_text;
 pub mod pdf;
 pub mod pdf_text;
+pub mod heic_png;
 pub mod jpeg_png;
 pub mod png_bmp;
 pub mod ppm_png;
@@ -100,6 +101,7 @@ pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
         "xml-json" => xml_json::run(mode, args),
         "xlsx-csv" => xlsx_csv::run(mode, args),
         "jpeg-png" => jpeg_png::run(mode, args),
+        "heic-png" => heic_png::run(mode, args),
         "png-bmp" => png_bmp::run(mode, args),
         "webp-png" => webp_png::run(mode, args),
         "qoi-png" => qoi_png::run(mode, args),

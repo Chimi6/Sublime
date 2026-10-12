@@ -2,8 +2,9 @@
 
 Universal efficient file conversion. One binary, zero runtime dependencies.
 Apple Pages and Numbers, Word, Excel, Markdown, HTML, RTF, PDF, plain text,
-CSV, JSON, and images today; every path, its fidelity, and a map are in
-`DOCS/FORMATS.md`.
+CSV, JSON, and images today; the formats and a map are in
+`DOCS/FORMATS.md`, and every path with its fidelity in
+`DOCS/CONVERSIONS.md`.
 
     sublime convert input.csv output.json
     sublime check csv json

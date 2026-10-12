@@ -131,6 +131,17 @@ pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliE
         });
     }
     check_collisions(&jobs)?;
+    let mut honoured = Vec::new();
+    for job in &jobs {
+        honoured.extend(job.plan.options());
+    }
+    let target = jobs.first().map_or("", |job| job.plan.to().id);
+    super::check_unused_options(
+        args,
+        &honoured,
+        &format!("these conversions to {target}"),
+        renderer,
+    )?;
 
     if args.dry_run {
         for job in &jobs {
@@ -152,13 +163,7 @@ pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliE
         return Ok(ExitCode::Success);
     }
 
-    let options = ConvertOptions {
-        strict: args.strict,
-        sheet: args.sheet.clone(),
-        quality: args.quality,
-        page: args.page,
-        font: crate::cli::commands::font_option(args.font.as_deref())?,
-    };
+    let options = super::convert_options(args, None)?;
     let workers = args
         .jobs
         .unwrap_or_else(|| {
@@ -309,7 +314,12 @@ fn convert_one(
         }
     }
     {
-        let mut context = Context::new(sink, options);
+        // Each input's own folder, where its images by path are found.
+        let options = ConvertOptions {
+            base: job.input.parent().map(std::path::Path::to_path_buf),
+            ..options.clone()
+        };
+        let mut context = Context::new(sink, &options);
         context.emit(Event::PathChosen {
             hops: job.plan.describe(),
         });

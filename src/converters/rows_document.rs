@@ -61,7 +61,10 @@ impl Converter for RowsToMarkdown {
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
-        let mut reader = CsvReader::with_delimiter(input, self.delimiter);
+        let mut rest = None;
+        let (delimiter, input) =
+            crate::converters::input::delimited_input(input, self.delimiter, context, &mut rest)?;
+        let mut reader = CsvReader::with_delimiter(input, delimiter);
         let mut writer = MarkdownWriter::streaming(output);
         let notes = emit_table(&mut reader, &mut writer)?;
         writer.finish()?;
@@ -169,7 +172,10 @@ impl Converter for MarkdownToRows {
         }
         for (name, rows) in &tables.tables {
             let output = parts.part(name)?;
-            let mut writer = CsvWriter::with_delimiter(output, self.delimiter);
+            let mut writer = CsvWriter::with_delimiter(
+                output,
+                crate::converters::input::written_delimiter(self.delimiter, context),
+            );
             for row in rows {
                 writer.write_record(row.iter().map(String::as_str))?;
             }
@@ -190,6 +196,11 @@ const MARKDOWN_TO_XLSX_NOTE: &str = "each of the document's tables a sheet, name
 impl Converter for MarkdownToXlsx {
     fn name(&self) -> &'static str {
         "markdown-to-xlsx"
+    }
+
+    /// Sheets are named after the headings, not `--sheet`.
+    fn options(&self) -> Vec<crate::format::Setting> {
+        Vec::new()
     }
 
     fn from(&self) -> &'static Format {

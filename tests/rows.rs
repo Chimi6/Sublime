@@ -123,3 +123,59 @@ fn invalid_json_lines_are_refused_at_their_line() {
         }
     }
 }
+
+fn convert_with(
+    converter: &dyn Converter,
+    bytes: &[u8],
+    delimiter: Option<u8>,
+) -> Result<String, ConvertError> {
+    let options = ConvertOptions {
+        delimiter,
+        ..ConvertOptions::default()
+    };
+    let mut sink = NullSink;
+    let mut context = Context::new(&mut sink, &options);
+    let mut output = Vec::new();
+    let mut cursor = std::io::Cursor::new(bytes);
+    converter.convert(Input::Rewindable(&mut cursor), &mut output, &mut context)?;
+    Ok(String::from_utf8(output).expect("utf-8 output"))
+}
+
+/// A semicolon export (its decimals with commas, a quoted semicolon) reads
+/// as semicolons without being told; a pipe file with `--delimiter`.
+#[test]
+fn csv_delimiters_are_found_or_given() {
+    let european = b"name;amount;note\nAlpha;1,5;\"a;b\"\nBeta;2;x\n";
+    assert_eq!(
+        convert_with(&CSV_TO_JSON, european, None).unwrap(),
+        r#"[{"name":"Alpha","amount":"1,5","note":"a;b"},{"name":"Beta","amount":"2","note":"x"}]"#
+    );
+    assert_eq!(
+        convert_with(&CSV_TO_TSV, b"a|b\n1|x,y\n", Some(b'|')).unwrap(),
+        "a\tb\n1\tx,y\n"
+    );
+    // A comma file stays one, a single column with a stray semicolon too.
+    assert_eq!(
+        convert_with(&CSV_TO_TSV, b"a,b\n1;2,3\n", None).unwrap(),
+        "a\tb\n1;2\t3\n"
+    );
+    assert_eq!(
+        convert_with(&CSV_TO_TSV, b"note;x\nplain\n", None).unwrap(),
+        "note;x\nplain\n"
+    );
+}
+
+/// `--delimiter` sets the delimiter CSV is written with, and TSV keeps its
+/// tab.
+#[test]
+fn csv_is_written_with_the_delimiter_given() {
+    let json = br#"[{"a":"x;y","b":2}]"#;
+    assert_eq!(
+        convert_with(&JSON_TO_CSV, json, Some(b';')).unwrap(),
+        "a;b\n\"x;y\";2\n"
+    );
+    assert_eq!(
+        convert_with(&JSON_TO_TSV, json, Some(b';')).unwrap(),
+        "a\tb\nx;y\t2\n"
+    );
+}

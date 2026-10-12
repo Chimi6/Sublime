@@ -197,6 +197,8 @@ mod tests {
         extensions: &["a"],
         magic: None,
         category: Category::Data,
+        read_options: &[],
+        write_options: &[],
     };
     static B: Format = Format {
         id: "b",
@@ -204,6 +206,8 @@ mod tests {
         extensions: &["b"],
         magic: None,
         category: Category::Data,
+        read_options: &[],
+        write_options: &[],
     };
     static C: Format = Format {
         id: "c",
@@ -211,6 +215,8 @@ mod tests {
         extensions: &["c"],
         magic: None,
         category: Category::Data,
+        read_options: &[],
+        write_options: &[],
     };
     static D: Format = Format {
         id: "d",
@@ -218,6 +224,8 @@ mod tests {
         extensions: &["d"],
         magic: None,
         category: Category::Data,
+        read_options: &[],
+        write_options: &[],
     };
 
     struct Upper;

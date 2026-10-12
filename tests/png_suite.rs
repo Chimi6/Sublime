@@ -104,3 +104,47 @@ fn every_suite_image_survives_our_writer_and_reader() {
         assert_eq!(again, image, "{name}");
     }
 }
+
+/// A sink taking 16-bit rows, keeping them.
+#[derive(Default)]
+struct Deep {
+    color: Option<ColorType>,
+    deep: bool,
+    pixels: Vec<u8>,
+}
+
+impl sublime::io::png::RowSink for Deep {
+    fn accept_deep(&mut self, _color: ColorType) -> bool {
+        self.deep = true;
+        true
+    }
+
+    fn start(&mut self, _width: u32, _height: u32, color: ColorType) -> std::io::Result<()> {
+        self.color = Some(color);
+        Ok(())
+    }
+
+    fn row(&mut self, pixels: &[u8]) -> std::io::Result<()> {
+        self.pixels.extend_from_slice(pixels);
+        Ok(())
+    }
+}
+
+#[test]
+fn sixteen_bit_files_go_on_at_sixteen_bits() {
+    // Gray, gray+alpha, RGB, RGBA at 16 bits, not interlaced.
+    for name in ["basn0g16", "basn4a16", "basn2c16", "basn6a16"] {
+        let bytes = fs::read(fixture_dir("").join(format!("{name}.png"))).expect("fixture");
+        let mut sink = Deep::default();
+        let notes = sublime::io::png::read_png_rows(&mut &bytes[..], &mut sink).expect(name);
+        assert!(sink.deep && !notes.sixteen_bit, "{name}");
+        // The high bytes are the 8-bit decode; the low bytes are kept.
+        let eight = expected(name);
+        let high: Vec<u8> = sink.pixels.iter().step_by(2).copied().collect();
+        assert_eq!(high, eight.pixels, "{name}");
+        assert!(
+            sink.pixels.iter().skip(1).step_by(2).any(|&low| low != 0),
+            "{name}"
+        );
+    }
+}

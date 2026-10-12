@@ -4,7 +4,7 @@
 use std::fmt;
 use std::io::{self, Read};
 
-use crate::io::scan::{find_csv_delimiter, find_tsv_delimiter};
+use crate::io::scan::{find_csv_delimiter, find_delimited, find_tsv_delimiter};
 
 const BUFFER_SIZE: usize = 64 * 1024;
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
@@ -250,8 +250,8 @@ impl<R: Read> CsvReader<R> {
         Ok(())
     }
 
-    /// Copies bytes into `data` up to, but not including, the next `,`, `"`,
-    /// `\n`, or `\r`, refilling the buffer as needed. The delimiter itself is
+    /// Copies bytes into `data` up to, but not including, the next
+    /// delimiter, `"`, `\n`, or `\r`, refilling the buffer as needed. The delimiter itself is
     /// left for `next_byte` so the state machine handles it. Ordinary bytes
     /// are the common case, so this is where most of the input flows.
     fn copy_run(&mut self, data: &mut Vec<u8>) -> io::Result<()> {
@@ -263,10 +263,10 @@ impl<R: Read> CsvReader<R> {
                 }
             }
             let available = &self.buffer[self.position..self.filled];
-            let found = if self.delimiter == b'\t' {
-                find_tsv_delimiter(available)
-            } else {
-                find_csv_delimiter(available)
+            let found = match self.delimiter {
+                b',' => find_csv_delimiter(available),
+                b'\t' => find_tsv_delimiter(available),
+                other => find_delimited(available, other),
             };
             let run_length = match found {
                 Some(index) => index,

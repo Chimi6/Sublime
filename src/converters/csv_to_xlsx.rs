@@ -10,7 +10,7 @@ use crate::io::csv::{CsvReader, Record};
 use crate::io::xlsx::XlsxWriter;
 
 const PROGRESS_INTERVAL: u64 = 4096;
-const FIDELITY_NOTE: &str = "plain decimals of up to fifteen digits become numbers, ISO 8601 dates, dates and times, and times become dates shown in the same form, TRUE and FALSE become booleans, everything else stays text; one sheet named Sheet1";
+const FIDELITY_NOTE: &str = "plain decimals of up to fifteen digits become numbers, ISO 8601 dates, dates and times, and times become dates shown in the same form, TRUE and FALSE become booleans, everything else stays text; one sheet, named by --sheet or Sheet1";
 
 pub struct CsvToXlsx {
     pub name: &'static str,
@@ -57,7 +57,10 @@ impl Converter for CsvToXlsx {
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
-        let mut reader = CsvReader::with_delimiter(input, self.delimiter);
+        let mut rest = None;
+        let (delimiter, input) =
+            crate::converters::input::delimited_input(input, self.delimiter, context, &mut rest)?;
+        let mut reader = CsvReader::with_delimiter(input, delimiter);
         let sheet_name = context.options.sheet.as_deref().unwrap_or("Sheet1");
         let mut writer = XlsxWriter::new(output, sheet_name)?;
         let mut record = Record::new();
