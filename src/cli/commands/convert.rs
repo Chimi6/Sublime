@@ -12,7 +12,9 @@ use crate::format::{self, Format};
 use crate::planner::{self, PlanOptions};
 use crate::registry;
 
-const SNIFF_SIZE: usize = 64;
+/// Enough for every magic: an OpenDocument package's stored `mimetype`
+/// entry ends at its 77th byte.
+const SNIFF_SIZE: usize = 128;
 
 pub fn run(
     args: &ConvertArgs,

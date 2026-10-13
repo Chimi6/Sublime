@@ -72,6 +72,7 @@ pub const NAMES: &[&str] = &[
     "jpeg-pdf",
     "pdf-text",
     "rtf-docx",
+    "odt-docx",
     "yaml-json",
 ];
 

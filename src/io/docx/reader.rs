@@ -94,6 +94,9 @@ pub fn read_docx(bytes: &[u8]) -> Result<Document, DocxError> {
         theme_fonts: [None, None],
         table_style_borders: HashMap::new(),
         after_note_mark: false,
+        section_widths: None,
+        in_body_part: false,
+        table_depth: 0,
     };
     // The theme first: styles name its fonts and colours.
     reader.rels = reader.relationships(&document_part);
@@ -101,6 +104,7 @@ pub fn read_docx(bytes: &[u8]) -> Result<Document, DocxError> {
     reader.read_styles();
     reader.read_numbering();
     reader.read_settings();
+    reader.read_embedded_fonts();
     reader.read_notes("footnotes.xml", "w:footnote");
     reader.read_notes("endnotes.xml", "w:endnote");
     reader.read_comments();
@@ -128,6 +132,20 @@ fn part_directory(part: &str) -> String {
         Some(index) => part[..=index].to_string(),
         None => String::new(),
     }
+}
+
+/// A font key's sixteen bytes (`{00010203-0405-...}`), `None` when it is
+/// missing or all zero (the font is stored as it is).
+fn font_key(text: &str) -> Option<[u8; 16]> {
+    let hex: String = text.chars().filter(char::is_ascii_hexdigit).collect();
+    if hex.len() != 32 {
+        return None;
+    }
+    let mut key = [0u8; 16];
+    for (index, byte) in key.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    (key != [0; 16]).then_some(key)
 }
 
 fn read_text(archive: &ZipArchive<'_>, name: &str) -> Option<String> {
@@ -283,6 +301,15 @@ struct Reader<'a> {
     table_style_borders: HashMap<String, (TableSides, Option<String>)>,
     /// A note mark was just read; the space Word puts after it is not text.
     after_note_mark: bool,
+    /// Each section's text width (page less side margins), read ahead from
+    /// the body's section properties when the first table sized as a share
+    /// of it is met (it is read before its section's properties are).
+    section_widths: Option<Vec<f32>>,
+    /// The body part is being read (not a header, footer, or note part).
+    in_body_part: bool,
+    /// How deep in tables the reader is (a nested table's share is of its
+    /// cell, not the page).
+    table_depth: usize,
 }
 
 impl Reader<'_> {
@@ -548,13 +575,17 @@ impl Reader<'_> {
         while let Some(event) = reader.next() {
             match event {
                 XmlEvent::Start {
-                    name, attributes, ..
+                    name,
+                    attributes,
+                    self_closing,
                 } => match name {
                     "w:name" => style.name = attribute(&attributes, "w:val").map(str::to_string),
                     "w:basedOn" => {
                         style.based_on = attribute(&attributes, "w:val").map(str::to_string);
                     }
-                    "w:pPr" => {
+                    // An empty element (pandoc writes `<w:pPr />`) has no end tag to
+                    // read to.
+                    "w:pPr" if !self_closing => {
                         let header = self.read_paragraph_properties(reader);
                         style.paragraph = header.properties;
                         style.num_id = header
@@ -562,17 +593,17 @@ impl Reader<'_> {
                             .filter(|(id, _)| *id >= 0)
                             .map(|(id, _)| id as usize);
                     }
-                    "w:rPr" => {
+                    "w:rPr" if !self_closing => {
                         let run = self.read_run_properties(reader);
                         style.run = run.properties;
                     }
-                    "w:tblPr" => {
+                    "w:tblPr" if !self_closing => {
                         let (_, borders) = read_table_properties(reader);
                         style.table_borders = Some(borders);
                     }
                     // Conditional formats (first row, banding...) carry their own
                     // table properties; only the style's own count here.
-                    "w:tblStylePr" => skip_element(reader, name),
+                    "w:tblStylePr" if !self_closing => skip_element(reader, name),
                     _ => {}
                 },
                 XmlEvent::End { name: "w:style" } => break,
@@ -844,6 +875,7 @@ impl Reader<'_> {
     // ----- the body -----
 
     fn read_body(&mut self, text: &str) {
+        self.in_body_part = true;
         let mut reader = XmlReader::new(text);
         let mut blocks: Vec<Block> = Vec::new();
         let mut in_body = false;
@@ -916,6 +948,7 @@ impl Reader<'_> {
         if !blocks.is_empty() || self.document.sections.is_empty() {
             self.finish_section(SectionHeader::default(), blocks);
         }
+        self.in_body_part = false;
     }
 
     fn finish_section(&mut self, header: SectionHeader, mut blocks: Vec<Block>) {
@@ -955,7 +988,9 @@ impl Reader<'_> {
                 },
             });
             let floating_before = self.document.floating.len();
+            let in_body = std::mem::replace(&mut self.in_body_part, false);
             let part_blocks = self.read_blocks(&mut reader, root);
+            self.in_body_part = in_body;
             self.page_part = None;
             // Drawings of a variant Word does not show are not shown.
             if !used {
@@ -2010,12 +2045,62 @@ impl Reader<'_> {
         read
     }
 
+    /// The current section's text width, scanning the body's section
+    /// properties the first time it is asked (only documents with tables
+    /// sized by share pay for the scan).
+    fn text_width(&mut self, reader: &XmlReader<'_>) -> Option<f32> {
+        if self.section_widths.is_none() {
+            if !self.in_body_part {
+                return None;
+            }
+            self.section_widths = Some(self.section_widths(reader.text()));
+        }
+        self.section_widths
+            .as_ref()?
+            .get(self.document.sections.len())
+            .copied()
+    }
+
+    /// Each section's text width, in order, from the body's `w:sectPr`
+    /// elements (found by search, not a second parse of the body).
+    fn section_widths(&mut self, text: &str) -> Vec<f32> {
+        let mut widths = Vec::new();
+        let mut from = 0;
+        while let Some(found) = text[from..].find("<w:sectPr") {
+            let start = from + found;
+            from = start + 1;
+            let Some(open_end) = text[start..].find('>').map(|end| start + end + 1) else {
+                break;
+            };
+            // Not `w:sectPrChange`, and not an empty element.
+            let tag = &text[start..open_end];
+            if !matches!(
+                tag.as_bytes().get(9),
+                Some(b'>' | b' ' | b'\t' | b'\n' | b'\r')
+            ) || tag.ends_with("/>")
+            {
+                continue;
+            }
+            let Some(close) = text[open_end..].find("</w:sectPr>") else {
+                break;
+            };
+            let segment = &text[open_end..open_end + close + "</w:sectPr>".len()];
+            let page = self
+                .read_section_properties(&mut XmlReader::new(segment))
+                .page;
+            widths.push(page.width - page.margin_left - page.margin_right);
+        }
+        widths
+    }
+
     fn read_section_properties(&mut self, reader: &mut XmlReader<'_>) -> SectionHeader {
         let mut header = SectionHeader::default();
         while let Some(event) = reader.next() {
             match event {
                 XmlEvent::Start {
-                    name, attributes, ..
+                    name,
+                    attributes,
+                    self_closing,
                 } => match name {
                     "w:headerReference" | "w:footerReference" => {
                         let kind = attribute(&attributes, "w:type").unwrap_or("default");
@@ -2079,7 +2164,7 @@ impl Reader<'_> {
                         header.continuous = attribute(&attributes, "w:val") == Some("continuous");
                     }
                     "w:titlePg" => header.title_page = toggle(attribute(&attributes, "w:val")),
-                    "w:sectPrChange" => skip_element(reader, name),
+                    "w:sectPrChange" if !self_closing => skip_element(reader, name),
                     _ => {}
                 },
                 XmlEvent::End { name: "w:sectPr" } => break,
@@ -2093,6 +2178,13 @@ impl Reader<'_> {
 
     #[inline(never)]
     fn read_table(&mut self, reader: &mut XmlReader<'_>) -> Table {
+        self.table_depth += 1;
+        let table = self.read_table_inner(reader);
+        self.table_depth -= 1;
+        table
+    }
+
+    fn read_table_inner(&mut self, reader: &mut XmlReader<'_>) -> Table {
         let mut table = Table::default();
         let mut table_style: Option<String> = None;
         let mut own_borders = TableSides::default();
@@ -2185,6 +2277,23 @@ impl Reader<'_> {
             .unwrap_or(0);
         if used > 0 && used < table.columns.len() {
             table.columns.truncate(used);
+        }
+        // A table sized as a share of the text width has its grid scaled to
+        // it, as Word lays it out (pandoc writes a 100% table over an even
+        // grid narrower than the page).
+        let grid: f32 = table.columns.iter().sum();
+        if let (Some(share), 1) = (sides.share, self.table_depth)
+            && grid > 0.0
+            && share > 0.0
+            && let Some(text_width) = self.text_width(reader)
+        {
+            let target = text_width * share.min(1.0);
+            if (target - grid).abs() > 1.0 {
+                let scale = target / grid;
+                for column in &mut table.columns {
+                    *column *= scale;
+                }
+            }
         }
         table
     }
@@ -3044,6 +3153,70 @@ impl Reader<'_> {
                 crop: None,
             }),
             _ => Pict::None,
+        }
+    }
+
+    /// The fonts `fontTable.xml` embeds (`w:embedRegular` and its kin),
+    /// unobfuscated with each one's key (ECMA-376 part 1, 17.8.1).
+    fn read_embedded_fonts(&mut self) {
+        let Some(relationship) = self
+            .rels
+            .iter()
+            .find(|relationship| relationship.kind.ends_with("/fontTable"))
+        else {
+            return;
+        };
+        let part = format!("{}{}", self.base, relationship.target);
+        let Some(text) = self.part_text(&part) else {
+            return;
+        };
+        let font_rels = self.relationships(&part);
+        let directory = part_directory(&part).to_string();
+        let mut reader = XmlReader::new(&text);
+        let mut family = String::new();
+        while let Some(event) = reader.next() {
+            if let XmlEvent::Start {
+                name, attributes, ..
+            } = &event
+            {
+                if *name == "w:font" {
+                    family = attribute(attributes, "w:name").unwrap_or("").to_string();
+                    continue;
+                }
+                let (bold, italic) = match *name {
+                    "w:embedRegular" => (false, false),
+                    "w:embedBold" => (true, false),
+                    "w:embedItalic" => (false, true),
+                    "w:embedBoldItalic" => (true, true),
+                    _ => continue,
+                };
+                let Some(target) = attribute(attributes, "r:id")
+                    .and_then(|id| font_rels.iter().find(|relationship| relationship.id == id))
+                    .map(|relationship| format!("{directory}{}", relationship.target))
+                else {
+                    continue;
+                };
+                let Some(entry) = self.archive.find(&target) else {
+                    continue;
+                };
+                let mut bytes = Vec::with_capacity(entry.uncompressed_size as usize);
+                if self.archive.read(entry, &mut bytes).is_err() {
+                    continue;
+                }
+                if let Some(key) = attribute(attributes, "w:fontKey").and_then(font_key) {
+                    // The first 32 bytes are XORed with the key's bytes,
+                    // reversed.
+                    for (index, byte) in bytes.iter_mut().take(32).enumerate() {
+                        *byte ^= key[15 - index % 16];
+                    }
+                }
+                self.document.fonts.push(crate::document::EmbeddedFont {
+                    family: family.clone(),
+                    bold,
+                    italic,
+                    bytes,
+                });
+            }
         }
     }
 
@@ -3925,6 +4098,76 @@ mod tests {
         assert!(framed.y > 792.0 - 36.0 - 20.0 && framed.y < 792.0 - 36.0);
     }
 
+    /// A table stated as a share of the text width is laid out to it, its
+    /// grid scaled; a nested one keeps its grid.
+    #[test]
+    fn a_table_as_a_share_of_the_page_is_scaled_to_it() {
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let cell = |inner: &str| format!("<w:tc><w:p><w:r><w:t>x</w:t></w:r></w:p>{inner}</w:tc>");
+        let nested = format!(
+            r#"<w:tbl><w:tblPr><w:tblW w:type="pct" w:w="5000"/></w:tblPr><w:tblGrid><w:gridCol w:w="1000"/></w:tblGrid><w:tr>{}</w:tr></w:tbl><w:p/>"#,
+            cell("")
+        );
+        let document = format!(
+            r#"<w:document {w}><w:body><w:tbl><w:tblPr><w:tblW w:type="pct" w:w="2500"/></w:tblPr><w:tblGrid><w:gridCol w:w="1440"/><w:gridCol w:w="2880"/></w:tblGrid><w:tr>{}{}</w:tr></w:tbl><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>"#,
+            cell(""),
+            cell(&nested)
+        );
+        let read = read_docx(&package(&document, &format!("<w:styles {w}/>"))).unwrap();
+        let Some(Block::Table(table)) = read.sections[0].blocks.first() else {
+            panic!("a table");
+        };
+        // Half of 468 points, two to one as the grid was.
+        assert!(
+            (table.columns[0] - 78.0).abs() < 0.01,
+            "{:?}",
+            table.columns
+        );
+        assert!(
+            (table.columns[1] - 156.0).abs() < 0.01,
+            "{:?}",
+            table.columns
+        );
+        let inner = table.rows[0].cells[1]
+            .blocks
+            .iter()
+            .find_map(|block| match block {
+                Block::Table(inner) => Some(inner),
+                _ => None,
+            })
+            .expect("the nested table");
+        assert_eq!(inner.columns, [50.0]);
+    }
+
+    /// An empty `<w:pPr />` in a style (pandoc writes them) ends there: it
+    /// once read on into the next style and swallowed Heading 1.
+    #[test]
+    fn empty_style_properties_do_not_swallow_the_next_style() {
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let styles = format!(
+            r#"<w:styles {w}><w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Bibliography"><w:name w:val="Bibliography"/><w:basedOn w:val="Normal"/><w:pPr /><w:rPr /></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr></w:style></w:styles>"#
+        );
+        let document = format!(
+            r#"<w:document {w}><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Title</w:t></w:r></w:p></w:body></w:document>"#
+        );
+        let read = read_docx(&package(&document, &styles)).unwrap();
+        let names: Vec<&str> = read
+            .styles
+            .paragraph
+            .iter()
+            .map(|style| style.name.as_str())
+            .collect();
+        assert_eq!(names, ["Normal", "Bibliography", "heading 1"]);
+        let Some(Block::Paragraph(paragraph)) = read.sections[0].blocks.first() else {
+            panic!("a paragraph");
+        };
+        let style = paragraph.style.expect("a style");
+        assert_eq!(
+            read.styles.paragraph[style].paragraph.outline_level,
+            Some(0)
+        );
+    }
+
     #[test]
     fn form_checkboxes_keep_their_state_as_box_characters() {
         let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
@@ -4402,6 +4645,9 @@ struct TableSides {
     margins: [Option<f32>; 4],
     alignment: Option<Alignment>,
     indent: Option<f32>,
+    /// The table's width as a share of the text width (`w:tblW` of type
+    /// `pct`), which Word lays the grid out to.
+    share: Option<f32>,
 }
 
 impl TableSides {
@@ -4424,6 +4670,7 @@ impl TableSides {
             margins,
             alignment: self.alignment.or(base.alignment),
             indent: self.indent.or(base.indent),
+            share: self.share.or(base.share),
         }
     }
 
@@ -4476,6 +4723,15 @@ fn read_table_properties(reader: &mut XmlReader<'_>) -> (Option<String>, TableSi
                         Some("left" | "start") => Some(Alignment::Left),
                         _ => None,
                     };
+                }
+                "w:tblW" if attribute(&attributes, "w:type") == Some("pct") => {
+                    // Fiftieths of a percent, or a percentage ("100%").
+                    borders.share = attribute(&attributes, "w:w").and_then(|value| {
+                        match value.strip_suffix('%') {
+                            Some(percent) => percent.parse::<f32>().ok().map(|share| share / 100.0),
+                            None => value.parse::<f32>().ok().map(|share| share / 5000.0),
+                        }
+                    });
                 }
                 "w:tblInd" if matches!(attribute(&attributes, "w:type"), None | Some("dxa")) => {
                     borders.indent = attribute(&attributes, "w:w").and_then(twips_to_points);

@@ -28,6 +28,7 @@ use crate::converters::markdown_to_json::MarkdownToJson;
 use crate::converters::markdown_to_pages::MarkdownToPages;
 use crate::converters::markdown_to_text::MarkdownToText;
 use crate::converters::numbers;
+use crate::converters::odt;
 use crate::converters::pages_to_docx::PagesToDocx;
 use crate::converters::pages_to_html::PagesToHtml;
 use crate::converters::pages_to_json::PagesToJson;
@@ -50,7 +51,7 @@ use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 92] = [
+static CONVERTERS: [&dyn Converter; 106] = [
     &csv_to_json::CSV_TO_JSON,
     &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
@@ -87,6 +88,20 @@ static CONVERTERS: [&dyn Converter; 92] = [
     &to_pdf::DOCX_TO_PDF,
     &to_pdf::PAGES_TO_PDF,
     &to_pdf::RTF_TO_PDF,
+    &odt::ODT_TO_DOCX,
+    &odt::ODT_TO_PAGES,
+    &odt::ODT_TO_RTF,
+    &odt::ODT_TO_MARKDOWN,
+    &odt::ODT_TO_HTML,
+    &odt::ODT_TO_TEXT,
+    &to_pdf::ODT_TO_PDF,
+    &odt::DOCX_TO_ODT,
+    &odt::PAGES_TO_ODT,
+    &odt::RTF_TO_ODT,
+    &odt::MARKDOWN_TO_ODT,
+    &odt::HTML_TO_ODT,
+    &odt::TEXT_TO_ODT,
+    &pdf_to_document::PDF_TO_ODT,
     &rtf::RTF_TO_DOCX,
     &rtf::RTF_TO_PAGES,
     &rtf::RTF_TO_MARKDOWN,
@@ -235,6 +250,7 @@ mod tests {
                 "markdown",
                 "markdown-json",
                 "numbers",
+                "odt",
                 "pages",
                 "pages-json",
                 "pam",

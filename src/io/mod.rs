@@ -16,6 +16,7 @@ pub mod json;
 pub mod lzw;
 pub mod markdown;
 pub mod netpbm;
+pub mod odt;
 pub mod orient;
 pub mod pages;
 pub mod pdf;

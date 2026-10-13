@@ -46,6 +46,9 @@ pub struct Document {
     /// The colour the pages are filled with, when not white.
     pub page_color: Option<Color>,
     pub media: Vec<Media>,
+    /// Font files the document carries (Word's and OpenDocument's
+    /// embedded fonts), for fonts the reader's machine may not have.
+    pub fonts: Vec<EmbeddedFont>,
     /// Objects placed on pages rather than in the text flow.
     pub floating: Vec<FloatingObject>,
     /// Every run's text, in reading order; runs hold spans of it.
@@ -759,6 +762,15 @@ pub struct Comment {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Note {
     pub blocks: Vec<Block>,
+}
+
+/// One face of an embedded font family: a TrueType or OpenType file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmbeddedFont {
+    pub family: String,
+    pub bold: bool,
+    pub italic: bool,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

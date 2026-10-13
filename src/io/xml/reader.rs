@@ -30,6 +30,11 @@ impl<'a> XmlReader<'a> {
         XmlReader { text, position: 0 }
     }
 
+    /// The whole text being read.
+    pub fn text(&self) -> &'a str {
+        self.text
+    }
+
     /// Text between the next start tag of `name` and its end tag, with
     /// nested elements' text concatenated.
     pub fn attribute<'e>(event: &'e XmlEvent<'a>, name: &str) -> Option<&'e str> {

@@ -275,6 +275,21 @@ pub static DOCX: Format = Format {
     write_options: &[Setting::Effort],
 };
 
+/// An OpenDocument package's first entry is its media type, stored: the
+/// ZIP local header (30 bytes, its fields varying) then `mimetype` and
+/// the type.
+pub static ODT: Format = Format {
+    id: "odt",
+    display_name: "OpenDocument text",
+    extensions: &["odt"],
+    magic: Some(
+        b"PK\x03\x04??????????????????????????mimetypeapplication/vnd.oasis.opendocument.text",
+    ),
+    category: Category::Document,
+    read_options: &[],
+    write_options: &[Setting::Effort],
+};
+
 pub static RTF: Format = Format {
     id: "rtf",
     display_name: "Rich Text Format",
