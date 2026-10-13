@@ -1,6 +1,6 @@
 # Word -> Markdown
 
-**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
+**Latest** (2026-10-13, the `odt` branch with the Word reader fixes: every line PASSES; 110.2 MB/s on the styled shape and 147.0 on prose, within 1% of `main` measured side by side)
 
 ## Purpose
 
@@ -51,6 +51,26 @@ Word files with larger style sheets and more properties per run will
 read somewhat slower; repeated text makes the per-file-byte row read low.
 
 ## Results
+
+### 2026-10-13, the `odt` branch (Word reader fixes)
+
+The reader now reads every style after an empty `<w:pPr />` and scales
+tables sized as a share of the page. Measured side by side with `main`'s
+binary on the same inputs (median of nine runs), it is within 1%; the
+section scan that would have cost 6 to 9% runs only for documents with
+such tables.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| docx -> markdown, styled (6.0 MB uncompressed): throughput (MB/s of uncompressed input) | 110.2 | 1.2 (pandoc) | PASS |
+| docx -> markdown, styled (0.2 MB file): throughput (MB/s of file bytes) [extra] | 3.7 | recorded | n/a |
+| docx -> markdown, styled: peak memory (MB) | 24.2 | 821.8 (pandoc) | PASS |
+| docx -> markdown, prose (7.5 MB uncompressed): throughput (MB/s of uncompressed input) | 147.0 | 1.1 (pandoc) | PASS |
+| docx -> markdown, prose (0.2 MB file): throughput (MB/s of file bytes) [extra] | 4.3 | recorded | n/a |
+| docx -> markdown, prose: peak memory (MB) | 27.8 | 1331.9 (pandoc) | PASS |
+
+commit: f755aba
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
 
 ### 2026-09-27, 0.24.0 release
 
