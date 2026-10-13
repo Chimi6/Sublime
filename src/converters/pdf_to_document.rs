@@ -23,6 +23,7 @@ enum Target {
     Markdown,
     Html,
     Docx,
+    Odt,
 }
 
 pub struct PdfToDocument {
@@ -47,6 +48,12 @@ pub static PDF_TO_DOCX: PdfToDocument = PdfToDocument {
     name: "pdf-to-docx",
     to: &formats::DOCX,
     target: Target::Docx,
+};
+
+pub static PDF_TO_ODT: PdfToDocument = PdfToDocument {
+    name: "pdf-to-odt",
+    to: &formats::ODT,
+    target: Target::Odt,
 };
 
 impl Converter for PdfToDocument {
@@ -106,6 +113,18 @@ impl Converter for PdfToDocument {
                     .map_err(malformed)?;
                 let document = builder.finish_streaming()?;
                 stream.finish(&document)?;
+                notes
+            }
+            Target::Odt => {
+                let mut builder = DocumentBuilder::new();
+                let notes = pdf_events(&bytes, page, &mut builder as &mut dyn EventSink<'_>)
+                    .map_err(malformed)?;
+                let document = builder.finish();
+                crate::io::odt::write_odt(
+                    &document,
+                    &mut *output,
+                    context.options.effort.unwrap_or_default(),
+                )?;
                 notes
             }
         };

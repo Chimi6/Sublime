@@ -5,7 +5,7 @@
 use std::io::{self, Write};
 
 use super::crc32::{crc32, crc32_update};
-use crate::io::deflate::{Level, deflate, deflate_part};
+use crate::io::deflate::{Level, deflate_part};
 
 const LOCAL_SIGNATURE: u32 = 0x0403_4B50;
 const CENTRAL_SIGNATURE: u32 = 0x0201_4B50;
@@ -180,7 +180,11 @@ impl<W: Write> ZipWriter<W> {
             return self.end_deflated();
         }
         let mut compressed = Vec::with_capacity(data.len() / 2);
-        deflate(data, &mut compressed);
+        crate::io::deflate::compress::deflate_with(
+            data,
+            &mut compressed,
+            Level::for_effort(Level::Default, self.effort),
+        );
         if compressed.len() < data.len() {
             self.add_entry(name, data, METHOD_DEFLATE, &compressed)
         } else {

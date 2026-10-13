@@ -6,11 +6,19 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Fixed
+
+- Word files whose styles hold an empty `<w:pPr />`, `<w:rPr />`, or `<w:tblStylePr />` (pandoc's and Apple's exports write them) misread the styles after it: pandoc's Heading 1 read as plain text. A table sized as a share of the page (`w:tblW` of type `pct`, as pandoc writes every table) is now laid out to that width instead of its narrower grid.
+
 ### Changed
 
 - HEIC encoding at the default effort is faster than x265 (`heif-enc`) on large photographs and still smaller at equal quality: balanced takes what fast was (0.8 to 1.6% more bytes than max on held-out photographs, 0.7 to 2.4% fewer than x265), and fast cuts deeper (a quarter faster than x265, smaller but for a tie at SSIM). Small pictures keep the full search at the default. 8% less work at every effort for the same bytes (the mode pass, rate tables, and RDOQ's first pass rebuilt nothing per block they could keep; chroma's references are built once per CU).
 
 ### Added
+
+- OpenDocument Text (`.odt`) both ways, to and from every document format (Word, Pages, RTF, Markdown, HTML, text, and PDF): styles, run and paragraph formatting, lists with their restarts, tables with merged cells, sections with page setup, columns, headers, and footers, page colour, links, page fields, footnotes, comment threads, tracked changes, pictures, text boxes, formulas (MathML), and embedded fonts. On 89 Word documents rendered by LibreOffice, Word -> ODT matches the reference page count on 82 (pandoc 55) at word recall 0.957 (pandoc 0.840), and LibreOffice's ODT -> Word on 76 (pandoc 53) at 0.974 (pandoc 0.887). Benchmark pair `odt-docx` passes every line against pandoc, at 77 to 122 times its speed (`DOCS/benchmarks/odt-docx.md`); notes in `DOCS/formats/odt.md`.
+
+- Embedded fonts carry through the document model: Word's (`w:embedRegular` and its kin, de-obfuscated) are read and written back, and reach ODT, so a Google Docs export keeps its typeface in LibreOffice.
 
 - `--effort max` for every deflate writer: PNG (6 to 10% smaller on graphics and screenshots), TIFF (10% on a stock photograph), ICO, PDF (2.5 to 3%), Word (39 to 40% on long documents), and Excel (29 to 30% on large sheets), at 1.3 to 8 times the time; each part deflated three ways and the smallest kept, so max is never larger. `--effort fast` is the same as balanced for these (deflate's default is near the fast end already). Balanced output is unchanged byte for byte.
 

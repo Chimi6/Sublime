@@ -217,8 +217,23 @@ fn write_parts<W: io::Write>(
     if writer.needs_settings(document) {
         zip.add_deflated(
             "word/settings.xml",
-            settings_xml(writer.even_pages, document.page_color.is_some()).as_bytes(),
+            settings_xml(
+                writer.even_pages,
+                document.page_color.is_some(),
+                !document.fonts.is_empty(),
+            )
+            .as_bytes(),
         )?;
+    }
+    if !document.fonts.is_empty() {
+        // Embedded fonts as Google Docs writes them: each face a TrueType
+        // file under a zero key (stored as it is).
+        let (table, relationships) = font_table_xml(document);
+        zip.add_deflated("word/fontTable.xml", table.as_bytes())?;
+        zip.add_deflated("word/_rels/fontTable.xml.rels", relationships.as_bytes())?;
+        for (index, font) in document.fonts.iter().enumerate() {
+            zip.add_deflated(&format!("word/fonts/font{}.ttf", index + 1), &font.bytes)?;
+        }
     }
     if !document.comments.is_empty() {
         zip.add_deflated("word/comments.xml", comments_xml(document).as_bytes())?;
@@ -1305,6 +1320,12 @@ impl DocxWriter {
                     "<Relationship Id=\"rId5\" Type=\"{REL}/comments\" Target=\"comments.xml\"/><Relationship Id=\"rId6\" Type=\"http://schemas.microsoft.com/office/2011/relationships/commentsExtended\" Target=\"commentsExtended.xml\"/>"
                 );
             }
+            if !document.fonts.is_empty() {
+                let _ = write!(
+                    xml,
+                    "<Relationship Id=\"rId7\" Type=\"{REL}/fontTable\" Target=\"fontTable.xml\"/>"
+                );
+            }
         }
         for (index, relationship) in relationships.iter().enumerate() {
             let kind = match relationship.kind {
@@ -1358,6 +1379,10 @@ impl DocxWriter {
         }
         if self.needs_settings(document) {
             xml.push_str("<Override PartName=\"/word/settings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml\"/>");
+        }
+        if !document.fonts.is_empty() {
+            xml.push_str("<Default Extension=\"ttf\" ContentType=\"application/x-font-ttf\"/>");
+            xml.push_str("<Override PartName=\"/word/fontTable.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml\"/>");
         }
         if !document.comments.is_empty() {
             xml.push_str("<Override PartName=\"/word/comments.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml\"/>");
@@ -1630,11 +1655,62 @@ fn root_relationships() -> String {
 
 /// The settings part: odd and even pages' own headers, and showing the page
 /// colour (Word draws it only when told to).
-fn settings_xml(even_pages: bool, page_color: bool) -> String {
+/// The font table of a document's embedded fonts, and its relationships.
+fn font_table_xml(document: &Document) -> (String, String) {
+    let mut table = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:fonts {W} xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+    );
+    let mut relationships = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"{PACKAGE_REL}\">"
+    );
+    let mut families: Vec<&str> = Vec::new();
+    for font in &document.fonts {
+        if !families.contains(&font.family.as_str()) {
+            families.push(&font.family);
+        }
+    }
+    for family in families {
+        table.push_str("<w:font w:name=\"");
+        escape_attribute(&mut table, family);
+        table.push_str("\">");
+        for (index, font) in document.fonts.iter().enumerate() {
+            if font.family != family {
+                continue;
+            }
+            let element = match (font.bold, font.italic) {
+                (false, false) => "w:embedRegular",
+                (true, false) => "w:embedBold",
+                (false, true) => "w:embedItalic",
+                (true, true) => "w:embedBoldItalic",
+            };
+            let _ = write!(
+                table,
+                "<{element} w:fontKey=\"{{00000000-0000-0000-0000-000000000000}}\" r:id=\"rIdF{0}\" w:subsetted=\"0\"/>",
+                index + 1
+            );
+            let _ = write!(
+                relationships,
+                "<Relationship Id=\"rIdF{0}\" Type=\"{REL}/font\" Target=\"fonts/font{0}.ttf\"/>",
+                index + 1
+            );
+        }
+        table.push_str("</w:font>");
+    }
+    table.push_str("</w:fonts>");
+    relationships.push_str("</Relationships>");
+    (table, relationships)
+}
+
+fn settings_xml(even_pages: bool, page_color: bool, embedded_fonts: bool) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:settings {W}>{}{}<w:compat><w:compatSetting w:name=\"compatibilityMode\" w:uri=\"http://schemas.microsoft.com/office/word\" w:val=\"15\"/></w:compat></w:settings>",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:settings {W}>{}{}{}<w:compat><w:compatSetting w:name=\"compatibilityMode\" w:uri=\"http://schemas.microsoft.com/office/word\" w:val=\"15\"/></w:compat></w:settings>",
         if page_color {
             "<w:displayBackgroundShape/>"
+        } else {
+            ""
+        },
+        if embedded_fonts {
+            "<w:embedTrueTypeFonts/>"
         } else {
             ""
         },

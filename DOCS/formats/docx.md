@@ -44,6 +44,7 @@ in as text).
 | `styles.xml` | document defaults (`docDefaults`), paragraph and character styles with `basedOn` chains, numbering styles |
 | `numbering.xml` | abstract numberings (levels: format, text, indents, start), `numStyleLink`/`styleLink` indirection, `num` instances with level-0 start overrides |
 | `settings.xml` | `evenAndOddHeaders` only |
+| `fontTable.xml`, `fonts/*` | embedded fonts (`w:embedRegular`, `w:embedBold`, `w:embedItalic`, `w:embedBoldItalic`): each font's file, its first 32 bytes un-XORed with the reversed `w:fontKey` (Word's obfuscation); the writer embeds them unobfuscated (a key of zeros; LibreOffice renders them), with `w:embedTrueTypeFonts` |
 | `footnotes.xml`, `endnotes.xml` | note bodies by id, separators skipped; both become footnotes |
 | `header*.xml`, `footer*.xml` | blocks per section reference (default, first with `titlePg`, even with the setting) |
 | `document.xml` | the body: paragraphs, tables, section properties |

@@ -20,7 +20,9 @@ use crate::format::{self, Format, FormatError};
 use crate::planner::{self, Plan, PlanOptions};
 use crate::registry;
 
-const SNIFF_SIZE: usize = 64;
+/// Enough for every magic: an OpenDocument package's stored `mimetype`
+/// entry ends at its 77th byte.
+const SNIFF_SIZE: usize = 128;
 
 /// One file to convert.
 struct Job {

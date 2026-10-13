@@ -31,6 +31,7 @@ enum Source {
     Docx,
     Pages,
     Rtf,
+    Odt,
 }
 
 pub struct ToPdf {
@@ -67,6 +68,12 @@ pub static PAGES_TO_PDF: ToPdf = ToPdf {
     name: "pages-to-pdf",
     from: &formats::PAGES,
     source: Source::Pages,
+};
+
+pub static ODT_TO_PDF: ToPdf = ToPdf {
+    name: "odt-to-pdf",
+    from: &formats::ODT,
+    source: Source::Odt,
 };
 
 pub static RTF_TO_PDF: ToPdf = ToPdf {
@@ -138,7 +145,7 @@ impl Converter for ToPdf {
                 images.report(context);
                 notes
             }
-            Source::Docx | Source::Pages | Source::Rtf => {
+            Source::Docx | Source::Pages | Source::Rtf | Source::Odt => {
                 let model = match self.source {
                     Source::Docx => {
                         let mut bytes = Vec::new();
@@ -155,6 +162,7 @@ impl Converter for ToPdf {
                             Package::read_scope(&bytes, Scope::Document).map_err(package_error)?;
                         read_document(&package)
                     }
+                    Source::Odt => crate::converters::odt::read_input(&mut input)?,
                     _ => crate::converters::rtf::read_input(&mut input)?,
                 };
                 let mut images = ModelImages::new(&model);
