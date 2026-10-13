@@ -94,7 +94,8 @@ pub fn read_docx(bytes: &[u8]) -> Result<Document, DocxError> {
         theme_fonts: [None, None],
         table_style_borders: HashMap::new(),
         after_note_mark: false,
-        section_widths: Vec::new(),
+        section_widths: None,
+        in_body_part: false,
         table_depth: 0,
     };
     // The theme first: styles name its fonts and colours.
@@ -301,9 +302,11 @@ struct Reader<'a> {
     /// A note mark was just read; the space Word puts after it is not text.
     after_note_mark: bool,
     /// Each section's text width (page less side margins), read ahead from
-    /// the body's section properties: a table sized as a share of it is
-    /// read before its section's properties are.
-    section_widths: Vec<f32>,
+    /// the body's section properties when the first table sized as a share
+    /// of it is met (it is read before its section's properties are).
+    section_widths: Option<Vec<f32>>,
+    /// The body part is being read (not a header, footer, or note part).
+    in_body_part: bool,
     /// How deep in tables the reader is (a nested table's share is of its
     /// cell, not the page).
     table_depth: usize,
@@ -872,7 +875,7 @@ impl Reader<'_> {
     // ----- the body -----
 
     fn read_body(&mut self, text: &str) {
-        self.section_widths = self.section_widths(text);
+        self.in_body_part = true;
         let mut reader = XmlReader::new(text);
         let mut blocks: Vec<Block> = Vec::new();
         let mut in_body = false;
@@ -945,6 +948,7 @@ impl Reader<'_> {
         if !blocks.is_empty() || self.document.sections.is_empty() {
             self.finish_section(SectionHeader::default(), blocks);
         }
+        self.in_body_part = false;
     }
 
     fn finish_section(&mut self, header: SectionHeader, mut blocks: Vec<Block>) {
@@ -984,7 +988,9 @@ impl Reader<'_> {
                 },
             });
             let floating_before = self.document.floating.len();
+            let in_body = std::mem::replace(&mut self.in_body_part, false);
             let part_blocks = self.read_blocks(&mut reader, root);
+            self.in_body_part = in_body;
             self.page_part = None;
             // Drawings of a variant Word does not show are not shown.
             if !used {
@@ -2039,6 +2045,22 @@ impl Reader<'_> {
         read
     }
 
+    /// The current section's text width, scanning the body's section
+    /// properties the first time it is asked (only documents with tables
+    /// sized by share pay for the scan).
+    fn text_width(&mut self, reader: &XmlReader<'_>) -> Option<f32> {
+        if self.section_widths.is_none() {
+            if !self.in_body_part {
+                return None;
+            }
+            self.section_widths = Some(self.section_widths(reader.text()));
+        }
+        self.section_widths
+            .as_ref()?
+            .get(self.document.sections.len())
+            .copied()
+    }
+
     /// Each section's text width, in order, from the body's `w:sectPr`
     /// elements (found by search, not a second parse of the body).
     fn section_widths(&mut self, text: &str) -> Vec<f32> {
@@ -2260,13 +2282,10 @@ impl Reader<'_> {
         // it, as Word lays it out (pandoc writes a 100% table over an even
         // grid narrower than the page).
         let grid: f32 = table.columns.iter().sum();
-        let text_width = self
-            .section_widths
-            .get(self.document.sections.len())
-            .copied();
-        if let (Some(share), Some(text_width), 1) = (sides.share, text_width, self.table_depth)
+        if let (Some(share), 1) = (sides.share, self.table_depth)
             && grid > 0.0
             && share > 0.0
+            && let Some(text_width) = self.text_width(reader)
         {
             let target = text_width * share.min(1.0);
             if (target - grid).abs() > 1.0 {
