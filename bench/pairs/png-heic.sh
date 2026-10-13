@@ -200,9 +200,9 @@ efforts() {
       "$sublime" -q convert "$png" "$data/out-effort-ours.heic" --effort "$effort"
       seconds="$(echo "$seconds + $(date +%s.%N) - $start" | bc -l)"
     done
-    # Fast is the pass line; balanced and max buy size with time.
+    # The default and fast are pass lines; max buys size with time.
     local result="context"
-    [ "$effort" = fast ] && result="$(pass "$(echo "$seconds <= $reference" | bc -l)")"
+    [ "$effort" = max ] || result="$(pass "$(echo "$seconds <= $reference" | bc -l)")"
     row "png -> heic, 12 photographs of 4032 pixels (quality 50, --effort $effort): throughput (MB/s of pixels)" "$(mbps "$pixels" "$seconds")" "$(mbps "$pixels" "$reference")" "n/a" "$result"
   done
 }

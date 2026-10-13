@@ -141,7 +141,9 @@ pub struct Picture<'s> {
     pub skip_trials: bool,
     /// The references of the block whose modes are being tried: the same
     /// for each mode, as nothing outside the block changes meanwhile.
-    pub neighbours: Option<((usize, usize, usize, usize), Neighbours)>,
+    /// Each component's references of the block being searched, by its
+    /// (x, y, size), while its modes are compared (and none else).
+    pub neighbours: [Option<CachedNeighbours>; 3],
 }
 
 const MODES: u32 = 35;
@@ -265,12 +267,15 @@ impl Picture<'_> {
         let mut known = [false; intra::LINE];
         // Availability a 4x4 luma unit at a time: 4 samples, or 2 chroma.
         let step = 4 >> shift;
+        // The block's own place in coding order, once for every unit.
+        let own = self.z_order(luma_x, luma_y);
         let usable = |sx: isize, sy: isize| -> bool {
-            sx >= 0
-                && sy >= 0
-                && (sx as usize) < plane.width
-                && (sy as usize) < plane_height
-                && self.available(luma_x, luma_y, sx << shift, sy << shift)
+            sx >= 0 && sy >= 0 && (sx as usize) < plane.width && (sy as usize) < plane_height && {
+                let (nx, ny) = ((sx as usize) << shift, (sy as usize) << shift);
+                nx < self.settings.coded_width
+                    && ny < self.settings.coded_height
+                    && self.z_order(nx, ny) < own
+            }
         };
         // The left column, bottom up: line[0] is p[-1][2n-1].
         let mut k = 0;
@@ -329,6 +334,9 @@ impl Clone for Neighbours {
         }
     }
 }
+
+/// A block's references and its (x, y, size).
+pub type CachedNeighbours = ((usize, usize, usize), Neighbours);
 
 impl Neighbours {
     fn of(picture: &Picture<'_>, component: usize, x: usize, y: usize, n: usize) -> Neighbours {
@@ -586,11 +594,9 @@ impl Picture<'_> {
         ] {
             buffer.resize(32 * 32, 0);
         }
-        let key = (component, x, y, n);
-        let cached = self
-            .neighbours
+        let cached = self.neighbours[component]
             .as_ref()
-            .filter(|(cached, _)| *cached == key)
+            .filter(|(cached, _)| *cached == (x, y, n))
             .map(|(_, neighbours)| neighbours.clone());
         let neighbours = cached.unwrap_or_else(|| Neighbours::of(self, component, x, y, n));
         neighbours.predict(
@@ -967,7 +973,18 @@ impl Picture<'_> {
     ) -> (Cu, u64) {
         let size = 1usize << log2;
         self.mark_units(x, y, size, depth, None);
-        self.rates = Some(super::rdoq::Rates::of(contexts));
+        // The CU's luma blocks run from its size down its transform
+        // tree's depth (4x4 at least), chroma's a size below each.
+        let deepest = log2.saturating_sub(self.settings.transform_depth).max(2);
+        let chroma_top = log2.saturating_sub(1).max(2);
+        let chroma_deepest = log2
+            .saturating_sub(1 + self.settings.transform_depth)
+            .max(2);
+        self.rates = Some(super::rdoq::Rates::of_sizes(
+            contexts,
+            deepest..=log2,
+            chroma_deepest..=chroma_top,
+        ));
         self.block_contexts = Some(contexts.clone());
         // Whole.
         let (whole_cost, whole_mode, whole_tree, whole_luma) =
@@ -1121,7 +1138,7 @@ impl Picture<'_> {
         };
         // Rough: every mode's SATD.
         let neighbours = Neighbours::of(self, 0, x, y, n);
-        self.neighbours = Some(((0, x, y, n), neighbours.clone()));
+        self.neighbours[0] = Some(((x, y, n), neighbours.clone()));
         let mut source = [0i32; 32 * 32];
         let plane = &self.source[0];
         for row in 0..n {
@@ -1136,42 +1153,55 @@ impl Picture<'_> {
                 + self.level.lambda_satd * mode_bits(mode);
             (cost, mode)
         };
-        let mut rough: Vec<(f64, u32)> = match self.settings.search.coarse_modes {
-            None => (0..MODES).map(&mut score).collect(),
+        // Scores on the stack (at most the 35 modes): this runs for every
+        // block of every candidate size.
+        let mut rough = [(0.0f64, 0u32); MODES as usize];
+        let mut scored = 0usize;
+        match self.settings.search.coarse_modes {
+            None => {
+                for mode in 0..MODES {
+                    rough[scored] = score(mode);
+                    scored += 1;
+                }
+            }
             Some(seeds) => {
                 // Planar, DC, every fourth angle, and the most probable
                 // modes; then two and one either side of the best angles.
                 let mut seen = [false; MODES as usize];
-                let mut rough = Vec::with_capacity(20);
                 let first = [0u32, 1]
                     .into_iter()
                     .chain((2..MODES).step_by(4))
                     .chain(mpm.iter().copied());
                 for mode in first {
                     if !std::mem::replace(&mut seen[mode as usize], true) {
-                        rough.push(score(mode));
+                        rough[scored] = score(mode);
+                        scored += 1;
                     }
                 }
                 for step in [2i32, 1] {
-                    let mut angles: Vec<(f64, u32)> = rough
-                        .iter()
-                        .copied()
-                        .filter(|&(_, mode)| mode >= 2)
-                        .collect();
-                    angles.sort_by(|a, b| a.0.total_cmp(&b.0));
-                    for &(_, mode) in angles.iter().take(seeds) {
+                    let mut angles = [(0.0f64, 0u32); MODES as usize];
+                    let mut count = 0usize;
+                    for &(cost, mode) in &rough[..scored] {
+                        if mode >= 2 {
+                            angles[count] = (cost, mode);
+                            count += 1;
+                        }
+                    }
+                    angles[..count].sort_by(|a, b| a.0.total_cmp(&b.0));
+                    for &(_, mode) in angles[..count].iter().take(seeds) {
                         for next in [mode as i32 - step, mode as i32 + step] {
                             if (2..MODES as i32).contains(&next)
                                 && !std::mem::replace(&mut seen[next as usize], true)
                             {
-                                rough.push(score(next as u32));
+                                rough[scored] = score(next as u32);
+                                scored += 1;
                             }
                         }
                     }
                 }
-                rough
             }
-        };
+        }
+        let rough = &mut rough[..scored];
         rough.sort_by(|a, b| a.0.total_cmp(&b.0));
         let count = self.settings.search.candidates[log2 as usize - 2];
         let mut candidates: Vec<u32> = rough.iter().take(count).map(|&(_, mode)| mode).collect();
@@ -1252,7 +1282,7 @@ impl Picture<'_> {
         let (mut cost, mode, mut tree, mut distortion, placed, after, mode_bits) =
             best.expect("a mode was tried");
         self.restore(0, x, y, n, &placed);
-        self.neighbours = None;
+        self.neighbours[0] = None;
         if skip_after {
             self.skip_trials = true;
             let chosen = self.save(0, x, y, n);
@@ -1419,6 +1449,11 @@ impl Picture<'_> {
     ) -> (u32, u32, u64) {
         let (cx, cy, size) = (x / 2, y / 2, (1usize << log2) / 2);
         let saved = [self.save(1, cx, cy, size), self.save(2, cx, cy, size)];
+        // A block's references are the same for every mode tried.
+        for component in [1, 2] {
+            let neighbours = Neighbours::of(self, component, cx, cy, size);
+            self.neighbours[component] = Some(((cx, cy, size), neighbours));
+        }
         // Chroma 4x4 blocks try transform skip once the mode is chosen.
         let skip_after = self.settings.transform_skip && log2 == 3;
         if skip_after {
@@ -1471,6 +1506,8 @@ impl Picture<'_> {
             }
         }
         place_chroma(tree, log2, &mut blocks.into_iter());
+        self.neighbours[1] = None;
+        self.neighbours[2] = None;
         (code, mode, distortion)
     }
 

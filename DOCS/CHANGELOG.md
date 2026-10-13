@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Changed
+
+- HEIC encoding at the default effort is faster than x265 (`heif-enc`) on large photographs and still smaller at equal quality: balanced takes what fast was (0.8 to 1.6% more bytes than max on held-out photographs, 0.7 to 2.4% fewer than x265), and fast cuts deeper (a quarter faster than x265, smaller but for a tie at SSIM). Small pictures keep the full search at the default. 8% less work at every effort for the same bytes (the mode pass, rate tables, and RDOQ's first pass rebuilt nothing per block they could keep; chroma's references are built once per CU).
+
 ### Added
 
 - `--effort max` for every deflate writer: PNG (6 to 10% smaller on graphics and screenshots), TIFF (10% on a stock photograph), ICO, PDF (2.5 to 3%), Word (39 to 40% on long documents), and Excel (29 to 30% on large sheets), at 1.3 to 8 times the time; each part deflated three ways and the smallest kept, so max is never larger. `--effort fast` is the same as balanced for these (deflate's default is near the fast end already). Balanced output is unchanged byte for byte.

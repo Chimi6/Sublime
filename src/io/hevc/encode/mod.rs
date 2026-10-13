@@ -45,11 +45,12 @@ pub struct Search {
 impl Search {
     /// Measured against max on photographs held out from the tuning (20
     /// from CLIC 2020, 12 of 4032 pixels; BD-rate over luma PSNR, SSIM,
-    /// RGB PSNR, SSIMULACRA2): balanced 0.5 to 0.9% larger in 58% of the
-    /// work, fast 0.8 to 1.6% larger in 41% (x265's speed, as heif-enc
-    /// runs it, on 12-megapixel photographs). A small picture (16-pixel
-    /// CTBs) codes in less time than x265's at max already, so balanced
-    /// searches it in full.
+    /// RGB PSNR, SSIMULACRA2) and against x265 as heif-enc runs it on the
+    /// 12: balanced 0.8 to 1.6% larger than max and a little faster than
+    /// x265, still smaller than it; fast 2 to 3.5% larger than max and a
+    /// quarter faster than x265, smaller than it by every measure but at
+    /// times SSIM. A small picture (16-pixel CTBs) codes faster than
+    /// x265's at max already, so balanced searches it in full.
     pub fn for_effort(effort: Effort, small: bool) -> Search {
         let effort = match effort {
             Effort::Balanced if small => Effort::Max,
@@ -64,18 +65,18 @@ impl Search {
                 flat_cost: [0.0, 0.0],
             },
             Effort::Balanced => Search {
-                candidates: [6, 6, 3, 3],
-                first_pass: 1,
-                split_small_transforms: false,
-                coarse_modes: Some(1),
-                flat_cost: [0.0, 0.0],
-            },
-            Effort::Fast => Search {
                 candidates: [4, 4, 3, 3],
                 first_pass: 1,
                 split_small_transforms: false,
                 coarse_modes: Some(1),
                 flat_cost: [15000.0, 12000.0],
+            },
+            Effort::Fast => Search {
+                candidates: [3, 3, 2, 2],
+                first_pass: 1,
+                split_small_transforms: false,
+                coarse_modes: Some(1),
+                flat_cost: [25000.0, 20000.0],
             },
         }
     }
@@ -317,7 +318,7 @@ impl<'p> Wavefront<'p> {
             block_contexts: None,
             rates: None,
             skip_trials: true,
-            neighbours: None,
+            neighbours: [None, None, None],
         };
         let mut row = Row {
             picture,
