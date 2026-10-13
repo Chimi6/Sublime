@@ -157,11 +157,11 @@ as HM's), at `--effort max`:
 on 21 CLIC photographs and then checked on 32 held out (the other 20 of
 CLIC's validation set and 12 photographs of 4032 pixels):
 
-| Effort | Search | Work | Bytes against max (held out) |
+| Effort | Search | Bytes against max (held out) | Against x265 (held out) |
 |---|---|---|---|
-| `max` | as above | 100% | 0 |
-| `balanced` (default) | 6, 6, 3, 3 candidates, each first coded whole and the best one's transform tree searched; 8x8 CUs' transforms not split (their 4x4 prediction blocks still tried); the SATD pass over every fourth angle and refined around the best | 58% | +0.5 to +0.9% |
-| `fast` | as balanced with 4, 4, 3, 3 candidates, and flat 16x16 and 32x32 CUs (cost per sample under 15000 and 12000 lambdas) not tried smaller | 41% | +0.8 to +1.6% |
+| `max` | as above | 0 | 2 to 4% smaller |
+| `balanced` (default) | 4, 4, 3, 3 candidates, each first coded whole and the best one's transform tree searched; 8x8 CUs' transforms not split (their 4x4 prediction blocks still tried); the SATD pass over every fourth angle and refined around the best; flat 16x16 and 32x32 CUs (cost per sample under 15000 and 12000 lambdas) not tried smaller | +0.8 to +1.6% | 0.7 to 2.4% smaller, and faster |
+| `fast` | as balanced with 3, 3, 2, 2 candidates and the flat lines at 25000 and 20000 | +1.4 to +2.6% | 0.7 to 2.0% smaller but for SSIM (a tie), and a quarter faster |
 
 A small picture (16-pixel CTBs) codes faster than x265 at max already,
 so balanced searches it in full; fast cuts it as it does a large one.
@@ -198,14 +198,14 @@ hardware decoder, is behind on every line but the 36-megapixel stock
 grid to JPEG (430 against 529 MB/s, 66 against 42 MB).
 
 Writing: `DOCS/benchmarks/png-heic.md` has the pair, against libheif's
-`heif-enc` (x265, slow preset). At the default effort files are smaller
-at equal quality by every measure (PSNR of luma and of RGB, SSIM,
-SSIMULACRA2) on 12 photographs of 4032 pixels and on 32 held out from
-the tuning (1 to 2.5%), and by PSNR and SSIM on Kodak's 24, but larger
-by SSIMULACRA2 there (+1.0%). `--effort fast` codes the 12 photographs at
-x265's speed, still smaller; balanced takes 17% longer, max 1.9 times.
-Memory is a fifth to a quarter of x265's. Apple's `sips`, on the
-hardware encoder, is 2 to 15 times faster and 12 to 17% larger.
+`heif-enc` (x265, slow preset). At the default effort the 12 photographs
+of 4032 pixels code faster than x265 (19.3 against 18.7 MB/s) and in
+fewer bytes at equal PSNR of luma and of RGB and at equal SSIMULACRA2
+(1.4 to 1.8% and 0.5%; a tie at SSIM); `--effort fast` is 21% faster and
+max 2 to 4% smaller in half x265's speed. On Kodak's 24, smaller by PSNR
+and SSIM but larger by SSIMULACRA2 (+1.0%). Memory is a fifth to a
+quarter of x265's. Apple's `sips`, on the hardware encoder, is 2 to 15
+times faster and 12 to 17% larger.
 
 ## Known deviations
 

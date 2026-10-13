@@ -1,13 +1,12 @@
 # PNG -> HEIC
 
-**Latest** (2026-10-10, `heic-write` branch, `--effort` and held-out
-photographs: against libheif's `heif-enc` (x265), files smaller at equal
-quality on every measure on 12 photographs of 4032 pixels, 32 held-out
-photographs, and Kodak's PSNR and SSIM, but not Kodak's SSIMULACRA2
-(+1.0%, the one failing line); `--effort fast` at x265's speed on the
-12 photographs, `balanced` (the default) 17% slower and `max` 1.9 times
-slower; a fifth to a quarter of its memory; 12 to 17% smaller than
-Apple's hardware encoder (`sips`, context), which is far faster)
+**Latest** (2026-10-12, `heic-gaps` branch: the default effort codes
+the 12 photographs of 4032 pixels faster than libheif's `heif-enc` (x265,
+19.3 against 18.7 MB/s) and still in fewer bytes at equal quality (PSNR
+of luma and of RGB, SSIMULACRA2; a tie at SSIM), `--effort fast` 21%
+faster; Kodak's SSIMULACRA2 (+1.0%) is the one failing line; a fifth to
+a quarter of x265's memory; 12 to 17% smaller than Apple's hardware
+encoder (`sips`, context), which is far faster)
 
 ## Purpose
 
@@ -28,9 +27,9 @@ hardware HEVC block, so its speed is not a software encoder's.
 
 At the default effort, files no larger than `heif-enc`'s at equal quality
 (BD-rate at or below 0) by each measure on each set, and no more memory.
-Speed: `--effort fast` not slower than `heif-enc` on the photographs, and
-the default effort not slower on the other inputs; balanced and max on the
-photographs are recorded as context (they buy size with time).
+Speed: the default effort and `--effort fast` not slower than `heif-enc`
+on every input; max on the photographs is recorded as context (it buys
+size with time).
 
 ## Method
 
@@ -74,14 +73,15 @@ with the same scoring. Against `heif-enc`:
 | Set | Effort | PSNR of luma | SSIM | PSNR of RGB | SSIMULACRA2 |
 |---|---|---|---|---|---|
 | CLIC, all 41 | max | -3.9% | -3.0% | -4.0% | -3.3% |
-| 32 held out | balanced | -2.2% | -1.1% | -2.5% | -1.3% |
-| 32 held out | fast | -1.9% | -0.7% | -2.4% | -1.2% |
+| 32 held out | balanced | -1.9% | -0.7% | -2.4% | -1.2% |
+| 32 held out | fast | -1.3% | +0.1% | -2.0% | -0.7% |
 | 5 pages of text | max | -9.6% | -4.6% | -9.6% | -11.8% |
 | 3 wallpapers, 2 icons | max | -0.9% | -0.3% | -2.0% | -5.7% |
 | 6 photographs in gray | max | -0.8% | +0.1% | -0.8% | +0.6% |
 
-Against max on the held-out photographs, balanced is 0.5 to 0.9% larger
-and fast 0.8 to 1.6%. Every file of these runs decodes in `sips` (558)
+Against max on the held-out photographs, balanced is 0.8 to 1.6% larger
+and fast 1.4 to 2.6% (the levels as of 2026-10-12, when balanced took
+what fast had been). Every file of these runs decodes in `sips` (558)
 and libheif (93 checked). Two of five graphics lose: sharp-edged icons,
 by up to 10% at equal RGB PSNR.
 
@@ -92,8 +92,8 @@ by up to 10% at equal RGB PSNR.
   minimizes squared error, does not; it is not the 16-pixel CTBs (32-pixel
   ones lose there too, +0.8%). The larger and held-out photographs do not
   show it.
-- The SSIM margins are thin on the 12 photographs (-0.4%) though wider on
-  the 32 held out (-1.1%).
+- The SSIM margins are thin: a tie on the 12 photographs (-0.0%) at the
+  default effort, -0.7% on the 32 held out.
 - `sips` scales the 12 photographs; another macOS might scale them
   differently. Their sources are pinned by hash.
 - Our encoder works on every core, `heif-enc` on about two and a half on
@@ -107,6 +107,32 @@ by up to 10% at equal RGB PSNR.
 - Peak resident memory counts what the allocator keeps of freed blocks.
 
 ## Results
+
+### 2026-10-12, the default effort faster than x265 on photographs
+
+| Target | Ours | Reference (heif-enc) | Context (sips) | Result |
+|---|---|---|---|---|
+| png -> heic, jphoto (45.8 MB of pixels, quality 50): throughput (MB/s of pixels) | 40.3 | 13.6 | 125.3 | PASS |
+| png -> heic, jphoto: peak memory (MB) | 70.2 | 320.9 | 204.5 | PASS |
+| png -> heic, jflat (45.8 MB of pixels, quality 50): throughput (MB/s of pixels) | 199.7 | 60.4 | 175.2 | PASS |
+| png -> heic, jflat: peak memory (MB) | 72.4 | 300.6 | 174.3 | PASS |
+| png -> heic, hstock (103.5 MB of pixels, quality 50): throughput (MB/s of pixels) [stock] | 114.2 | 28.6 | 180.3 | PASS |
+| png -> heic, hstock: peak memory (MB) [stock] | 142.1 | 635.0 | 390.1 | PASS |
+| png -> heic, Kodak (24 photographs): BD-rate at equal PSNR of luma (negative: ours smaller) | -1.4% | 0% (itself) | ours -12.2% | PASS |
+| png -> heic, Kodak (24 photographs): BD-rate at equal SSIM (negative: ours smaller) | -0.3% | 0% (itself) | ours -13.3% | PASS |
+| png -> heic, Kodak (24 photographs): BD-rate at equal PSNR of RGB (negative: ours smaller) | -0.3% | 0% (itself) | ours -12.0% | PASS |
+| png -> heic, Kodak (24 photographs): BD-rate at equal SSIMULACRA2 (negative: ours smaller) | +1.0% | 0% (itself) | ours -13.2% | FAIL |
+| png -> heic, Kodak (24 photographs of 0.4 megapixels, quality 50): throughput (MB/s of pixels) | 8.5 | 6.6 | 11.2 | PASS |
+| png -> heic, 12 photographs of 4032 pixels: BD-rate at equal PSNR of luma (negative: ours smaller) | -1.4% | 0% (itself) | ours -11.5% | PASS |
+| png -> heic, 12 photographs of 4032 pixels: BD-rate at equal SSIM (negative: ours smaller) | -0.0% | 0% (itself) | ours -13.3% | PASS |
+| png -> heic, 12 photographs of 4032 pixels: BD-rate at equal PSNR of RGB (negative: ours smaller) | -1.8% | 0% (itself) | ours -14.6% | PASS |
+| png -> heic, 12 photographs of 4032 pixels: BD-rate at equal SSIMULACRA2 (negative: ours smaller) | -0.5% | 0% (itself) | ours -16.8% | PASS |
+| png -> heic, 12 photographs of 4032 pixels (quality 50, --effort fast): throughput (MB/s of pixels) | 22.7 | 18.7 | n/a | PASS |
+| png -> heic, 12 photographs of 4032 pixels (quality 50, --effort balanced): throughput (MB/s of pixels) | 19.3 | 18.7 | n/a | PASS |
+| png -> heic, 12 photographs of 4032 pixels (quality 50, --effort max): throughput (MB/s of pixels) | 9.9 | 18.7 | n/a | context |
+
+commit: d86c182 (plus the `heic-gaps` working tree)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
 
 ### 2026-10-10, `--effort`, photographs of 4032 pixels, SSIMULACRA2
 

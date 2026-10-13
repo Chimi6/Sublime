@@ -28,7 +28,19 @@ pub struct Rates {
 }
 
 impl Rates {
+    /// The rates of every block size.
     pub fn of(contexts: &Contexts) -> Rates {
+        Rates::of_sizes(contexts, 2..=5, 2..=5)
+    }
+
+    /// The rates, with the last position's tables only for the luma and
+    /// chroma block sizes (log2) given: a CU codes two or three sizes, and
+    /// the tables are rebuilt at every CU.
+    pub fn of_sizes(
+        contexts: &Contexts,
+        luma: std::ops::RangeInclusive<u32>,
+        chroma: std::ops::RangeInclusive<u32>,
+    ) -> Rates {
         let costs = |start: usize| -> [u32; 2] {
             let packed = contexts.contexts[start].packed;
             [bin_cost(packed, 0), bin_cost(packed, 1)]
@@ -43,14 +55,19 @@ impl Rates {
             cbf: [costs(cabac::CBF_LUMA + 1), costs(cabac::CBF_CHROMA)],
             last: [[([0; 32], [0; 32]); 2]; 4],
         }
-        .with_last_rates()
+        .with_last_rates(luma, chroma)
     }
 
-    fn with_last_rates(mut self) -> Rates {
-        for log2 in 2..=5u32 {
-            for luma in [false, true] {
-                self.last[log2 as usize - 2][usize::from(luma)] = last_rates(&self, log2, luma);
-            }
+    fn with_last_rates(
+        mut self,
+        luma: std::ops::RangeInclusive<u32>,
+        chroma: std::ops::RangeInclusive<u32>,
+    ) -> Rates {
+        for log2 in luma {
+            self.last[log2 as usize - 2][1] = last_rates(&self, log2, true);
+        }
+        for log2 in chroma {
+            self.last[log2 as usize - 2][0] = last_rates(&self, log2, false);
         }
         self
     }
@@ -282,16 +299,18 @@ pub fn quantize(block: &Block<'_>, rates: &Rates, work: &mut Work, levels: &mut 
         levels[..area].fill(0);
         return;
     }
-    let mut last = None;
-    for s in 0..area {
-        let coefficient = block.coefficients[position(s)];
+    // Levels in raster order (contiguous, so it vectorizes), then the
+    // last nonzero one's scan position from the scan's end, and only the
+    // positions up to it gathered into scan order.
+    for (out, &coefficient) in chosen[..area].iter_mut().zip(&block.coefficients[..area]) {
         let value = i64::from(coefficient.unsigned_abs()) * scale;
-        scaled[s] = value;
-        let level = ((value + rounding_of(qbits)) >> qbits).min(32767) as u32;
-        nearest[s] = level;
-        if level > 0 {
-            last = Some(s);
-        }
+        *out = ((value + rounding_of(qbits)) >> qbits).min(32767) as u32;
+    }
+    let last = (0..area).rev().find(|&s| chosen[position(s)] > 0);
+    for s in 0..=last.unwrap_or(0) {
+        let at = position(s);
+        scaled[s] = i64::from(block.coefficients[at].unsigned_abs()) * scale;
+        nearest[s] = chosen[at];
     }
     levels[..area].fill(0);
     let Some(last_scan) = last else {
