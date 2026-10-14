@@ -41,7 +41,7 @@ in as text).
 |---|---|
 | `_rels/.rels` | the main part's name (falls back to `word/document.xml`) |
 | `word/_rels/*.rels` | relationship ids to hyperlinks, images, headers, footers |
-| `styles.xml` | document defaults (`docDefaults`), paragraph and character styles with `basedOn` chains, numbering styles |
+| `styles.xml` | document defaults (`docDefaults`), paragraph and character styles with `basedOn` chains, numbering styles; a style named `heading N` without an outline level of its own (Google Docs writes them so) is heading N, as Word reads it |
 | `numbering.xml` | abstract numberings (levels: format, text, indents, start), `numStyleLink`/`styleLink` indirection, `num` instances with level-0 start overrides |
 | `settings.xml` | `evenAndOddHeaders` only |
 | `fontTable.xml`, `fonts/*` | embedded fonts (`w:embedRegular`, `w:embedBold`, `w:embedItalic`, `w:embedBoldItalic`): each font's file, its first 32 bytes un-XORed with the reversed `w:fontKey` (Word's obfuscation); the writer embeds them unobfuscated (a key of zeros; LibreOffice renders them), with `w:embedTrueTypeFonts` |

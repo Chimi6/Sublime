@@ -10,6 +10,7 @@ use crate::converters::docx_to_html::DocxToHtml;
 use crate::converters::docx_to_markdown::DocxToMarkdown;
 use crate::converters::docx_to_pages::DocxToPages;
 use crate::converters::docx_to_text::DocxToText;
+use crate::converters::epub;
 use crate::converters::html_to_docx::HtmlToDocx;
 use crate::converters::html_to_markdown::HtmlToMarkdown;
 use crate::converters::html_to_pages::HtmlToPages;
@@ -51,7 +52,7 @@ use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 106] = [
+static CONVERTERS: [&dyn Converter; 122] = [
     &csv_to_json::CSV_TO_JSON,
     &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
@@ -88,6 +89,22 @@ static CONVERTERS: [&dyn Converter; 106] = [
     &to_pdf::DOCX_TO_PDF,
     &to_pdf::PAGES_TO_PDF,
     &to_pdf::RTF_TO_PDF,
+    &epub::EPUB_TO_DOCX,
+    &epub::EPUB_TO_PAGES,
+    &epub::EPUB_TO_RTF,
+    &epub::EPUB_TO_ODT,
+    &epub::EPUB_TO_MARKDOWN,
+    &epub::EPUB_TO_HTML,
+    &epub::EPUB_TO_TEXT,
+    &to_pdf::EPUB_TO_PDF,
+    &epub::DOCX_TO_EPUB,
+    &epub::PAGES_TO_EPUB,
+    &epub::RTF_TO_EPUB,
+    &epub::ODT_TO_EPUB,
+    &epub::MARKDOWN_TO_EPUB,
+    &epub::HTML_TO_EPUB,
+    &epub::TEXT_TO_EPUB,
+    &pdf_to_document::PDF_TO_EPUB,
     &odt::ODT_TO_DOCX,
     &odt::ODT_TO_PAGES,
     &odt::ODT_TO_RTF,
@@ -241,6 +258,7 @@ mod tests {
                 "csv",
                 "cur",
                 "docx",
+                "epub",
                 "heic",
                 "html",
                 "ico",

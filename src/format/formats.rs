@@ -290,6 +290,16 @@ pub static ODT: Format = Format {
     write_options: &[Setting::Effort],
 };
 
+pub static EPUB: Format = Format {
+    id: "epub",
+    display_name: "EPUB e-book",
+    extensions: &["epub"],
+    magic: Some(b"PK\x03\x04??????????????????????????mimetypeapplication/epub+zip"),
+    category: Category::Document,
+    read_options: &[],
+    write_options: &[Setting::Effort],
+};
+
 pub static RTF: Format = Format {
     id: "rtf",
     display_name: "Rich Text Format",

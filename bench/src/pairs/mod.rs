@@ -73,6 +73,7 @@ pub const NAMES: &[&str] = &[
     "pdf-text",
     "rtf-docx",
     "odt-docx",
+    "epub-docx",
     "yaml-json",
 ];
 

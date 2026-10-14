@@ -480,10 +480,16 @@ impl Reader<'_> {
                             {
                                 self.document.styles.default_paragraph = Some(index);
                             }
+                            let name = style.name.unwrap_or_else(|| id.clone());
+                            let mut paragraph = style.paragraph;
+                            if paragraph.outline_level.is_none() {
+                                paragraph.outline_level =
+                                    crate::document::heading_number(&name).map(|level| level - 1);
+                            }
                             self.document.styles.paragraph.push(ParagraphStyle {
-                                name: style.name.unwrap_or_else(|| id.clone()),
+                                name,
                                 parent: None,
-                                paragraph: style.paragraph,
+                                paragraph,
                                 run: style.run,
                             });
                             paragraph_parents.push(style.based_on);
@@ -4137,6 +4143,21 @@ mod tests {
             })
             .expect("the nested table");
         assert_eq!(inner.columns, [50.0]);
+    }
+
+    /// Google Docs names its headings without stating their outline
+    /// level; the built-in name is enough, as it is for Word.
+    #[test]
+    fn heading_styles_named_without_a_level_are_headings() {
+        let w = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
+        let styles = format!(
+            r#"<w:styles {w}><w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:pPr><w:keepNext w:val="1"/></w:pPr></w:style></w:styles>"#
+        );
+        let document = format!(
+            r#"<w:document {w}><w:body><w:p><w:pPr><w:pStyle w:val="Heading3"/></w:pPr><w:r><w:t>Part</w:t></w:r></w:p></w:body></w:document>"#
+        );
+        let read = read_docx(&package(&document, &styles)).unwrap();
+        assert_eq!(read.styles.paragraph[0].paragraph.outline_level, Some(2));
     }
 
     /// An empty `<w:pPr />` in a style (pandoc writes them) ends there: it

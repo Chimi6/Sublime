@@ -24,6 +24,7 @@ enum Target {
     Html,
     Docx,
     Odt,
+    Epub,
 }
 
 pub struct PdfToDocument {
@@ -48,6 +49,12 @@ pub static PDF_TO_DOCX: PdfToDocument = PdfToDocument {
     name: "pdf-to-docx",
     to: &formats::DOCX,
     target: Target::Docx,
+};
+
+pub static PDF_TO_EPUB: PdfToDocument = PdfToDocument {
+    name: "pdf-to-epub",
+    to: &formats::EPUB,
+    target: Target::Epub,
 };
 
 pub static PDF_TO_ODT: PdfToDocument = PdfToDocument {
@@ -121,6 +128,18 @@ impl Converter for PdfToDocument {
                     .map_err(malformed)?;
                 let document = builder.finish();
                 crate::io::odt::write_odt(
+                    &document,
+                    &mut *output,
+                    context.options.effort.unwrap_or_default(),
+                )?;
+                notes
+            }
+            Target::Epub => {
+                let mut builder = DocumentBuilder::new();
+                let notes = pdf_events(&bytes, page, &mut builder as &mut dyn EventSink<'_>)
+                    .map_err(malformed)?;
+                let document = builder.finish();
+                crate::io::epub::write_epub(
                     &document,
                     &mut *output,
                     context.options.effort.unwrap_or_default(),

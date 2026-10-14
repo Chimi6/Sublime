@@ -2612,7 +2612,7 @@ impl<'a> Reader<'a> {
         // Word's built-in headings carry their outline level; writers that
         // leave it out still name them.
         if paragraph.outline_level.is_none()
-            && let Some(level) = heading_number(&name)
+            && let Some(level) = crate::document::heading_number(&name)
         {
             paragraph.outline_level = Some(level - 1);
         }
@@ -3378,14 +3378,6 @@ fn custom_path(
         height,
         steps,
     })
-}
-
-/// The level of a built-in heading style's name (`heading 2`, `Heading 2`).
-fn heading_number(name: &str) -> Option<u8> {
-    let lower = name.trim().to_ascii_lowercase();
-    let rest = lower.strip_prefix("heading")?.trim();
-    let level: u8 = rest.parse().ok()?;
-    (1..=9).contains(&level).then_some(level)
 }
 
 /// A list number written in `kind`: 12, l, L, xii, XII.

@@ -37,7 +37,7 @@ events as tags go by:
 | `ul`, `ol start` | list; loose when the first item holds a `p` of its own |
 | `li` | item; a new item closes the previous |
 | `hr` | rule |
-| `table`, `thead`, `tr`, `th`, `td` | table; the first row is the head, alignment from `align` or `style="text-align"`; events are held until the head row tells the columns |
+| `table`, `thead`, `tr`, `th`, `td` | table; the first row is the head, alignment from `align` or `style="text-align"`; events are held until the head row tells the columns; a cell's `colspan` and `rowspan` leave empty cells where it covers the grid, so the cells beside it keep their columns |
 | `a href title` | link; `a` without `href` is transparent |
 | `img src alt title` | image |
 | `em`, `i`, `cite`, `var`, `dfn` | emphasis |
@@ -47,6 +47,9 @@ events as tags go by:
 | `br` | hard break |
 | `sup class="footnote-ref"` with `a href="#fn-x"` | footnote reference |
 | `section class="footnotes"` with `li id="fn-x"` | footnote definition; back-reference links dropped |
+| `a` with `epub:type="noteref"` or `role="doc-noteref"` (EPUB, pandoc) | footnote reference, labelled by its link's fragment, wherever the note lives |
+| `aside`, `li`, `div`, `section`, `p` with `epub:type="footnote"`/`"endnote"` or `role="doc-footnote"`/`"doc-endnote"`; sections of them (`epub:type="endnotes"`, `role="doc-endnotes"`) | footnote definitions; a notes section's heading and rule are markup, and links back (`role="doc-backlink"`) are dropped |
+| `svg` framing one `image` | that picture (an e-book's cover page); other SVG is skipped |
 | `input type="checkbox"` | task list marker |
 | `script`, `style`, `head`, `title`, `template`, `svg`, `math`, `iframe`, `noscript`, `select`, `textarea`, `canvas`, `video`, `audio`, `object` | skipped with their content |
 | `div`, `section`, `article`, `main`, `header`, `footer`, `nav`, `aside`, `figure`, `details`, `dl`, `form`, `body`, `html` | block containers: their blocks flow through, closing one closes them |

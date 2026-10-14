@@ -10,6 +10,7 @@ pub mod docx_to_html;
 pub mod docx_to_markdown;
 pub mod docx_to_pages;
 pub mod docx_to_text;
+pub mod epub;
 pub mod html_to_docx;
 pub mod html_to_markdown;
 pub mod html_to_pages;

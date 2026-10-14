@@ -5,6 +5,7 @@ pub mod bmp;
 pub mod csv;
 pub mod deflate;
 pub mod docx;
+pub mod epub;
 pub mod font;
 pub mod heif;
 pub mod hevc;

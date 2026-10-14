@@ -36,6 +36,12 @@ check(fromWord.status === "converted-with-loss", `docx -> markdown status ${from
 check(new TextDecoder().decode(fromWord.bytes).startsWith("# Lists"), "docx -> markdown starts with the title");
 check(new TextDecoder().decode(fromWord.bytes).includes("  - Nested bullet under the second\n"), "docx -> markdown keeps nested lists");
 
+// EPUB: a book written (its modification time without a clock) and read back.
+const book = sublime.convert(word, "docx", "epub");
+check(book.status === "converted-with-loss" && new TextDecoder().decode(book.bytes.slice(38, 58)) === "application/epub+zip", `docx -> epub: ${book.status} ${book.message}`);
+const fromBook = sublime.convert(book.bytes, "epub", "markdown");
+check(new TextDecoder().decode(fromBook.bytes).includes("# Lists"), `epub -> markdown: ${fromBook.status} ${fromBook.message}`);
+
 // HEIC: a tiled iPhone-style photo decodes without threads, to PNG and
 // (as its own YCbCr) to JPEG.
 const heic = new Uint8Array(readFileSync("tests/fixtures/heic/apple-photo.heic"));
