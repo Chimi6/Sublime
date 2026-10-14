@@ -32,6 +32,7 @@ enum Source {
     Pages,
     Rtf,
     Odt,
+    Epub,
 }
 
 pub struct ToPdf {
@@ -74,6 +75,12 @@ pub static ODT_TO_PDF: ToPdf = ToPdf {
     name: "odt-to-pdf",
     from: &formats::ODT,
     source: Source::Odt,
+};
+
+pub static EPUB_TO_PDF: ToPdf = ToPdf {
+    name: "epub-to-pdf",
+    from: &formats::EPUB,
+    source: Source::Epub,
 };
 
 pub static RTF_TO_PDF: ToPdf = ToPdf {
@@ -145,7 +152,7 @@ impl Converter for ToPdf {
                 images.report(context);
                 notes
             }
-            Source::Docx | Source::Pages | Source::Rtf | Source::Odt => {
+            Source::Docx | Source::Pages | Source::Rtf | Source::Odt | Source::Epub => {
                 let model = match self.source {
                     Source::Docx => {
                         let mut bytes = Vec::new();
@@ -163,6 +170,7 @@ impl Converter for ToPdf {
                         read_document(&package)
                     }
                     Source::Odt => crate::converters::odt::read_input(&mut input)?,
+                    Source::Epub => crate::converters::epub::read_input(&mut input)?,
                     _ => crate::converters::rtf::read_input(&mut input)?,
                 };
                 let mut images = ModelImages::new(&model);
@@ -245,7 +253,9 @@ impl ImageSource for FileImages {
             self.remote += 1;
             return None;
         }
-        let path = percent_decoded(destination.strip_prefix("file://").unwrap_or(destination));
+        let path = crate::io::scan::percent_decoded(
+            destination.strip_prefix("file://").unwrap_or(destination),
+        );
         let path = std::path::Path::new(&path);
         let path = if path.is_absolute() {
             path.to_path_buf()
@@ -261,27 +271,6 @@ impl ImageSource for FileImages {
     fn decode(&mut self, bytes: &[u8], sink: &mut dyn RowSink) -> std::io::Result<()> {
         crate::converters::image::decode_image(bytes, sink)
     }
-}
-
-/// A path's `%XX` escapes decoded (`My%20Photo.png`).
-fn percent_decoded(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%'
-            && let Some(value) = text
-                .get(index + 1..index + 3)
-                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
-        {
-            out.push(value);
-            index += 3;
-            continue;
-        }
-        out.push(bytes[index]);
-        index += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A document model's images (Word, Pages, RTF): its media by file name,

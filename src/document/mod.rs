@@ -257,6 +257,16 @@ impl StyleTable {
     }
 }
 
+/// The level of a built-in heading style's name (`heading 2`, `Heading 2`):
+/// Word's headings carry their outline level, and writers that leave it
+/// out (Google Docs) still name them.
+pub fn heading_number(name: &str) -> Option<u8> {
+    let lower = name.trim().to_ascii_lowercase();
+    let rest = lower.strip_prefix("heading")?.trim();
+    let level: u8 = rest.parse().ok()?;
+    (1..=9).contains(&level).then_some(level)
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ParagraphStyle {
     pub name: String,

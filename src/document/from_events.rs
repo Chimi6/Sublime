@@ -79,7 +79,17 @@ pub struct DocumentBuilder<'s> {
     property_ids: [Option<Option<u32>>; 8],
     dropped_html: bool,
     other_images: bool,
+    /// Resolves an image source that is not a data URI (a path inside a
+    /// package) to its file name and bytes.
+    images: Option<ImageResolver<'s>>,
+    /// Sources already resolved, to their media.
+    resolved: Vec<(String, usize)>,
+    /// The next top-level paragraph starts a new page.
+    page_break: bool,
 }
+
+/// Finds the bytes of an image by its source: the file name and the bytes.
+pub type ImageResolver<'s> = Box<dyn FnMut(&str) -> Option<(String, Vec<u8>)> + 's>;
 
 struct BuiltInStyles {
     headings: [StyleId; 6],
@@ -145,6 +155,9 @@ impl<'s> DocumentBuilder<'s> {
             property_ids: [None; 8],
             dropped_html: false,
             other_images: false,
+            images: None,
+            resolved: Vec::new(),
+            page_break: false,
         }
     }
 
@@ -181,6 +194,18 @@ impl<'s> DocumentBuilder<'s> {
             return Err(error);
         }
         Ok(self.finish())
+    }
+
+    /// Images whose source is not a data URI are looked up with
+    /// `resolver` (a package's own files) and embedded when found.
+    pub fn resolve_images(&mut self, resolver: ImageResolver<'s>) {
+        self.images = Some(resolver);
+    }
+
+    /// The next top-level paragraph starts a new page (a book's chapter).
+    pub fn break_page(&mut self) {
+        self.close_paragraph();
+        self.page_break = true;
     }
 
     /// Whether raw HTML was dropped on the way.
@@ -227,7 +252,13 @@ impl<'s> DocumentBuilder<'s> {
                 _ => None,
             };
         }
-        paragraph.properties = self.paragraph_properties_id(indent_levels, properties);
+        paragraph.properties = if self.page_break && self.targets.len() == 1 {
+            self.page_break = false;
+            properties.page_break_before = Some(true);
+            self.document.intern_paragraph_properties(properties)
+        } else {
+            self.paragraph_properties_id(indent_levels, properties)
+        };
         self.current = Some(paragraph);
         self.current_kind = kind;
     }
@@ -433,7 +464,11 @@ impl<'s> DocumentBuilder<'s> {
         let Some((destination, alt)) = self.image.take() else {
             return;
         };
-        if let Some(media) = self.embed_data_uri(&destination) {
+        let media = match self.embed_data_uri(&destination) {
+            Some(media) => Some(media),
+            None => self.resolve_image(&destination),
+        };
+        if let Some(media) = media {
             let description = if alt.is_empty() { None } else { Some(alt) };
             let id = self.document.push_image(InlineImage {
                 media,
@@ -460,6 +495,22 @@ impl<'s> DocumentBuilder<'s> {
     }
 
     /// `data:<type>;base64,<bytes>` as a media entry.
+    /// An image from the resolver, once per source.
+    fn resolve_image(&mut self, destination: &str) -> Option<usize> {
+        if let Some((_, id)) = self
+            .resolved
+            .iter()
+            .find(|(source, _)| source == destination)
+        {
+            return Some(*id);
+        }
+        let (name, bytes) = (self.images.as_mut()?)(destination)?;
+        let id = self.document.media.len();
+        self.document.media.push(Media { name, bytes });
+        self.resolved.push((destination.to_string(), id));
+        Some(id)
+    }
+
     fn embed_data_uri(&mut self, destination: &str) -> Option<usize> {
         let rest = destination.strip_prefix("data:")?;
         let (header, payload) = rest.split_once(',')?;

@@ -8,6 +8,10 @@ section under a version heading.
 
 ### Fixed
 
+- Word files from Google Docs lost every heading: their heading styles name the level (`heading 2`) without stating it, which Word reads as the level and now Sublime does too, so their headings reach Markdown, HTML, ODT, EPUB, and every other format.
+
+- HTML read with a space before an inline element's end (`<b>bold, </b><i>italic</i>`) ran the words together; merged table cells (`colspan`, `rowspan`) shifted the cells beside them; and a picture in an SVG frame was dropped. All three now read as a browser shows them.
+
 - Word files whose styles hold an empty `<w:pPr />`, `<w:rPr />`, or `<w:tblStylePr />` (pandoc's and Apple's exports write them) misread the styles after it: pandoc's Heading 1 read as plain text. A table sized as a share of the page (`w:tblW` of type `pct`, as pandoc writes every table) is now laid out to that width instead of its narrower grid.
 
 ### Changed
@@ -15,6 +19,8 @@ section under a version heading.
 - HEIC encoding at the default effort is faster than x265 (`heif-enc`) on large photographs and still smaller at equal quality: balanced takes what fast was (0.8 to 1.6% more bytes than max on held-out photographs, 0.7 to 2.4% fewer than x265), and fast cuts deeper (a quarter faster than x265, smaller but for a tie at SSIM). Small pictures keep the full search at the default. 8% less work at every effort for the same bytes (the mode pass, rate tables, and RDOQ's first pass rebuilt nothing per block they could keep; chroma's references are built once per CU).
 
 ### Added
+
+- EPUB both ways, to and from every document format (Word, Pages, RTF, ODT, Markdown, HTML, text, and PDF). Books are written as EPUB 3 with an EPUB 2 table of contents: chapters at page breaks and top headings, named styles as CSS in `em`, notes as pop-up footnotes, tables with merged cells, pictures, MathML equations, and embedded fonts; every book from 110 Word files passes epubcheck (pandoc's fail on 103, 58 of them for more than the missing title it writes without `--metadata title`). Books are read in spine order with their cover, pictures, and notes, including endnotes in a file of their own, which pandoc leaves as text; on 11 held-out books, every note and picture of all 11 reaches Word (pandoc: 8 and 8). HTML input reads EPUB and pandoc notes too. Benchmark pair `epub-docx` passes every line against pandoc, at 47 to 413 times its speed. Notes in `DOCS/formats/epub.md`, numbers in `DOCS/benchmarks/epub-docx.md`.
 
 - OpenDocument Text (`.odt`) both ways, to and from every document format (Word, Pages, RTF, Markdown, HTML, text, and PDF): styles, run and paragraph formatting, lists with their restarts, tables with merged cells, sections with page setup, columns, headers, and footers, page colour, links, page fields, footnotes, comment threads, tracked changes, pictures, text boxes, formulas (MathML), and embedded fonts. On 89 Word documents rendered by LibreOffice, Word -> ODT matches the reference page count on 82 (pandoc 55) at word recall 0.957 (pandoc 0.840), and LibreOffice's ODT -> Word on 76 (pandoc 53) at 0.974 (pandoc 0.887). Benchmark pair `odt-docx` passes every line against pandoc, at 77 to 122 times its speed (`DOCS/benchmarks/odt-docx.md`); notes in `DOCS/formats/odt.md`.
 

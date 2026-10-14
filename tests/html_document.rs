@@ -247,3 +247,68 @@ fn loose_and_ordered_lists_keep_their_shape() {
         "<ol start=\"3\">\n<li>\n<p>three</p>\n<p>more</p>\n</li>\n<li>\n<p>four</p>\n</li>\n</ol>";
     assert_eq!(html_to_markdown(html), "3. three\n\n   more\n\n4. four\n");
 }
+
+/// A space before an inline element's end still separates words, as a
+/// browser shows it.
+#[test]
+fn a_space_inside_an_ending_element_is_kept() {
+    assert_eq!(
+        html_to_markdown("<p>Regular, <b>bold, </b><i>italic</i> text.</p>"),
+        "Regular, **bold,** *italic* text.\n"
+    );
+}
+
+/// EPUB's and pandoc's notes: references by role or `epub:type`, notes in
+/// a section of their own or standing alone, links back left out.
+#[test]
+fn epub_and_pandoc_notes_are_footnotes() {
+    let markdown = html_to_markdown(concat!(
+        "<p>One<a href=\"#fn1\" epub:type=\"noteref\">1</a> and two",
+        "<a href=\"notes.xhtml#n2\" role=\"doc-noteref\">2</a>.</p>",
+        "<section epub:type=\"footnotes\"><h2>Notes</h2><hr/>",
+        "<aside id=\"fn1\" epub:type=\"footnote\"><p>First. <a href=\"#r1\" role=\"doc-backlink\">back</a></p></aside>",
+        "</section>",
+        "<ol><li id=\"n2\" epub:type=\"endnote\"><p>Second.</p></li></ol>",
+    ));
+    assert_eq!(
+        markdown,
+        "One[^fn1] and two[^n2].\n\n[^fn1]: First.\n\n[^n2]: Second.\n"
+    );
+}
+
+/// Merged cells hold their place: a cell spanning columns or rows leaves
+/// empty cells where it covers the grid, so the cells beside it line up.
+#[test]
+fn spanned_cells_keep_the_grid() {
+    let markdown = html_to_markdown(concat!(
+        "<table><tr><th colspan=\"2\">Wide</th><th>C</th></tr>",
+        "<tr><td rowspan=\"2\">Tall</td><td>b2</td><td>c2</td></tr>",
+        "<tr><td>b3</td><td>c3</td></tr></table>",
+    ));
+    assert_eq!(
+        markdown,
+        "| Wide |  | C |\n| --- | --- | --- |\n| Tall | b2 | c2 |\n|  | b3 | c3 |\n"
+    );
+}
+
+/// A picture framed in an SVG (an e-book's cover page) is the picture.
+#[test]
+fn a_picture_in_an_svg_frame() {
+    let markdown = html_to_markdown(concat!(
+        "<div><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\">",
+        "<image width=\"10\" height=\"10\" xlink:href=\"cover.jpg\"/></svg></div>",
+    ));
+    assert_eq!(markdown, "![](cover.jpg)\n");
+}
+
+/// Project Gutenberg's notes: a `sup.footnoteref` reference, and blocks
+/// with ids in a `div.footnotes`, each led by a link back.
+#[test]
+fn gutenberg_notes_are_footnotes() {
+    let markdown = html_to_markdown(concat!(
+        "<p>A line.<sup class=\"footnoteref\"><a href=\"p1.xhtml#FNDEF.1\" id=\"FNREF.1\" class=\"pginternal\">1</a></sup></p>",
+        "<div class=\"footnotes\"><div class=\"footnote\" id=\"FNDEF.1\">",
+        "<a href=\"p1.xhtml#FNREF.1\" class=\"pginternal\">[1]</a> The note.</div></div>",
+    ));
+    assert_eq!(markdown, "A line.[^FNDEF.1]\n\n[^FNDEF.1]: The note.\n");
+}

@@ -13,7 +13,10 @@
 //! are skipped.
 //!
 //! The footnote and task-list markup of cmark-gfm (what `HtmlWriter`
-//! produces) is read back as footnotes and task markers.
+//! produces) is read back as footnotes and task markers, and so are the
+//! notes of EPUB and pandoc: references marked `epub:type="noteref"` or
+//! `role="doc-noteref"`, and notes in a section of them or on their own
+//! (`epub:type="footnote"`, `role="doc-endnote"`), wherever they live.
 
 use std::borrow::Cow;
 
@@ -64,6 +67,10 @@ enum Node {
     /// A `<code>` span; its inner tags are ignored.
     Code,
     FootnoteDefinition,
+    /// A section of notes (cmark-gfm's `section.footnotes`, an EPUB
+    /// `endnotes` section): its items are notes, and its other text (a
+    /// heading, a rule) is markup.
+    Notes,
     /// A block container with no Markdown form (`div`, `section`): its
     /// blocks flow through, and closing it closes them.
     Block,
@@ -86,6 +93,12 @@ struct TableBuffer<'a> {
     head_cells: usize,
     in_head: bool,
     head_done: bool,
+    /// Per column, how many more rows a cell above still covers.
+    spans: Vec<u32>,
+    /// The column the next cell of this row lands in.
+    column: usize,
+    /// Columns the open cell covers beyond its own.
+    extra: u32,
 }
 
 struct Reader<'a, 's> {
@@ -203,15 +216,65 @@ impl<'a> Reader<'a, '_> {
             return;
         }
         match lower.as_str() {
+            "svg" if !self_closing => {
+                // A picture in an SVG frame (an e-book's cover page) is the
+                // picture; drawn SVG has no Markdown form.
+                let picture = self.peek_svg_picture();
+                self.skip_raw_text(name);
+                if let Some(destination) = picture {
+                    self.ensure_phrasing();
+                    self.flush_space();
+                    self.emit(Event::Start(Tag::Image {
+                        destination: decode_attribute(destination),
+                        title: Cow::Borrowed(""),
+                    }));
+                    self.emit(Event::End(TagEnd::Image));
+                }
+            }
             "script" | "style" | "head" | "template" | "svg" | "iframe" | "noscript" | "select"
             | "textarea" | "canvas" | "video" | "audio" | "object" | "title" | "math" => {
                 if !self_closing {
                     self.skip_raw_text(name);
                 }
             }
+            "ol" | "section" | "div" | "aside" if is_notes_section(attributes) => {
+                self.close_blocks_for_block();
+                self.stack.push(Open {
+                    name,
+                    node: Node::Notes,
+                });
+            }
+            "aside" | "div" | "section" | "li" | "p"
+                if !self_closing
+                    && (is_note(attributes)
+                        // A block with an id right in a notes section
+                        // (Gutenberg's `div.footnote`).
+                        || (self.in_notes_markup()
+                            && self.stack.last().is_some_and(|open| open.node == Node::Notes)
+                            && attribute(attributes, "id").is_some())) =>
+            {
+                // A note on its own (an EPUB footnote beside its text), or
+                // an item of a notes list.
+                if self.in_footnotes() {
+                    self.close_to_footnotes_list();
+                } else {
+                    self.close_blocks_for_block();
+                }
+                let label = note_label(attribute(attributes, "id").unwrap_or(""));
+                self.push(
+                    name,
+                    Node::FootnoteDefinition,
+                    Tag::FootnoteDefinition(Cow::Borrowed(label)),
+                );
+            }
             "p" => {
                 self.close_blocks_for_block();
                 self.push(name, Node::Paragraph { implicit: false }, Tag::Paragraph);
+            }
+            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "hr" if self.in_notes_markup() => {
+                if !self_closing && !lower.is("hr") {
+                    self.skip_raw_text(name);
+                }
             }
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                 self.close_blocks_for_block();
@@ -256,9 +319,7 @@ impl<'a> Reader<'a, '_> {
             "li" => {
                 if self.in_footnotes() {
                     self.close_to_footnotes_list();
-                    let label = attribute(attributes, "id")
-                        .and_then(|id| id.strip_prefix("fn-"))
-                        .unwrap_or("");
+                    let label = note_label(attribute(attributes, "id").unwrap_or(""));
                     self.push(
                         name,
                         Node::FootnoteDefinition,
@@ -286,6 +347,9 @@ impl<'a> Reader<'a, '_> {
                     head_cells: 0,
                     in_head: false,
                     head_done: false,
+                    spans: Vec::new(),
+                    column: 0,
+                    extra: 0,
                 });
                 self.stack.push(Open {
                     name,
@@ -304,6 +368,9 @@ impl<'a> Reader<'a, '_> {
                     return;
                 }
                 self.close_row();
+                if let Some(table) = self.table.as_mut() {
+                    table.column = 0;
+                }
                 let head_done = self.table.as_ref().is_some_and(|table| table.head_done);
                 if head_done {
                     self.push(name, Node::TableRow, Tag::TableRow);
@@ -321,6 +388,9 @@ impl<'a> Reader<'a, '_> {
                 }
                 self.close_cell();
                 if !self.is_in(Node::TableHead) && !self.is_in(Node::TableRow) {
+                    if let Some(table) = self.table.as_mut() {
+                        table.column = 0;
+                    }
                     // A cell with no row: open one.
                     let head_done = self.table.as_ref().is_some_and(|table| table.head_done);
                     if head_done {
@@ -332,6 +402,8 @@ impl<'a> Reader<'a, '_> {
                         self.push("tr", Node::TableHead, Tag::TableHead);
                     }
                 }
+                // Columns cells above still cover come first.
+                self.fill_spanned(false);
                 if let Some(table) = self.table.as_mut()
                     && table.in_head
                 {
@@ -340,6 +412,25 @@ impl<'a> Reader<'a, '_> {
                     table.head_cells += 1;
                 }
                 self.push(name, Node::TableCell, Tag::TableCell);
+                let span = |key: &str| {
+                    attribute(attributes, key)
+                        .and_then(|value| value.trim().parse::<u32>().ok())
+                        .unwrap_or(1)
+                        .clamp(1, 1000)
+                };
+                let (columns, rows) = (span("colspan"), span("rowspan"));
+                if let Some(table) = self.table.as_mut() {
+                    let column = table.column;
+                    let end = column + columns as usize;
+                    if table.spans.len() < end {
+                        table.spans.resize(end, 0);
+                    }
+                    for covered in &mut table.spans[column..end] {
+                        *covered = rows - 1;
+                    }
+                    table.column = end;
+                    table.extra = columns - 1;
+                }
             }
             "br" => {
                 self.ensure_phrasing();
@@ -363,10 +454,20 @@ impl<'a> Reader<'a, '_> {
                 self.emit(Event::End(TagEnd::Image));
             }
             "a" => {
-                if attribute(attributes, "class")
-                    .is_some_and(|class| class.contains("footnote-backref"))
-                {
+                if is_backlink(attributes) || self.is_note_backlink(attributes) {
                     // The way back from a footnote is not content.
+                    self.skip_raw_text(name);
+                    return;
+                }
+                if is_noteref(attributes) {
+                    // The reference; its shown number is the reader's to make.
+                    let href = attribute(attributes, "href").unwrap_or("");
+                    let fragment = href.rsplit_once('#').map_or(href, |(_, fragment)| fragment);
+                    self.ensure_phrasing();
+                    self.flush_space();
+                    self.emit(Event::FootnoteReference(Cow::Borrowed(note_label(
+                        fragment,
+                    ))));
                     self.skip_raw_text(name);
                     return;
                 }
@@ -411,8 +512,9 @@ impl<'a> Reader<'a, '_> {
                 });
             }
             "sup"
-                if attribute(attributes, "class")
-                    .is_some_and(|class| class.contains("footnote-ref")) =>
+                if attribute(attributes, "class").is_some_and(|class| {
+                    class.contains("footnote-ref") || class.contains("footnoteref")
+                }) =>
             {
                 self.ensure_phrasing();
                 self.flush_space();
@@ -430,17 +532,6 @@ impl<'a> Reader<'a, '_> {
                     self.pending_space = false;
                     self.at_start = true;
                 }
-            }
-            "section"
-                if attribute(attributes, "class")
-                    .is_some_and(|class| class.contains("footnotes")) =>
-            {
-                self.close_blocks_for_block();
-                // Named for the list and items inside to find.
-                self.stack.push(Open {
-                    name: "section.footnotes",
-                    node: Node::Block,
-                });
             }
             "div" | "section" | "article" | "main" | "header" | "footer" | "nav" | "aside"
             | "figure" | "figcaption" | "details" | "summary" | "dl" | "dt" | "dd" | "address"
@@ -473,10 +564,11 @@ impl<'a> Reader<'a, '_> {
             return;
         }
         // The nearest open element with this name; nothing above it survives.
-        let Some(index) = self.stack.iter().rposition(|open| {
-            open.name.eq_ignore_ascii_case(name)
-                || (open.name == "section.footnotes" && lower.is("section"))
-        }) else {
+        let Some(index) = self
+            .stack
+            .iter()
+            .rposition(|open| open.name.eq_ignore_ascii_case(name))
+        else {
             return;
         };
         if self.stack[index].node == Node::Transparent {
@@ -526,7 +618,14 @@ impl<'a> Reader<'a, '_> {
         let Some(open) = self.stack.pop() else {
             return;
         };
-        self.pending_space = false;
+        // A space before an inline element's end still separates its last
+        // word from the next (`<b>bold </b>text`); a block's ends there.
+        if !matches!(
+            open.node,
+            Node::Emphasis | Node::Strong | Node::Strike | Node::Link | Node::Transparent
+        ) {
+            self.pending_space = false;
+        }
         let end = match open.node {
             Node::Paragraph { .. } => Some(TagEnd::Paragraph),
             Node::Heading(level) => Some(TagEnd::Heading(level)),
@@ -544,14 +643,30 @@ impl<'a> Reader<'a, '_> {
                 None
             }
             Node::TableHead => {
+                self.fill_spanned(true);
                 if let Some(table) = self.table.as_mut() {
                     table.in_head = false;
                     table.head_done = true;
                 }
                 Some(TagEnd::TableHead)
             }
-            Node::TableRow => Some(TagEnd::TableRow),
-            Node::TableCell => Some(TagEnd::TableCell),
+            Node::TableRow => {
+                self.fill_spanned(true);
+                Some(TagEnd::TableRow)
+            }
+            Node::TableCell => {
+                self.emit(Event::End(TagEnd::TableCell));
+                // The columns it spans hold empty cells, so the next cell
+                // lands where it is.
+                let extra = self
+                    .table
+                    .as_mut()
+                    .map_or(0, |table| std::mem::take(&mut table.extra));
+                for _ in 0..extra {
+                    self.empty_cell();
+                }
+                None
+            }
             Node::Emphasis => Some(TagEnd::Emphasis),
             Node::Strong => Some(TagEnd::Strong),
             Node::Strike => Some(TagEnd::Strikethrough),
@@ -561,7 +676,7 @@ impl<'a> Reader<'a, '_> {
                 None
             }
             Node::FootnoteDefinition => Some(TagEnd::FootnoteDefinition),
-            Node::Block | Node::Transparent => None,
+            Node::Notes | Node::Block | Node::Transparent => None,
         };
         if let Some(end) = end {
             self.emit(Event::End(end));
@@ -588,9 +703,17 @@ impl<'a> Reader<'a, '_> {
     }
 
     fn in_footnotes(&self) -> bool {
-        self.stack
-            .iter()
-            .any(|open| open.name == "section.footnotes")
+        self.stack.iter().any(|open| open.node == Node::Notes)
+    }
+
+    /// In a notes section but outside any note: headings and rules there
+    /// title the section, and are not content.
+    fn in_notes_markup(&self) -> bool {
+        self.in_footnotes()
+            && !self
+                .stack
+                .iter()
+                .any(|open| open.node == Node::FootnoteDefinition)
     }
 
     /// A block is starting: any implicit paragraph and the inline
@@ -634,8 +757,8 @@ impl<'a> Reader<'a, '_> {
     /// down to the section's list.
     fn close_to_footnotes_list(&mut self) {
         while let Some(open) = self.stack.last() {
-            let is_list = open.node == Node::Block
-                && (open.name.eq_ignore_ascii_case("ol") || open.name == "section.footnotes");
+            let is_list = open.node == Node::Notes
+                || (open.node == Node::Block && open.name.eq_ignore_ascii_case("ol"));
             if is_list {
                 break;
             }
@@ -725,12 +848,7 @@ impl<'a> Reader<'a, '_> {
         if in_table_gap && text.trim().is_empty() {
             return;
         }
-        if self.in_footnotes()
-            && !self
-                .stack
-                .iter()
-                .any(|open| open.node == Node::FootnoteDefinition)
-        {
+        if self.in_notes_markup() {
             return;
         }
         let mut rest = text;
@@ -833,6 +951,42 @@ impl<'a> Reader<'a, '_> {
         self.sink.event(Event::End(TagEnd::Table));
     }
 
+    /// An empty cell where a merged cell covers the grid.
+    fn empty_cell(&mut self) {
+        if let Some(table) = self.table.as_mut()
+            && table.in_head
+        {
+            table.alignments.push(Alignment::None);
+            table.head_cells += 1;
+        }
+        self.emit(Event::Start(Tag::TableCell));
+        self.emit(Event::End(TagEnd::TableCell));
+    }
+
+    /// Empty cells for the columns cells above still cover: those before
+    /// the next cell, or (`to_end`, as the row ends) all that remain.
+    fn fill_spanned(&mut self, to_end: bool) {
+        loop {
+            let Some(table) = self.table.as_mut() else {
+                return;
+            };
+            let column = table.column;
+            let covered = table.spans.get(column).copied().unwrap_or(0);
+            let later = to_end
+                && table.spans[column.min(table.spans.len())..]
+                    .iter()
+                    .any(|rows| *rows > 0);
+            if covered == 0 && !later {
+                return;
+            }
+            if covered > 0 {
+                table.spans[column] -= 1;
+            }
+            table.column += 1;
+            self.empty_cell();
+        }
+    }
+
     fn emit(&mut self, event: Event<'a>) {
         match self.table.as_mut() {
             Some(table) => table.events.push(event),
@@ -906,17 +1060,105 @@ impl<'a> Reader<'a, '_> {
         false
     }
 
-    /// Inside `<sup class="footnote-ref">`: the label of its `<a href="#fn-...">`.
+    /// Inside an `<svg>`: the source of the one picture it frames.
+    fn peek_svg_picture(&self) -> Option<&'a str> {
+        let rest = &self.html[self.position..];
+        let end = rest.find("</svg>").unwrap_or(rest.len());
+        let inner = &rest[..end];
+        let at = inner.find("<image")?;
+        if inner[at + 6..].contains("<image") {
+            return None;
+        }
+        let tag = &inner[at + 6..];
+        let tag = &tag[..tag.find('>').unwrap_or(tag.len())];
+        let (attributes, _, _) = parse_attributes(tag);
+        attribute(&attributes, "xlink:href").or_else(|| attribute(&attributes, "href"))
+    }
+
+    /// Inside `<sup class="footnote-ref">`: the label of its link's
+    /// fragment (`<a href="#fn-...">`).
     fn peek_footnote_label(&self) -> &'a str {
         let rest = &self.html[self.position..];
         let end = rest.find("</sup>").unwrap_or(rest.len());
         let inner = &rest[..end];
-        let Some(at) = inner.find("#fn-") else {
+        let Some(href) = inner.find("href=") else {
             return "";
         };
-        let label = &inner[at + 4..];
-        &label[..label.find('"').unwrap_or(label.len())]
+        let value = &inner[href + 5..];
+        let quote = value.chars().next().unwrap_or('"');
+        let value = value.trim_start_matches(['"', '\'']);
+        let value = &value[..value.find(quote).unwrap_or(value.len())];
+        note_label(
+            value
+                .rsplit_once('#')
+                .map_or(value, |(_, fragment)| fragment),
+        )
     }
+
+    /// In a note, a link back to its reference by the reference's id
+    /// (`#FNREF.1`, `#fnref1`, `#noteref-1`): the way back, not content.
+    fn is_note_backlink(&self, attributes: &[(&str, &str)]) -> bool {
+        self.stack
+            .iter()
+            .any(|open| open.node == Node::FootnoteDefinition)
+            && attribute(attributes, "href").is_some_and(|href| {
+                let fragment = href.rsplit_once('#').map_or("", |(_, fragment)| fragment);
+                let lower = fragment.to_ascii_lowercase();
+                lower.contains("fnref")
+                    || lower.contains("noteref")
+                    || lower.contains("footnote-ref")
+            })
+    }
+}
+
+/// A note's label from its id or a reference's fragment: cmark-gfm's
+/// `fn-` prefix aside, the id itself.
+fn note_label(id: &str) -> &str {
+    id.strip_prefix("fn-").unwrap_or(id)
+}
+
+/// Whether a space-separated attribute value holds `word`.
+fn has_word(attributes: &[(&str, &str)], name: &str, words: &[&str]) -> bool {
+    attribute(attributes, name).is_some_and(|value| {
+        value
+            .split_ascii_whitespace()
+            .any(|word| words.contains(&word))
+    })
+}
+
+/// A reference to a note: pandoc's and EPUB's (a `sup.footnote-ref` of
+/// cmark-gfm is read where it opens).
+fn is_noteref(attributes: &[(&str, &str)]) -> bool {
+    has_word(attributes, "epub:type", &["noteref"])
+        || has_word(attributes, "role", &["doc-noteref"])
+        || has_word(attributes, "class", &["footnote-ref"])
+}
+
+/// The way back from a note to its reference.
+fn is_backlink(attributes: &[(&str, &str)]) -> bool {
+    has_word(attributes, "epub:type", &["backlink"])
+        || has_word(attributes, "role", &["doc-backlink"])
+        || has_word(attributes, "class", &["footnote-backref", "footnote-back"])
+}
+
+/// A section that holds notes.
+fn is_notes_section(attributes: &[(&str, &str)]) -> bool {
+    has_word(attributes, "class", &["footnotes"])
+        || has_word(attributes, "role", &["doc-endnotes", "doc-footnotes"])
+        || has_word(
+            attributes,
+            "epub:type",
+            &["footnotes", "endnotes", "rearnotes"],
+        )
+}
+
+/// A note itself.
+fn is_note(attributes: &[(&str, &str)]) -> bool {
+    has_word(
+        attributes,
+        "epub:type",
+        &["footnote", "endnote", "rearnote", "note"],
+    ) || has_word(attributes, "role", &["doc-footnote", "doc-endnote"])
 }
 
 /// A tag name compared without case, without allocating for the common
