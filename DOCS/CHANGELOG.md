@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-14
+
 ### Fixed
 
 - Word files from Google Docs lost every heading: their heading styles name the level (`heading 2`) without stating it, which Word reads as the level and now Sublime does too, so their headings reach Markdown, HTML, ODT, EPUB, and every other format.
