@@ -277,22 +277,18 @@ struct BookLinks<'b, 's> {
 
 impl<'a> EventSink<'a> for BookLinks<'_, '_> {
     fn event(&mut self, event: Event<'a>) {
-        match &event {
+        let keep = match &event {
             Event::Start(Tag::Link { destination, .. }) => {
                 let keep = is_external(destination);
                 self.kept.push(keep);
-                if !keep {
-                    return;
-                }
+                keep
             }
-            Event::End(TagEnd::Link) => {
-                if !self.kept.pop().unwrap_or(true) {
-                    return;
-                }
-            }
-            _ => {}
+            Event::End(TagEnd::Link) => self.kept.pop().unwrap_or(true),
+            _ => true,
+        };
+        if keep {
+            self.builder.event(event);
         }
-        self.builder.event(event);
     }
 
     fn transient(&mut self, event: Event<'_>) {
