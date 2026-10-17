@@ -42,6 +42,13 @@ check(book.status === "converted-with-loss" && new TextDecoder().decode(book.byt
 const fromBook = sublime.convert(book.bytes, "epub", "markdown");
 check(new TextDecoder().decode(fromBook.bytes).includes("# Lists"), `epub -> markdown: ${fromBook.status} ${fromBook.message}`);
 
+// ODS: rows written as a spreadsheet, typed, and read back as shown.
+const sheetCsv = new TextEncoder().encode("name,amount,day\nAnn,1234.5,2024-01-05\n");
+const spreadsheet = sublime.convert(sheetCsv, "csv", "ods");
+check(new TextDecoder().decode(spreadsheet.bytes.slice(38, 84)) === "application/vnd.oasis.opendocument.spreadsheet", `csv -> ods: ${spreadsheet.status} ${spreadsheet.message}`);
+const fromSheet = sublime.convert(spreadsheet.bytes, "ods", "csv");
+check(new TextDecoder().decode(fromSheet.bytes) === "name,amount,day\nAnn,1234.5,2024-01-05\n", `ods -> csv: ${fromSheet.status} ${fromSheet.message}`);
+
 // HEIC: a tiled iPhone-style photo decodes without threads, to PNG and
 // (as its own YCbCr) to JPEG.
 const heic = new Uint8Array(readFileSync("tests/fixtures/heic/apple-photo.heic"));

@@ -28,7 +28,7 @@ and from WebP and PNG) or not at all. SQLite is out of v1. In order:
    always, the goal is to beat the existing tools. HEVC is covered by
    patent pools; the docs say so.
 6. ODT, then EPUB (both done).
-7. ODS.
+7. ODS (done).
 8. N64 ROMs between `z64`, `v64`, and `n64` (decided 2026-10-09: in v1).
 9. Wrap-up: every benchmark pair re-run, size budgets settled (HEIC
    grows the binary and the WebAssembly module), this document current.
@@ -105,7 +105,7 @@ formats.
 | dBase | dbf | [ ] | B | S | Ancient, still everywhere (shapefiles, legacy exports). DBF <-> CSV. |
 | Excel workbook | xlsx | [x] | S | M | Shipped (0.16.0 to 0.28.0): every sheet, typed cells with number formats, merged cells, to and from every row format and Numbers. Notes in `formats/xlsx.md`. |
 | Excel legacy | xls | [ ] | C | L | BIFF8 over OLE2. Read only. |
-| OpenDocument spreadsheet | ods | [ ] | A | M | Same keystones as XLSX. |
+| OpenDocument spreadsheet | ods | [x] | A | M | Shipped (0.32.0): every sheet both ways, cells as LibreOffice shows them, number formats to and from Excel and Numbers, merged cells. Notes in `formats/ods.md`. |
 | Apple Numbers | numbers | [x] | A | L | Shipped both ways (0.27.0 to 0.29.0): cells as Numbers shows them, pivot and categorised tables, merges, and a writer with formats and merges from Excel. Notes in `formats/numbers.md`. |
 | Parquet | parquet | [ ] | A | L | Thrift-compact metadata, plain and dictionary encodings, snappy and zstd. Read to CSV/JSON first; write later. High value for data people. |
 | Apache Arrow IPC / Feather | arrow, feather | [ ] | B | M | Flatbuffers metadata plus raw buffers. Read first. |
@@ -346,7 +346,7 @@ listed.
 
 | Tier | Formats |
 |---|---|
-| **S** | HEIC both ways (v1) · ODT, EPUB, ODS (v1) · Images in documents to PDF (v1) · SQLite read (after v1) · WAV · ZIP and gzip (keystones) |
+| **S** | HEIC both ways (v1) · ODT, EPUB, ODS (v1, done) · Images in documents to PDF (v1) · SQLite read (after v1) · WAV · ZIP and gzip (keystones) |
 | **A** | Semicolon and pipe CSV · INI · MessagePack and CBOR · plist · ODS and ODT · Numbers · Parquet read · NumPy · PEM/DER · vCard and iCalendar · RTF · EPUB · reStructuredText · AsciiDoc · Jupyter · Email (EML, MBOX) · Subtitles (SRT, VTT, ASS, TTML) · GIF · BMP · TIFF · Netpbm · ICO/ICNS · Exif and XMP · AIFF · FLAC · MP3 decode · MIDI · TAR · TrueType/OpenType · WOFF · STL · OBJ · glTF · GeoJSON · GPX · KML · FASTA/FASTQ · DICOM · Intel HEX and S-record · N64 ROM byte order · N64 saves · SNES headers · Genesis SMD/BIN · Minecraft NBT · Spreadsheet to Markdown table |
 | **B** | Java properties · .env · JSON5 · BSON · dBase · Arrow · Avro · MATLAB · R data · JWK/JWT · BibTeX/RIS · PGN · Keynote · MOBI/AZW3 · FictionBook · Org-mode · LaTeX · man pages · R Markdown · Outlook MSG · WebP decode · farbfeld and QOI · TGA · SVG subset rasterizer · PSD · Aseprite · DDS/KTX · Ogg Vorbis decode · Tracker modules · N64 audio · Video remuxing · Transcoding via External · bzip2 · XZ · Zstandard · ISO 9660 · WOFF2 · Glyphs to SVG · PLY · 3MF/AMF · Quake models · Minecraft schematics · Shapefile · WKT/WKB · GenBank/GFF/BED/VCF · PDB · FITS · NES headers · Game Boy saves · PlayStation images · Doom WAD · Quake PAK · PICO-8 · Base64 and hex · Feeds |
 | **C** | XLS · HDF5 · NetCDF · SPSS/Stata/SAS · Protobuf generic · Word `.doc` · Textile/MediaWiki · RTFD · PCX · XCF · ORA/Krita · Camera raw · IFF ILBM · legacy rasters · AU/VOC/CAF · Opus, AAC, ALAC · Chiptune (SID, NSF, SPC, GBS, VGM) · Animated GIF via External · 7z · cpio/ar/deb · CAB · Type 1 fonts · Bitmap fonts · OFF/X3D/VRML · COLLADA · Source SMD · TopoJSON · OSM · GeoTIFF · SAM/BAM · NIfTI · EDF · N64 textures · Retro disk images · Hex dumps · OPML · Log formats · Diagram text-to-text |
