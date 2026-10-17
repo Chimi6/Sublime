@@ -677,21 +677,25 @@ fn is_am_pm(chars: &[char]) -> bool {
 }
 
 fn excel_condition(inner: &str) -> Option<(Op, f64)> {
-    let (op, rest) = if let Some(rest) = inner.strip_prefix(">=") {
-        (Op::GreaterEqual, rest)
-    } else if let Some(rest) = inner.strip_prefix("<=") {
-        (Op::LessEqual, rest)
-    } else if let Some(rest) = inner.strip_prefix("<>") {
-        (Op::NotEqual, rest)
-    } else if let Some(rest) = inner.strip_prefix('>') {
-        (Op::Greater, rest)
-    } else if let Some(rest) = inner.strip_prefix('<') {
-        (Op::Less, rest)
-    } else if let Some(rest) = inner.strip_prefix('=') {
-        (Op::Equal, rest)
-    } else {
-        return None;
-    };
+    condition(inner)
+}
+
+/// A comparison and its number (`>=0.5`, `<>0`, `!=0`); two-character
+/// operators are tried first.
+fn condition(text: &str) -> Option<(Op, f64)> {
+    const OPERATORS: [(&str, Op); 8] = [
+        (">=", Op::GreaterEqual),
+        ("<=", Op::LessEqual),
+        ("<>", Op::NotEqual),
+        ("!=", Op::NotEqual),
+        ("==", Op::Equal),
+        (">", Op::Greater),
+        ("<", Op::Less),
+        ("=", Op::Equal),
+    ];
+    let (op, rest) = OPERATORS
+        .iter()
+        .find_map(|(symbol, op)| text.strip_prefix(symbol).map(|rest| (*op, rest)))?;
     Some((op, rest.trim().parse().ok()?))
 }
 
@@ -1321,25 +1325,7 @@ impl OdsStyles {
 
 /// `value()>=0` as a condition.
 fn ods_condition(text: &str) -> Option<(Op, f64)> {
-    let rest = text.trim().strip_prefix("value()")?.trim();
-    let (op, number) = if let Some(rest) = rest.strip_prefix(">=") {
-        (Op::GreaterEqual, rest)
-    } else if let Some(rest) = rest.strip_prefix("<=") {
-        (Op::LessEqual, rest)
-    } else if let Some(rest) = rest.strip_prefix("!=") {
-        (Op::NotEqual, rest)
-    } else if let Some(rest) = rest.strip_prefix("<>") {
-        (Op::NotEqual, rest)
-    } else if let Some(rest) = rest.strip_prefix('>') {
-        (Op::Greater, rest)
-    } else if let Some(rest) = rest.strip_prefix('<') {
-        (Op::Less, rest)
-    } else if let Some(rest) = rest.strip_prefix('=') {
-        (Op::Equal, rest)
-    } else {
-        return None;
-    };
-    Some((op, number.trim().parse().ok()?))
+    condition(text.trim().strip_prefix("value()")?.trim())
 }
 
 /// Writes the style as ODS data style elements named `name` (maps' targets
