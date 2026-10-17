@@ -5,5 +5,5 @@ pub mod reader;
 pub mod writer;
 
 pub use crc32::crc32;
-pub use reader::{Entry, ZipArchive, ZipError};
+pub use reader::{Entry, EntryStream, ZipArchive, ZipError};
 pub use writer::ZipWriter;

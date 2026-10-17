@@ -19,6 +19,7 @@ serde_yaml = "0.9"
 quick-xml = "0.37"
 calamine = { version = "0.26", features = ["dates"] }
 rust_xlsxwriter = "0.79"
+calamine36 = { package = "calamine", version = "0.36.1" }
 png = "0.17"
 image = { version = "0.25", default-features = false, features = ["bmp", "jpeg", "webp", "pnm", "tga", "ico", "png", "tiff"] }
 jpeg-encoder = "0.6"

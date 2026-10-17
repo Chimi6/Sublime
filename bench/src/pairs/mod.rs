@@ -15,6 +15,7 @@ pub mod markdown_docx;
 pub mod markdown_html;
 pub mod markdown_json;
 pub mod markdown_text;
+pub mod ods_csv;
 pub mod pages_docx;
 pub mod pages_html;
 pub mod pages_json;
@@ -60,6 +61,7 @@ pub const NAMES: &[&str] = &[
     "toml-json",
     "xml-json",
     "xlsx-csv",
+    "ods-csv",
     "jpeg-png",
     "png-bmp",
     "webp-png",
@@ -102,6 +104,7 @@ pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
         "toml-json" => toml_json::run(mode, args),
         "xml-json" => xml_json::run(mode, args),
         "xlsx-csv" => xlsx_csv::run(mode, args),
+        "ods-csv" => ods_csv::run(mode, args),
         "jpeg-png" => jpeg_png::run(mode, args),
         "heic-png" => heic_png::run(mode, args),
         "png-bmp" => png_bmp::run(mode, args),

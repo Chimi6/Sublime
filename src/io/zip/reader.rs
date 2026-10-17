@@ -166,6 +166,54 @@ impl<'a> ZipArchive<'a> {
         self.entries.iter().find(|entry| entry.name == name)
     }
 
+    /// Decompresses `entry` a piece at a time (`EntryStream::next_piece`),
+    /// verifying its checksum at the end, so a large part is never held
+    /// whole.
+    pub fn stream(&self, entry: &Entry) -> Result<EntryStream<'a>, ZipError> {
+        if entry.flags & 1 != 0 {
+            return Err(ZipError::Encrypted {
+                name: entry.name.clone(),
+            });
+        }
+        let header = entry.local_header_offset as usize;
+        if read_u32(self.bytes, header)? != LOCAL_SIGNATURE {
+            return Err(ZipError::BadSignature {
+                what: "local file header",
+                offset: header,
+            });
+        }
+        let name_length = usize::from(read_u16(self.bytes, header + 26)?);
+        let extra_length = usize::from(read_u16(self.bytes, header + 28)?);
+        let data_start = header + 30 + name_length + extra_length;
+        let data = slice(
+            self.bytes,
+            data_start,
+            entry.compressed_size as usize,
+            "entry data",
+        )?;
+        let inflater = match entry.method {
+            METHOD_STORED => None,
+            METHOD_DEFLATE => Some(crate::io::deflate::Inflater::new()),
+            method => {
+                return Err(ZipError::UnsupportedMethod {
+                    name: entry.name.clone(),
+                    method,
+                });
+            }
+        };
+        Ok(EntryStream {
+            name: entry.name.clone(),
+            data,
+            consumed: 0,
+            inflater,
+            crc: 0,
+            produced: 0,
+            expected_crc: entry.crc32,
+            expected_size: entry.uncompressed_size,
+            done: false,
+        })
+    }
+
     /// Decompresses `entry` into `out` and verifies its checksum.
     pub fn read(&self, entry: &Entry, out: &mut Vec<u8>) -> Result<(), ZipError> {
         if entry.flags & 1 != 0 {
@@ -214,6 +262,78 @@ impl<'a> ZipArchive<'a> {
             });
         }
         Ok(())
+    }
+}
+
+/// An entry decompressed a piece at a time.
+pub struct EntryStream<'a> {
+    name: String,
+    data: &'a [u8],
+    consumed: usize,
+    inflater: Option<crate::io::deflate::Inflater>,
+    crc: u32,
+    produced: u64,
+    expected_crc: u32,
+    expected_size: u64,
+    done: bool,
+}
+
+impl EntryStream<'_> {
+    /// Appends the next piece of the entry, about `size` bytes, to `out`;
+    /// false once the entry has ended (its checksum verified).
+    pub fn next_piece(&mut self, out: &mut Vec<u8>, size: usize) -> Result<bool, ZipError> {
+        if self.done {
+            return Ok(false);
+        }
+        let start = out.len();
+        match &mut self.inflater {
+            None => {
+                let end = (self.consumed + size).min(self.data.len());
+                out.extend_from_slice(&self.data[self.consumed..end]);
+                self.consumed = end;
+                if self.consumed == self.data.len() {
+                    self.done = true;
+                }
+            }
+            Some(inflater) => {
+                let name = &self.name;
+                let failed = |error| ZipError::Inflate {
+                    name: name.clone(),
+                    error,
+                };
+                loop {
+                    let (used, progress) = inflater
+                        .push(&self.data[self.consumed..], size)
+                        .map_err(failed)?;
+                    self.consumed += used;
+                    let output = inflater.output();
+                    out.extend_from_slice(output);
+                    let taken = output.len();
+                    inflater.drain(taken);
+                    match progress {
+                        crate::io::deflate::Progress::Done => {
+                            self.done = true;
+                            break;
+                        }
+                        crate::io::deflate::Progress::OutputFull => break,
+                        crate::io::deflate::Progress::NeedInput => {
+                            if self.consumed >= self.data.len() {
+                                return Err(failed(InflateError::Truncated));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let piece = &out[start..];
+        self.crc = super::crc32::crc32_update(self.crc, piece);
+        self.produced += piece.len() as u64;
+        if self.done && (self.produced != self.expected_size || self.crc != self.expected_crc) {
+            return Err(ZipError::BadData {
+                name: self.name.clone(),
+            });
+        }
+        Ok(!piece.is_empty() || !self.done)
     }
 }
 

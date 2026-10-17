@@ -196,7 +196,8 @@ impl Converter for NumbersTo {
 }
 
 /// Each cell format's Excel form, worked out once per format.
-type ExcelCodes = std::collections::HashMap<*const CellFormat, (Excel, Option<std::rc::Rc<str>>)>;
+pub(crate) type ExcelCodes =
+    std::collections::HashMap<*const CellFormat, (Excel, Option<std::rc::Rc<str>>)>;
 
 /// Days from Excel's day zero (1899-12-30) to 2001-01-01, Numbers' epoch.
 const EXCEL_DAYS_TO_2001: f64 = 36_892.0;
@@ -204,7 +205,7 @@ const EXCEL_DAYS_TO_2001: f64 = 36_892.0;
 /// A cell as Excel stores it: numbers, dates, durations, and booleans as
 /// values with the Excel format that shows them as Numbers does; what no
 /// Excel format shows the same, as Numbers' text.
-fn excel_cell<'a>(
+pub(crate) fn excel_cell<'a>(
     cell: &'a WorkbookCell,
     codes: &mut ExcelCodes,
 ) -> (XlsxCell<'a>, Option<std::rc::Rc<str>>) {
@@ -286,13 +287,13 @@ fn excel_cell<'a>(
 }
 
 /// A table to write: where it is and the name its part takes.
-struct Picked {
-    sheet: usize,
-    table: usize,
-    name: String,
+pub(crate) struct Picked {
+    pub(crate) sheet: usize,
+    pub(crate) table: usize,
+    pub(crate) name: String,
 }
 
-fn read_all(input: &mut Input<'_>) -> Result<Vec<u8>, ConvertError> {
+pub(crate) fn read_all(input: &mut Input<'_>) -> Result<Vec<u8>, ConvertError> {
     let mut bytes = Vec::new();
     input.read_to_end(&mut bytes)?;
     Ok(bytes)
@@ -300,7 +301,7 @@ fn read_all(input: &mut Input<'_>) -> Result<Vec<u8>, ConvertError> {
 
 /// The document's tables, named, or the ones `--sheet` picks: a sheet's
 /// name (its every table), a table's part name, or a table's number from 1.
-fn pick_tables(
+pub(crate) fn pick_tables(
     workbook: &WorkbookReader<'_>,
     context: &mut Context<'_>,
 ) -> Result<Vec<Picked>, ConvertError> {

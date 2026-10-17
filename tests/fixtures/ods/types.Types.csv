@@ -1,0 +1,28 @@
+Kind,Shown
+text,A < B & C
+spaces,two  spaces	tab
+lines,"first
+second
+third"
+link,see the site
+general,1234.5678
+no shown text,0.125
+grouped,"1,234,567.89"
+percent,25.60%
+currency,"$1,234.50"
+"currency, negative","-$1,234.50"
+scientific,1.23E+04
+fraction,1 1/2
+ISO date,2024-01-05
+locale-order date,5.1.24
+long date,"Saturday, October 29, 2022"
+duration,36:00:00
+date and time,11/22/23 06:04 PM
+low,[low]
+"low, zero",[low]
+"low, large","1,234"
+German format,"1.234,50"
+blank digits,Nr.   0042
+text format, padded 
+boolean,TRUE
+boolean as number,TRUE

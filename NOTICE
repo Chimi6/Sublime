@@ -6,3 +6,7 @@ option) any later version. See LICENSE and LICENSING.md.
 
 Releases 0.1.0 through 0.3.0 were published under the Apache License,
 Version 2.0, and remain available under it.
+
+src/io/ods/builtin.rs holds date format codes taken from LibreOffice's
+locale data (Copyright The Document Foundation and contributors), under the
+Mozilla Public License 2.0; that file is also available under it.

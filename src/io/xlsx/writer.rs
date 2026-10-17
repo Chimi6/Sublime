@@ -413,9 +413,9 @@ pub fn is_number_literal(text: &str) -> bool {
 /// shown in the form it was written in: `yyyy-mm-dd`, the same with a
 /// quoted `T` and `hh:mm:ss`, and `[hh]:mm:ss` (LibreOffice shows a plain
 /// `hh:mm:ss` with AM and PM).
-const STYLE_DATE: u8 = 1;
-const STYLE_DATE_TIME: u8 = 2;
-const STYLE_TIME: u8 = 3;
+pub const STYLE_DATE: u8 = 1;
+pub const STYLE_DATE_TIME: u8 = 2;
+pub const STYLE_TIME: u8 = 3;
 
 /// The Excel serial (days since 1899-12-30, the 1900 system) and cell style
 /// of an ISO 8601 date (`2024-08-08`), date and time (`2024-08-08T14:35:00`),
@@ -479,7 +479,7 @@ pub fn iso_serial(text: &str) -> Option<(f64, u8)> {
 
 /// Days from 1970-01-01 to a calendar date (Howard Hinnant's algorithm,
 /// the inverse of the reader's `civil_from_days`).
-fn days_from_civil(year: u32, month: u32, day: u32) -> i64 {
+pub(crate) fn days_from_civil(year: u32, month: u32, day: u32) -> i64 {
     let year = i64::from(year) - i64::from(month <= 2);
     let era = year.div_euclid(400);
     let year_of_era = year - era * 400;
