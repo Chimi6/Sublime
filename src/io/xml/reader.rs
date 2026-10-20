@@ -35,6 +35,11 @@ impl<'a> XmlReader<'a> {
         self.text
     }
 
+    /// The byte offset just past the last event returned.
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
     /// Text between the next start tag of `name` and its end tag, with
     /// nested elements' text concatenated.
     pub fn attribute<'e>(event: &'e XmlEvent<'a>, name: &str) -> Option<&'e str> {
@@ -74,7 +79,7 @@ impl<'a> Iterator for XmlReader<'a> {
                     self.position += end;
                     continue;
                 }
-                let end = rest.find('>').unwrap_or(rest.len() - 1);
+                let end = find_byte(rest, b'>').unwrap_or(rest.len() - 1);
                 let tag = &rest[1..end];
                 self.position += end + 1;
                 if let Some(name) = tag.strip_prefix('/') {
@@ -89,12 +94,35 @@ impl<'a> Iterator for XmlReader<'a> {
                     self_closing,
                 });
             }
-            let end = rest.find('<').unwrap_or(rest.len());
+            let end = find_byte(rest, b'<').unwrap_or(rest.len());
             let text = &rest[..end];
             self.position += end;
             return Some(XmlEvent::Text(decode_entities(text)));
         }
     }
+}
+
+/// The first `byte` (ASCII) in `text`, eight bytes at a time: a markup
+/// byte is found far more often in machine-written XML than `str::find`'s
+/// general searcher pays for.
+fn find_byte(text: &str, byte: u8) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let repeated = u64::from_ne_bytes([byte; 8]);
+    let mut at = 0;
+    while at + 8 <= bytes.len() {
+        let mut word = [0u8; 8];
+        word.copy_from_slice(&bytes[at..at + 8]);
+        let diff = u64::from_ne_bytes(word) ^ repeated;
+        // A zero byte in `diff` is a match.
+        if (diff.wrapping_sub(0x0101_0101_0101_0101) & !diff & 0x8080_8080_8080_8080) != 0 {
+            break;
+        }
+        at += 8;
+    }
+    bytes[at..]
+        .iter()
+        .position(|candidate| *candidate == byte)
+        .map(|offset| at + offset)
 }
 
 fn parse_tag(tag: &str) -> (&str, Vec<(&str, Cow<'_, str>)>) {
@@ -113,7 +141,7 @@ fn parse_tag(tag: &str) -> (&str, Vec<(&str, Cow<'_, str>)>) {
             Some(quote @ ('"' | '\'')) => quote,
             _ => break,
         };
-        let value_end = match after[1..].find(quote) {
+        let value_end = match find_byte(&after[1..], quote as u8) {
             Some(index) => index + 1,
             None => break,
         };

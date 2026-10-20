@@ -233,6 +233,27 @@ impl<'a> Workbook<'a> {
         Ok(merges)
     }
 
+    /// The sheet's merged ranges as (row, column, rows, columns) from 0,
+    /// without reading its rows (they follow the rows in the part).
+    pub fn merges(&self, sheet: usize) -> Vec<(usize, usize, usize, usize)> {
+        let Some(xml) = read_text(&self.archive, &self.sheets[sheet].1) else {
+            return Vec::new();
+        };
+        let Some(start) = xml.find("<mergeCells") else {
+            return Vec::new();
+        };
+        XmlReader::new(&xml[start..])
+            .filter_map(|event| match &event {
+                XmlEvent::Start {
+                    name: "mergeCell",
+                    attributes,
+                    ..
+                } => attribute(attributes, "ref").and_then(merge_range),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Puts the cell's text at its column, filling the gap with empties.
     fn place(&self, cells: &mut Vec<String>, cell: &Cell) {
         while cells.len() < cell.column {
@@ -585,7 +606,7 @@ pub fn serial_to_iso(serial: f64, date1904: bool) -> String {
 }
 
 /// Days since 1970-01-01 to a calendar date (Howard Hinnant's algorithm).
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
+pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let day_of_era = z - era * 146_097;

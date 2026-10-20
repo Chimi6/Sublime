@@ -6,6 +6,14 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- OpenDocument spreadsheets (`.ods`) both ways: every sheet reaches CSV, TSV, JSON, JSON Lines, Markdown (and every document format through it), Excel, and Numbers, and each of those reaches ODS. Cells show as LibreOffice shows them to an English reader: number, percent, currency, scientific, fraction, date, time, boolean, conditional, and text formats, a document language's built-in dates in English's, a format in its own language as the file holds it, formula errors by their English names. Excel and Numbers get each value typed with its number format (ODS data styles and Excel codes map both ways, `?` digits and language tags included) and merged cells. Against LibreOffice's own CSV export, 99.65% of cells outside formulas match on its 297 test spreadsheets and 99.999% of 12.2 million on 35 held-out government spreadsheets; every CSV written as ODS reads back the same in LibreOffice. `content.xml` is read four megabytes at a time in one pass, so a 15 MB spreadsheet holding 710 MB of XML reads its first sheet in 0.7 s at 40 MB. Benchmark pair `ods-csv` passes every line against calamine and LibreOffice. Notes in `DOCS/formats/ods.md`, numbers in `DOCS/benchmarks/ods-csv.md`.
+
+### Fixed
+
+- An Excel number stored with more than fifteen significant digits stays a number when it reaches ODS.
+
 ## [0.31.0] - 2026-10-14
 
 ### Fixed

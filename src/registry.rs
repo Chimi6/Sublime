@@ -29,6 +29,7 @@ use crate::converters::markdown_to_json::MarkdownToJson;
 use crate::converters::markdown_to_pages::MarkdownToPages;
 use crate::converters::markdown_to_text::MarkdownToText;
 use crate::converters::numbers;
+use crate::converters::ods;
 use crate::converters::odt;
 use crate::converters::pages_to_docx::PagesToDocx;
 use crate::converters::pages_to_html::PagesToHtml;
@@ -52,7 +53,7 @@ use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 122] = [
+static CONVERTERS: [&dyn Converter; 134] = [
     &csv_to_json::CSV_TO_JSON,
     &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
@@ -160,6 +161,18 @@ static CONVERTERS: [&dyn Converter; 122] = [
     &numbers::NUMBERS_TO_JSON,
     &numbers::NUMBERS_TO_MARKDOWN,
     &numbers::NUMBERS_TO_XLSX,
+    &ods::ODS_TO_CSV,
+    &ods::ODS_TO_TSV,
+    &ods::ODS_TO_JSON,
+    &ods::ODS_TO_MARKDOWN,
+    &ods::ODS_TO_XLSX,
+    &ods::ODS_TO_NUMBERS,
+    &ods::CSV_TO_ODS,
+    &ods::TSV_TO_ODS,
+    &ods::XLSX_TO_ODS,
+    &ods::JSON_TO_ODS,
+    &ods::MARKDOWN_TO_ODS,
+    &ods::NUMBERS_TO_ODS,
     &to_numbers::CSV_TO_NUMBERS,
     &to_numbers::TSV_TO_NUMBERS,
     &to_numbers::XLSX_TO_NUMBERS,
@@ -268,6 +281,7 @@ mod tests {
                 "markdown",
                 "markdown-json",
                 "numbers",
+                "ods",
                 "odt",
                 "pages",
                 "pages-json",

@@ -290,6 +290,18 @@ pub static ODT: Format = Format {
     write_options: &[Setting::Effort],
 };
 
+pub static ODS: Format = Format {
+    id: "ods",
+    display_name: "OpenDocument spreadsheet",
+    extensions: &["ods"],
+    magic: Some(
+        b"PK\x03\x04??????????????????????????mimetypeapplication/vnd.oasis.opendocument.spreadsheet",
+    ),
+    category: Category::Data,
+    read_options: &[Setting::Sheet],
+    write_options: &[Setting::Sheet, Setting::Effort],
+};
+
 pub static EPUB: Format = Format {
     id: "epub",
     display_name: "EPUB e-book",
