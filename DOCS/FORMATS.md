@@ -225,6 +225,21 @@ graph LR
 | **tiff** | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 |  | <img src="map/lossy.svg?v=2" width="18" alt="lossy"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | <img src="map/lossy.svg?v=2" width="18" alt="lossy"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | <img src="map/lossy.svg?v=2" width="18" alt="lossy"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | · | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 |
 | **webp** | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 |  | <img src="map/lossy.svg?v=2" width="18" alt="lossy"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | <img src="map/lossy.svg?v=2" width="18" alt="lossy"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | <img src="map/lossy.svg?v=2" width="18" alt="lossy"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | <img src="map/conditional.svg?v=2" width="18" alt="conditional"> 1 | · |
 
+### game
+
+```mermaid
+graph LR
+  z64 --- v64
+  z64 --- n64
+  v64 --- n64
+```
+
+| from \ to | n64 | v64 | z64 |
+|---|:-:|:-:|:-:|
+| **n64** | · | <img src="map/lossless.svg?v=2" width="18" alt="lossless"> 1 | <img src="map/lossless.svg?v=2" width="18" alt="lossless"> 1 |
+| **v64** | <img src="map/lossless.svg?v=2" width="18" alt="lossless"> 1 | · | <img src="map/lossless.svg?v=2" width="18" alt="lossless"> 1 |
+| **z64** | <img src="map/lossless.svg?v=2" width="18" alt="lossless"> 1 | <img src="map/lossless.svg?v=2" width="18" alt="lossless"> 1 | · |
+
 ### Between categories
 
 A format's converter into another category opens every path that category already has, so the other side is drawn as the category itself.
@@ -295,3 +310,11 @@ Two flags tune what a writer makes, each with one meaning everywhere. `--quality
 | tga | Truevision TGA image | tga, icb, vda, vst | - | - | png-to-tga, bmp-to-tga, jpeg-to-tga, webp-to-tga, qoi-to-tga, pbm-to-tga, pgm-to-tga, ppm-to-tga, pam-to-tga, tiff-to-tga, ico-to-tga, pdf-to-tga, heic-to-tga, cur-to-tga | tga-to-png, tga-to-bmp, tga-to-jpeg, tga-to-webp, tga-to-qoi, tga-to-pbm, tga-to-pgm, tga-to-ppm, tga-to-pam, tga-to-tiff, tga-to-ico, tga-to-pdf, tga-to-heic |
 | tiff | TIFF image | tif, tiff | - | `--effort (default balanced)` | png-to-tiff, bmp-to-tiff, jpeg-to-tiff, webp-to-tiff, qoi-to-tiff, pbm-to-tiff, pgm-to-tiff, ppm-to-tiff, pam-to-tiff, tga-to-tiff, ico-to-tiff, pdf-to-tiff, heic-to-tiff, cur-to-tiff | tiff-to-png, tiff-to-bmp, tiff-to-jpeg, tiff-to-webp, tiff-to-qoi, tiff-to-pbm, tiff-to-pgm, tiff-to-ppm, tiff-to-pam, tiff-to-tga, tiff-to-ico, tiff-to-pdf, tiff-to-heic |
 | webp | WebP image | webp | - | `--effort (default balanced)` | png-to-webp, bmp-to-webp, jpeg-to-webp, qoi-to-webp, pbm-to-webp, pgm-to-webp, ppm-to-webp, pam-to-webp, tga-to-webp, tiff-to-webp, ico-to-webp, pdf-to-webp, heic-to-webp, cur-to-webp | webp-to-png, webp-to-bmp, webp-to-jpeg, webp-to-qoi, webp-to-pbm, webp-to-pgm, webp-to-ppm, webp-to-pam, webp-to-tga, webp-to-tiff, webp-to-ico, webp-to-pdf, webp-to-heic |
+
+### game formats
+
+| Id | Name | Extensions | Options read | Options written | Produced by | Consumed by |
+|---|---|---|---|---|---|---|
+| n64 | N64 ROM, little-endian | n64 | - | - | z64-to-n64, v64-to-n64 | n64-to-z64, n64-to-v64 |
+| v64 | N64 ROM, byte-swapped | v64 | - | - | z64-to-v64, n64-to-v64 | v64-to-z64, v64-to-n64 |
+| z64 | N64 ROM, big-endian | z64 | - | - | v64-to-z64, n64-to-z64 | z64-to-v64, z64-to-n64 |

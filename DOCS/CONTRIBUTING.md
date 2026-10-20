@@ -54,7 +54,10 @@ Six places, and the compiler or a test catches anything you miss.
    commit both.
 
 Then add a line to `CHANGELOG.md` and, if the work changes direction, to
-`STATE.md`.
+`STATE.md`. What the format leaves out or gets wrong goes in its
+`DOCS/formats/<format>.md` and as an entry under Tech Debt in `STATE.md`,
+and so does any benchmark line that fails; remove the entry when it is
+fixed.
 
 ## Fidelity contract
 

@@ -49,6 +49,15 @@ check(new TextDecoder().decode(spreadsheet.bytes.slice(38, 84)) === "application
 const fromSheet = sublime.convert(spreadsheet.bytes, "ods", "csv");
 check(new TextDecoder().decode(fromSheet.bytes) === "name,amount,day\nAnn,1234.5,2024-01-05\n", `ods -> csv: ${fromSheet.status} ${fromSheet.message}`);
 
+// N64: a ROM's bytes reordered, and a byte-swapped ROM given as z64
+// read by its header.
+const rom = new Uint8Array(4096).map((_, index) => index * 7);
+rom.set([0x80, 0x37, 0x12, 0x40]);
+const swapped = sublime.convert(rom, "z64", "v64");
+check(swapped.status === "converted" && swapped.bytes[0] === 0x37 && swapped.bytes[5] === rom[4] && swapped.bytes.length === 4096, `z64 -> v64: ${swapped.status} ${swapped.message}`);
+const little = sublime.convert(swapped.bytes, "z64", "n64");
+check(little.bytes[0] === 0x40 && little.bytes[3] === 0x80 && little.bytes[7] === rom[4], `v64 named z64 -> n64: ${little.status} ${little.message}`);
+
 // HEIC: a tiled iPhone-style photo decodes without threads, to PNG and
 // (as its own YCbCr) to JPEG.
 const heic = new Uint8Array(readFileSync("tests/fixtures/heic/apple-photo.heic"));

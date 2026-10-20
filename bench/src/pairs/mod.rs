@@ -36,6 +36,7 @@ pub mod toml_json;
 pub mod xlsx_csv;
 pub mod xml_json;
 pub mod yaml_json;
+pub mod z64_v64;
 
 pub const NAMES: &[&str] = &[
     "csv-json",
@@ -77,6 +78,7 @@ pub const NAMES: &[&str] = &[
     "odt-docx",
     "epub-docx",
     "yaml-json",
+    "z64-v64",
 ];
 
 pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
@@ -118,6 +120,7 @@ pub fn run(pair: &str, mode: &str, args: &[String]) -> Result<(), String> {
         "jpeg-pdf" => pdf::run(mode, args),
         "pdf-text" => pdf_text::run(mode, args),
         "yaml-json" => yaml_json::run(mode, args),
+        "z64-v64" => z64_v64::run(mode, args),
         other => Err(format!(
             "unknown pair '{other}'; known: {}",
             NAMES.join(", ")

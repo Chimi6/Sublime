@@ -16,6 +16,7 @@ pub mod jpeg;
 pub mod json;
 pub mod lzw;
 pub mod markdown;
+pub mod n64;
 pub mod netpbm;
 pub mod ods;
 pub mod odt;

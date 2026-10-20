@@ -42,7 +42,9 @@ against each other: `csv -> json` at 333 MB/s and `pages -> docx` at
   bytes, a stdin variant, a floor), marked `[extra]` in the target or
   named in the reference cell; they never replace the standard rows.
 - **Units.** MB is 1,048,576 bytes everywhere: sizes, throughput, memory.
-  Time is the median of three runs of the whole process. Nothing is
+  Time is the median of three runs of the whole process (more for a pair
+  whose commands take milliseconds, set by `bench_runs` and said in its
+  document). Nothing is
   reported per second of CPU or in-process.
 - **Reference cell.** The named reference's number, run in the same session
   on the same input: a peer crate compiled into the bench binary, or an

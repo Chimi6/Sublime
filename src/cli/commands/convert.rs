@@ -32,6 +32,15 @@ pub fn run(
     let reads_stdin = input_name == "-";
     let mut input_file = open_input_file(args, reads_stdin)?;
     let from = resolve_from(args, &known, reads_stdin, input_file.as_mut())?;
+    let from = match from {
+        (found, Some(named)) => {
+            renderer.emit(&Event::Warning {
+                message: overruled_extension(&input_name, found, named),
+            });
+            found
+        }
+        (found, None) => found,
+    };
     let to = resolve_to(args, &known)?;
     refuse_clobbering_another_format(args, to)?;
     let via = match &args.via {
@@ -107,23 +116,21 @@ fn resolve_from(
     known: &[&'static Format],
     reads_stdin: bool,
     input_file: Option<&mut InputSource>,
-) -> Result<&'static Format, CliError> {
+) -> Result<(&'static Format, Option<&'static Format>), CliError> {
     if let Some(id) = &args.from {
         let found = format::find_by_id(id, known)?;
-        return Ok(found);
+        return Ok((found, None));
     }
     if reads_stdin {
         return Err(CliError::Format(format::FormatError::Undetectable));
     }
     let input_name = args.inputs.first().cloned().unwrap_or_default();
-    let by_extension = format::find_by_extension(Path::new(&input_name), known);
-    let extension_error = match by_extension {
-        Ok(found) => return Ok(found),
-        Err(error) => error,
-    };
     let file = match input_file {
         Some(file) => file,
-        None => return Err(CliError::Format(format::FormatError::Undetectable)),
+        None => {
+            let found = format::find_by_extension(Path::new(&input_name), known)?;
+            return Ok((found, None));
+        }
     };
     let mut head = [0u8; SNIFF_SIZE];
     let read_count = file.read(&mut head).map_err(|error| CliError::Io {
@@ -131,11 +138,17 @@ fn resolve_from(
         error,
     })?;
     rewind_file(file, &input_name)?;
-    let by_magic = format::find_by_magic(&head[..read_count], known);
-    match by_magic {
-        Ok(found) => Ok(found),
-        Err(_) => Err(CliError::Format(extension_error)),
-    }
+    let found = format::detect(Path::new(&input_name), &head[..read_count], known)?;
+    Ok(found)
+}
+
+/// The warning for a file read as the format its content shows rather
+/// than the one its extension names.
+pub(crate) fn overruled_extension(name: &str, found: &Format, named: &Format) -> String {
+    format!(
+        "'{name}' is named as {} ({}) but holds {} ({}); read as {}",
+        named.id, named.display_name, found.id, found.display_name, found.id
+    )
 }
 
 fn rewind_file(file: &mut InputSource, name: &str) -> Result<(), CliError> {
