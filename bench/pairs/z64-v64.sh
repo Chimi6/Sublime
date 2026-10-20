@@ -41,6 +41,9 @@ run_pair() {
     # The other orders, as inputs: ours, checked against the crate below.
     "$bench" z64-v64 ours z64-v64 "$z64" "$data/rom-$shape.v64"
     "$bench" z64-v64 ours z64-n64 "$z64" "$data/rom-$shape.n64"
+    # Their 128 MB would otherwise still be going to disk while the first
+    # row, ours, is timed.
+    sync
     for direction in z64-v64 v64-z64 z64-n64 v64-n64; do
       local from="${direction%-*}" to="${direction#*-}"
       local input="$data/rom-$shape.$from"
