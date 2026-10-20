@@ -29,7 +29,8 @@ bench="bench/target/release/sublime-bench"
 time_bin="$(command -v gtime || echo /usr/bin/time)"
 
 # time_cmd <label> <command...> : prints "label median_seconds max_rss_kb"
-# over three runs, wall clock per run, peak RSS from GNU time.
+# over three runs (or $bench_runs, which a pair whose commands take
+# milliseconds raises), wall clock per run, peak RSS from GNU time.
 time_cmd() {
   local label="$1"; shift
   local rss=""
@@ -39,7 +40,8 @@ time_cmd() {
   # on btrfs and ext4 for a rename into place (ours, atomic) and not for
   # a truncate (the crates'), which is the file system, not the converter.
   local last="${!#}"
-  for _ in 1 2 3; do
+  local run
+  for run in $(seq "${bench_runs:-3}"); do
     case "$(basename -- "$last")" in out-*) rm -f -- "$last" ;; esac
     local start end
     start="$(date +%s.%N)"
@@ -51,7 +53,7 @@ time_cmd() {
     rss="$(tail -n 1 "$data/rss.txt")"
   done
   local median
-  median="$(printf '%s\n' "${results[@]}" | sort -n | sed -n 2p)"
+  median="$(printf '%s\n' "${results[@]}" | sort -n | sed -n "$(( (${#results[@]} + 1) / 2 ))p")"
   echo "$label $median $rss"
 }
 mbps() { awk "BEGIN{printf \"%.1f\", $1 / $2 / 1048576}"; }

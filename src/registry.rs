@@ -28,6 +28,7 @@ use crate::converters::markdown_to_html::MarkdownToHtml;
 use crate::converters::markdown_to_json::MarkdownToJson;
 use crate::converters::markdown_to_pages::MarkdownToPages;
 use crate::converters::markdown_to_text::MarkdownToText;
+use crate::converters::n64;
 use crate::converters::numbers;
 use crate::converters::ods;
 use crate::converters::odt;
@@ -53,7 +54,7 @@ use crate::converters::xml_to_json::XmlToJson;
 use crate::converters::yaml_to_json::YamlToJson;
 use crate::format::Format;
 
-static CONVERTERS: [&dyn Converter; 134] = [
+static CONVERTERS: [&dyn Converter; 140] = [
     &csv_to_json::CSV_TO_JSON,
     &json_to_csv::JSON_TO_CSV,
     &MarkdownToHtml,
@@ -188,6 +189,12 @@ static CONVERTERS: [&dyn Converter; 134] = [
     &rows_document::TSV_TO_MARKDOWN,
     &rows_document::MARKDOWN_TO_CSV,
     &rows_document::MARKDOWN_TO_TSV,
+    &n64::Z64_TO_V64,
+    &n64::Z64_TO_N64,
+    &n64::V64_TO_Z64,
+    &n64::V64_TO_N64,
+    &n64::N64_TO_Z64,
+    &n64::N64_TO_V64,
 ];
 
 /// The listed converters and the generated image pairs, gathered once.
@@ -280,6 +287,7 @@ mod tests {
                 "jsonl",
                 "markdown",
                 "markdown-json",
+                "n64",
                 "numbers",
                 "ods",
                 "odt",
@@ -298,10 +306,12 @@ mod tests {
                 "tiff",
                 "toml",
                 "tsv",
+                "v64",
                 "webp",
                 "xlsx",
                 "xml",
-                "yaml"
+                "yaml",
+                "z64"
             ]
         );
     }

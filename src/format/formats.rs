@@ -365,3 +365,38 @@ pub static MARKDOWN_JSON: Format = Format {
     read_options: &[],
     write_options: &[],
 };
+
+/// An N64 ROM as the console reads it, big-endian: the order a header
+/// checksum is computed in (Mr. Backup Z64 dumps).
+pub static Z64: Format = Format {
+    id: "z64",
+    display_name: "N64 ROM, big-endian",
+    extensions: &["z64"],
+    magic: Some(b"\x80\x37\x12\x40"),
+    category: Category::Game,
+    read_options: &[],
+    write_options: &[],
+};
+
+/// An N64 ROM with each 16-bit pair swapped (Doctor V64 dumps).
+pub static V64: Format = Format {
+    id: "v64",
+    display_name: "N64 ROM, byte-swapped",
+    extensions: &["v64"],
+    magic: Some(b"\x37\x80\x40\x12"),
+    category: Category::Game,
+    read_options: &[],
+    write_options: &[],
+};
+
+/// An N64 ROM with each 32-bit word reversed. `.n64` names other orders
+/// in the wild too; the converters go by the header.
+pub static N64: Format = Format {
+    id: "n64",
+    display_name: "N64 ROM, little-endian",
+    extensions: &["n64"],
+    magic: Some(b"\x40\x12\x37\x80"),
+    category: Category::Game,
+    read_options: &[],
+    write_options: &[],
+};

@@ -104,7 +104,17 @@ pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliE
         let from = match from_override {
             Some(from) => from,
             None => match detect_format(&input, &known) {
-                Ok(from) => from,
+                Ok((from, None)) => from,
+                Ok((from, Some(named))) => {
+                    renderer.emit(&Event::Warning {
+                        message: super::convert::overruled_extension(
+                            &input.display().to_string(),
+                            from,
+                            named,
+                        ),
+                    });
+                    from
+                }
                 Err(error) => {
                     // Files inside a directory or glob that we cannot
                     // read are skipped; a file named outright is an error.
@@ -543,24 +553,18 @@ fn collect_directory(
     Ok(())
 }
 
-/// The input's format by extension, else by its first bytes.
+/// The input's format by extension, else by its first bytes; by its
+/// first bytes too when they overrule the extension (`format::detect`),
+/// with the format the extension named.
 pub(crate) fn detect_format(
     path: &Path,
     known: &[&'static Format],
-) -> Result<&'static Format, FormatError> {
-    let by_extension = format::find_by_extension(path, known);
-    let extension_error = match by_extension {
-        Ok(found) => return Ok(found),
-        Err(error) => error,
-    };
+) -> Result<(&'static Format, Option<&'static Format>), FormatError> {
     let mut head = [0u8; SNIFF_SIZE];
     let read_count = File::open(path)
         .and_then(|mut file| file.read(&mut head))
         .unwrap_or(0);
-    match format::find_by_magic(&head[..read_count], known) {
-        Ok(found) => Ok(found),
-        Err(_) => Err(extension_error),
-    }
+    format::detect(path, &head[..read_count], known)
 }
 
 // ---- globs, for shells that do not expand them (Windows) ----

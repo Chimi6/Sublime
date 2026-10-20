@@ -16,6 +16,7 @@ pub enum Category {
     Audio,
     Video,
     Archive,
+    Game,
 }
 
 impl Category {
@@ -27,6 +28,7 @@ impl Category {
             Category::Audio => "audio",
             Category::Video => "video",
             Category::Archive => "archive",
+            Category::Game => "game",
         }
     }
 }
@@ -247,6 +249,36 @@ pub fn find_by_magic(
     Err(FormatError::Undetectable)
 }
 
+/// The format of a file named `path` whose first bytes are `head`: the
+/// one its extension names, unless the file fails that format's magic
+/// and carries another's (a byte-swapped N64 ROM saved as `.z64`), and
+/// by its magic when no format has its extension. Returns the format the
+/// extension named as well when the content overruled it.
+pub fn detect(
+    path: &Path,
+    head: &[u8],
+    known: &[&'static Format],
+) -> Result<(&'static Format, Option<&'static Format>), FormatError> {
+    let named = match find_by_extension(path, known) {
+        Ok(named) => named,
+        Err(extension_error) => {
+            return find_by_magic(head, known)
+                .map(|found| (found, None))
+                .map_err(|_| extension_error);
+        }
+    };
+    let Some(magic) = named.magic else {
+        return Ok((named, None));
+    };
+    if find_by_magic(head, &[named]).is_ok() || head.len() < magic.len() {
+        return Ok((named, None));
+    }
+    match find_by_magic(head, known) {
+        Ok(found) => Ok((found, Some(named))),
+        Err(_) => Ok((named, None)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +358,27 @@ mod tests {
     fn undetectable_when_no_magic_matches() {
         let result = find_by_magic(b"a,b,c", &known());
         assert_eq!(result.unwrap_err(), FormatError::Undetectable);
+    }
+
+    #[test]
+    fn content_overrules_an_extension_whose_magic_it_fails() {
+        let known = [&formats::Z64, &formats::V64, &formats::N64, &formats::CSV];
+        let swapped = b"\x37\x80\x40\x12rest";
+        let (found, named) = detect(Path::new("game.z64"), swapped, &known).unwrap();
+        assert_eq!(
+            (found.id, named.map(|named| named.id)),
+            ("v64", Some("z64"))
+        );
+        let (found, named) = detect(Path::new("game.v64"), swapped, &known).unwrap();
+        assert_eq!((found.id, named), ("v64", None));
+        // A file matching no magic keeps its extension's format.
+        let (found, named) = detect(Path::new("game.z64"), b"\0\0\0\0", &known).unwrap();
+        assert_eq!((found.id, named), ("z64", None));
+        // A format without magic is never overruled.
+        let (found, named) = detect(Path::new("rom.csv"), swapped, &known).unwrap();
+        assert_eq!((found.id, named), ("csv", None));
+        let (found, _) = detect(Path::new("game"), swapped, &known).unwrap();
+        assert_eq!(found.id, "v64");
     }
 
     #[test]

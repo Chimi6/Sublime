@@ -28,6 +28,7 @@ pub mod markdown_to_html;
 pub mod markdown_to_json;
 pub mod markdown_to_pages;
 pub mod markdown_to_text;
+pub mod n64;
 pub mod numbers;
 pub mod ods;
 pub mod odt;

@@ -36,7 +36,7 @@ pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliE
                 error: std::io::Error::from(std::io::ErrorKind::NotFound),
             });
         }
-        let format = super::batch::detect_format(&path, &known).map_err(CliError::Format)?;
+        let (format, _) = super::batch::detect_format(&path, &known).map_err(CliError::Format)?;
         let Some(kind) = reader_for(format.id) else {
             return Err(CliError::Usage(format!(
                 "'{input}' is {}, not an image: only images merge into a PDF",

@@ -247,6 +247,10 @@ impl fmt::Display for ConvertError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ConvertError::Io(error) => write!(formatter, "{error}"),
+            // A whole-file fault has no position to give.
+            ConvertError::Malformed { location, message } if *location == Location::default() => {
+                write!(formatter, "{message}")
+            }
             ConvertError::Malformed { location, message } => {
                 write!(formatter, "{location}: {message}")
             }
@@ -461,5 +465,10 @@ mod tests {
             message: "bad".to_string(),
         };
         assert_eq!(error.to_string(), "line 3, column 7: bad");
+        let whole = ConvertError::Malformed {
+            location: Location::default(),
+            message: "bad".to_string(),
+        };
+        assert_eq!(whole.to_string(), "bad");
     }
 }
