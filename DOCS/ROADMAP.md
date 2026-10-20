@@ -31,8 +31,10 @@ and from WebP and PNG) or not at all. SQLite is out of v1. In order:
 7. ODS (done).
 8. N64 ROMs between `z64`, `v64`, and `n64` (decided 2026-10-09: in v1;
    done).
-9. Wrap-up: every benchmark pair re-run, size budgets settled (HEIC
-   grows the binary and the WebAssembly module), this document current.
+9. Wrap-up: the registry held as data, lowering every conversion's
+   startup memory (STATE, Tech Debt); every benchmark pair re-run, size
+   budgets settled (HEIC grows the binary and the WebAssembly module),
+   this document current.
 
 N64 ROMs between `z64`, `v64`, and `n64` come before v1 (item 8 above);
 the other novelty formats wait until after it (Games and consoles below).
