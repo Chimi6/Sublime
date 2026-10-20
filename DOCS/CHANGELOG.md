@@ -6,6 +6,18 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Added
+
+- N64 ROMs between their three byte orders: big-endian `.z64`, byte-swapped `.v64`, and little-endian `.n64`, each to the other two, lossless. The order is read from the ROM's header, not its name, so a byte-swapped ROM saved as `.z64` comes out right (and `sublime convert game.z64 fixed.z64` repairs it), with a warning saying what the file really was. Checked on a 40 MB No-Intro dump: round trips come back to its SHA-1, and the output is byte-identical to ucon64's, `n64romconvert`'s, and `dd conv=swab`'s. Benchmark pair `z64-v64`: 1.2 to 1.35 times the speed of `dd`, 2.2 to 2.9 times `n64romconvert`, and 3 to 4.2 times ucon64; memory (2.6 MB) is a little over ucon64's and `dd`'s, the binary's startup floor. Notes in `DOCS/formats/n64.md`, numbers in `DOCS/benchmarks/z64-v64.md`.
+
+### Changed
+
+- A file whose content fails the signature of the format its extension names, and matches another format's, is read as that format, with a warning (it was read as named and failed, or stopped at "same format").
+
+### Fixed
+
+- Errors about a whole file no longer start with `line 0, column 0:`.
+
 ## [0.32.0] - 2026-10-20
 
 ### Added

@@ -29,7 +29,8 @@ and from WebP and PNG) or not at all. SQLite is out of v1. In order:
    patent pools; the docs say so.
 6. ODT, then EPUB (both done).
 7. ODS (done).
-8. N64 ROMs between `z64`, `v64`, and `n64` (decided 2026-10-09: in v1).
+8. N64 ROMs between `z64`, `v64`, and `n64` (decided 2026-10-09: in v1;
+   done).
 9. Wrap-up: every benchmark pair re-run, size budgets settled (HEIC
    grows the binary and the WebAssembly module), this document current.
 
@@ -309,7 +310,7 @@ communities, and have no good cross-platform tool.
 
 | Format | Extensions | Status | Tier | Effort | Directions and notes |
 |---|---|---|---|---|---|
-| N64 ROM byte order | z64, v64, n64 | [ ] | A | S | The same ROM in native big-endian (`z64`), 16-bit byte-swapped (`v64`, Doctor V64 dumps), and little-endian (`n64`). Pure reordering, lossless; detect the real order from the header rather than the extension. |
+| N64 ROM byte order | z64, v64, n64 | [x] | A | S | Shipped (0.33.0): each order to the other two, lossless, the real order read from the header rather than the extension. Notes in `formats/n64.md`. |
 | N64 saves | eep, sra, fla, mpk, srm | [ ] | A | S | EEPROM, SRAM, FlashRAM, Controller Pak; `srm` is the RetroArch bundle of all four. SRAM and FlashRAM differ by 32-bit byte swap between PC and Wii emulators. Small, lossless, and a perennial forum question. |
 | N64 textures | — | [ ] | C | M | CI4/CI8/RGBA16/IA formats to PNG given dimensions and palette; needs a ROM-hacking style interface. |
 | N64 audio | aifc | [ ] | B | M | See Audio (VADPCM). |
