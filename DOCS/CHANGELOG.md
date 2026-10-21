@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-21
+
 ### Changed
 
 - Every conversion starts in less memory: the converters' names, formats, and fidelity are a table fixed when the binary is built, so planning runs none of their code, and the 195 image pairs are built only when an image is at one end. `sublime check z64 v64` holds 1.95 MB (was 2.24), a 40 MB N64 ROM converts in 2.42 MB (was 2.66). Sizes barely move: on CI's Linux build the binary is 5,596,192 bytes (was 5,592,448) and the WebAssembly module 2,951,471 (was 2,952,440).
