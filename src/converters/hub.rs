@@ -5,7 +5,7 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Tier};
 use crate::converters::input::read_text_document;
 use crate::event::Context;
 use crate::format::Format;
@@ -30,26 +30,6 @@ pub struct HubPair {
 }
 
 impl Converter for HubPair {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        self.from
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(self.note)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         input: Input<'_>,
@@ -58,6 +38,19 @@ impl Converter for HubPair {
     ) -> Result<(), ConvertError> {
         let (tree, node) = read(self.read, input, self.name, context)?;
         write(self.write, &tree, node, output, self.name, context)
+    }
+}
+
+impl HubPair {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: self.from,
+            to: self.to,
+            fidelity: Fidelity::Conditional(self.note),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -243,10 +236,10 @@ mod tests {
         ];
         for pair in pairs {
             assert_eq!(
-                pair.name(),
-                format!("{}-to-{}", pair.from().id, pair.to().id)
+                pair.entry().name,
+                format!("{}-to-{}", pair.entry().from.id, pair.entry().to.id)
             );
-            assert!(matches!(pair.fidelity(), Fidelity::Conditional(_)));
+            assert!(matches!(pair.entry().fidelity, Fidelity::Conditional(_)));
         }
     }
 }

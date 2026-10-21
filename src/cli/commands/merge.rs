@@ -107,7 +107,7 @@ fn write_pages(
                 converter: converter.name,
                 from: converter.from.id,
                 to: converter.to.id,
-                fidelity: converter.fidelity.clone(),
+                fidelity: converter.fidelity,
                 tier: Tier::Native,
             }],
         });

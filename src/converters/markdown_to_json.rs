@@ -3,10 +3,9 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Tier};
 use crate::converters::input::read_text_document;
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::markdown::events_json::JsonEventWriter;
 use crate::io::markdown::{Options, parse_into};
@@ -16,26 +15,6 @@ const NAME: &str = "markdown-to-json";
 pub struct MarkdownToJson;
 
 impl Converter for MarkdownToJson {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::MARKDOWN
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::MARKDOWN_JSON
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossless
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -48,6 +27,19 @@ impl Converter for MarkdownToJson {
         writer.finish()?;
         output.flush()?;
         Ok(())
+    }
+}
+
+impl MarkdownToJson {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::MARKDOWN,
+            to: &formats::MARKDOWN_JSON,
+            fidelity: Fidelity::Lossless,
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -76,10 +68,10 @@ mod tests {
 
     #[test]
     fn declares_contract() {
-        let converter = MarkdownToJson;
-        assert_eq!(converter.name(), "markdown-to-json");
-        assert_eq!(converter.from().id, "markdown");
-        assert_eq!(converter.to().id, "markdown-json");
-        assert_eq!(converter.fidelity(), Fidelity::Lossless);
+        let converter: &'static MarkdownToJson = &MarkdownToJson;
+        assert_eq!(converter.entry().name, "markdown-to-json");
+        assert_eq!(converter.entry().from.id, "markdown");
+        assert_eq!(converter.entry().to.id, "markdown-json");
+        assert_eq!(converter.entry().fidelity, Fidelity::Lossless);
     }
 }

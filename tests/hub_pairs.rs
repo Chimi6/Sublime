@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use sublime::converter::{ConvertError, ConvertOptions, Converter, Input};
+use sublime::converter::{ConvertError, ConvertOptions, Converter, Entry, Input};
 use sublime::converters::hub;
 use sublime::converters::json_to_toml::JsonToToml;
 use sublime::converters::json_to_xml::JsonToXml;
@@ -53,7 +53,7 @@ fn fixtures(format: &str) -> Vec<(String, Vec<u8>)> {
 /// outputs are read back to JSON with `target_to_json` and compared.
 fn check(
     format: &str,
-    direct: &dyn Converter,
+    direct: Entry,
     to_json: &dyn Converter,
     from_json: &dyn Converter,
     target_to_json: &dyn Converter,
@@ -69,7 +69,7 @@ fn check(
         }
         let json = convert(to_json, &source).expect("source reads");
         let via_json = convert(from_json, &json);
-        let straight = convert(direct, &source);
+        let straight = convert(direct.converter, &source);
         match (straight, via_json) {
             (Ok(straight), Ok(via_json)) => {
                 let straight_json =
@@ -80,13 +80,13 @@ fn check(
                     String::from_utf8_lossy(&straight_json),
                     String::from_utf8_lossy(&via_json_json),
                     "{}: {name}",
-                    direct.name()
+                    direct.name
                 );
             }
             (Err(ConvertError::Unsupported(_)), Err(ConvertError::Unsupported(_))) => {}
             (straight, via_json) => panic!(
                 "{}: {name}: direct {:?}, via JSON {:?}",
-                direct.name(),
+                direct.name,
                 straight.map(|bytes| bytes.len()),
                 via_json.map(|bytes| bytes.len())
             ),
@@ -98,14 +98,14 @@ fn check(
 fn toml_pairs_match_the_json_route() {
     check(
         "toml",
-        &hub::TOML_TO_YAML,
+        hub::TOML_TO_YAML.entry(),
         &TomlToJson,
         &JsonToYaml,
         &YamlToJson,
     );
     check(
         "toml",
-        &hub::TOML_TO_XML,
+        hub::TOML_TO_XML.entry(),
         &TomlToJson,
         &JsonToXml,
         &XmlToJson,
@@ -116,14 +116,14 @@ fn toml_pairs_match_the_json_route() {
 fn yaml_pairs_match_the_json_route() {
     check(
         "yaml",
-        &hub::YAML_TO_TOML,
+        hub::YAML_TO_TOML.entry(),
         &YamlToJson,
         &JsonToToml,
         &TomlToJson,
     );
     check(
         "yaml",
-        &hub::YAML_TO_XML,
+        hub::YAML_TO_XML.entry(),
         &YamlToJson,
         &JsonToXml,
         &XmlToJson,
@@ -134,14 +134,14 @@ fn yaml_pairs_match_the_json_route() {
 fn xml_pairs_match_the_json_route() {
     check(
         "xml",
-        &hub::XML_TO_TOML,
+        hub::XML_TO_TOML.entry(),
         &XmlToJson,
         &JsonToToml,
         &TomlToJson,
     );
     check(
         "xml",
-        &hub::XML_TO_YAML,
+        hub::XML_TO_YAML.entry(),
         &XmlToJson,
         &JsonToYaml,
         &YamlToJson,

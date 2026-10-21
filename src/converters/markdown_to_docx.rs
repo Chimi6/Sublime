@@ -5,11 +5,10 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Tier};
 use crate::converters::input::read_text_document;
 use crate::document::from_events::DocumentBuilder;
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::docx::DocxStream;
 use crate::io::markdown::{Options, parse_into};
@@ -20,26 +19,6 @@ const FIDELITY_NOTE: &str = "lossless for headings, paragraphs, lists, quotes, c
 pub struct MarkdownToDocx;
 
 impl Converter for MarkdownToDocx {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::MARKDOWN
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::DOCX
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -58,17 +37,30 @@ impl Converter for MarkdownToDocx {
     }
 }
 
+impl MarkdownToDocx {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::MARKDOWN,
+            to: &formats::DOCX,
+            fidelity: Fidelity::Conditional(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declares_contract() {
-        assert_eq!(MarkdownToDocx.name(), "markdown-to-docx");
-        assert_eq!(MarkdownToDocx.from().id, "markdown");
-        assert_eq!(MarkdownToDocx.to().id, "docx");
+        assert_eq!(MarkdownToDocx.entry().name, "markdown-to-docx");
+        assert_eq!(MarkdownToDocx.entry().from.id, "markdown");
+        assert_eq!(MarkdownToDocx.entry().to.id, "docx");
         assert_eq!(
-            MarkdownToDocx.fidelity(),
+            MarkdownToDocx.entry().fidelity,
             Fidelity::Conditional(FIDELITY_NOTE)
         );
     }

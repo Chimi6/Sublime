@@ -8,19 +8,19 @@ pub mod pipe;
 
 use std::fmt;
 
-use crate::converter::{Converter, FidelityKind};
+use crate::converter::{Entry, FidelityKind};
 use crate::event::Hop;
 use crate::format::Format;
 
 pub use execute::{execute, execute_in_memory, execute_parts};
 
 pub struct Plan {
-    pub hops: Vec<&'static dyn Converter>,
+    pub hops: Vec<&'static Entry>,
 }
 
 impl fmt::Debug for Plan {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let names: Vec<&'static str> = self.hops.iter().map(|hop| hop.name()).collect();
+        let names: Vec<&'static str> = self.hops.iter().map(|hop| hop.name).collect();
         formatter
             .debug_struct("Plan")
             .field("hops", &names)
@@ -30,19 +30,19 @@ impl fmt::Debug for Plan {
 
 impl Plan {
     pub fn from(&self) -> &'static Format {
-        self.hops[0].from()
+        self.hops[0].from
     }
 
     pub fn to(&self) -> &'static Format {
         let last_index = self.hops.len() - 1;
-        self.hops[last_index].to()
+        self.hops[last_index].to
     }
 
     /// The options some hop honours (`Converter::options`).
     pub fn options(&self) -> Vec<crate::format::Setting> {
         let mut options: Vec<crate::format::Setting> = Vec::new();
         for hop in &self.hops {
-            for option in hop.options() {
+            for option in hop.converter.options(hop.from, hop.to) {
                 if !options.contains(&option) {
                     options.push(option);
                 }
@@ -54,7 +54,7 @@ impl Plan {
     pub fn worst_fidelity(&self) -> FidelityKind {
         let mut worst = FidelityKind::Lossless;
         for hop in &self.hops {
-            let kind = hop.fidelity().kind();
+            let kind = hop.fidelity.kind();
             if kind > worst {
                 worst = kind;
             }
@@ -69,7 +69,7 @@ impl Plan {
     pub fn loss_descriptions(&self) -> Vec<&'static str> {
         let mut descriptions = Vec::new();
         for hop in &self.hops {
-            if let Some(text) = hop.fidelity().description() {
+            if let Some(text) = hop.fidelity.description() {
                 descriptions.push(text);
             }
         }
@@ -80,11 +80,11 @@ impl Plan {
         let mut hops = Vec::with_capacity(self.hops.len());
         for converter in &self.hops {
             let hop = Hop {
-                converter: converter.name(),
-                from: converter.from().id,
-                to: converter.to().id,
-                fidelity: converter.fidelity(),
-                tier: converter.tier(),
+                converter: converter.name,
+                from: converter.from.id,
+                to: converter.to.id,
+                fidelity: converter.fidelity,
+                tier: converter.tier,
             };
             hops.push(hop);
         }
@@ -135,7 +135,7 @@ impl fmt::Display for PlanError {
 impl std::error::Error for PlanError {}
 
 pub fn plan(
-    converters: &[&'static dyn Converter],
+    converters: &'static [Entry],
     from: &'static Format,
     to: &'static Format,
     options: &PlanOptions,
@@ -159,7 +159,7 @@ pub fn plan(
 }
 
 fn search(
-    converters: &[&'static dyn Converter],
+    converters: &'static [Entry],
     from: &'static Format,
     to: &'static Format,
     strict: bool,
@@ -182,8 +182,8 @@ fn search(
     let mut pruned = Vec::new();
     if let Some(plan) = unrestricted {
         for hop in plan.hops {
-            if !hop.fidelity().is_lossless() {
-                pruned.push(hop.name());
+            if !hop.fidelity.is_lossless() {
+                pruned.push(hop.name);
             }
         }
     }
@@ -209,7 +209,7 @@ impl PathCost {
 
 /// Readable Dijkstra over a graph of at most a few hundred formats.
 fn dijkstra(
-    converters: &[&'static dyn Converter],
+    converters: &'static [Entry],
     from: &'static Format,
     to: &'static Format,
     lossless_only: bool,
@@ -217,15 +217,15 @@ fn dijkstra(
     let mut node_ids: Vec<&'static str> = Vec::new();
     push_node(&mut node_ids, from.id);
     push_node(&mut node_ids, to.id);
-    let mut edges: Vec<&'static dyn Converter> = Vec::new();
+    let mut edges: Vec<&'static Entry> = Vec::new();
     for converter in converters {
-        let allowed = !lossless_only || converter.fidelity().is_lossless();
+        let allowed = !lossless_only || converter.fidelity.is_lossless();
         if !allowed {
             continue;
         }
-        push_node(&mut node_ids, converter.from().id);
-        push_node(&mut node_ids, converter.to().id);
-        edges.push(*converter);
+        push_node(&mut node_ids, converter.from.id);
+        push_node(&mut node_ids, converter.to.id);
+        edges.push(converter);
     }
 
     let node_count = node_ids.len();
@@ -250,21 +250,21 @@ fn dijkstra(
             None => break,
         };
         for (edge_index, converter) in edges.iter().enumerate() {
-            let edge_source = index_of(&node_ids, converter.from().id);
+            let edge_source = index_of(&node_ids, converter.from.id);
             if edge_source != current {
                 continue;
             }
-            let neighbor = index_of(&node_ids, converter.to().id);
+            let neighbor = index_of(&node_ids, converter.to.id);
             let candidate = PathCost {
-                cost: current_cost.cost + converter.fidelity().cost(),
+                cost: current_cost.cost + converter.fidelity.cost(),
                 hops: current_cost.hops + 1,
-                tier: current_cost.tier + converter.tier().rank(),
+                tier: current_cost.tier + converter.tier.rank(),
             };
             let is_better = match best[neighbor] {
                 None => true,
                 Some(existing) => {
                     let existing_name = incoming_name(&edges, incoming_edge[neighbor]);
-                    beats(candidate, existing, converter.name(), existing_name)
+                    beats(candidate, existing, converter.name, existing_name)
                 }
             };
             if is_better {
@@ -275,13 +275,13 @@ fn dijkstra(
     }
 
     best[target]?;
-    let mut hops: Vec<&'static dyn Converter> = Vec::new();
+    let mut hops: Vec<&'static Entry> = Vec::new();
     let mut cursor = target;
     while cursor != source {
         let edge_index = incoming_edge[cursor]?;
         let converter = edges[edge_index];
         hops.push(converter);
-        cursor = index_of(&node_ids, converter.from().id);
+        cursor = index_of(&node_ids, converter.from.id);
     }
     hops.reverse();
     Some(Plan { hops })
@@ -327,9 +327,9 @@ fn pick_next(best: &[Option<PathCost>], visited: &[bool]) -> Option<usize> {
     chosen
 }
 
-fn incoming_name(edges: &[&'static dyn Converter], edge_index: Option<usize>) -> &'static str {
+fn incoming_name(edges: &[&'static Entry], edge_index: Option<usize>) -> &'static str {
     match edge_index {
-        Some(index) => edges[index].name(),
+        Some(index) => edges[index].name,
         None => "",
     }
 }
@@ -349,7 +349,7 @@ fn beats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converter::{ConvertError, Fidelity, Input, Tier};
+    use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
     use crate::event::Context;
     use crate::format::Category;
     use std::io::Write;
@@ -400,21 +400,6 @@ mod tests {
     }
 
     impl Converter for Fake {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-        fn from(&self) -> &'static Format {
-            self.from
-        }
-        fn to(&self) -> &'static Format {
-            self.to
-        }
-        fn fidelity(&self) -> Fidelity {
-            self.fidelity.clone()
-        }
-        fn tier(&self) -> Tier {
-            self.tier
-        }
         fn convert(
             &self,
             _input: Input<'_>,
@@ -423,6 +408,24 @@ mod tests {
         ) -> Result<(), ConvertError> {
             Err(ConvertError::Unsupported("fake".to_string()))
         }
+    }
+
+    impl Fake {
+        fn entry(&'static self) -> Entry {
+            Entry {
+                name: self.name,
+                from: self.from,
+                to: self.to,
+                fidelity: self.fidelity,
+                tier: self.tier,
+                converter: self,
+            }
+        }
+    }
+
+    fn graph(fakes: &[&'static Fake]) -> &'static [Entry] {
+        let entries: Vec<Entry> = fakes.iter().map(|fake| fake.entry()).collect();
+        Box::leak(entries.into_boxed_slice())
     }
 
     static A_B: Fake = Fake {
@@ -469,21 +472,21 @@ mod tests {
     };
 
     fn names(plan: &Plan) -> Vec<&'static str> {
-        plan.hops.iter().map(|hop| hop.name()).collect()
+        plan.hops.iter().map(|hop| hop.name).collect()
     }
 
     #[test]
     fn prefers_three_lossless_hops_over_one_lossy_hop() {
-        let converters: Vec<&'static dyn Converter> = vec![&A_B, &B_C, &C_D, &A_D_LOSSY];
-        let plan = plan(&converters, &A, &D, &PlanOptions::default()).unwrap();
+        let converters = graph(&[&A_B, &B_C, &C_D, &A_D_LOSSY]);
+        let plan = plan(converters, &A, &D, &PlanOptions::default()).unwrap();
         assert_eq!(names(&plan), vec!["a-b", "b-c", "c-d"]);
         assert!(plan.is_lossless());
     }
 
     #[test]
     fn takes_the_lossy_hop_when_it_is_the_only_way() {
-        let converters: Vec<&'static dyn Converter> = vec![&A_D_LOSSY];
-        let plan = plan(&converters, &A, &D, &PlanOptions::default()).unwrap();
+        let converters = graph(&[&A_D_LOSSY]);
+        let plan = plan(converters, &A, &D, &PlanOptions::default()).unwrap();
         assert_eq!(names(&plan), vec!["a-d-lossy"]);
         assert_eq!(plan.worst_fidelity(), FidelityKind::Lossy);
         assert_eq!(plan.loss_descriptions(), vec!["drops"]);
@@ -491,12 +494,12 @@ mod tests {
 
     #[test]
     fn strict_refuses_lossy_and_names_the_pruned_edges() {
-        let converters: Vec<&'static dyn Converter> = vec![&A_D_LOSSY, &A_C_COND, &C_D];
+        let converters = graph(&[&A_D_LOSSY, &A_C_COND, &C_D]);
         let options = PlanOptions {
             strict: true,
             via: None,
         };
-        let error = plan(&converters, &A, &D, &options).unwrap_err();
+        let error = plan(converters, &A, &D, &options).unwrap_err();
         match error {
             PlanError::NoPath { pruned, .. } => assert_eq!(pruned, vec!["a-c-cond"]),
             other => panic!("wrong error {other:?}"),
@@ -505,18 +508,18 @@ mod tests {
 
     #[test]
     fn via_forces_a_waypoint() {
-        let converters: Vec<&'static dyn Converter> = vec![&A_B, &B_C, &C_D, &A_D_LOSSY, &A_C_COND];
+        let converters = graph(&[&A_B, &B_C, &C_D, &A_D_LOSSY, &A_C_COND]);
         let options = PlanOptions {
             strict: false,
             via: Some(&C),
         };
-        let plan = plan(&converters, &A, &D, &options).unwrap();
+        let plan = plan(converters, &A, &D, &options).unwrap();
         assert_eq!(names(&plan), vec!["a-b", "b-c", "c-d"]);
     }
 
     #[test]
     fn via_equal_to_an_endpoint_is_ignored() {
-        let converters: Vec<&'static dyn Converter> = vec![&A_B, &B_C];
+        let converters = graph(&[&A_B, &B_C]);
         let via_from = PlanOptions {
             strict: false,
             via: Some(&A),
@@ -525,38 +528,38 @@ mod tests {
             strict: false,
             via: Some(&C),
         };
-        let first = plan(&converters, &A, &C, &via_from).unwrap();
-        let second = plan(&converters, &A, &C, &via_to).unwrap();
+        let first = plan(converters, &A, &C, &via_from).unwrap();
+        let second = plan(converters, &A, &C, &via_to).unwrap();
         assert_eq!(names(&first), vec!["a-b", "b-c"]);
         assert_eq!(names(&second), vec!["a-b", "b-c"]);
     }
 
     #[test]
     fn no_path_is_an_error() {
-        let converters: Vec<&'static dyn Converter> = vec![&A_B];
-        let error = plan(&converters, &A, &D, &PlanOptions::default()).unwrap_err();
+        let converters = graph(&[&A_B]);
+        let error = plan(converters, &A, &D, &PlanOptions::default()).unwrap_err();
         let is_no_path = matches!(error, PlanError::NoPath { .. });
         assert!(is_no_path);
     }
 
     #[test]
     fn same_format_is_an_error() {
-        let converters: Vec<&'static dyn Converter> = vec![&A_B];
-        let error = plan(&converters, &A, &A, &PlanOptions::default()).unwrap_err();
+        let converters = graph(&[&A_B]);
+        let error = plan(converters, &A, &A, &PlanOptions::default()).unwrap_err();
         assert_eq!(error, PlanError::SameFormat("a"));
     }
 
     #[test]
     fn native_beats_external_on_a_tie() {
-        let converters: Vec<&'static dyn Converter> = vec![&A_B_EXTERNAL, &A_B];
-        let plan = plan(&converters, &A, &B, &PlanOptions::default()).unwrap();
+        let converters = graph(&[&A_B_EXTERNAL, &A_B]);
+        let plan = plan(converters, &A, &B, &PlanOptions::default()).unwrap();
         assert_eq!(names(&plan), vec!["a-b"]);
     }
 
     #[test]
     fn describe_lists_hops() {
-        let converters: Vec<&'static dyn Converter> = vec![&A_B];
-        let plan = plan(&converters, &A, &B, &PlanOptions::default()).unwrap();
+        let converters = graph(&[&A_B]);
+        let plan = plan(converters, &A, &B, &PlanOptions::default()).unwrap();
         let hops = plan.describe();
         assert_eq!(hops.len(), 1);
         assert_eq!(hops[0].converter, "a-b");

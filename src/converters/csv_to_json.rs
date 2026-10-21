@@ -4,7 +4,7 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Tier};
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
@@ -56,26 +56,6 @@ pub static TSV_TO_JSONL: CsvToJson = CsvToJson {
 };
 
 impl Converter for CsvToJson {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        self.from
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossless
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         input: Input<'_>,
@@ -125,6 +105,19 @@ impl Converter for CsvToJson {
         }
         writer.flush()?;
         Ok(())
+    }
+}
+
+impl CsvToJson {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: self.from,
+            to: self.to,
+            fidelity: Fidelity::Lossless,
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -277,10 +270,10 @@ mod tests {
     #[test]
     fn declares_contract() {
         let converter = &CSV_TO_JSON;
-        assert_eq!(converter.name(), "csv-to-json");
-        assert_eq!(converter.from().id, "csv");
-        assert_eq!(converter.to().id, "json");
-        assert_eq!(converter.fidelity(), Fidelity::Lossless);
-        assert_eq!(converter.tier(), Tier::Native);
+        assert_eq!(converter.entry().name, "csv-to-json");
+        assert_eq!(converter.entry().from.id, "csv");
+        assert_eq!(converter.entry().to.id, "json");
+        assert_eq!(converter.entry().fidelity, Fidelity::Lossless);
+        assert_eq!(converter.entry().tier, Tier::Native);
     }
 }

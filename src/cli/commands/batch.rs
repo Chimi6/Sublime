@@ -135,7 +135,8 @@ pub fn run(args: &ConvertArgs, renderer: &mut dyn Sink) -> Result<ExitCode, CliE
                 input.display()
             )));
         }
-        let plan = planner::plan(registry::all_converters(), from, to, &plan_options)?;
+        let converters = registry::converters_for(from, to, plan_options.via);
+        let plan = planner::plan(converters, from, to, &plan_options)?;
         jobs.push(Job {
             input,
             output,

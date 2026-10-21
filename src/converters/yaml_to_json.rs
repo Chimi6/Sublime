@@ -6,10 +6,9 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Tier};
 use crate::converters::input::read_text_document;
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::json::{JsonWriter, from_tree};
 use crate::io::yaml;
@@ -21,26 +20,6 @@ const FIDELITY_NOTE: &str = "anchors are expanded, tags outside the core schema 
 pub struct YamlToJson;
 
 impl Converter for YamlToJson {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::YAML
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::JSON
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -71,15 +50,31 @@ impl Converter for YamlToJson {
     }
 }
 
+impl YamlToJson {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::YAML,
+            to: &formats::JSON,
+            fidelity: Fidelity::Conditional(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declares_contract() {
-        assert_eq!(YamlToJson.name(), "yaml-to-json");
-        assert_eq!(YamlToJson.from().id, "yaml");
-        assert_eq!(YamlToJson.to().id, "json");
-        assert_eq!(YamlToJson.fidelity(), Fidelity::Conditional(FIDELITY_NOTE));
+        assert_eq!(YamlToJson.entry().name, "yaml-to-json");
+        assert_eq!(YamlToJson.entry().from.id, "yaml");
+        assert_eq!(YamlToJson.entry().to.id, "json");
+        assert_eq!(
+            YamlToJson.entry().fidelity,
+            Fidelity::Conditional(FIDELITY_NOTE)
+        );
     }
 }

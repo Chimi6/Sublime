@@ -4,11 +4,10 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Tier};
 use crate::converters::input::read_text_document;
 use crate::document::from_events::DocumentBuilder;
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::docx::DocxStream;
 use crate::io::html::reader::parse_into;
@@ -19,26 +18,6 @@ const FIDELITY_NOTE: &str = "lossless for headings, paragraphs, lists, quotes, c
 pub struct HtmlToDocx;
 
 impl Converter for HtmlToDocx {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::HTML
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::DOCX
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -57,15 +36,31 @@ impl Converter for HtmlToDocx {
     }
 }
 
+impl HtmlToDocx {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::HTML,
+            to: &formats::DOCX,
+            fidelity: Fidelity::Conditional(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declares_contract() {
-        assert_eq!(HtmlToDocx.name(), "html-to-docx");
-        assert_eq!(HtmlToDocx.from().id, "html");
-        assert_eq!(HtmlToDocx.to().id, "docx");
-        assert_eq!(HtmlToDocx.fidelity(), Fidelity::Conditional(FIDELITY_NOTE));
+        assert_eq!(HtmlToDocx.entry().name, "html-to-docx");
+        assert_eq!(HtmlToDocx.entry().from.id, "html");
+        assert_eq!(HtmlToDocx.entry().to.id, "docx");
+        assert_eq!(
+            HtmlToDocx.entry().fidelity,
+            Fidelity::Conditional(FIDELITY_NOTE)
+        );
     }
 }

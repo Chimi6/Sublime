@@ -3,10 +3,9 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Tier};
 use crate::converters::pages_to_json::package_error;
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::pages::json::{ReadError, read_json};
 
@@ -15,26 +14,6 @@ const NAME: &str = "json-to-pages";
 pub struct JsonToPages;
 
 impl Converter for JsonToPages {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::PAGES_JSON
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::PAGES
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossless
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         input: Input<'_>,
@@ -54,15 +33,28 @@ impl Converter for JsonToPages {
     }
 }
 
+impl JsonToPages {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::PAGES_JSON,
+            to: &formats::PAGES,
+            fidelity: Fidelity::Lossless,
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declares_contract() {
-        assert_eq!(JsonToPages.name(), "json-to-pages");
-        assert_eq!(JsonToPages.from().id, "pages-json");
-        assert_eq!(JsonToPages.to().id, "pages");
-        assert_eq!(JsonToPages.fidelity(), Fidelity::Lossless);
+        assert_eq!(JsonToPages.entry().name, "json-to-pages");
+        assert_eq!(JsonToPages.entry().from.id, "pages-json");
+        assert_eq!(JsonToPages.entry().to.id, "pages");
+        assert_eq!(JsonToPages.entry().fidelity, Fidelity::Lossless);
     }
 }

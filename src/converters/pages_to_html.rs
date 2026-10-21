@@ -3,11 +3,10 @@
 
 use std::io::{Read, Write};
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Tier};
 use crate::converters::pages_to_json::package_error;
 use crate::document::markdown::emit_events;
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::html::HtmlWriter;
 use crate::io::pages::{Package, Scope, read_document};
@@ -18,26 +17,6 @@ const FIDELITY_NOTE: &str = "page layout, headers and footers, fonts, sizes, and
 pub struct PagesToHtml;
 
 impl Converter for PagesToHtml {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::PAGES
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::HTML
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -56,15 +35,28 @@ impl Converter for PagesToHtml {
     }
 }
 
+impl PagesToHtml {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::PAGES,
+            to: &formats::HTML,
+            fidelity: Fidelity::Lossy(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declares_contract() {
-        assert_eq!(PagesToHtml.name(), "pages-to-html");
-        assert_eq!(PagesToHtml.from().id, "pages");
-        assert_eq!(PagesToHtml.to().id, "html");
-        assert_eq!(PagesToHtml.fidelity(), Fidelity::Lossy(FIDELITY_NOTE));
+        assert_eq!(PagesToHtml.entry().name, "pages-to-html");
+        assert_eq!(PagesToHtml.entry().from.id, "pages");
+        assert_eq!(PagesToHtml.entry().to.id, "html");
+        assert_eq!(PagesToHtml.entry().fidelity, Fidelity::Lossy(FIDELITY_NOTE));
     }
 }

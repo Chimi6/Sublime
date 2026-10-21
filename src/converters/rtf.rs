@@ -4,7 +4,7 @@
 
 use std::io::{Read, Write};
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Tier};
 use crate::converters::input::read_text_document;
 use crate::converters::pages_to_json::package_error;
 use crate::document::Document;
@@ -87,26 +87,6 @@ pub fn read_input(input: &mut Input<'_>) -> Result<Document, ConvertError> {
 }
 
 impl Converter for FromRtf {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::RTF
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(self.note)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -145,6 +125,19 @@ impl Converter for FromRtf {
         }
         output.flush()?;
         Ok(())
+    }
+}
+
+impl FromRtf {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: &formats::RTF,
+            to: self.to,
+            fidelity: Fidelity::Lossy(self.note),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -204,26 +197,6 @@ pub static TEXT_TO_RTF: ToRtf = ToRtf {
 };
 
 impl Converter for ToRtf {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        self.from
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::RTF
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(self.note)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -281,6 +254,19 @@ impl Converter for ToRtf {
     }
 }
 
+impl ToRtf {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: self.from,
+            to: &formats::RTF,
+            fidelity: Fidelity::Lossy(self.note),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,9 +280,9 @@ mod tests {
             (&RTF_TO_HTML, "html"),
             (&RTF_TO_TEXT, "text"),
         ] {
-            assert_eq!(converter.from().id, "rtf");
-            assert_eq!(converter.to().id, to);
-            assert_eq!(converter.name(), format!("rtf-to-{to}"));
+            assert_eq!(converter.entry().from.id, "rtf");
+            assert_eq!(converter.entry().to.id, to);
+            assert_eq!(converter.entry().name, format!("rtf-to-{to}"));
         }
         for (converter, from) in [
             (&DOCX_TO_RTF, "docx"),
@@ -305,9 +291,9 @@ mod tests {
             (&HTML_TO_RTF, "html"),
             (&TEXT_TO_RTF, "text"),
         ] {
-            assert_eq!(converter.from().id, from);
-            assert_eq!(converter.to().id, "rtf");
-            assert_eq!(converter.name(), format!("{from}-to-rtf"));
+            assert_eq!(converter.entry().from.id, from);
+            assert_eq!(converter.entry().to.id, "rtf");
+            assert_eq!(converter.entry().name, format!("{from}-to-rtf"));
         }
     }
 }

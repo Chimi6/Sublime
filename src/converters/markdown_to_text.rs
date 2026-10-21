@@ -3,10 +3,9 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Tier};
 use crate::converters::input::read_text_document;
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::markdown::{Options, parse_into};
 use crate::io::text::TextWriter;
@@ -17,26 +16,6 @@ const FIDELITY_NOTE: &str = "markup, raw HTML, and image sources are dropped";
 pub struct MarkdownToText;
 
 impl Converter for MarkdownToText {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::MARKDOWN
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::TEXT
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -49,6 +28,19 @@ impl Converter for MarkdownToText {
         writer.finish()?;
         output.flush()?;
         Ok(())
+    }
+}
+
+impl MarkdownToText {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::MARKDOWN,
+            to: &formats::TEXT,
+            fidelity: Fidelity::Lossy(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -77,11 +69,11 @@ mod tests {
 
     #[test]
     fn declares_contract() {
-        let converter = MarkdownToText;
-        assert_eq!(converter.name(), "markdown-to-text");
-        assert_eq!(converter.from().id, "markdown");
-        assert_eq!(converter.to().id, "text");
-        assert_eq!(converter.fidelity(), Fidelity::Lossy(FIDELITY_NOTE));
-        assert_eq!(converter.tier(), Tier::Native);
+        let converter: &'static MarkdownToText = &MarkdownToText;
+        assert_eq!(converter.entry().name, "markdown-to-text");
+        assert_eq!(converter.entry().from.id, "markdown");
+        assert_eq!(converter.entry().to.id, "text");
+        assert_eq!(converter.entry().fidelity, Fidelity::Lossy(FIDELITY_NOTE));
+        assert_eq!(converter.entry().tier, Tier::Native);
     }
 }

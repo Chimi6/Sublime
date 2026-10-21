@@ -8,7 +8,7 @@ use crate::event::Context;
 use crate::format::Format;
 
 /// The declared fidelity contract of a converter.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fidelity {
     Lossless,
     /// Lossless for some inputs, lossy for others. The text says when.
@@ -289,8 +289,6 @@ pub struct ConvertOptions {
     pub base: Option<std::path::PathBuf>,
 }
 
-/// One edge in the format graph. Implement this and add one line to
-/// `src/registry.rs`.
 /// Where a converter that splits its input (a workbook's sheets, a
 /// document's tables, a PDF's pages) writes each part.
 pub trait Parts {
@@ -299,12 +297,30 @@ pub trait Parts {
     fn part(&mut self, name: &str) -> io::Result<&mut dyn Write>;
 }
 
+/// One edge in the format graph as the planner reads it: plain data, so
+/// planning a conversion runs none of the converters' code. Each converter
+/// builds its own at compile time (`entry`), and `src/registry.rs` lists
+/// them.
+#[derive(Clone, Copy)]
+pub struct Entry {
+    pub name: &'static str,
+    pub from: &'static Format,
+    pub to: &'static Format,
+    pub fidelity: Fidelity,
+    pub tier: Tier,
+    pub converter: &'static dyn Converter,
+}
+
+impl fmt::Debug for Entry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.name)
+    }
+}
+
+/// What a conversion does. Implement this, give the type a `const fn
+/// entry` naming its formats and fidelity, and add the entry to
+/// `src/registry.rs`.
 pub trait Converter: Sync {
-    fn name(&self) -> &'static str;
-    fn from(&self) -> &'static Format;
-    fn to(&self) -> &'static Format;
-    fn fidelity(&self) -> Fidelity;
-    fn tier(&self) -> Tier;
     fn convert(
         &self,
         input: Input<'_>,
@@ -315,9 +331,9 @@ pub trait Converter: Sync {
     /// The options this conversion honours: by default what its input
     /// format honours read and its output format written. A pair that
     /// ignores one of them says so here.
-    fn options(&self) -> Vec<crate::format::Setting> {
-        let mut options = self.from().read_options.to_vec();
-        options.extend_from_slice(self.to().write_options);
+    fn options(&self, from: &'static Format, to: &'static Format) -> Vec<crate::format::Setting> {
+        let mut options = from.read_options.to_vec();
+        options.extend_from_slice(to.write_options);
         options
     }
 

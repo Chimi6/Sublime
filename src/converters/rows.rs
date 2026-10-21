@@ -4,7 +4,7 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Tier};
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
@@ -41,26 +41,6 @@ pub static TSV_TO_CSV: Delimited = Delimited {
 };
 
 impl Converter for Delimited {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        self.from
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossless
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         input: Input<'_>,
@@ -93,30 +73,23 @@ impl Converter for Delimited {
     }
 }
 
+impl Delimited {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: self.from,
+            to: self.to,
+            fidelity: Fidelity::Lossless,
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 /// JSON Lines -> JSON: the values, in order, as one array.
 pub struct JsonlToJson;
 
 impl Converter for JsonlToJson {
-    fn name(&self) -> &'static str {
-        "jsonl-to-json"
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::JSONL
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::JSON
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossless
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         input: Input<'_>,
@@ -135,12 +108,25 @@ impl Converter for JsonlToJson {
             copy_value(&mut tokens, first, &mut writer)?;
             count += 1;
             if count % PROGRESS_INTERVAL == 0 {
-                context.progress(self.name(), tokens.bytes_consumed());
+                context.progress("jsonl-to-json", tokens.bytes_consumed());
             }
         }
         writer.end_array()?;
         writer.flush()?;
         Ok(())
+    }
+}
+
+impl JsonlToJson {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: "jsonl-to-json",
+            from: &formats::JSONL,
+            to: &formats::JSON,
+            fidelity: Fidelity::Lossless,
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -152,26 +138,6 @@ const JSON_TO_JSONL_NOTE: &str =
     "an array becomes one line per element; any other root becomes one line";
 
 impl Converter for JsonToJsonl {
-    fn name(&self) -> &'static str {
-        "json-to-jsonl"
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::JSON
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::JSONL
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(JSON_TO_JSONL_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         input: Input<'_>,
@@ -205,7 +171,7 @@ impl Converter for JsonToJsonl {
                     expect_value = false;
                     count += 1;
                     if count % PROGRESS_INTERVAL == 0 {
-                        context.progress(self.name(), tokens.bytes_consumed());
+                        context.progress("json-to-jsonl", tokens.bytes_consumed());
                     }
                 }
                 other => {
@@ -219,6 +185,19 @@ impl Converter for JsonToJsonl {
         expect_end(&mut tokens)?;
         writer.flush()?;
         Ok(())
+    }
+}
+
+impl JsonToJsonl {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: "json-to-jsonl",
+            from: &formats::JSON,
+            to: &formats::JSONL,
+            fidelity: Fidelity::Conditional(JSON_TO_JSONL_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 

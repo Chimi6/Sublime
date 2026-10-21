@@ -6,7 +6,9 @@ use std::io::{Read, Write};
 
 use std::sync::OnceLock;
 
-use crate::converter::{ConvertError, Converter, Fidelity, FidelityKind, Input, Location, Tier};
+use crate::converter::{
+    ConvertError, Converter, Entry, Fidelity, FidelityKind, Input, Location, Tier,
+};
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
@@ -47,20 +49,8 @@ pub struct ImagePair {
 }
 
 impl Converter for ImagePair {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        self.from
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to
-    }
-
     /// Images set on a PDF page have no text, so no `--font`.
-    fn options(&self) -> Vec<crate::format::Setting> {
+    fn options(&self, _from: &'static Format, _to: &'static Format) -> Vec<crate::format::Setting> {
         let mut options = self.from.read_options.to_vec();
         options.extend(
             self.to.write_options.iter().filter(|option| {
@@ -68,14 +58,6 @@ impl Converter for ImagePair {
             }),
         );
         options
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        self.fidelity.clone()
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
     }
 
     fn convert(
@@ -172,6 +154,19 @@ impl Converter for ImagePair {
                     .with_effort(context.options.effort.unwrap_or_default());
                 read_rows(self.read, &mut input, &mut rows, self.name, context)
             }
+        }
+    }
+}
+
+impl ImagePair {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: self.from,
+            to: self.to,
+            fidelity: self.fidelity,
+            tier: Tier::Native,
+            converter: self,
         }
     }
 }
@@ -658,6 +653,11 @@ pub fn codecs() -> impl Iterator<
         .map(|codec| (codec.format, codec.read.as_ref(), codec.write.as_ref()))
 }
 
+/// Whether an image codec reads or writes `format` (PDF among them).
+pub fn is_image_format(format: &'static Format) -> bool {
+    CODECS.iter().any(|codec| codec.format.id == format.id)
+}
+
 /// The pair from one format id to another (`pair("png", "bmp")`).
 pub fn pair(from: &str, to: &str) -> &'static ImagePair {
     pairs()
@@ -718,12 +718,18 @@ mod tests {
 
     #[test]
     fn pairs_declare_their_contracts() {
-        assert_eq!(pair("png", "bmp").name(), "png-to-bmp");
-        assert_eq!(pair("png", "bmp").from().id, "png");
-        assert_eq!(pair("bmp", "png").to().id, "png");
-        assert_eq!(pair("bmp", "png").fidelity(), Fidelity::Lossless);
-        assert_eq!(pair("bmp", "jpeg").fidelity(), Fidelity::Lossy(JPEG_LOSS));
-        assert_eq!(pair("webp", "jpeg").fidelity().kind(), FidelityKind::Lossy);
+        assert_eq!(pair("png", "bmp").entry().name, "png-to-bmp");
+        assert_eq!(pair("png", "bmp").entry().from.id, "png");
+        assert_eq!(pair("bmp", "png").entry().to.id, "png");
+        assert_eq!(pair("bmp", "png").entry().fidelity, Fidelity::Lossless);
+        assert_eq!(
+            pair("bmp", "jpeg").entry().fidelity,
+            Fidelity::Lossy(JPEG_LOSS)
+        );
+        assert_eq!(
+            pair("webp", "jpeg").entry().fidelity.kind(),
+            FidelityKind::Lossy
+        );
     }
 
     #[test]

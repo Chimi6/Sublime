@@ -4,7 +4,7 @@
 
 use std::io::{Read, Write};
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Tier};
 use crate::converters::pdf_to_text::report_text_notes;
 use crate::document::from_events::DocumentBuilder;
 use crate::event::Context;
@@ -64,26 +64,6 @@ pub static PDF_TO_ODT: PdfToDocument = PdfToDocument {
 };
 
 impl Converter for PdfToDocument {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::PDF
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -150,5 +130,18 @@ impl Converter for PdfToDocument {
         output.flush()?;
         report_text_notes(&notes, context);
         Ok(())
+    }
+}
+
+impl PdfToDocument {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: &formats::PDF,
+            to: self.to,
+            fidelity: Fidelity::Lossy(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }

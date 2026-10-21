@@ -3,10 +3,9 @@
 
 use std::io::{Read, Write};
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Tier};
 use crate::document::markdown::emit_events;
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::docx::read_docx;
 use crate::io::html::HtmlWriter;
@@ -17,26 +16,6 @@ const FIDELITY_NOTE: &str = "page layout, headers and footers, fonts, sizes, and
 pub struct DocxToHtml;
 
 impl Converter for DocxToHtml {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::DOCX
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::HTML
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -57,15 +36,28 @@ impl Converter for DocxToHtml {
     }
 }
 
+impl DocxToHtml {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::DOCX,
+            to: &formats::HTML,
+            fidelity: Fidelity::Lossy(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declares_contract() {
-        assert_eq!(DocxToHtml.name(), "docx-to-html");
-        assert_eq!(DocxToHtml.from().id, "docx");
-        assert_eq!(DocxToHtml.to().id, "html");
-        assert_eq!(DocxToHtml.fidelity(), Fidelity::Lossy(FIDELITY_NOTE));
+        assert_eq!(DocxToHtml.entry().name, "docx-to-html");
+        assert_eq!(DocxToHtml.entry().from.id, "docx");
+        assert_eq!(DocxToHtml.entry().to.id, "html");
+        assert_eq!(DocxToHtml.entry().fidelity, Fidelity::Lossy(FIDELITY_NOTE));
     }
 }

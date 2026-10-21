@@ -3,7 +3,7 @@
 
 use std::io::{self, BufWriter, Write};
 
-use crate::converter::{ConvertError, ConvertOptions, Converter, Input};
+use crate::converter::{ConvertError, ConvertOptions, Entry, Input};
 use crate::event::{CollectingSink, Context};
 use crate::planner::Plan;
 use crate::planner::execute::run_hop;
@@ -71,7 +71,7 @@ pub(super) fn run_chain(
 }
 
 fn run_hop_into_pipe(
-    converter: &'static dyn Converter,
+    converter: &'static Entry,
     source: HopSource<'_>,
     pipe_writer: PipeWriter,
     options: &ConvertOptions,
@@ -89,7 +89,7 @@ fn run_hop_into_pipe(
 }
 
 fn run_hop_collecting(
-    converter: &'static dyn Converter,
+    converter: &'static Entry,
     source: HopSource<'_>,
     output: &mut dyn Write,
     options: &ConvertOptions,

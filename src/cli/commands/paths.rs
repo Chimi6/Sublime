@@ -59,7 +59,7 @@ fn all_plans() -> Vec<Plan> {
 }
 
 fn path_names(plan: &Plan) -> String {
-    let names: Vec<&str> = plan.hops.iter().map(|hop| hop.name()).collect();
+    let names: Vec<&str> = plan.hops.iter().map(|hop| hop.name).collect();
     names.join(" -> ")
 }
 
@@ -133,11 +133,11 @@ pub fn render_markdown() -> String {
             let mut produced_by: Vec<&str> = Vec::new();
             let mut consumed_by: Vec<&str> = Vec::new();
             for converter in registry::all_converters() {
-                if converter.to().id == format.id {
-                    produced_by.push(converter.name());
+                if converter.to.id == format.id {
+                    produced_by.push(converter.name);
                 }
-                if converter.from().id == format.id {
-                    consumed_by.push(converter.name());
+                if converter.from.id == format.id {
+                    consumed_by.push(converter.name);
                 }
             }
             let line = format!(
@@ -169,13 +169,13 @@ pub fn render_conversions() -> String {
     text.push_str("| Name | From | To | Tier | Fidelity | Notes |\n");
     text.push_str("|---|---|---|---|---|---|\n");
     for converter in registry::all_converters() {
-        let fidelity = converter.fidelity();
+        let fidelity = converter.fidelity;
         let line = format!(
             "| {} | {} | {} | {} | {} | {} |\n",
-            converter.name(),
-            converter.from().id,
-            converter.to().id,
-            converter.tier().label(),
+            converter.name,
+            converter.from.id,
+            converter.to.id,
+            converter.tier.label(),
             fidelity.kind().label(),
             cell(fidelity.description().unwrap_or(""))
         );
@@ -221,10 +221,9 @@ fn render_mermaid() -> String {
         text.push_str("\n\n");
         let mut lines: Vec<(String, String)> = Vec::new();
         for converter in converters {
-            let inside =
-                converter.from().category == *category && converter.to().category == *category;
+            let inside = converter.from.category == *category && converter.to.category == *category;
             if inside {
-                add_line(&mut lines, converter.from().id, converter.to().id);
+                add_line(&mut lines, converter.from.id, converter.to.id);
             }
         }
         text.push_str("```mermaid\ngraph LR\n");
@@ -235,8 +234,8 @@ fn render_mermaid() -> String {
     // Across categories: the other side drawn as its category.
     let mut crossing: Vec<(String, String)> = Vec::new();
     for converter in converters {
-        let from = converter.from();
-        let to = converter.to();
+        let from = converter.from;
+        let to = converter.to;
         if from.category == to.category {
             continue;
         }

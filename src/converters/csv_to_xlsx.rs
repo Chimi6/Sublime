@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Tier};
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
@@ -31,26 +31,6 @@ pub static TSV_TO_XLSX: CsvToXlsx = CsvToXlsx {
 };
 
 impl Converter for CsvToXlsx {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        self.from
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::XLSX
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         input: Input<'_>,
@@ -82,15 +62,31 @@ impl Converter for CsvToXlsx {
     }
 }
 
+impl CsvToXlsx {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: self.from,
+            to: &formats::XLSX,
+            fidelity: Fidelity::Conditional(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declares_contract() {
-        assert_eq!(CSV_TO_XLSX.name(), "csv-to-xlsx");
-        assert_eq!(TSV_TO_XLSX.from().id, "tsv");
-        assert_eq!(CSV_TO_XLSX.to().id, "xlsx");
-        assert_eq!(CSV_TO_XLSX.fidelity(), Fidelity::Conditional(FIDELITY_NOTE));
+        assert_eq!(CSV_TO_XLSX.entry().name, "csv-to-xlsx");
+        assert_eq!(TSV_TO_XLSX.entry().from.id, "tsv");
+        assert_eq!(CSV_TO_XLSX.entry().to.id, "xlsx");
+        assert_eq!(
+            CSV_TO_XLSX.entry().fidelity,
+            Fidelity::Conditional(FIDELITY_NOTE)
+        );
     }
 }

@@ -3,11 +3,10 @@
 
 use std::io::{Read, Write};
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Tier};
 use crate::converters::pages_to_json::package_error;
 use crate::document::markdown::emit_events;
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::pages::{Package, Scope, read_document};
 use crate::io::text::TextWriter;
@@ -19,26 +18,6 @@ const FIDELITY_NOTE: &str =
 pub struct PagesToText;
 
 impl Converter for PagesToText {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::PAGES
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::TEXT
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -57,15 +36,28 @@ impl Converter for PagesToText {
     }
 }
 
+impl PagesToText {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::PAGES,
+            to: &formats::TEXT,
+            fidelity: Fidelity::Lossy(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declares_contract() {
-        assert_eq!(PagesToText.name(), "pages-to-text");
-        assert_eq!(PagesToText.from().id, "pages");
-        assert_eq!(PagesToText.to().id, "text");
-        assert_eq!(PagesToText.fidelity(), Fidelity::Lossy(FIDELITY_NOTE));
+        assert_eq!(PagesToText.entry().name, "pages-to-text");
+        assert_eq!(PagesToText.entry().from.id, "pages");
+        assert_eq!(PagesToText.entry().to.id, "text");
+        assert_eq!(PagesToText.entry().fidelity, Fidelity::Lossy(FIDELITY_NOTE));
     }
 }

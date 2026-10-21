@@ -4,7 +4,7 @@
 
 use std::io::{Read, Write};
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Tier};
 use crate::converters::input::read_text_document;
 use crate::converters::pages_to_json::package_error;
 use crate::document::Document;
@@ -92,26 +92,6 @@ fn malformed(message: String) -> ConvertError {
 }
 
 impl Converter for FromEpub {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::EPUB
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(self.note)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -120,6 +100,19 @@ impl Converter for FromEpub {
     ) -> Result<(), ConvertError> {
         let document = read_input(&mut input)?;
         write_other(self.target, &document, output, context)
+    }
+}
+
+impl FromEpub {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: &formats::EPUB,
+            to: self.to,
+            fidelity: Fidelity::Lossy(self.note),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -244,26 +237,6 @@ to_epub!(HTML_TO_EPUB, "html-to-epub", HTML, Html, FROM_TEXT_NOTE);
 to_epub!(TEXT_TO_EPUB, "text-to-epub", TEXT, Text, FROM_TEXT_NOTE);
 
 impl Converter for ToEpub {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        self.from
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::EPUB
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(self.note)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -278,6 +251,19 @@ impl Converter for ToEpub {
         )?;
         output.flush()?;
         Ok(())
+    }
+}
+
+impl ToEpub {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: self.from,
+            to: &formats::EPUB,
+            fidelity: Fidelity::Lossy(self.note),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -296,9 +282,9 @@ mod tests {
             (&EPUB_TO_HTML, "html"),
             (&EPUB_TO_TEXT, "text"),
         ] {
-            assert_eq!(converter.from().id, "epub");
-            assert_eq!(converter.to().id, to);
-            assert_eq!(converter.name(), format!("epub-to-{to}"));
+            assert_eq!(converter.entry().from.id, "epub");
+            assert_eq!(converter.entry().to.id, to);
+            assert_eq!(converter.entry().name, format!("epub-to-{to}"));
         }
         for (converter, from) in [
             (&DOCX_TO_EPUB, "docx"),
@@ -309,9 +295,9 @@ mod tests {
             (&HTML_TO_EPUB, "html"),
             (&TEXT_TO_EPUB, "text"),
         ] {
-            assert_eq!(converter.from().id, from);
-            assert_eq!(converter.to().id, "epub");
-            assert_eq!(converter.name(), format!("{from}-to-epub"));
+            assert_eq!(converter.entry().from.id, from);
+            assert_eq!(converter.entry().to.id, "epub");
+            assert_eq!(converter.entry().name, format!("{from}-to-epub"));
         }
     }
 }

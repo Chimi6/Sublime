@@ -4,10 +4,9 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Tier};
 use crate::converters::input::read_text_document;
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::html::HtmlWriter;
 use crate::io::markdown::{Options, parse_into};
@@ -17,26 +16,6 @@ const NAME: &str = "markdown-to-html";
 pub struct MarkdownToHtml;
 
 impl Converter for MarkdownToHtml {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::MARKDOWN
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::HTML
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossless
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -49,6 +28,19 @@ impl Converter for MarkdownToHtml {
         writer.finish()?;
         output.flush()?;
         Ok(())
+    }
+}
+
+impl MarkdownToHtml {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::MARKDOWN,
+            to: &formats::HTML,
+            fidelity: Fidelity::Lossless,
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -77,11 +69,11 @@ mod tests {
 
     #[test]
     fn declares_contract() {
-        let converter = MarkdownToHtml;
-        assert_eq!(converter.name(), "markdown-to-html");
-        assert_eq!(converter.from().id, "markdown");
-        assert_eq!(converter.to().id, "html");
-        assert_eq!(converter.fidelity(), Fidelity::Lossless);
-        assert_eq!(converter.tier(), Tier::Native);
+        let converter: &'static MarkdownToHtml = &MarkdownToHtml;
+        assert_eq!(converter.entry().name, "markdown-to-html");
+        assert_eq!(converter.entry().from.id, "markdown");
+        assert_eq!(converter.entry().to.id, "html");
+        assert_eq!(converter.entry().fidelity, Fidelity::Lossless);
+        assert_eq!(converter.entry().tier, Tier::Native);
     }
 }
