@@ -214,7 +214,8 @@ fn run(from: &[u8], to: &[u8], input: &[u8], options_text: &[u8]) -> u32 {
         strict: false,
         via: None,
     };
-    let plan = match planner::plan(registry::all_converters(), from, to, &plan_options) {
+    let converters = registry::converters_for(from, to, None);
+    let plan = match planner::plan(converters, from, to, &plan_options) {
         Ok(plan) => plan,
         Err(error @ PlanError::NoPath { .. }) => {
             set_message(&error.to_string());

@@ -1,10 +1,12 @@
 # HEIC -> PNG and JPEG
 
-**Latest** (2026-10-08, `heic-read` branch, pictures streamed by bands and
-files read by item: every line PASSES against libheif; ahead of Apple's
-hardware decoder (`sips`, context) in speed and memory on every line but
-the 36-megapixel stock grid to JPEG (430 against 529 MB/s, 66 against
-42 MB))
+**Latest** (2026-10-21, 1.0.0 release run: the quality-50 photo to PNG
+at 112.3 MB/s against libheif's 10.5 and to JPEG at 521.7 against 53.2,
+the flat image 769.1 and 1153.6 against 94.9 and 271.2, at 16 to 57% of
+its memory; every line PASSES against libheif; ahead of Apple's hardware
+decoder (`sips`, context) in speed and memory on every line but the
+36-megapixel stock grid to JPEG (435.5 against 524.8 MB/s, 65.9 against
+40.0 MB))
 
 ## Purpose
 
@@ -57,6 +59,49 @@ clock of the whole process, peak resident memory from GNU `time`.
   libheif repeats); decoded planes are bit-identical (`tests/heic_suite.rs`).
 
 ## Results
+
+### 2026-10-21, 1.0.0 release
+
+| Target | Ours | Reference (heif-dec) | Context (sips) | Result |
+|---|---|---|---|---|
+| heic -> png, hphoto-x265-q50 (45.8 MB of pixels, 2.1 MB on disk): throughput (MB/s of decoded pixels) | 112.3 | 10.5 | 46.4 | PASS |
+| heic -> png, hphoto-x265-q50: peak memory (MB) | 23.3 | 120.2 | 149.3 | PASS |
+| heic -> jpeg, hphoto-x265-q50 (45.8 MB of pixels, 2.1 MB on disk): throughput (MB/s of decoded pixels) | 521.7 | 53.2 | 276.6 | PASS |
+| heic -> jpeg, hphoto-x265-q50: peak memory (MB) | 19.7 | 74.6 | 31.7 | PASS |
+| heic -> png, hphoto-x265-q90 (45.8 MB of pixels, 11.9 MB on disk): throughput (MB/s of decoded pixels) | 71.8 | 8.6 | 40.7 | PASS |
+| heic -> png, hphoto-x265-q90: peak memory (MB) | 43.2 | 142.2 | 189.3 | PASS |
+| heic -> jpeg, hphoto-x265-q90 (45.8 MB of pixels, 11.9 MB on disk): throughput (MB/s of decoded pixels) | 251.5 | 32.2 | 199.9 | PASS |
+| heic -> jpeg, hphoto-x265-q90: peak memory (MB) | 41.7 | 104.2 | 76.4 | PASS |
+| heic -> png, hphoto-x265-10bit (45.8 MB of pixels, 8.7 MB on disk): throughput (MB/s of decoded pixels) | 52.8 | 1.9 | 15.9 | PASS |
+| heic -> png, hphoto-x265-10bit: peak memory (MB) | 46.2 | 239.5 | 181.8 | PASS |
+| heic -> jpeg, hphoto-x265-10bit (45.8 MB of pixels, 8.7 MB on disk): throughput (MB/s of decoded pixels) | 235.1 | 32.4 | 196.5 | PASS |
+| heic -> jpeg, hphoto-x265-10bit: peak memory (MB) | 42.2 | 167.1 | 60.3 | PASS |
+| heic -> png, hflat-x265-q75 (45.8 MB of pixels, 0.1 MB on disk): throughput (MB/s of decoded pixels) | 769.1 | 94.9 | 82.6 | PASS |
+| heic -> png, hflat-x265-q75: peak memory (MB) | 17.8 | 114.3 | 142.1 | PASS |
+| heic -> jpeg, hflat-x265-q75 (45.8 MB of pixels, 0.1 MB on disk): throughput (MB/s of decoded pixels) | 1153.6 | 271.2 | 392.3 | PASS |
+| heic -> jpeg, hflat-x265-q75: peak memory (MB) | 17.5 | 68.4 | 19.0 | PASS |
+| heic -> png, hphoto-apple (45.8 MB of pixels, 2.3 MB on disk): throughput (MB/s of decoded pixels) | 90.4 | 10.6 | 40.0 | PASS |
+| heic -> png, hphoto-apple: peak memory (MB) | 29.5 | 93.6 | 148.7 | PASS |
+| heic -> jpeg, hphoto-apple (45.8 MB of pixels, 2.3 MB on disk): throughput (MB/s of decoded pixels) | 435.4 | 171.5 | 282.0 | PASS |
+| heic -> jpeg, hphoto-apple: peak memory (MB) | 26.1 | 45.8 | 28.8 | PASS |
+| heic -> png, stock (103.5 MB of pixels, 19.4 MB on disk): throughput (MB/s of decoded pixels) [stock] | 93.7 | 3.6 | 45.2 | PASS |
+| heic -> png, stock: peak memory (MB) [stock] | 74.5 | 229.2 | 315.5 | PASS |
+| heic -> jpeg, stock (103.5 MB of pixels, 19.4 MB on disk): throughput (MB/s of decoded pixels) [stock] | 435.5 | 74.0 | 524.8 | PASS |
+| heic -> jpeg, stock: peak memory (MB) [stock] | 65.9 | 127.4 | 40.0 | PASS |
+
+commit: ec68950 (the `v1-wrapup` branch, before the version bump)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes against libheif, as in the previous block, and `sips`
+(context) still leads only on the 36-megapixel stock grid to JPEG
+(435.5 against 524.8 MB/s, 65.9 against 40.0 MB). Our throughput reads
+2 to 18% lower than the previous block's on ten of twelve lines (the
+10-bit photo to PNG most, 52.8 against 64.7 MB/s) and 1 to 5% higher on
+two (the quality-90 photo and the stock grid to JPEG); the machine was in use
+during this run (load average 7 to 12 on 10 cores: a browser, a VPN
+client, a remote-desktop host), so wall-clock rows are noisier than
+earlier blocks', and the decoder, which uses every core, loses more to
+that load than `heif-dec` does.
 
 ### 2026-10-08, pictures streamed by bands, files read by item
 

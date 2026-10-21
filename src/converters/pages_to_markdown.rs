@@ -3,11 +3,10 @@
 
 use std::io::{Read, Write};
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Tier};
 use crate::converters::pages_to_json::package_error;
 use crate::document::markdown::emit_events;
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::markdown::MarkdownWriter;
 use crate::io::pages::{Package, Scope, read_document};
@@ -18,26 +17,6 @@ const FIDELITY_NOTE: &str = "page layout, headers and footers, fonts, sizes, and
 pub struct PagesToMarkdown;
 
 impl Converter for PagesToMarkdown {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::PAGES
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::MARKDOWN
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -56,15 +35,31 @@ impl Converter for PagesToMarkdown {
     }
 }
 
+impl PagesToMarkdown {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::PAGES,
+            to: &formats::MARKDOWN,
+            fidelity: Fidelity::Lossy(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declares_contract() {
-        assert_eq!(PagesToMarkdown.name(), "pages-to-markdown");
-        assert_eq!(PagesToMarkdown.from().id, "pages");
-        assert_eq!(PagesToMarkdown.to().id, "markdown");
-        assert_eq!(PagesToMarkdown.fidelity(), Fidelity::Lossy(FIDELITY_NOTE));
+        assert_eq!(PagesToMarkdown.entry().name, "pages-to-markdown");
+        assert_eq!(PagesToMarkdown.entry().from.id, "pages");
+        assert_eq!(PagesToMarkdown.entry().to.id, "markdown");
+        assert_eq!(
+            PagesToMarkdown.entry().fidelity,
+            Fidelity::Lossy(FIDELITY_NOTE)
+        );
     }
 }

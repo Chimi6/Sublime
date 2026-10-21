@@ -3,10 +3,9 @@
 
 use std::io::{Read, Write};
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Tier};
 use crate::document::markdown::emit_events;
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::docx::read_docx;
 use crate::io::text::TextWriter;
@@ -18,26 +17,6 @@ const FIDELITY_NOTE: &str =
 pub struct DocxToText;
 
 impl Converter for DocxToText {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::DOCX
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::TEXT
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -58,15 +37,28 @@ impl Converter for DocxToText {
     }
 }
 
+impl DocxToText {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::DOCX,
+            to: &formats::TEXT,
+            fidelity: Fidelity::Lossy(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declares_contract() {
-        assert_eq!(DocxToText.name(), "docx-to-text");
-        assert_eq!(DocxToText.from().id, "docx");
-        assert_eq!(DocxToText.to().id, "text");
-        assert_eq!(DocxToText.fidelity(), Fidelity::Lossy(FIDELITY_NOTE));
+        assert_eq!(DocxToText.entry().name, "docx-to-text");
+        assert_eq!(DocxToText.entry().from.id, "docx");
+        assert_eq!(DocxToText.entry().to.id, "text");
+        assert_eq!(DocxToText.entry().fidelity, Fidelity::Lossy(FIDELITY_NOTE));
     }
 }

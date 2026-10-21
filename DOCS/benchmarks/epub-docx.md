@@ -1,6 +1,6 @@
 # EPUB <-> Word
 
-**Latest** (2026-10-14, the `epub` branch: docx -> epub at 60.6 MB/s of input plus output on the styled shape and 83.6 on prose, epub -> docx at 62.0 and 82.6; every line PASSES against pandoc at 47 to 413 times its speed and a tenth to a twenty-third of its memory)
+**Latest** (2026-10-21, 1.0.0 release run: docx -> epub at 62.4 MB/s of input plus output on the styled shape and 87.6 on prose, epub -> docx at 62.3 and 84.1; every line PASSES against pandoc at 45 to 420 times its speed and a tenth to a twenty-fourth of its memory)
 
 ## Purpose
 
@@ -49,6 +49,32 @@ chapters with one style sheet, where real books split into many files
 and real Word files carry larger style sheets.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release run (`v1-wrapup` branch)
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| docx -> epub, styled (6.0 MB in + 6.1 MB out, uncompressed): throughput (MB/s of input plus output) | 62.4 | 1.4 (pandoc) | PASS |
+| docx -> epub, styled: throughput (MB/s of uncompressed input) [extra] | 30.8 | 0.9 (pandoc) | n/a |
+| docx -> epub, styled: peak memory (MB) | 33.5 | 568.6 (pandoc) | PASS |
+| epub -> docx, styled (6.1 MB in + 3.6 MB out, uncompressed): throughput (MB/s of input plus output) | 62.3 | 0.5 (pandoc) | PASS |
+| epub -> docx, styled: throughput (MB/s of uncompressed input) [extra] | 39.2 | 0.2 (pandoc) | n/a |
+| epub -> docx, styled: peak memory (MB) | 38.5 | 400.1 (pandoc) | PASS |
+| docx -> epub, prose (7.5 MB in + 7.8 MB out, uncompressed): throughput (MB/s of input plus output) | 87.6 | 1.4 (pandoc) | PASS |
+| docx -> epub, prose: throughput (MB/s of uncompressed input) [extra] | 43.1 | 0.9 (pandoc) | n/a |
+| docx -> epub, prose: peak memory (MB) | 33.4 | 812.1 (pandoc) | PASS |
+| epub -> docx, prose (7.8 MB in + 5.8 MB out, uncompressed): throughput (MB/s of input plus output) | 84.1 | 0.2 (pandoc) | PASS |
+| epub -> docx, prose: throughput (MB/s of uncompressed input) [extra] | 48.4 | 0.1 (pandoc) | n/a |
+| epub -> docx, prose: peak memory (MB) | 42.9 | 459.6 (pandoc) | PASS |
+
+commit: ec68950 (on the `v1-wrapup` branch, before the 1.0.0 release)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes. The machine was in use during this run (load average
+7 to 12 on 10 cores: a browser, a VPN client, a remote-desktop host), so
+the wall-clock rows are noisier than earlier blocks'. On the same machine
+and inputs as the block below, every throughput row is level or a few
+percent higher and memory moves by at most 2.5 MB either way.
 
 ### 2026-10-14, the `epub` branch
 

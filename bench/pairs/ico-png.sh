@@ -7,6 +7,12 @@
 # References: the image crate (its ICO decoder; for icons, `thumbnail`
 # at each size and its multi-image ICO encoder) with the png crate.
 
+# Milliseconds from seconds and KB from bytes, as functions: macOS's bash
+# 3.2 misreads an awk program quoted inside "$(...)" inside a row's
+# arguments.
+ms() { awk "BEGIN{printf \"%.1f\", $1 * 1000}"; }
+kb() { awk "BEGIN{printf \"%.1f\", $1 / 1024}"; }
+
 run_pair() {
   local side=4000
   echo "== generating" >&2
@@ -25,16 +31,16 @@ image.save('$data/icon.ico')
   bytes="$(wc -c < "$data/icon.ico" | tr -d ' ')"
   ours="$(time_cmd ours "$sublime" -q convert "$data/icon.ico" "$data/out-icon-ours.png")"
   crates="$(time_cmd crates "$bench" ico-png crates-ico-png "$data/icon.ico" "$data/out-icon-crates.png")"
-  row "ico -> png, 256 icon ($(mb "$bytes") MB): wall time (ms)" "$(awk "BEGIN{printf \"%.1f\", $(seconds_of "$ours") * 1000}")" "$(awk "BEGIN{printf \"%.1f\", $(seconds_of "$crates") * 1000}") (image + png)" "$(pass "$(echo "$(seconds_of "$ours") <= $(seconds_of "$crates")" | bc -l)")"
+  row "ico -> png, 256 icon ($(mb "$bytes") MB): wall time (ms)" "$(ms "$(seconds_of "$ours")")" "$(ms "$(seconds_of "$crates")") (image + png)" "$(pass "$(echo "$(seconds_of "$ours") <= $(seconds_of "$crates")" | bc -l)")"
   row "ico -> png, 256 icon: peak memory (MB)" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$crates")") (image + png)" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$crates")" | bc -l)")"
   for shape in icon256 jphoto jflat; do
     local png="$data/$shape.png" png_bytes
     png_bytes="$(wc -c < "$png" | tr -d ' ')"
     ours="$(time_cmd ours "$sublime" -q convert "$png" "$data/out-$shape-ours.ico")"
     crates="$(time_cmd crates "$bench" ico-png crates-png-ico "$png" "$data/out-$shape-crates.ico")"
-    row "png -> ico, $shape ($(mb "$png_bytes") MB in): wall time (ms)" "$(awk "BEGIN{printf \"%.1f\", $(seconds_of "$ours") * 1000}")" "$(awk "BEGIN{printf \"%.1f\", $(seconds_of "$crates") * 1000}") (png + image)" "$(pass "$(echo "$(seconds_of "$ours") <= $(seconds_of "$crates")" | bc -l)")"
+    row "png -> ico, $shape ($(mb "$png_bytes") MB in): wall time (ms)" "$(ms "$(seconds_of "$ours")")" "$(ms "$(seconds_of "$crates")") (png + image)" "$(pass "$(echo "$(seconds_of "$ours") <= $(seconds_of "$crates")" | bc -l)")"
     row "png -> ico, $shape: peak memory (MB)" "$(rss_mb "$(rss_of "$ours")")" "$(rss_mb "$(rss_of "$crates")") (png + image)" "$(pass "$(echo "$(rss_of "$ours") <= $(rss_of "$crates")" | bc -l)")"
-    row "png -> ico, $shape: output size (KB) [extra]" "$(awk "BEGIN{printf \"%.1f\", $(wc -c < "$data/out-$shape-ours.ico") / 1024}")" "$(awk "BEGIN{printf \"%.1f\", $(wc -c < "$data/out-$shape-crates.ico") / 1024}") (image)" "n/a"
+    row "png -> ico, $shape: output size (KB) [extra]" "$(kb "$(wc -c < "$data/out-$shape-ours.ico")")" "$(kb "$(wc -c < "$data/out-$shape-crates.ico")") (image)" "n/a"
   done
   rm -f "$data/out-"*
 }

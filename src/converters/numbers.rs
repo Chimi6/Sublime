@@ -8,7 +8,7 @@
 
 use std::io::{Read, Write};
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Parts, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Parts, Tier};
 use crate::converters::pages_to_json::package_error;
 use crate::event::Context;
 use crate::format::Format;
@@ -72,26 +72,6 @@ pub static NUMBERS_TO_XLSX: NumbersTo = NumbersTo {
 };
 
 impl Converter for NumbersTo {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::NUMBERS
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(self.note)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -192,6 +172,19 @@ impl Converter for NumbersTo {
             write_rows(&mut workbook, &table, delimiter, parts.part(&table.name)?)?;
         }
         Ok(())
+    }
+}
+
+impl NumbersTo {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: &formats::NUMBERS,
+            to: self.to,
+            fidelity: Fidelity::Conditional(self.note),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -393,9 +386,9 @@ mod tests {
 
     #[test]
     fn declares_contract() {
-        assert_eq!(NUMBERS_TO_CSV.name(), "numbers-to-csv");
-        assert_eq!(NUMBERS_TO_CSV.from().id, "numbers");
-        assert_eq!(NUMBERS_TO_XLSX.to().id, "xlsx");
+        assert_eq!(NUMBERS_TO_CSV.entry().name, "numbers-to-csv");
+        assert_eq!(NUMBERS_TO_CSV.entry().from.id, "numbers");
+        assert_eq!(NUMBERS_TO_XLSX.entry().to.id, "xlsx");
         assert!(NUMBERS_TO_TSV.splits());
         assert!(!NUMBERS_TO_JSON.splits());
     }

@@ -3,7 +3,7 @@
 
 use std::io::{Read, Write};
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Parts, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Parts, Tier};
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
@@ -32,26 +32,6 @@ pub static XLSX_TO_TSV: XlsxToCsv = XlsxToCsv {
 };
 
 impl Converter for XlsxToCsv {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::XLSX
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -94,6 +74,19 @@ impl Converter for XlsxToCsv {
             self.write_sheet(&workbook, sheet, delimiter, output, context)?;
         }
         Ok(())
+    }
+}
+
+impl XlsxToCsv {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: &formats::XLSX,
+            to: self.to,
+            fidelity: Fidelity::Conditional(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -155,26 +148,6 @@ pub static XLSX_TO_MARKDOWN: XlsxWhole = XlsxWhole {
 };
 
 impl Converter for XlsxWhole {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::XLSX
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(self.note)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -203,6 +176,19 @@ impl Converter for XlsxWhole {
     }
 }
 
+impl XlsxWhole {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: &formats::XLSX,
+            to: self.to,
+            fidelity: Fidelity::Conditional(self.note),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 impl From<XlsxError> for ConvertError {
     fn from(error: XlsxError) -> Self {
         match error {
@@ -221,9 +207,12 @@ mod tests {
 
     #[test]
     fn declares_contract() {
-        assert_eq!(XLSX_TO_CSV.name(), "xlsx-to-csv");
-        assert_eq!(XLSX_TO_CSV.from().id, "xlsx");
-        assert_eq!(XLSX_TO_TSV.to().id, "tsv");
-        assert_eq!(XLSX_TO_CSV.fidelity(), Fidelity::Conditional(FIDELITY_NOTE));
+        assert_eq!(XLSX_TO_CSV.entry().name, "xlsx-to-csv");
+        assert_eq!(XLSX_TO_CSV.entry().from.id, "xlsx");
+        assert_eq!(XLSX_TO_TSV.entry().to.id, "tsv");
+        assert_eq!(
+            XLSX_TO_CSV.entry().fidelity,
+            Fidelity::Conditional(FIDELITY_NOTE)
+        );
     }
 }

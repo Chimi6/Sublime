@@ -9,7 +9,7 @@
 use std::io::Write;
 
 use crate::converter::{
-    ConvertError, Converter, Fidelity, Input, Location, MemoryParts, Parts, Tier,
+    ConvertError, Converter, Entry, Fidelity, Input, Location, MemoryParts, Parts, Tier,
 };
 use crate::converters::numbers::{ExcelCodes, excel_cell, pick_tables, read_all};
 use crate::converters::pages_to_json::package_error;
@@ -97,26 +97,6 @@ pub static ODS_TO_NUMBERS: OdsTo = OdsTo {
 };
 
 impl Converter for OdsTo {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::ODS
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(self.note)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -247,6 +227,19 @@ impl Converter for OdsTo {
             },
         )?;
         missing(found, selector.as_deref(), names)
+    }
+}
+
+impl OdsTo {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: &formats::ODS,
+            to: self.to,
+            fidelity: Fidelity::Conditional(self.note),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -423,19 +416,7 @@ pub static NUMBERS_TO_ODS: ToOds = ToOds {
 };
 
 impl Converter for ToOds {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        self.from
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::ODS
-    }
-
-    fn options(&self) -> Vec<Setting> {
+    fn options(&self, _from: &'static Format, _to: &'static Format) -> Vec<Setting> {
         match self.source {
             // Sheets are named after the source's own names.
             Source::Json | Source::Document => vec![Setting::Effort],
@@ -446,17 +427,6 @@ impl Converter for ToOds {
                 options
             }
         }
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        match self.source {
-            Source::Document => Fidelity::Lossy(self.note),
-            _ => Fidelity::Conditional(self.note),
-        }
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
     }
 
     fn convert(
@@ -619,6 +589,22 @@ impl Converter for ToOds {
     }
 }
 
+impl ToOds {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: self.from,
+            to: &formats::ODS,
+            fidelity: match self.source {
+                Source::Document => Fidelity::Lossy(self.note),
+                _ => Fidelity::Conditional(self.note),
+            },
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 /// An Excel cell (as the workbook reader gives it: numbers as stored,
 /// dates in ISO 8601, booleans as `TRUE` and `FALSE`) typed by its text,
 /// with its number format.
@@ -703,12 +689,12 @@ mod tests {
 
     #[test]
     fn declares_contracts() {
-        assert_eq!(ODS_TO_CSV.from().id, "ods");
-        assert_eq!(ODS_TO_XLSX.to().id, "xlsx");
+        assert_eq!(ODS_TO_CSV.entry().from.id, "ods");
+        assert_eq!(ODS_TO_XLSX.entry().to.id, "xlsx");
         assert!(ODS_TO_TSV.splits());
         assert!(!ODS_TO_JSON.splits());
-        assert_eq!(CSV_TO_ODS.to().id, "ods");
-        assert_eq!(NUMBERS_TO_ODS.from().id, "numbers");
+        assert_eq!(CSV_TO_ODS.entry().to.id, "ods");
+        assert_eq!(NUMBERS_TO_ODS.entry().from.id, "numbers");
     }
 
     #[test]

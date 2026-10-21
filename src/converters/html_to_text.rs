@@ -3,10 +3,9 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Tier};
 use crate::converters::input::read_text_document;
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::html::reader::parse_into;
 use crate::io::text::TextWriter;
@@ -17,26 +16,6 @@ const FIDELITY_NOTE: &str = "markup, scripts, styles, and image sources are drop
 pub struct HtmlToText;
 
 impl Converter for HtmlToText {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::HTML
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::TEXT
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -52,15 +31,28 @@ impl Converter for HtmlToText {
     }
 }
 
+impl HtmlToText {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::HTML,
+            to: &formats::TEXT,
+            fidelity: Fidelity::Lossy(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declares_contract() {
-        assert_eq!(HtmlToText.name(), "html-to-text");
-        assert_eq!(HtmlToText.from().id, "html");
-        assert_eq!(HtmlToText.to().id, "text");
-        assert_eq!(HtmlToText.fidelity(), Fidelity::Lossy(FIDELITY_NOTE));
+        assert_eq!(HtmlToText.entry().name, "html-to-text");
+        assert_eq!(HtmlToText.entry().from.id, "html");
+        assert_eq!(HtmlToText.entry().to.id, "text");
+        assert_eq!(HtmlToText.entry().fidelity, Fidelity::Lossy(FIDELITY_NOTE));
     }
 }

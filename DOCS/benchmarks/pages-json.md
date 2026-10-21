@@ -1,6 +1,6 @@
 # Pages <-> pages-json
 
-**Latest** (2026-09-24: pages -> pages-json 30.0 MB/s of input on the dense shape and 40.6 on prose, at 44.1 and 27.3 MB peak, below the 50 MB/s goal; pages-json -> pages 325.3 and 338.2 MB/s of input at 46 and 31 MB peak, passing both goals)
+**Latest** (2026-10-21, the 1.0.0 release run: pages -> pages-json 24.4 MB/s of input on the styled shape and 25.9 on prose, at 27.6 and 35.6 MB peak, below the 50 MB/s goal, so throughput FAILS on both shapes; pages-json -> pages 145.9 and 238.6 MB/s of input at 27.8 and 45.2 MB peak, passing both goals)
 
 ## Purpose
 
@@ -89,6 +89,33 @@ and `ours` / `ours-back` modes for in-process runs.
   0.10 s on the dense shape.
 
 ## Results
+
+### 2026-10-21, the `v1-wrapup` branch, the 1.0.0 release run
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> pages-json, styled (1.4 MB): throughput (MB/s of input) | 24.4 | goal: 50 | FAIL |
+| pages -> pages-json, styled: peak memory (MB) | 27.6 | goal: <= 64.0 | PASS |
+| pages-json -> pages, styled (15.1 MB): throughput (MB/s of input) | 145.9 | goal: 50 | PASS |
+| pages-json -> pages, styled: peak memory (MB) | 27.8 | goal: <= 64.0 | PASS |
+| pages -> pages-json, prose (1.5 MB): throughput (MB/s of input) | 25.9 | goal: 50 | FAIL |
+| pages -> pages-json, prose: peak memory (MB) | 35.6 | goal: <= 64.0 | PASS |
+| pages-json -> pages, prose (16.1 MB): throughput (MB/s of input) | 238.6 | goal: 50 | PASS |
+| pages-json -> pages, prose: peak memory (MB) | 45.2 | goal: <= 64.0 | PASS |
+
+The machine was in use during this run (load average 7 to 12 on 10
+cores: a browser, a VPN client, a remote-desktop host), so the
+wall-clock rows are noisier than they would be on an idle machine. This
+block is from the M1 Max laptop and the previous one from the Linux
+bench machine, and the generator's styled shape is now a 1.4 MB package
+and 15.1 MB of JSON where it was 2.5 and 33.7 MB, so the styled rows
+are not a like-for-like comparison. The standing is unchanged: the
+forward direction's throughput still FAILS on both shapes (24.4 and
+25.9 MB/s against 50), and the reverse direction and every memory row
+pass.
 
 ### 2026-09-24, reader cursors and one arena copy
 

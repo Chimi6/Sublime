@@ -3,10 +3,9 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Tier};
 use crate::converters::input::read_text_document;
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::html::reader::parse_into;
 use crate::io::markdown::MarkdownWriter;
@@ -17,26 +16,6 @@ const FIDELITY_NOTE: &str = "scripts, styles, forms, and layout are dropped; ele
 pub struct HtmlToMarkdown;
 
 impl Converter for HtmlToMarkdown {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::HTML
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::MARKDOWN
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -52,15 +31,31 @@ impl Converter for HtmlToMarkdown {
     }
 }
 
+impl HtmlToMarkdown {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::HTML,
+            to: &formats::MARKDOWN,
+            fidelity: Fidelity::Lossy(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declares_contract() {
-        assert_eq!(HtmlToMarkdown.name(), "html-to-markdown");
-        assert_eq!(HtmlToMarkdown.from().id, "html");
-        assert_eq!(HtmlToMarkdown.to().id, "markdown");
-        assert_eq!(HtmlToMarkdown.fidelity(), Fidelity::Lossy(FIDELITY_NOTE));
+        assert_eq!(HtmlToMarkdown.entry().name, "html-to-markdown");
+        assert_eq!(HtmlToMarkdown.entry().from.id, "html");
+        assert_eq!(HtmlToMarkdown.entry().to.id, "markdown");
+        assert_eq!(
+            HtmlToMarkdown.entry().fidelity,
+            Fidelity::Lossy(FIDELITY_NOTE)
+        );
     }
 }

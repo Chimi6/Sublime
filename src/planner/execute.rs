@@ -6,7 +6,7 @@ use std::io::Write;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-use crate::converter::{ConvertError, Converter, Input, MemoryParts, Parts};
+use crate::converter::{ConvertError, Entry, Input, MemoryParts, Parts};
 use crate::event::{Context, Event};
 use crate::planner::Plan;
 #[cfg(not(target_arch = "wasm32"))]
@@ -54,19 +54,19 @@ pub fn execute_in_memory(
     for converter in first_hops {
         let mut next = Vec::new();
         if is_first {
-            run_hop(*converter, Input::Stream(&mut input), &mut next, context)?;
+            run_hop(converter, Input::Stream(&mut input), &mut next, context)?;
             is_first = false;
         } else {
             let mut source: &[u8] = &buffer;
-            run_hop(*converter, Input::Stream(&mut source), &mut next, context)?;
+            run_hop(converter, Input::Stream(&mut source), &mut next, context)?;
         }
         buffer = next;
     }
     if is_first {
-        run_hop(*last, input, output, context)
+        run_hop(last, input, output, context)
     } else {
         let mut source: &[u8] = &buffer;
-        run_hop(*last, Input::Stream(&mut source), output, context)
+        run_hop(last, Input::Stream(&mut source), output, context)
     }
 }
 
@@ -83,11 +83,11 @@ pub fn execute_parts(
     let target_splits = plan
         .hops
         .last()
-        .is_some_and(|last| last.to().holds_one_part());
+        .is_some_and(|last| last.to.holds_one_part());
     let split_at = plan
         .hops
         .iter()
-        .position(|hop| hop.splits())
+        .position(|hop| hop.converter.splits())
         .filter(|_| target_splits);
     let Some(split_at) = split_at else {
         let output = parts.part("")?;
@@ -100,7 +100,7 @@ pub fn execute_parts(
         ));
     };
     if before.is_empty() {
-        return split_and_finish(*splitter, after, input, parts, context);
+        return split_and_finish(splitter, after, input, parts, context);
     }
     // The hops before the split make one input for it.
     let head = Plan {
@@ -109,13 +109,13 @@ pub fn execute_parts(
     let mut prepared = Vec::new();
     execute(&head, input, &mut prepared, context)?;
     let mut source: &[u8] = &prepared;
-    split_and_finish(*splitter, after, Input::Stream(&mut source), parts, context)
+    split_and_finish(splitter, after, Input::Stream(&mut source), parts, context)
 }
 
 /// Runs the splitting hop, then the hops after it once per part.
 fn split_and_finish(
-    splitter: &'static dyn Converter,
-    after: &[&'static dyn Converter],
+    splitter: &'static Entry,
+    after: &[&'static Entry],
     input: Input<'_>,
     parts: &mut dyn Parts,
     context: &mut Context<'_>,
@@ -138,46 +138,46 @@ fn split_and_finish(
 }
 
 fn run_hop_parts(
-    converter: &'static dyn Converter,
+    converter: &'static Entry,
     input: Input<'_>,
     parts: &mut dyn Parts,
     context: &mut Context<'_>,
 ) -> Result<(), ConvertError> {
     context.emit(Event::StepStarted {
-        converter: converter.name(),
+        converter: converter.name,
     });
     #[cfg(not(target_arch = "wasm32"))]
     let started = Instant::now();
-    let result = converter.convert_parts(input, parts, context);
+    let result = converter.converter.convert_parts(input, parts, context);
     #[cfg(not(target_arch = "wasm32"))]
     let elapsed = started.elapsed();
     #[cfg(target_arch = "wasm32")]
     let elapsed = std::time::Duration::ZERO;
     context.emit(Event::StepFinished {
-        converter: converter.name(),
+        converter: converter.name,
         elapsed,
     });
     result
 }
 
 pub(super) fn run_hop(
-    converter: &'static dyn Converter,
+    converter: &'static Entry,
     input: Input<'_>,
     output: &mut dyn Write,
     context: &mut Context<'_>,
 ) -> Result<(), ConvertError> {
     context.emit(Event::StepStarted {
-        converter: converter.name(),
+        converter: converter.name,
     });
     #[cfg(not(target_arch = "wasm32"))]
     let started = Instant::now();
-    let result = converter.convert(input, output, context);
+    let result = converter.converter.convert(input, output, context);
     #[cfg(not(target_arch = "wasm32"))]
     let elapsed = started.elapsed();
     #[cfg(target_arch = "wasm32")]
     let elapsed = std::time::Duration::ZERO;
     context.emit(Event::StepFinished {
-        converter: converter.name(),
+        converter: converter.name,
         elapsed,
     });
     result
@@ -186,7 +186,7 @@ pub(super) fn run_hop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::converter::{ConvertOptions, Converter, Fidelity, Input, Tier};
+    use crate::converter::{ConvertOptions, Converter, Entry, Fidelity, Input, Tier};
     use crate::event::{CollectingSink, Event};
     use crate::format::{Category, Format};
     use std::io::{Read, Write};
@@ -235,21 +235,6 @@ mod tests {
     struct WritesALot;
 
     impl Converter for Upper {
-        fn name(&self) -> &'static str {
-            "upper"
-        }
-        fn from(&self) -> &'static Format {
-            &A
-        }
-        fn to(&self) -> &'static Format {
-            &B
-        }
-        fn fidelity(&self) -> Fidelity {
-            Fidelity::Lossless
-        }
-        fn tier(&self) -> Tier {
-            Tier::Native
-        }
         fn convert(
             &self,
             mut input: Input<'_>,
@@ -265,21 +250,6 @@ mod tests {
     }
 
     impl Converter for Exclaim {
-        fn name(&self) -> &'static str {
-            "exclaim"
-        }
-        fn from(&self) -> &'static Format {
-            &B
-        }
-        fn to(&self) -> &'static Format {
-            &C
-        }
-        fn fidelity(&self) -> Fidelity {
-            Fidelity::Lossless
-        }
-        fn tier(&self) -> Tier {
-            Tier::Native
-        }
         fn convert(
             &self,
             mut input: Input<'_>,
@@ -296,21 +266,6 @@ mod tests {
     }
 
     impl Converter for Fails {
-        fn name(&self) -> &'static str {
-            "fails"
-        }
-        fn from(&self) -> &'static Format {
-            &B
-        }
-        fn to(&self) -> &'static Format {
-            &C
-        }
-        fn fidelity(&self) -> Fidelity {
-            Fidelity::Lossless
-        }
-        fn tier(&self) -> Tier {
-            Tier::Native
-        }
         fn convert(
             &self,
             _input: Input<'_>,
@@ -322,21 +277,6 @@ mod tests {
     }
 
     impl Converter for Tail {
-        fn name(&self) -> &'static str {
-            "tail"
-        }
-        fn from(&self) -> &'static Format {
-            &C
-        }
-        fn to(&self) -> &'static Format {
-            &D
-        }
-        fn fidelity(&self) -> Fidelity {
-            Fidelity::Lossless
-        }
-        fn tier(&self) -> Tier {
-            Tier::Native
-        }
         fn convert(
             &self,
             mut input: Input<'_>,
@@ -353,21 +293,6 @@ mod tests {
     }
 
     impl Converter for WritesALot {
-        fn name(&self) -> &'static str {
-            "writes_a_lot"
-        }
-        fn from(&self) -> &'static Format {
-            &A
-        }
-        fn to(&self) -> &'static Format {
-            &B
-        }
-        fn fidelity(&self) -> Fidelity {
-            Fidelity::Lossless
-        }
-        fn tier(&self) -> Tier {
-            Tier::Native
-        }
         fn convert(
             &self,
             _input: Input<'_>,
@@ -380,11 +305,46 @@ mod tests {
         }
     }
 
-    static UPPER: Upper = Upper;
-    static EXCLAIM: Exclaim = Exclaim;
-    static FAILS: Fails = Fails;
-    static TAIL: Tail = Tail;
-    static WRITES_A_LOT: WritesALot = WritesALot;
+    static UPPER: Entry = Entry {
+        name: "upper",
+        from: &A,
+        to: &B,
+        fidelity: Fidelity::Lossless,
+        tier: Tier::Native,
+        converter: &Upper,
+    };
+    static EXCLAIM: Entry = Entry {
+        name: "exclaim",
+        from: &B,
+        to: &C,
+        fidelity: Fidelity::Lossless,
+        tier: Tier::Native,
+        converter: &Exclaim,
+    };
+    static FAILS: Entry = Entry {
+        name: "fails",
+        from: &B,
+        to: &C,
+        fidelity: Fidelity::Lossless,
+        tier: Tier::Native,
+        converter: &Fails,
+    };
+    static TAIL: Entry = Entry {
+        name: "tail",
+        from: &C,
+        to: &D,
+        fidelity: Fidelity::Lossless,
+        tier: Tier::Native,
+        converter: &Tail,
+    };
+    static WRITES_A_LOT: Entry = Entry {
+        name: "writes_a_lot",
+        from: &A,
+        to: &B,
+        fidelity: Fidelity::Lossless,
+        tier: Tier::Native,
+        converter: &WritesALot,
+    };
 
     fn run(plan: &Plan, input: &[u8]) -> (Result<(), ConvertError>, Vec<u8>, CollectingSink) {
         let options = ConvertOptions::default();

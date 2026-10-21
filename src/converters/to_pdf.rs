@@ -5,7 +5,7 @@
 use std::io::{Read, Write};
 use std::sync::Arc;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Tier};
 use crate::converters::input::read_text_document;
 use crate::converters::pages_to_json::package_error;
 use crate::document::Document;
@@ -90,26 +90,6 @@ pub static RTF_TO_PDF: ToPdf = ToPdf {
 };
 
 impl Converter for ToPdf {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        self.from
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::PDF
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -184,6 +164,19 @@ impl Converter for ToPdf {
         document.finish()?;
         output.flush()?;
         Ok(())
+    }
+}
+
+impl ToPdf {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: self.from,
+            to: &formats::PDF,
+            fidelity: Fidelity::Conditional(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 

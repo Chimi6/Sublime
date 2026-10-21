@@ -4,9 +4,8 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Tier};
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::json;
 use crate::io::toml;
@@ -19,26 +18,6 @@ const FIDELITY_NOTE: &str =
 pub struct JsonToToml;
 
 impl Converter for JsonToToml {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::JSON
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::TOML
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         input: Input<'_>,
@@ -66,6 +45,19 @@ impl Converter for JsonToToml {
     }
 }
 
+impl JsonToToml {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::JSON,
+            to: &formats::TOML,
+            fidelity: Fidelity::Conditional(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 fn not_a_table(what: &str) -> ConvertError {
     ConvertError::Unsupported(format!(
         "a TOML document is a table; the JSON root is {what}"
@@ -78,9 +70,12 @@ mod tests {
 
     #[test]
     fn declares_contract() {
-        assert_eq!(JsonToToml.name(), "json-to-toml");
-        assert_eq!(JsonToToml.from().id, "json");
-        assert_eq!(JsonToToml.to().id, "toml");
-        assert_eq!(JsonToToml.fidelity(), Fidelity::Conditional(FIDELITY_NOTE));
+        assert_eq!(JsonToToml.entry().name, "json-to-toml");
+        assert_eq!(JsonToToml.entry().from.id, "json");
+        assert_eq!(JsonToToml.entry().to.id, "toml");
+        assert_eq!(
+            JsonToToml.entry().fidelity,
+            Fidelity::Conditional(FIDELITY_NOTE)
+        );
     }
 }

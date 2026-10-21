@@ -1,6 +1,6 @@
 # Text -> Markdown
 
-**Latest** (2026-09-24, first release of the text reader: text -> markdown 256.0 MB/s of input on the dense shape and 442.1 on prose, at 16.7 and 58.8 MB peak; every line PASSES)
+**Latest** (2026-10-21, the 1.0.0 release run: text -> markdown 282.1 MB/s of input on the dense shape and 612.5 on prose, at 16.2 and 58.5 MB peak; every line PASSES)
 
 ## Purpose
 
@@ -49,6 +49,25 @@ text would.
 
 ## Results
 
+### 2026-10-21, the `v1-wrapup` branch, the 1.0.0 release run
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| text -> markdown, dense (13.8 MB): throughput (MB/s of input) | 282.1 | goal: 50 | PASS |
+| text -> markdown, dense: peak memory (MB) | 16.2 | goal: <= 64.0 | PASS |
+| text -> markdown, prose (56.1 MB): throughput (MB/s of input) | 612.5 | goal: 50 | PASS |
+| text -> markdown, prose: peak memory (MB) | 58.5 | goal: <= 64.0 | PASS |
+
+The machine was in use during this run (load average 7 to 12 on 10
+cores: a browser, a VPN client, a remote-desktop host), so the
+wall-clock rows are noisier than they would be on an idle machine. This
+block is from the M1 Max laptop and the previous one from the Linux
+bench machine, so the rates are not a like-for-like comparison. Every
+line still passes; prose memory is still the input held whole.
+
 ### 2026-09-24, first release of the text reader
 
 commit: 34a9e90 (the reader's working tree, before its commit)
@@ -66,3 +85,6 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 Five to nine times the goal. Memory on prose is the input held whole
 (56 MB) since the writer borrows every line from it; a streaming
 converter would read line by line, which nothing here needs yet.
+
+2026-10-21, the 1.0.0 release run on the M1 Max laptop: 282.1 and
+612.5 MB/s, five to twelve times the goal.

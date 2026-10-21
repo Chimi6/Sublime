@@ -1,6 +1,6 @@
 # Pages -> Excel
 
-**Latest** (2026-10-08: 14.8 and 18.0 MB/s of input against the 50 MB/s goal, and 1,777 and 618 MB peak against 64 MB, from 2,231 and 736; every line still FAILS; what remains is listed in Conclusions and in `STATE.md` as tech debt)
+**Latest** (2026-10-21, the 1.0.0 release run: 13.4 and 16.3 MB/s of input on `tables` and `report` against the 50 MB/s goal, and 1,746 and 597 MB peak against 64 MB; every line still FAILS; what remains is listed in Conclusions and in `STATE.md` as tech debt)
 
 ## Purpose
 
@@ -53,6 +53,28 @@ MB here, 3.2 million decoded fields of the 31 million below. A Pages-made
 document of the same tables will read lighter; the per-table cost remains.
 
 ## Results
+
+### 2026-10-21, the `v1-wrapup` branch, the 1.0.0 release run
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> xlsx, tables (57.6 MB): throughput (MB/s of input) | 13.4 | goal: 50 | FAIL |
+| pages -> xlsx, tables: peak memory (MB) | 1745.6 | goal: <= 64.0 | FAIL |
+| pages -> xlsx, tables (57.6 MB in + 27.8 MB out): throughput (MB/s of input plus uncompressed output) [extra] | 19.8 | n/a | n/a |
+| pages -> xlsx, report (21.6 MB): throughput (MB/s of input) | 16.3 | goal: 50 | FAIL |
+| pages -> xlsx, report: peak memory (MB) | 596.7 | goal: <= 64.0 | FAIL |
+| pages -> xlsx, report (21.6 MB in + 7.6 MB out): throughput (MB/s of input plus uncompressed output) [extra] | 22.1 | n/a | n/a |
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+The machine was in use during this run (load average 7 to 12 on 10
+cores: a browser, a VPN client, a remote-desktop host), so the
+wall-clock rows are noisier than the 2026-10-08 block's. Every line
+still FAILS, as before. Against 2026-10-08, throughput read 13.4 and
+16.3 MB/s where it read 14.8 and 18.0, and peak memory 1,745.6 and
+596.7 MB where it was 1,777.2 and 618.0. The plain-cell writer and
+streaming tables are still the tech debt in `STATE.md`.
 
 ### 2026-10-06, 0.27.1
 

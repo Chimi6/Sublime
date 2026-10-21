@@ -1,6 +1,6 @@
 # Markdown -> HTML
 
-**Latest** (2026-09-25, 0.17.0 Markdown speedups: markdown -> html 112.9 MB/s of input on the markup-dense shape and 336.6 on prose, at 306 and 9.8 MB peak; all lines PASS against pulldown-cmark; the prose input is 4.7 MB and its median swings by tens of MB/s between runs)
+**Latest** (2026-10-21, 1.0.0 release run on the Apple M1 Max: markdown -> html 99.0 MB/s of input on the markup-dense shape (73.8 MB) and 298.3 on prose (56.6 MB), at 352.2 and 83.9 MB peak, against pulldown-cmark's 4.7 and 251.2; all lines PASS)
 
 ## Purpose
 
@@ -96,6 +96,31 @@ differ between renderers.
   identical one.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release run (`v1-wrapup` branch)
+
+commit: ec68950 (on the `v1-wrapup` branch, before the 1.0.0 release)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| markdown -> html, markup-dense (73.8 MB): throughput (MB/s of input) | 99.0 | 4.7 | PASS |
+| markdown -> html, prose (56.6 MB): throughput (MB/s of input) | 298.3 | 251.2 | PASS |
+| markdown -> html, markup-dense: peak memory (MB) | 352.2 | 672.3 (reference) | PASS |
+| markdown -> html, prose: peak memory (MB) | 83.9 | 263.9 (reference) | PASS |
+
+Every line passes. The first attempt at this run read stale, smaller
+inputs left in `bench/data` (2.2 MB dense, 1.7 MB prose: the scripts
+generate only when the file is missing, and several pairs share the
+names); they were deleted, regenerated at the documented sizes, and the
+pair rerun. The machine was in use during the rerun, more heavily than
+during the rest of this run (load average 16 to 26 on 10 cores: a
+browser, a VPN client, a remote-desktop host), so the wall-clock rows
+are noisier than earlier blocks'. The machine is the Apple M1 Max, not
+the Linux one of the block below, and the prose input is the full
+56.6 MB rather than that block's 4.7 MB, so the rows do not compare
+with it; against the reference in the same session we are 21 times
+faster on dense and 19% faster on prose, against 28 times and 5% below.
 
 ### 2026-09-25, 0.17.0 Markdown speedups
 

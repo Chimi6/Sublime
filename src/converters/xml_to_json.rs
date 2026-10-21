@@ -4,9 +4,8 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Tier};
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::json::{JsonWriter, from_tree};
 use crate::io::xml::tree;
@@ -17,26 +16,6 @@ const FIDELITY_NOTE: &str = "attributes become @-keys, text #text, repeated elem
 pub struct XmlToJson;
 
 impl Converter for XmlToJson {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::XML
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::JSON
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -54,15 +33,31 @@ impl Converter for XmlToJson {
     }
 }
 
+impl XmlToJson {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::XML,
+            to: &formats::JSON,
+            fidelity: Fidelity::Conditional(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declares_contract() {
-        assert_eq!(XmlToJson.name(), "xml-to-json");
-        assert_eq!(XmlToJson.from().id, "xml");
-        assert_eq!(XmlToJson.to().id, "json");
-        assert_eq!(XmlToJson.fidelity(), Fidelity::Conditional(FIDELITY_NOTE));
+        assert_eq!(XmlToJson.entry().name, "xml-to-json");
+        assert_eq!(XmlToJson.entry().from.id, "xml");
+        assert_eq!(XmlToJson.entry().to.id, "json");
+        assert_eq!(
+            XmlToJson.entry().fidelity,
+            Fidelity::Conditional(FIDELITY_NOTE)
+        );
     }
 }

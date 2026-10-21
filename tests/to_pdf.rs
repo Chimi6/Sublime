@@ -113,8 +113,12 @@ fn every_document_format_reaches_pdf() {
         let mut out = Vec::new();
         write_pdf_text(&pdf, None, &mut out).expect("our PDF reads");
         let out = String::from_utf8(out).unwrap();
-        assert!(out.contains(expect), "{}: {out}", converter.name());
-        assert!(!out.trim().is_empty(), "{} wrote no text", converter.name());
+        assert!(out.contains(expect), "{}: {out}", converter.entry().name);
+        assert!(
+            !out.trim().is_empty(),
+            "{} wrote no text",
+            converter.entry().name
+        );
     }
 }
 

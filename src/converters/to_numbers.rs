@@ -10,7 +10,7 @@
 use std::io::{Read, Write};
 
 use crate::converter::MemoryParts;
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Tier};
 use crate::converters::pages_to_json::package_error;
 use crate::event::Context;
 use crate::format::Format;
@@ -73,29 +73,6 @@ pub static MARKDOWN_TO_NUMBERS: ToNumbers = ToNumbers {
 };
 
 impl Converter for ToNumbers {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        self.from
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::NUMBERS
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        match self.source {
-            Source::Document => Fidelity::Lossy(DOCUMENT_NOTE),
-            _ => Fidelity::Conditional(NOTE),
-        }
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -196,6 +173,22 @@ impl Converter for ToNumbers {
     }
 }
 
+impl ToNumbers {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: self.from,
+            to: &formats::NUMBERS,
+            fidelity: match self.source {
+                Source::Document => Fidelity::Lossy(DOCUMENT_NOTE),
+                _ => Fidelity::Conditional(NOTE),
+            },
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 fn one_table(sheet: &str, table: &str, rows: NumbersRows) -> NumbersSheet {
     NumbersSheet {
         name: sheet.to_string(),
@@ -273,8 +266,8 @@ mod tests {
 
     #[test]
     fn declares_contract() {
-        assert_eq!(CSV_TO_NUMBERS.name(), "csv-to-numbers");
-        assert_eq!(XLSX_TO_NUMBERS.from().id, "xlsx");
-        assert_eq!(TSV_TO_NUMBERS.to().id, "numbers");
+        assert_eq!(CSV_TO_NUMBERS.entry().name, "csv-to-numbers");
+        assert_eq!(XLSX_TO_NUMBERS.entry().from.id, "xlsx");
+        assert_eq!(TSV_TO_NUMBERS.entry().to.id, "numbers");
     }
 }

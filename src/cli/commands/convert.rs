@@ -52,7 +52,12 @@ pub fn run(
         strict: args.strict,
         via,
     };
-    let plan = planner::plan(registry::all_converters(), from, to, &plan_options)?;
+    let plan = planner::plan(
+        registry::converters_for(from, to, plan_options.via),
+        from,
+        to,
+        &plan_options,
+    )?;
 
     super::check_unused_options(
         args,
@@ -225,7 +230,7 @@ fn convert_to_stdout(
         && let Some(last) = plan.hops.last()
     {
         context.loss(
-            last.name(),
+            last.name,
             crate::converter::Location::default(),
             format!(
                 "stdout holds one part: wrote '{}' and left out {} more ({}); give an output file to write each, or pick one with --sheet or --page",

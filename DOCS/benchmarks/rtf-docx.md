@@ -1,6 +1,6 @@
 # RTF <-> Word
 
-**Latest** (2026-10-06, 0.26.0 with RTF: docx -> rtf at 91.8 MB/s on the styled shape and 130.6 on prose, rtf -> docx at 184.7 and 251.4 MB/s of input plus uncompressed output, every line PASSES against pandoc at 25 to 60 times pandoc's speed and a twentieth of its memory)
+**Latest** (2026-10-21, the 1.0.0 release run: docx -> rtf at 90.4 MB/s on the styled shape and 133.1 on prose, rtf -> docx at 159.5 and 245.4 MB/s of input plus uncompressed output, every line PASSES against pandoc at 36 to 83 times pandoc's speed and a thirteenth to a twenty-fifth of its memory)
 
 ## Purpose
 
@@ -55,6 +55,32 @@ is the RTF our writer makes, which pandoc reads in full.
 
 ## Results
 
+### 2026-10-21, the `v1-wrapup` branch, the 1.0.0 release run
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| docx -> rtf, styled (6.0 MB uncompressed): throughput (MB/s of uncompressed input) | 90.4 | 1.5 (pandoc) | PASS |
+| docx -> rtf, styled: peak memory (MB) | 25.2 | 566.8 (pandoc) | PASS |
+| rtf -> docx, styled (4.6 MB in + 9.7 MB out): throughput (MB/s of input plus uncompressed output) | 159.5 | 4.4 (pandoc) | PASS |
+| rtf -> docx, styled: throughput (MB/s of input) [extra] | 51.5 | 1.8 (pandoc) | n/a |
+| rtf -> docx, styled: peak memory (MB) | 22.8 | 383.7 (pandoc) | PASS |
+| docx -> rtf, prose (7.5 MB uncompressed): throughput (MB/s of uncompressed input) | 133.1 | 1.6 (pandoc) | PASS |
+| docx -> rtf, prose: peak memory (MB) | 30.7 | 775.8 (pandoc) | PASS |
+| rtf -> docx, prose (7.7 MB in + 11.9 MB out): throughput (MB/s of input plus uncompressed output) | 245.4 | 4.9 (pandoc) | PASS |
+| rtf -> docx, prose: throughput (MB/s of input) [extra] | 96.2 | 2.5 (pandoc) | n/a |
+| rtf -> docx, prose: peak memory (MB) | 32.0 | 435.4 (pandoc) | PASS |
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+The machine was in use during this run (load average 7 to 12 on 10
+cores: a browser, a VPN client, a remote-desktop host), so the
+wall-clock rows are noisier than the previous block's. Every line still
+passes. `rtf -> docx` on the styled shape read 159.5 MB/s against 184.7
+on 2026-10-06; the other rates are within 3%. Peak memory on
+`rtf -> docx` prose rose from 27.2 to 32.0 MB, still under a
+thirteenth of pandoc's.
+
 ### 2026-10-06, 0.26.0 with RTF
 
 | Target | Ours | Reference | Result |
@@ -80,3 +106,7 @@ shapes, inside the 64 MB the Pages and Word pairs keep to. The writer is
 the slower side: `docx -> rtf` escapes every character outside ASCII and
 restates each run's formatting, which is what RTF readers expect. Re-run on
 the Linux bench machine for the record beside the other pairs.
+
+2026-10-21, the 1.0.0 release run: `rtf -> docx` on prose peaked at
+32.0 MB, so the paths no longer all hold under 31 MB; every line still
+passes, inside the 64 MB.

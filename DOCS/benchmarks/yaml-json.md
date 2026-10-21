@@ -1,6 +1,6 @@
 # YAML <-> JSON
 
-**Latest** (2026-09-25, arena tree: yaml -> json 128.9 MB/s of input on the dense shape and 322.6 on prose, at 235 and 427 MB peak; json -> yaml 98.5 and 356.0 MB/s at 172 and 211 MB peak; every line PASSES against serde_yaml with serde_json, at 2.3 to 5 times its throughput and 11 to 49 percent of its memory)
+**Latest** (2026-10-21, 1.0.0 release run: yaml -> json 87.8 MB/s of input on the dense shape and 214.8 on prose, at 359 and 536 MB peak; json -> yaml 70.7 and 212.9 MB/s at 198 and 234 MB peak; every line PASSES against serde_yaml with serde_json, at 2.1 to 4.4 times its throughput and 15 to 57 percent of its memory)
 
 ## Purpose
 
@@ -66,6 +66,35 @@ throughput in MB/s over the input file's bytes. Rows and units follow
 
 ## Results
 
+### 2026-10-21, `v1-wrapup` branch, the 1.0.0 release run
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| yaml -> json, dense (62.3 MB): throughput (MB/s of input) | 87.8 | 19.8 (serde_yaml + serde_json) | PASS |
+| yaml -> json, dense: peak memory (MB) | 359.1 | 2317.1 (serde_yaml + serde_json) | PASS |
+| yaml -> json, prose (190.1 MB): throughput (MB/s of input) | 214.8 | 71.4 (serde_yaml + serde_json) | PASS |
+| yaml -> json, prose: peak memory (MB) | 535.7 | 1081.2 (serde_yaml + serde_json) | PASS |
+| json -> yaml, dense (56.2 MB): throughput (MB/s of input) | 70.7 | 34.1 (serde_json + serde_yaml) | PASS |
+| json -> yaml, dense: peak memory (MB) | 197.5 | 523.7 (serde_json + serde_yaml) | PASS |
+| json -> yaml, prose (180.0 MB): throughput (MB/s of input) | 212.9 | 65.5 (serde_json + serde_yaml) | PASS |
+| json -> yaml, prose: peak memory (MB) | 234.0 | 409.4 (serde_json + serde_yaml) | PASS |
+
+Every line passes, at 2.1 to 4.4 times the reference's throughput and
+15 to 57 percent of its memory. This run is on a different machine from
+the previous blocks (an M1 Max, not the Linux i7-13700K), so its absolute
+MB/s do not compare with theirs. The machine was in use during the run
+(load average 7 to 12 on 10 cores: a browser, a VPN client, a
+remote-desktop host), so the wall-clock rows are noisier than earlier
+blocks'. Our peak memory is higher than in the previous block on every
+row: yaml -> json 234.7 -> 359.1 MB dense and 427.2 -> 535.7 MB prose,
+json -> yaml 172.0 -> 197.5 MB dense and 210.6 -> 234.0 MB prose. The
+reference's dense yaml -> json row rose too (2161.2 -> 2317.1 MB); this
+run does not say how much of the rise is the machine's allocator and how
+much is a change since.
+
 ### 2026-09-25, the value hub as an arena tree
 
 commit: bd7a134 (the working tree of this commit)
@@ -118,3 +147,9 @@ yaml -> json rows hold the input text beside the tree (62 and 190 MB of
 their peaks); a windowed reader like XML's is the lever if a large YAML
 case ever matters. The numbers do not justify claims about alias-heavy
 or deeply nested documents.
+
+On 2026-10-21, on an M1 Max under load, the reader was 4.4 times the
+reference on the dense shape rather than five, and the dense yaml -> json
+row peaked at 359 MB for 62 MB of input, about six bytes per input byte
+rather than three-plus-input; json -> yaml dense (70.7 MB/s) is still the
+lowest row.

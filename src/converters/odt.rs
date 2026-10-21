@@ -4,7 +4,7 @@
 
 use std::io::{Read, Write};
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Tier};
 use crate::converters::input::read_text_document;
 use crate::converters::pages_to_json::package_error;
 use crate::document::Document;
@@ -95,26 +95,6 @@ pub fn read_input(input: &mut Input<'_>) -> Result<Document, ConvertError> {
 }
 
 impl Converter for FromOdt {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::ODT
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(self.note)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -158,6 +138,19 @@ impl Converter for FromOdt {
         }
         output.flush()?;
         Ok(())
+    }
+}
+
+impl FromOdt {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: &formats::ODT,
+            to: self.to,
+            fidelity: Fidelity::Lossy(self.note),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -224,26 +217,6 @@ pub static TEXT_TO_ODT: ToOdt = ToOdt {
 };
 
 impl Converter for ToOdt {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        self.from
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::ODT
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(self.note)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -294,6 +267,19 @@ impl Converter for ToOdt {
     }
 }
 
+impl ToOdt {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: self.from,
+            to: &formats::ODT,
+            fidelity: Fidelity::Lossy(self.note),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,9 +294,9 @@ mod tests {
             (&ODT_TO_HTML, "html"),
             (&ODT_TO_TEXT, "text"),
         ] {
-            assert_eq!(converter.from().id, "odt");
-            assert_eq!(converter.to().id, to);
-            assert_eq!(converter.name(), format!("odt-to-{to}"));
+            assert_eq!(converter.entry().from.id, "odt");
+            assert_eq!(converter.entry().to.id, to);
+            assert_eq!(converter.entry().name, format!("odt-to-{to}"));
         }
         for (converter, from) in [
             (&DOCX_TO_ODT, "docx"),
@@ -320,9 +306,9 @@ mod tests {
             (&HTML_TO_ODT, "html"),
             (&TEXT_TO_ODT, "text"),
         ] {
-            assert_eq!(converter.from().id, from);
-            assert_eq!(converter.to().id, "odt");
-            assert_eq!(converter.name(), format!("{from}-to-odt"));
+            assert_eq!(converter.entry().from.id, from);
+            assert_eq!(converter.entry().to.id, "odt");
+            assert_eq!(converter.entry().name, format!("{from}-to-odt"));
         }
     }
 }

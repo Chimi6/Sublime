@@ -1,6 +1,6 @@
 # WebP <-> PNG
 
-**Latest** (2026-09-27, 0.24.0 release: 1 line FAILS, the lossless photo encode (0.21.0 decision))
+**Latest** (2026-10-21, 1.0.0 release run: lossless webp to png 67.9 MB/s against 39.4 on the photo and 612.9 against 431.5 on the flat, lossy 69.1 against 56.1 and 227.0 against 210.4, png to lossless webp 146.4 against 302.9 and 534.8 against 662.2, peak memory 6.9 to 109.2 MB against 77.2 to 190.8; 2 lines FAIL, the lossless photo encode (0.21.0 decision) and, new in this run, the lossless flat encode)
 
 ## Purpose
 
@@ -58,6 +58,44 @@ median wall clock of the whole process, peak resident memory from GNU
   between runs.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| webp (lossless) -> png, photo (45.8 MB of pixels, 25.8 MB on disk): throughput (MB/s of decoded pixels) | 67.9 | 39.4 (image + png) | PASS |
+| webp (lossless) -> png, photo: peak memory (MB) | 109.2 | 190.8 (image + png) | PASS |
+| webp (lossy) -> png, photo (45.8 MB of pixels, 0.3 MB on disk): throughput (MB/s of decoded pixels) | 69.1 | 56.1 (image + png) | PASS |
+| webp (lossy) -> png, photo: peak memory (MB) | 8.5 | 84.7 (image + png) | PASS |
+| png -> webp (lossless), photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 146.4 | 302.9 (png + image) | FAIL |
+| png -> webp (lossless), photo: peak memory (MB) | 97.6 | 148.9 (png + image) | PASS |
+| png -> webp (lossless), photo: output size (MB) [extra] | 27.4 | 28.5 (image); 25.8 (libwebp, default effort) | n/a |
+| webp (lossless) -> png, flat (45.8 MB of pixels, 0.0 MB on disk): throughput (MB/s of decoded pixels) | 612.9 | 431.5 (image + png) | PASS |
+| webp (lossless) -> png, flat: peak memory (MB) | 96.6 | 112.8 (image + png) | PASS |
+| webp (lossy) -> png, flat (45.8 MB of pixels, 0.1 MB on disk): throughput (MB/s of decoded pixels) | 227.0 | 210.4 (image + png) | PASS |
+| webp (lossy) -> png, flat: peak memory (MB) | 6.9 | 77.2 (image + png) | PASS |
+| png -> webp (lossless), flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 534.8 | 662.2 (png + image) | FAIL |
+| png -> webp (lossless), flat: peak memory (MB) | 51.7 | 112.7 (png + image) | PASS |
+| png -> webp (lossless), flat: output size (MB) [extra] | 0.0 | 0.0 (image); 0.0 (libwebp, default effort) | n/a |
+
+commit: ec68950 (the `v1-wrapup` branch, before the version bump)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Two lines FAIL. The lossless photo encode is the known miss (146.4
+against 302.9 MB/s; 253.1 against 435.5 in the previous block). The
+lossless flat encode is new: 534.8 against 662.2 MB/s, where it passed
+in the previous block at 772.5 against 612.2. A paired A/B of our
+binary at ec68950 against the commit before it (93a37d4), 9 alternated
+runs each, gave the same medians on the flat encode (0.08 s both): the
+registry change did not cause it. This is the first block on this
+machine; the earlier blocks are the Linux i7, so the rows do not
+compare like for like with them. The machine was in use during this run
+(load average 7 to 12 on 10 cores: a browser, a VPN client, a
+remote-desktop host), so wall-clock rows are noisier than earlier
+blocks'. The first attempt could not make the inputs (Pillow was no
+longer installed); they were made with Pillow 13.0.0 in a fresh Python
+3.13 environment and the pair rerun, and these are the rerun's rows.
+Output sizes are unchanged.
 
 ### 2026-09-27, 0.24.0 release
 
@@ -267,3 +305,7 @@ up chooses predictors by an entropy estimate on every row (1 to 1.5%
 smaller than the default, 40% slower). No level wins the photo encode
 line while the color cache is on, and the cache is what makes real
 photos 8 to 37% smaller; the line stays a known miss by design.
+
+**2026-10-21, 1.0.0 release run.** The flat encode no longer passes on
+the M1 Max: 534.8 against 662.2 MB/s, where the previous block had it
+at 772.5 against 612.2.

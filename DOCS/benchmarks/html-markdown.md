@@ -1,6 +1,6 @@
 # HTML -> Markdown
 
-**Latest** (2026-09-25, 0.17.0 Markdown speedups: html -> markdown 167.4 MB/s of input on the markup-dense shape and 234.9 on prose, at 29.6 and 15.0 MB peak; every line PASSES against htmd, whose throughput rounds to zero at one decimal)
+**Latest** (2026-10-21, 1.0.0 release run on the Apple M1 Max with 5.3 and 2.4 MB inputs: html -> markdown 106.6 MB/s of input on the markup-dense shape and 135.0 on prose, at 9.0 and 5.0 MB peak; every line PASSES against htmd at 1.0 and 5.1 MB/s)
 
 ## Purpose
 
@@ -55,6 +55,29 @@ follow `README.md`.
   design costs, not that it is slow at what it does.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release run (`v1-wrapup` branch)
+
+commit: ec68950 (on the `v1-wrapup` branch, before the 1.0.0 release)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| html -> markdown, markup-dense (5.3 MB): throughput (MB/s of input) | 106.6 | 1.0 (htmd) | PASS |
+| html -> markdown, markup-dense: peak memory (MB) | 9.0 | 187.3 (htmd) | PASS |
+| html -> markdown, prose (2.4 MB): throughput (MB/s of input) | 135.0 | 5.1 (htmd) | PASS |
+| html -> markdown, prose: peak memory (MB) | 5.0 | 76.9 (htmd) | PASS |
+
+Every line passes. The machine was in use during this run (load average
+7 to 12 on 10 cores: a browser, a VPN client, a remote-desktop host), so
+the wall-clock rows are noisier than earlier blocks'. The harness printed
+20,000 units, but the HTML on this machine was the 4,000-unit files (5.3
+and 2.4 MB, not the 26.6 and 12.1 MB of the blocks below), and the
+machine is the Apple M1 Max, not the Linux one. The rows therefore do
+not compare with the block below: the smaller inputs run in tens of
+milliseconds, where process start weighs more, and htmd, whose cost grows
+faster than its input, reads far faster on them (1.0 and 5.1 MB/s
+against 0.1 and 0.4).
 
 ### 2026-09-25, 0.17.0 Markdown speedups
 

@@ -1,6 +1,6 @@
 # PNG <-> PDF
 
-**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run: pdf to png 92.5 MB/s against 48.2 on the photo and 1012.1 against 484.0 on the flat, png to pdf 192.7 against 63.5 and 736.8 against 202.0, peak memory 5.9 to 53.4 MB against 61.2 to 273.6; every line PASSES, no `[stock]` rows on this machine)
 
 ## Purpose
 
@@ -50,6 +50,35 @@ outputs are removed before each run.
   at the end); peak memory is about the file's size plus rows.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pdf -> png, photo (45.8 MB of pixels, 39.7 MB on disk): throughput (MB/s of decoded pixels) | 92.5 | 48.2 (lopdf + png) | PASS |
+| pdf -> png, photo: peak memory (MB) | 53.4 | 163.3 (lopdf + png) | PASS |
+| pdf -> png, photo: output size (MB) [extra] | 25.0 | 27.1 (png) | n/a |
+| png -> pdf, photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 192.7 | 63.5 (png + printpdf) | PASS |
+| png -> pdf, photo: peak memory (MB) | 12.2 | 273.6 (png + printpdf) | PASS |
+| png -> pdf, photo: output size (MB) [extra] | 25.0 | 37.9 (printpdf) | n/a |
+| pdf -> png, flat (45.8 MB of pixels, 0.4 MB on disk): throughput (MB/s of decoded pixels) | 1012.1 | 484.0 (lopdf + png) | PASS |
+| pdf -> png, flat: peak memory (MB) | 7.5 | 61.2 (lopdf + png) | PASS |
+| pdf -> png, flat: output size (MB) [extra] | 0.1 | 0.3 (png) | n/a |
+| png -> pdf, flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 736.8 | 202.0 (png + printpdf) | PASS |
+| png -> pdf, flat: peak memory (MB) | 5.9 | 190.9 (png + printpdf) | PASS |
+| png -> pdf, flat: output size (MB) [extra] | 0.1 | 0.2 (printpdf) | n/a |
+
+commit: ec68950 (the `v1-wrapup` branch, before the version bump)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes. This is the first block on this machine; the earlier
+blocks are the Linux i7, so the rows do not compare like for like with
+them. The photo PDF is 39.7 MB here against 40.7 in earlier blocks,
+since this machine's ImageMagick made it. The machine was in use during
+this run (load average 7 to 12 on 10 cores: a browser, a VPN client, a
+remote-desktop host), so wall-clock rows are noisier than earlier
+blocks'. `[stock]` rows are absent: `bench/data/stock.*` is not on this
+machine.
 
 ### 2026-09-27, 0.24.0 release
 

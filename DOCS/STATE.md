@@ -6,6 +6,7 @@ describes.
 
 ## Now
 
+- 2026-10-21: v1 wrap-up and 1.0.0 (branch `v1-wrapup`). The converter registry is data: each converter has a `const fn entry()` and the registry is a static table of entries, so planning runs no converter's code, and the 195 image pairs are built only when an image format is an end (`registry::converters_for`). Starting memory 2.24 -> 1.95 MB, a ROM conversion 2.66 -> 2.42 MB, startup 0.15 ms faster; sizes move by a few KB. Every benchmark pair was rerun and recorded (first run on the M1 Max for many pairs, under load); the failing lines are under Tech Debt. The bench harness was fixed for this Mac (`gtime` in `csv-json`, awk helpers in `ico-png`, a bash 5 guard in `jpeg-pdf`). ROADMAP item 9 done; the next cycle is audio and video.
 - 2026-10-20: N64 ROMs between `z64`, `v64`, and `n64` (`src/io/n64.rs`, branch `n64`): six lossless converters permute each 32-bit word in a 256 KB buffer, vectorized as an array shuffle, reading the input's order from where the header's `0x80` lies whatever the name. Detection on the command line now lets content overrule an extension whose signature it fails when another format's matches (`format::detect`, for every format), with a warning; errors without a position drop `line 0, column 0`. Checked on Paper Mario (USA), a 40 MB No-Intro dump in `~/Downloads` (not committed): round trips return its SHA-1, outputs byte-identical to ucon64, `n64romconvert`, and `dd conv=swab`. Pair `z64-v64`: every speed line passes (1.2 to 1.35 times `dd`); the four memory lines against ucon64 and `dd` fail by 0.1 to 0.6 MB, the binary's startup floor (Tech Debt). The bench harness takes `bench_runs` for millisecond pairs. The wrap-up is next.
 - 2026-10-17: OpenDocument spreadsheet both ways (`src/io/ods`, branch `ods`): every sheet reads into rows with cells shown as LibreOffice shows them to an English reader, and rows write as sheets typed by the read-back rule; number formats pass through one model between ODS data styles and Excel codes (`numfmt.rs`), so ODS reaches Excel and Numbers with its formats and back. LibreOffice's built-in dates per document language come from its locale data (`builtin.rs`, MPL-2.0, `scripts/gen-ods-dates.py`). `content.xml` streams in four-megabyte pieces through a new `ZipArchive::stream`, read once, each wanted sheet held as its cells' text. Against LibreOffice's CSV export (`scripts/ods-check`): 303 of 463 development sheets byte-identical, 99.65% of non-formula cells; held out (35 government files, 12.2 million cells), 190 of 240 sheets, 99.999%, with five faults the held-out set found fixed before those numbers; every development CSV written as ODS reads back the same in LibreOffice. Pair `ods-csv` passes every line (calamine 0.36, LibreOffice). Budgets: binary 5.62 MB (Linux 5.59), wasm 3.14 MB (3.11). N64 ROMs are next.
 - 2026-10-14: EPUB both ways (`src/io/epub`, branch `epub`): books are read in spine order through the HTML reader, with their cover, pictures, and notes (EPUB, pandoc, Standard Ebooks, and Gutenberg markup, in the chapter or a notes file), and written as EPUB 3 with an EPUB 2 table of contents, chapters at page breaks and top headings, styles as CSS in `em`, pop-up footnotes, merged cells, pictures, MathML, and embedded fonts. Every book from the 89 Word files and 21 held-out ones passes epubcheck (pandoc's fail on 82 and 21); on 11 held-out books, EPUB -> Word keeps every note and picture in all 11 (pandoc 8 and 8); `scripts/epub-check`. Fixed on the way for every format: Google Docs headings (named, not levelled), HTML spaces before an inline end, merged cells in HTML tables, SVG-framed pictures. Pair `epub-docx` passes every line against pandoc. Budgets: binary 5.44 MB (Linux 5.36), wasm 3.02 MB (2.99).
@@ -49,27 +50,9 @@ describes.
 
 ## Next
 
-- 2026-10-08, the v1 plan (decided with the user; full list in `ROADMAP.md`, v1): release the Numbers work as 0.29.0; the Pages reader's memory on large tables; CSV delimiters; images in documents to PDF; HEIC read, then HEIC write, native and measured against libheif/x265 and `sips`; ODT, then EPUB; ODS; the wrap-up. SQLite and the niche formats (MessagePack, CBOR, INI, subtitles, notebooks, ICNS, GIF) come after v1, and N64 ROMs (`z64`, `v64`, `n64`) are the first novelty after it.
-
-The document category's one-way streets are closed (0.8.0 to 0.10.0) and the data category's planned set is in (0.11.0 to 0.16.0). What follows, in order:
-
-- 2026-09-28, PDF first (a flagship: complete both ways before 1.0). Shipped: images <-> PDF (0.23), PDF to text, Markdown, HTML, and Word (0.24), and documents to PDF with system fonts (0.25). In order:
-  1. **Images in documents to PDF** (done 2026-10-08, `formats/pdf.md`): pictures set as blocks at their size. Left: pictures in table cells, inline with text, floating beside it, and crops; and Markdown to Word does not carry images by path (the Word writer has no input folder yet).
-  2. **The `markdown-pdf` pair** (bench): a long generated Markdown document to PDF against printpdf's HTML layout (Markdown to HTML by us, HTML to PDF by printpdf 0.8) and pandoc when a PDF engine is installed (none on the Linux box); pass lines speed and memory; output size recorded.
-  3. **Release 0.26.0** (minor: new paths): release blocks for the new pair and every pair the inflater or PDF code touched, the binary block (budgets are 2.70 MB and 1.40 MB after the raise for this work), changelog, ROADMAP.
-  4. After 0.25: complex scripts (a shaper for Arabic joining and Indic conjuncts, the bidi algorithm for right-to-left order) and CFF font subsetting (most CJK `.otf`), both under Tech Debt; page numbers, headers, footers, and hyphenation; reading a PDF's embedded fonts to get true sizes (the Ghostscript CID case in 0.24).
-  5. The Mac session's Pages <-> Word work shipped in 0.25.0, so changes to the Pages or Word readers, writers, or the document model are open again, including setting a Word or Pages document in its own named fonts.
-  Encrypted PDFs with an empty user password (RC4, AES) remain their own item.
-- 2026-09-25, spreadsheets as a family (the XLSX reader and writer are the model; every entry below reads into rows and writes from them so it reaches CSV, TSV, JSON, JSON Lines, and the hub formats through the planner):
-  - **Apple Numbers** (reader done 2026-10-06, `DOCS/formats/numbers.md`): left are number formats (currency, percentages, custom formats) as Numbers shows them, references from Numbers' own CSV export on Numbers-made fixtures (Mac session), and the writer, which needs the object-graph work the Pages writer did.
-  - **OpenDocument spreadsheet** (done 2026-10-17, `DOCS/formats/ods.md`).
-  - **Google Sheets** is not a file format: it exports XLSX, CSV, or ODS, which we read (said in `DOCS/formats/ods.md`).
-  - **Spreadsheet to document** (done 2026-09-25): rows become a Markdown table and reach every document format; a document's first table comes back as rows. Workbooks whole (2026-10-06): a workbook's sheets and a document's tables travel together into formats that hold several (JSON as an object of sheets, documents as a table per sheet, workbooks as a sheet per table) and become a file each, in a folder, for formats that hold one (CSV, TSV, JSON Lines). Numbers reads into it (2026-10-06). Still open: PDF pages and multi-page TIFFs as an image each through the same split.
-  - **Excel-made fixtures** for the XLSX reader (Mac session, Excel or Numbers export), and number formats beyond dates.
-- 2026-09-26, the image category after PNG, BMP, and JPEG: GIF once there is somewhere for its frames to go (APNG or video); until then its first frame is a small reader on the hub. Every codec lands in the pixel hub and ships with a pair against a real crate. JPEG levers in Tech Debt: subsampling chosen from the chroma's detail, optimized Huffman tables, progressive output, Exif orientation on the image path.
-- 2026-09-25, the cheap hub batch: INI, plist (XML and binary), MessagePack, CBOR, each a day on the value tree.
-- Then the document category: ODT and EPUB, which reuse the Word and HTML work almost entirely; RTF.
-- The Pages writer decision stays with the Mac session.
+- 2026-10-21: v1 is done (`ROADMAP.md`, v1) and released as 1.0.0. The next cycle is audio and video (`ROADMAP.md`, After v1): our own codecs first, judged against ffmpeg and each codec's reference tool, with an installed ffmpeg as the External-tier fallback for what is not written yet. In order: the containers (ISO BMFF, EBML, RIFF) and remuxing; WAV, AIFF, FLAC, and ALAC both ways; MP3, AAC, Vorbis, and Opus decoders; video decoders (H.264, HEVC video, VP9, AV1); then encoders one at a time.
+- 2026-10-21: Record the v1.0.0 musl asset and gzipped module in `DOCS/benchmarks/binary.md` (this Mac has neither toolchain), and rerun the failing bench lines (Tech Debt) on an idle machine.
+- Left from the earlier plans, after the media cycle unless a user needs them sooner: SQLite read; the cheap hub batch (INI, plist, MessagePack, CBOR); the `markdown-pdf` bench pair; PDF pictures in table cells, inline, floating, and cropped, and Markdown to Word carrying images by path; complex scripts and CFF fonts in PDF (Tech Debt); the Pages reader's memory on large tables (1.8 GB on 100,000 rows against the 64 MB goal; Optimization); Excel-made fixtures and number formats beyond dates into CSV, JSON, and documents.
 
 ## Future
 
@@ -90,12 +73,21 @@ The document category's one-way streets are closed (0.8.0 to 0.10.0) and the dat
 
 ## Blockers
 
-- 2026-09-24: The Pages document paths fail the shared Pages goals of 50 MB/s of input and 64 MB peak (`DOCS/benchmarks/pages-docx.md`, `pages-markdown.md`, `pages-html.md`, `pages-text.md`). After the typed decode of the attribute tables and the interned Word styles (on top of the slim model, the streamed Word body, and the reachable decode): memory passes on every document row (28 to 46 MB), Word passes throughput under the standard's compressed-output measure (150 MB/s of input plus uncompressed output), and the text paths fail throughput at 32 to 40 MB/s against 50. A real resume converts in 3 ms at 4.8 MB, inside both goals. What remains on the dense shape, in-process: package decode 10 ms (7.5 of it Snappy), document build 25 ms, the text writers 11 ms; wall clock adds about 10 ms of process start, file I/O, and first-touch page faults (13,000 pages). The text paths are 5 to 8 ms from the line; levers under Spikes. Causes measured: a 224-byte run struct with cloned font and language strings (48 MB of model for 170,000 runs), the Word body held whole before Deflate (30 MB), and the package decoding 570 objects to use 70. Fix for 0.6.1: intern strings in the style table and slim the run, stream the Word body through the compressor, decode objects on lookup.
-- 2026-09-24: `pages -> pages-json` misses the 50 MB/s goal at 28 and 40 MB/s of package bytes (`DOCS/benchmarks/pages-json.md`); the reverse direction passes at 330 MB/s. Levers: the typed decode of the attribute tables written as JSON directly (the Spikes entry below), then `Tree::decode` itself and the JSON writer's per-field work.
+- (none) The two Pages throughput entries moved to Tech Debt on 2026-10-21; 1.0.0 ships with them.
 
 ## Tech Debt
 
-- 2026-10-20: Startup memory floor. A conversion holds 2.24 MB before it reads a byte (a minimal Rust program 1.36): about 700 KB more of our code is paged in (16 KB pages on Apple Silicon; the command line, detection, planner, error formatting, the image-pair table, and 122 converter metadata methods on 14 pages, 224 KB), 144 KB more of patched static tables, and little heap. It fails `z64-v64`'s four memory lines against ucon64 and `dd` by 0.1 to 0.6 MB. Decided (with the user): hold the registry as data (name, formats, fidelity, tier read from a static table, the image pairs too) so planning runs no converter's code; in the v1 wrap-up. Grouping startup code with a linker order file is set aside as too much for now.
+- 2026-09-24 (updated 2026-10-21, moved from Blockers): The Pages document paths' throughput against the shared Pages goal of 50 MB/s of input (`DOCS/benchmarks/pages-markdown.md`, `pages-html.md`, `pages-text.md`). The 1.0.0 run, on an M1 Max under load: memory passes on every document row (26 to 47 MB against 64), Word passes both ways (Pages -> Word 129 and 140 MB/s of input plus uncompressed output, Word -> Pages 67 and 89), and the text paths fail throughput at 26 to 33 MB/s (styled 29 to 33, prose 26 to 28). A real resume converts in 3 ms at 4.8 MB, inside both goals. Where the time goes on the dense shape, in-process (2026-09-24): package decode 10 ms (7.5 of it Snappy), document build 25 ms, the text writers 11 ms; wall clock adds about 10 ms of process start, file I/O, and first-touch page faults. Levers under Spikes. Pages -> Word's peak memory rose on every row since 2026-10-06 (prose 33.8 -> 46.8 MB), still inside the goal.
+- 2026-09-24 (updated 2026-10-21, moved from Blockers): `pages -> pages-json` misses the 50 MB/s goal at 24 and 26 MB/s of package bytes (`DOCS/benchmarks/pages-json.md`); the reverse direction passes at 146 and 239. Levers: the typed decode of the attribute tables written as JSON directly (the Spikes entry below), then `Tree::decode` itself and the JSON writer's per-field work.
+- 2026-10-21: Benchmark lines failing in the 1.0.0 run that passed in their previous blocks. The run was on the M1 Max with the machine in use (load average 7 to 26 on 10 cores); for several pairs every earlier block was on the Linux i7, so these are not like for like. An alternated A/B of ec68950 against the commit before it showed the registry change caused none of those it covered. Rerun on an idle machine before acting on any of them.
+  - `csv-markdown`: markdown -> csv 49.6 against pulldown-cmark with the csv crate's 79.4 MB/s (0.17.0: 120.8 against 107.1). A/B: same median.
+  - `markdown-json`: markdown-json -> markdown 159.1 against 235.4 (each side's own JSON; the gate is wall time). Not A/B'd at this input size.
+  - `qoi-png`: png -> qoi, photo 281.4 against 336.3 and flat 920.3 against 964.1 (earlier blocks on Linux). A/B on photo: same median.
+  - `webp-png`: png -> webp lossless, flat 534.8 against 662.2 (earlier on Linux), besides the known photo line. A/B: same median.
+  - `pdf-text`: peak memory on `gs` 21.6 MB against pdftotext's 12.1 and pdf-extract's 10.0, on `base14` 13.9 against pdftotext's 13.2 (earlier on Linux; the `gs` input is Ghostscript 10.08's rewrite, new to this run).
+  - `binary`: startup above the spawn floor read 1.11 to 1.26 ms in single loaded runs (FAIL against 1 ms); alternated with the previous commit it is 0.78 (PASS).
+- 2026-10-21: The bench harness depends on the machine more than its documents say. Inputs are generated only when missing and several pairs share names in `bench/data` (`big.md`, `prose.md`, `big.csv`), so a file left by an earlier, smaller generation is measured silently; the 1.0.0 run measured 2.2 MB of Markdown where the documents say 73.8 until the files were deleted. Tools that had gone from this Mac (Pillow, PyMuPDF, Ghostscript, Miller, bash 5) failed some pairs and voided `jpeg-pdf`'s timings under bash 3.2 (it now refuses to run without bash 5; `ico-png` no longer needs it). Wanted: inputs named by generator and size, and a preflight that checks every pair's tools before a long run.
+- 2026-10-20 (updated 2026-10-21): Startup memory floor. A conversion held 2.24 MB before it read a byte (a minimal Rust program 1.36): code paged in for the command line, detection, planner, error formatting, the image-pair table, and 122 converter metadata methods. The registry is now data (2026-10-21: a const table of entries, the 195 image pairs built only when an image format is an end), and the floor is 1.95 MB (`sublime check z64 v64`); a 40 MB ROM converts in 2.42 MB (was 2.66). It still fails `z64-v64`'s four memory lines against ucon64 (2.0 to 2.1 MB) and `dd` (2.3) by 0.1 to 0.4 MB. Left: image conversions still build the pairs (about 400 KB); grouping startup code with a linker order file is set aside as too much for now.
 - 2026-10-20: N64 leftovers (`DOCS/formats/n64.md`): copier headers (512 bytes before the ROM), 64DD disk images (`.ndd`), saves (EEPROM, SRAM, FlashRAM, Controller Pak; ROADMAP's next N64 row), and header checksum repair are not handled.
 - 2026-10-17: ODS leftovers (`DOCS/formats/ods.md`): formulas are carried as their last values only, and nothing of styling (fonts, fills, borders, widths, conditional formatting, validation, comments, charts, pictures). Excel paths read lower where LibreOffice recalculates on load. Known deviations from LibreOffice: text in a styled span inside a link is kept (LibreOffice drops it), and an empty sheet is no rows (LibreOffice writes one blank line). The locale date table (`builtin.rs`) is MPL-2.0 LibreOffice data, kept by decision; regenerate with `scripts/gen-ods-dates.py`. Typed cells end to end (Future) would let ODS pass types without the read-back rule.
 - 2026-10-14: EPUB leftovers (`DOCS/formats/epub.md`): pages (sizes, margins), headers and footers, page-number fields, comments, deleted text, links to the document's own bookmarks (the model has no bookmarks), charts and drawn shapes, and pictures in formats EPUB does not carry. Reading leaves out style sheets and metadata; fixed-layout books read as their text; MOBI and AZW3 are later.
@@ -109,7 +101,6 @@ documents in `DOCS/benchmarks`; measured-best patterns and failed spikes
 live in `temp/patterns.md`. Size wins over speed where they trade (the
 WebP color cache stays).
 
-- 2026-10-06: Pages writer tables past 256 rows are now tiles of 256 (shared with the Numbers writer, which Numbers accepts cleanly); open a long Word table converted to Pages in Pages to confirm it loads without repair (not checked in Pages yet).
 - 2026-10-08, Pages tables at scale (future improvement; `DOCS/benchmarks/pages-xlsx.md`): the reader's levers are in (two-pass document read, data list entries and tile rows kept as bytes, a tile row's legacy copy left out): a Pages document of 100,000 table rows peaks at 1.8 GB (from 2.2), against the 64 MB goal. What remains, in order of return:
   1. **Plain cells in the Pages writer** (branch `pages-plain-cells`, written, not checked in Pages): our writer stores every cell of a table as rich text (a payload and a text storage each, about 43 tree fields a cell); Pages keeps a plain cell in the string table with its cell style. With it the same document is 23 MB instead of 60 and reads in 0.9 s at 551 MB. Needs a Pages session: open, no repair, cells and their styles as written, PDF export.
   2. **Streaming tables**: half of what is left is the document model (about 200 bytes a cell: `Cell` 104, `Paragraph` 80, its text) and half the tables' own bytes (a Pages row carries a 510-byte offset array). Under 64 MB needs tables read a tile at a time straight to the output, as the Numbers workbook path does, which changes the document model's contract for every document path.
@@ -124,7 +115,7 @@ WebP color cache stays).
 - Lossy WebP output is not written; JPEG covers lossy output for now.
 - Deflate (PNG, DOCX, XLSX): the default level now matches or beats zlib 6's ratio at about its speed. libdeflate reaches the same ratio at about twice zlib's speed: its hash-table layout and match finder are the model. Photo-shaped data costs about 11 ns a position in the chain walk (dependent loads); noise now skips seven searches in eight. A near-optimal parse would suit a smallest-output level.
 - PNG writer: filters by smallest residual sum; fixed Sub compressed 1.3% smaller on a decoded lossy photo under zlib. A real-photo corpus would settle a Sub bias. The `png -> bmp` photo line's margin is thin in the harness (ours 102 against 109 ms direct).
-- JPEG encoder size: optimized Huffman tables (3 to 5%), trellis quantization (5 to 10% at equal PSNR), and 4:2:0 or 4:4:4 chosen from the chroma planes' edge energy (fixed 4:2:0 costs 24 dB on hard-edged graphics). All but the last hold the coefficients.
+- JPEG encoder size: optimized Huffman tables (3 to 5%), trellis quantization (5 to 10% at equal PSNR), and subsampling chosen from the chroma planes' edge energy (today 4:2:0 below quality 90 and 4:4:4 from 90; 4:2:0 costs 24 dB on hard-edged graphics). All but the last hold the coefficients.
 - Markdown dense parse: level with `pulldown-cmark`, not ahead; the arena-shrinking spike under Spikes is the lever.
 - `qoi-png` thin margins: the photo decode (65.3 against 64.7 MB/s, the PNG write of a noise photo is most of it) and the stock encode (583.8 against 582.0, a tie). Levers: the deflate noise path (shared with the WebP lossless decode line), and the PNG reader's unfilter on large RGBA images.
 - `ppm-png` photo encode: a tie (86 to 89 ms against 88 to 90 direct; the harness read 834 against 888 MB/s). The time is the PNG decode, the inflater level with the png crate's fdeflate; the lever is the inflater's decode structure. CRC-32 over the IDAT chunks is 7% of it.
@@ -138,18 +129,17 @@ WebP color cache stays).
 - 2026-09-26: JPEG leftovers:
   - Not read: CMYK and YCCK (Adobe four-component files, common from print workflows), 12-bit samples, arithmetic coding, lossless and hierarchical modes, DNL-supplied heights. CMYK is the one users will hit.
   - The reader takes the file whole (its entropy-coded data is one bit stream); a windowed reader would make input memory constant too. The file is a tenth of the pixels, so this is small.
-  - Exif orientation is reported, not applied; the transform belongs to the image path with the other whole-image operations.
   - The writer has no progressive output (it holds the coefficients, an image-path feature).
   - Encoder size levers moved to Optimization above.
   - Margins (2026-09-26): the photo encode leads jpeg-encoder by 7 to 9% since chroma is computed from summed RGB. Tried and reverted for the decode: libjpeg's color lookup tables (6% slower) and planar color groups (1 to 3% slower); a constant-chroma upsampling skip helps only specially shaped images and was not written. The flat decode's lead rests on the PNG writer.
 - 2026-09-26: Image leftovers:
-  - The hub is 8-bit: 16-bit PNG samples lose their low byte (reported as a loss). A 16-bit hub is the change if a lossless 16-bit path is ever wanted.
-  - No metadata is carried (gamma, ICC, text, physical size); APNG frames are not read; BMP RLE is refused.
+  - Streaming paths carry 16-bit samples (0.30.0); the in-memory `Image` (the downscale behind icons) and interlaced 16-bit PNGs still drop to 8 bits.
+  - ICC and Exif are carried from JPEG and HEIC into PNG, JPEG, and HEIC output (0.30.0); the PNG reader skips iCCP, eXIf, gamma, and text; WebP and TIFF writers drop them; APNG frames are not read; BMP RLE is refused.
   - The PNG writer's filter heuristic (smallest sum of residual magnitudes, the standard) chooses Average on the synthetic photo where fixed Sub compressed 20% smaller under the first generator's mirrored noise; with independent noise both give the same size. An entropy estimate chose the same. A real-photo corpus would settle whether a bias toward Sub is worth it.
   - Deflate and PNG filter levers moved to Optimization above (lazy matching and priced matches shipped 2026-09-27).
 - 2026-09-25: Excel leftovers:
   - The reader inflates the sheet part whole before parsing (415 MB peak on a 39 MB workbook whose sheet inflates to 326 MB); a windowed inflate feeding the XML reader would make it constant. The writer already streams.
-  - Number formats other than dates are dropped; merged cells read as their top-left value.
+  - Number formats and merges reach Numbers and ODS; CSV, JSON, and documents get the raw value and the top-left cell.
   - No Excel-made fixtures yet; the set is hand-built from the specification.
 - 2026-09-25: Value hub leftovers:
   - The TOML and YAML readers hold the input text whole beside the tree (60 to 190 MB of their peaks on the benchmark shapes); the XML reader's sliding window is the shape to port if a large config case ever matters.
@@ -158,16 +148,15 @@ WebP color cache stays).
 - 2026-09-24: WebAssembly leftovers:
   - Multi-hop paths hold each intermediate whole in memory (no threads in the browser); a single-hop path streams as on the command line. Fine for documents, a concern only for large data files through two hops.
   - The module has no size tooling beyond `opt-level = "z"`; `wasm-opt` would take 10 to 20% more off but is a toolchain dependency the build does not assume.
-  - No progress or event reporting across the boundary; the host gets a status, the bytes, and one message.
+  - No progress or event stream across the boundary; the host gets a status, the bytes, an error message, and unused-option warnings.
 - 2026-09-24: Pages document reader and Word writer leftovers:
   - Equations are written as MathML text; Office Math (OMML) from MathML is the proper output.
   - Floating objects anchor to the first paragraph on their page by counting explicit page breaks; pages that begin by overflow are not known without layout.
   - PDF and other non-picture media are left out of the Word file; converting PDF vector images to PNG needs a rasterizer.
-  - Text box fills are solid colors only; gradients, image fills, strokes, and shape geometry other than rectangles are dropped. Lines and charts are dropped.
-  - Comments (`table_highlight`) are not read.
+  - Gradient and image fills are dropped (strokes, shape geometry, lines, and charts are read since 0.25.0).
   - Drop caps come out as an ordinary first letter (Apple splits them into a framed paragraph).
   - Header and footer areas (left, center, right) are joined as paragraphs; Word has no three-area header.
-  - The release binary grew to 1.36 MB with the document pipeline (budget raised to 1.4 MB); std's backtrace symbolizer (gimli, addr2line, about 100 KB) is the largest non-feature cost and the lever if size matters.
+  - std's backtrace symbolizer (gimli, addr2line, about 100 KB) is the largest non-feature cost in the binary and the lever if size matters.
 - 2026-09-23: Pages leftovers from the package reader:
   - 31 registry types without a schema; they decode raw. Resolve as the document reader needs them.
   - The schema comes from community protos of two vintages; fields Pages 12 added since decode raw. Coverage is measured by the round-trip test, not by name.
@@ -184,15 +173,14 @@ WebP color cache stays).
   - Execution: a converter thread panic is reported as `Unsupported`; `PipeReader::read` blocks on a zero-length buffer; partial output can reach stdout before a mid-chain error is reported (inherent to streaming, needs a doc note on `execute`).
   - JSON tokenizer: `skip_value` does not check bracket type agreement (`[1}` skips); a high surrogate followed by a non-escape consumes one extra byte before erroring.
   - JSON -> CSV: truncated input is reported as `Unsupported` rather than `Malformed`; duplicate keys within one object can mask differing-key detection.
-  - CSV reader: bare CR accepted as a line ending but undocumented; error paths drop the record buffer's capacity.
-  - Tests: no coverage for `Progress` events, `\b`/`\f` JSON escapes, `describe_path` with mixed multi-hop fidelity, or `bytes_consumed` with a BOM present.
+  - CSV reader: error paths drop the record buffer's capacity (bare CR is documented).
+  - Tests: no coverage for `\b`/`\f` JSON escapes, `describe_path` with mixed multi-hop fidelity, or `bytes_consumed` with a BOM present.
 - 2026-09-22: JSON -> CSV from stdin buffers the whole input to memory (two passes need a rewind). Files stream in constant memory. See Spikes.
 - 2026-09-22: Multi-hop chains replay events after completion instead of streaming them live.
 
 ## Spikes
 
 - 2026-09-24: Pages performance levers past the three phases, in order of expected return (numbers are the dense benchmark shape, in-process, from `DOCS/benchmarks/pages-docx.md`):
-  - Done 2026-09-24: **typed decode of the attribute tables** (`Tree::deferred`, parsed by the reader): dense-shape memory 70 -> 48 MB (passes), text paths 27 -> 32 MB/s. **Run formatting interned into Word character styles**: XML 19.3 -> 15.6 MB, Word 17 -> 20 MB/s; the gain was smaller than projected because most runs carry only a named style or a toggle, which cannot move into a style.
   - Tried 2026-09-24 and kept for correctness, without measurable gain: a one-entry cache in front of the style hash lookups (removed), 16-byte table spans, bulk overlapping copies in the Snappy decoder. The text paths sit at 58 ms wall on the dense shape against 50: package decode 10 ms (7.5 Snappy), document build 25 ms, writer 11 ms, process and page faults about 10 ms. What remains is structural: a Snappy decoder inner loop at 1.5 GB/s (about 3 ms), a document without per-paragraph vectors (one run vector per document; fewer pages touched, cheaper drop), and a model-free streaming text path (rejected so far, see below).
   - **Merging adjacent runs with equal effective formatting.** Pages splits runs at style-object boundaries that often resolve to the same look; fewer runs means less of everything downstream.
   - **Dropping the object trees once the model is built**, for the document paths only; the media bytes are already copied out.
@@ -203,9 +191,9 @@ WebP color cache stays).
 - 2026-09-23: Word-at-a-time scanning for the inline parser's special characters; the byte loop with a lookup table is its largest remaining cost.
 - 2026-09-23: Unicode general-category tables for exact delimiter-run classification (see `DOCS/formats/markdown.md`, known deviations).
 - 2026-09-22: Single-pass JSON -> CSV with header inference from the first N objects, for the stdin case.
-- 2026-09-22: `opt-level = "z"` versus `3`: measure size and speed.
+- 2026-09-22: `opt-level`: the binary is `3` and the WebAssembly module `"z"`; measure the other setting for each, size and speed.
 - 2026-09-22: SIMD byte scanning with `std::arch`. The word-at-a-time scanner in `io::scan` closed the CSV -> JSON gap without intrinsics; the CSV reader alone is still slower than the `csv` crate reader (see benchmarks/csv-json.md), so this remains the stretch target.
-- 2026-09-22: Content sniffing beyond magic bytes for extensionless input.
+- 2026-09-22: Content sniffing for extensionless text input (JSON, CSV, and the like), beyond `format::detect`'s signature check (0.33.0).
 
 ## Done
 
@@ -251,7 +239,7 @@ WebP color cache stays).
 - 2026-09-22: Writers own a 64 KiB buffer and hand sinks whole chunks. Per-field writes through `dyn Write` cost more than parsing did; buffering inside the writer was the single largest win in the first performance spike.
 - 2026-09-22: Byte scanning is done eight bytes at a time with plain integer bit tricks before reaching for SIMD intrinsics. It is portable, dependency-free, and readable, and it was enough to beat the reference pipeline.
 - 2026-09-22: Zero runtime dependencies. Every proposed runtime dependency needs an entry in `DEPENDENCIES.md` with measured cost.
-- 2026-09-22: Converters register through one explicit list in `src/registry.rs`. No link-time or build-script auto-registration.
+- 2026-09-22: Converters register through one explicit list in `src/registry.rs`. No link-time or build-script auto-registration. (2026-10-21: the list is of `Entry` data, each built at compile time by the converter's `const fn entry`, so planning runs no converter's code.)
 - 2026-09-22: The library never prints; it emits typed events to an explicitly passed sink. No global logger.
 - 2026-09-22: The planner picks the cheapest path by fidelity and prints it. `--strict` refuses lossy paths.
 - 2026-09-22: Three tiers: Native (our code), Library (a crate compiled in), External (an installed binary). Only ffmpeg is anticipated in External.

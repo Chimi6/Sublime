@@ -1,6 +1,6 @@
 # QOI <-> PNG
 
-**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run: qoi to png 111.2 MB/s against 51.8 on the photo and 977.4 against 493.6 on the flat, png to qoi 281.4 against 336.3 and 920.3 against 964.1, peak memory 4.1 to 10.7 MB against 51.9 to 131.3; 2 lines FAIL, png -> qoi on the photo and on the flat)
 
 ## Purpose
 
@@ -47,6 +47,40 @@ wall clock of the whole process, peak resident memory from GNU `time`.
   1%) and can flip with machine load.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| qoi -> png, photo (45.8 MB of pixels, 45.1 MB on disk): throughput (MB/s of decoded pixels) | 111.2 | 51.8 (qoi + png) | PASS |
+| qoi -> png, photo: peak memory (MB) | 10.7 | 131.3 (qoi + png) | PASS |
+| qoi -> png, photo: output size (MB) [extra] | 25.0 | 27.1 (png) | n/a |
+| png -> qoi, photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 281.4 | 336.3 (png + qoi) | FAIL |
+| png -> qoi, photo: peak memory (MB) | 4.1 | 96.5 (png + qoi) | PASS |
+| qoi -> png, flat (45.8 MB of pixels, 0.7 MB on disk): throughput (MB/s of decoded pixels) | 977.4 | 493.6 (qoi + png) | PASS |
+| qoi -> png, flat: peak memory (MB) | 5.0 | 51.9 (qoi + png) | PASS |
+| qoi -> png, flat: output size (MB) [extra] | 0.1 | 0.3 (png) | n/a |
+| png -> qoi, flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 920.3 | 964.1 (png + qoi) | FAIL |
+| png -> qoi, flat: peak memory (MB) | 4.1 | 52.3 (png + qoi) | PASS |
+
+commit: ec68950 (the `v1-wrapup` branch, before the version bump)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Both png -> qoi lines FAIL, and both passed in the previous block: the
+photo at 281.4 against 336.3 MB/s (439.6 against 411.4 before), the
+flat at 920.3 against 964.1 (1138.4 against 1070.9 before). A paired
+A/B of our binary at ec68950 against the commit before it (93a37d4), 9
+alternated runs each, gave the same medians on the photo encode (0.22 s
+both): the registry change did not cause it. The flat encode had no
+A/B. This is the first block on
+this machine; the earlier blocks are the Linux i7, so the rows do not
+compare like for like with them. The machine was in use during this run
+(load average 7 to 12 on 10 cores: a browser, a VPN client, a
+remote-desktop host), so wall-clock rows are noisier than earlier
+blocks'. The first attempt could not make the inputs (Pillow was no
+longer installed); they were made with Pillow 13.0.0 in a fresh Python
+3.13 environment and the pair rerun, and these are the rerun's rows.
+`[stock]` rows are absent: `bench/data/stock.*` is not on this machine.
 
 ### 2026-09-27, 0.24.0 release
 
@@ -152,3 +186,8 @@ encoder keeps its state in locals for each row, writes into a scratch
 slice sized once, hashes in one multiply (the qoi crate's form), and
 closes a final run once per row. Memory is the streaming win: a row,
 not the image.
+
+**2026-10-21, 1.0.0 release run.** The encoder's margin did not hold on
+the M1 Max: png -> qoi failed on both shapes (photo 281.4 against
+336.3 MB/s, flat 920.3 against 964.1), so the encode lines no longer
+show a lead over the qoi crate.

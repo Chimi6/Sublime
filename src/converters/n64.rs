@@ -6,7 +6,7 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Tier};
 use crate::event::Context;
 use crate::format::Format;
 use crate::format::formats;
@@ -59,26 +59,6 @@ pub static N64_TO_V64: Reorder = Reorder {
 };
 
 impl Converter for Reorder {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        self.from.0
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to.0
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossless
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -118,6 +98,19 @@ impl Converter for Reorder {
     }
 }
 
+impl Reorder {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: self.from.0,
+            to: self.to.0,
+            fidelity: Fidelity::Lossless,
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 fn malformed(message: String) -> ConvertError {
     ConvertError::Malformed {
         location: Location::default(),
@@ -140,9 +133,13 @@ mod tests {
             &N64_TO_V64,
         ];
         for converter in all {
-            let expected = format!("{}-to-{}", converter.from().id, converter.to().id);
-            assert_eq!(converter.name(), expected);
-            assert_eq!(converter.fidelity(), Fidelity::Lossless);
+            let expected = format!(
+                "{}-to-{}",
+                converter.entry().from.id,
+                converter.entry().to.id
+            );
+            assert_eq!(converter.entry().name, expected);
+            assert_eq!(converter.entry().fidelity, Fidelity::Lossless);
         }
     }
 }

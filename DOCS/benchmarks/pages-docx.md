@@ -1,6 +1,6 @@
 # Pages <-> Word
 
-**Latest** (2026-10-06, 0.26.0: Word -> Pages recorded for the first time, at 66.8 MB/s of uncompressed input on the styled shape and 91.8 on prose, peaking at 39.6 and 51.1 MB; Pages -> Word at 142.8 and 160.3 MB/s on this machine; every goal PASSES)
+**Latest** (2026-10-21, the 1.0.0 release run: Pages -> Word at 129.3 MB/s of input plus uncompressed output on the styled shape and 140.0 on prose, peaking at 30.0 and 46.8 MB; Word -> Pages at 66.5 and 89.2 MB/s of uncompressed input, peaking at 42.8 and 54.1 MB; every goal PASSES)
 
 ## Purpose
 
@@ -81,6 +81,36 @@ in-process runs; inputs come from the `pages-json` pair's generator.
   work the Markdown, HTML, and text pairs do not.
 
 ## Results
+
+### 2026-10-21, the `v1-wrapup` branch, the 1.0.0 release run
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> docx, styled (1.4 MB in + 6.0 MB out): throughput (MB/s of input plus uncompressed output) | 129.3 | goal: 50 | PASS |
+| pages -> docx, styled: throughput (MB/s of input) [extra] | 24.6 | recorded | n/a |
+| pages -> docx, styled: peak memory (MB) | 30.0 | goal: <= 64.0 | PASS |
+| pages -> docx, prose (1.5 MB in + 7.5 MB out): throughput (MB/s of input plus uncompressed output) | 140.0 | goal: 50 | PASS |
+| pages -> docx, prose: throughput (MB/s of input) [extra] | 23.5 | recorded | n/a |
+| pages -> docx, prose: peak memory (MB) | 46.8 | goal: <= 64.0 | PASS |
+| docx -> pages, styled (6.0 MB uncompressed): throughput (MB/s of uncompressed input) | 66.5 | goal: 50 | PASS |
+| docx -> pages, styled: throughput (MB/s of input) [extra] | 2.3 | recorded | n/a |
+| docx -> pages, styled: peak memory (MB) | 42.8 | goal: <= 64.0 | PASS |
+| docx -> pages, prose (7.5 MB uncompressed): throughput (MB/s of uncompressed input) | 89.2 | goal: 50 | PASS |
+| docx -> pages, prose: throughput (MB/s of input) [extra] | 2.6 | recorded | n/a |
+| docx -> pages, prose: peak memory (MB) | 54.1 | goal: <= 64.0 | PASS |
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+The machine was in use during this run (load average 7 to 12 on 10
+cores: a browser, a VPN client, a remote-desktop host), so the
+wall-clock rows are noisier than the previous block's. Every goal still
+passes. Against 2026-10-06 on the same machine, Pages -> Word ran at
+129.3 and 140.0 MB/s where it ran at 142.8 and 160.3, and Word -> Pages
+held at 66.5 and 89.2 (66.8 and 91.8). Peak memory rose on every row:
+Pages -> Word 26.3 to 30.0 MB on styled and 33.8 to 46.8 MB on prose,
+Word -> Pages 39.6 to 42.8 and 51.1 to 54.1 MB. The prose rise is the
+largest and leaves 17 MB of headroom under the goal.
 
 ### 2026-10-06, 0.26.0: Word -> Pages added
 

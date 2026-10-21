@@ -1,6 +1,6 @@
 # TIFF <-> PNG
 
-**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run: tiff to png 73.7 MB/s against 42.4 on the photo and 217.0 against 165.3 on the flat, png to tiff 211.1 against 86.4 and 568.5 against 472.8, peak memory 7.0 to 51.5 MB against 60.9 to 161.7; every line PASSES, no `[stock]` rows on this machine)
 
 ## Purpose
 
@@ -42,6 +42,31 @@ outputs are removed before each run.
   those layouts are proven by the oracle, not timed here.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| tiff -> png, photo (45.8 MB of pixels, 32.8 MB on disk): throughput (MB/s of decoded pixels) | 73.7 | 42.4 (image + png) | PASS |
+| tiff -> png, photo: peak memory (MB) | 51.5 | 161.7 (image + png) | PASS |
+| tiff -> png, photo: output size (MB) [extra] | 25.0 | 27.1 (png) | n/a |
+| png -> tiff, photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 211.1 | 86.4 (png + image) | PASS |
+| png -> tiff, photo: peak memory (MB) | 39.4 | 63.5 (png + image) | PASS |
+| tiff -> png, flat (45.8 MB of pixels, 0.7 MB on disk): throughput (MB/s of decoded pixels) | 217.0 | 165.3 (image + png) | PASS |
+| tiff -> png, flat: peak memory (MB) | 15.6 | 98.8 (image + png) | PASS |
+| tiff -> png, flat: output size (MB) [extra] | 0.1 | 0.3 (png) | n/a |
+| png -> tiff, flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 568.5 | 472.8 (png + image) | PASS |
+| png -> tiff, flat: peak memory (MB) | 7.0 | 60.9 (png + image) | PASS |
+
+commit: ec68950 (the `v1-wrapup` branch, before the version bump)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes. This is the first block on this machine; the earlier
+blocks are the Linux i7, so the rows do not compare like for like with
+them. The machine was in use during this run (load average 7 to 12 on
+10 cores: a browser, a VPN client, a remote-desktop host), so
+wall-clock rows are noisier than earlier blocks'. `[stock]` rows are
+absent: `bench/data/stock.*` is not on this machine.
 
 ### 2026-09-27, 0.24.0 release
 

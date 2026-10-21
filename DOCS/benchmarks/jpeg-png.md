@@ -1,6 +1,6 @@
 # JPEG <-> PNG
 
-**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run: jpeg to png 88.0 MB/s against 38.8 on the photo and 728.7 against 490.9 on the flat, png to jpeg 553.5 against jpeg-encoder's 363.6 and 797.4 against 401.1, peak memory 7.1 to 13.7 MB against about 51 to 75; every line PASSES)
 
 ## Purpose
 
@@ -78,6 +78,35 @@ median wall clock of the whole process, peak resident memory from GNU
   session; a line near parity is a coin toss between runs.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| jpeg -> png, photo (45.8 MB of pixels, 1.6 MB on disk): throughput (MB/s of decoded pixels) | 88.0 | 38.8 (image + png) | PASS |
+| jpeg -> png, photo: peak memory (MB) | 13.7 | 75.2 (image + png) | PASS |
+| png -> jpeg, photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 553.5 | 363.6 (png + jpeg-encoder); 294.6 (png + image) | PASS |
+| png -> jpeg, photo: peak memory (MB) | 7.2 | 51.4 (png + jpeg-encoder); 51.3 (png + image) | PASS |
+| png -> jpeg, photo: output size (MB) at quality 85 [extra] | 1.5 | 1.6 (jpeg-encoder); 2.0 (image) | n/a |
+| png -> jpeg, photo: PSNR against the source (dB) at quality 85 [extra] | 36.19 | 35.90 (jpeg-encoder); 36.47 (image) | n/a |
+| jpeg -> png, flat (45.8 MB of pixels, 0.3 MB on disk): throughput (MB/s of decoded pixels) | 728.7 | 490.9 (image + png) | PASS |
+| jpeg -> png, flat: peak memory (MB) | 9.2 | 52.6 (image + png) | PASS |
+| png -> jpeg, flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 797.4 | 401.1 (png + jpeg-encoder); 312.5 (png + image) | PASS |
+| png -> jpeg, flat: peak memory (MB) | 7.1 | 51.3 (png + jpeg-encoder); 51.7 (png + image) | PASS |
+| png -> jpeg, flat: output size (MB) at quality 85 [extra] | 0.3 | 0.3 (jpeg-encoder); 0.5 (image) | n/a |
+| png -> jpeg, flat: PSNR against the source (dB) at quality 85 [extra] | 32.39 | 32.39 (jpeg-encoder); 56.88 (image) | n/a |
+
+commit: ec68950 (the `v1-wrapup` branch, before the version bump)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes. This is the first block on this machine; the earlier
+blocks are the Linux i7, so neither the throughput nor the memory rows
+compare like for like with them (our memory rows read higher here, 13.7
+MB on the photo decode against 6.8 in the previous block, while the
+crates' read about the same). The machine was in use during this run
+(load average 7 to 12 on 10 cores: a browser, a VPN client, a
+remote-desktop host), so wall-clock rows are noisier than earlier
+blocks'. Sizes and PSNR are unchanged.
 
 ### 2026-09-27, 0.24.0 release
 

@@ -1,6 +1,6 @@
 # PDF -> Text
 
-**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
+**Latest** (2026-10-21, the 1.0.0 release run: pdf -> text at 36.3 MB/s of PDF on `story`, 2.4 on `gs`, and 16.3 on `base14`, at 10.5, 21.6, and 13.9 MB peak; every throughput line PASSES, and the `gs` and `base14` memory lines FAIL, against pdf-extract's 10.0 MB on `gs` and pdftotext's 13.2 MB on `base14`)
 
 ## Purpose
 
@@ -46,6 +46,43 @@ outputs are removed before each run.
   not read those CID fonts); its time there is for less work.
 
 ## Results
+
+### 2026-10-21, the `v1-wrapup` branch, the 1.0.0 release run
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pdf -> text, story (2.9 MB, 300 pages): throughput (MB/s of PDF) | 36.3 | 2.8 (pdf-extract); 13.9 (pdftotext) | PASS |
+| pdf -> text, story: peak memory (MB) | 10.5 | 17.6 (pdf-extract); 11.8 (pdftotext) | PASS |
+| pdf -> text, story: words out [extra] | 116700 | 116700 (pdf-extract); 116700 (pdftotext) | n/a |
+| pdf -> text, gs (0.2 MB, 300 pages): throughput (MB/s of PDF) | 2.4 | 1.6 (pdf-extract); 1.4 (pdftotext) | PASS |
+| pdf -> text, gs: peak memory (MB) | 21.6 | 10.0 (pdf-extract); 12.1 (pdftotext) | FAIL |
+| pdf -> text, gs: words out [extra] | 116700 | 5978 (pdf-extract); 116700 (pdftotext) | n/a |
+| pdf -> text, base14 (3.1 MB, 300 pages): throughput (MB/s of PDF) | 16.3 | 2.3 (pdf-extract); 8.6 (pdftotext) | PASS |
+| pdf -> text, base14: peak memory (MB) | 13.9 | 30.3 (pdf-extract); 13.2 (pdftotext) | FAIL |
+| pdf -> text, base14: words out [extra] | 172800 | 172800 (pdf-extract); 172800 (pdftotext) | n/a |
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+The machine was in use during this run (load average 7 to 12 on 10
+cores: a browser, a VPN client, a remote-desktop host), so the
+wall-clock rows are noisier than the earlier blocks'. This block is from
+the M1 Max laptop and the earlier ones from the Linux bench machine.
+
+The inputs were regenerated for this run: PyMuPDF and Ghostscript were
+no longer on this machine, so `bench/pairs/pdf-text.sh` ran with
+PyMuPDF (pymupdf.VersionBind 2.0) in a fresh Python 3.13 venv and
+Ghostscript 10.08.0 from Homebrew. The `gs` input is Ghostscript's
+rewrite of the report, so a different Ghostscript makes a different
+file: the `gs` rows' input changed with the tool version. The sizes,
+page counts, and words out match the earlier blocks.
+
+Two lines that passed in the 0.24.0 release block FAIL now, both on
+memory. `gs`: 21.6 MB against 10.0 (pdf-extract) and 12.1 (pdftotext),
+where it was 5.8 against 8.5 and 17.4. `base14`: 13.9 MB against 13.2
+(pdftotext), where it was 9.2 against 25.9 (pdf-extract) and 17.7
+(pdftotext). Every throughput line and the `story` memory line still
+pass.
 
 ### 2026-09-27, 0.24.0 release
 

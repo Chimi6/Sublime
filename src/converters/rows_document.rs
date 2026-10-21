@@ -5,7 +5,7 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Location, Parts, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Location, Parts, Tier};
 use crate::converters::input::read_text_document;
 use crate::event::Context;
 use crate::format::Format;
@@ -35,26 +35,6 @@ pub static TSV_TO_MARKDOWN: RowsToMarkdown = RowsToMarkdown {
 };
 
 impl Converter for RowsToMarkdown {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        self.from
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::MARKDOWN
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(ROWS_TO_MARKDOWN_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         input: Input<'_>,
@@ -93,6 +73,19 @@ impl Converter for RowsToMarkdown {
     }
 }
 
+impl RowsToMarkdown {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: self.from,
+            to: &formats::MARKDOWN,
+            fidelity: Fidelity::Conditional(ROWS_TO_MARKDOWN_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 /// Markdown -> rows: the document's first table.
 pub struct MarkdownToRows {
     pub name: &'static str,
@@ -115,26 +108,6 @@ pub static MARKDOWN_TO_TSV: MarkdownToRows = MarkdownToRows {
 };
 
 impl Converter for MarkdownToRows {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::MARKDOWN
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(MARKDOWN_TO_ROWS_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -185,6 +158,19 @@ impl Converter for MarkdownToRows {
     }
 }
 
+impl MarkdownToRows {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: &formats::MARKDOWN,
+            to: self.to,
+            fidelity: Fidelity::Lossy(MARKDOWN_TO_ROWS_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 /// Markdown -> workbook: every table a sheet, named after the heading
 /// before it.
 pub struct MarkdownToXlsx;
@@ -194,29 +180,9 @@ pub static MARKDOWN_TO_XLSX: MarkdownToXlsx = MarkdownToXlsx;
 const MARKDOWN_TO_XLSX_NOTE: &str = "each of the document's tables a sheet, named after the heading before it, inline formatting flattened to text, decimals as numbers, ISO dates as dates, and TRUE and FALSE as booleans; everything else in the document is dropped";
 
 impl Converter for MarkdownToXlsx {
-    fn name(&self) -> &'static str {
-        "markdown-to-xlsx"
-    }
-
     /// Sheets are named after the headings, not `--sheet`.
-    fn options(&self) -> Vec<crate::format::Setting> {
+    fn options(&self, _from: &'static Format, _to: &'static Format) -> Vec<crate::format::Setting> {
         vec![crate::format::Setting::Effort]
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::MARKDOWN
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::XLSX
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(MARKDOWN_TO_XLSX_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
     }
 
     fn convert(
@@ -251,6 +217,19 @@ impl Converter for MarkdownToXlsx {
         writer.finish()?;
         output.flush()?;
         Ok(())
+    }
+}
+
+impl MarkdownToXlsx {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: "markdown-to-xlsx",
+            from: &formats::MARKDOWN,
+            to: &formats::XLSX,
+            fidelity: Fidelity::Lossy(MARKDOWN_TO_XLSX_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -294,26 +273,6 @@ pub static JSON_TO_MARKDOWN: JsonToMarkdown = JsonToMarkdown;
 const JSON_TO_MARKDOWN_NOTE: &str = "an array of objects as one table, an object of such arrays as a table under a heading per member; keys become the header row, nested values JSON text, and line breaks inside cells spaces";
 
 impl Converter for JsonToMarkdown {
-    fn name(&self) -> &'static str {
-        "json-to-markdown"
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::JSON
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::MARKDOWN
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(JSON_TO_MARKDOWN_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         input: Input<'_>,
@@ -323,6 +282,19 @@ impl Converter for JsonToMarkdown {
         let mut tables = crate::converter::MemoryParts::default();
         crate::converters::json_to_csv::JSON_TO_CSV.convert_parts(input, &mut tables, context)?;
         tables_to_markdown(&tables.parts, output, context)
+    }
+}
+
+impl JsonToMarkdown {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: "json-to-markdown",
+            from: &formats::JSON,
+            to: &formats::MARKDOWN,
+            fidelity: Fidelity::Conditional(JSON_TO_MARKDOWN_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -336,26 +308,6 @@ pub static MARKDOWN_TABLES_TO_JSON: MarkdownTablesToJson = MarkdownTablesToJson;
 const TABLES_TO_JSON_NOTE: &str = "the document's tables only: one as an array of objects keyed by its header, several as an object of such arrays keyed by the heading before each; inline formatting is flattened to text and everything else in the document is dropped";
 
 impl Converter for MarkdownTablesToJson {
-    fn name(&self) -> &'static str {
-        "markdown-tables-to-json"
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::MARKDOWN
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::JSON
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossy(TABLES_TO_JSON_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         mut input: Input<'_>,
@@ -386,17 +338,33 @@ impl Converter for MarkdownTablesToJson {
     }
 }
 
+impl MarkdownTablesToJson {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: "markdown-tables-to-json",
+            from: &formats::MARKDOWN,
+            to: &formats::JSON,
+            fidelity: Fidelity::Lossy(TABLES_TO_JSON_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn declares_contracts() {
-        assert_eq!(CSV_TO_MARKDOWN.name(), "csv-to-markdown");
-        assert_eq!(TSV_TO_MARKDOWN.from().id, "tsv");
-        assert_eq!(CSV_TO_MARKDOWN.to().id, "markdown");
-        assert_eq!(MARKDOWN_TO_CSV.from().id, "markdown");
-        assert_eq!(MARKDOWN_TO_TSV.to().id, "tsv");
-        assert!(matches!(MARKDOWN_TO_CSV.fidelity(), Fidelity::Lossy(_)));
+        assert_eq!(CSV_TO_MARKDOWN.entry().name, "csv-to-markdown");
+        assert_eq!(TSV_TO_MARKDOWN.entry().from.id, "tsv");
+        assert_eq!(CSV_TO_MARKDOWN.entry().to.id, "markdown");
+        assert_eq!(MARKDOWN_TO_CSV.entry().from.id, "markdown");
+        assert_eq!(MARKDOWN_TO_TSV.entry().to.id, "tsv");
+        assert!(matches!(
+            MARKDOWN_TO_CSV.entry().fidelity,
+            Fidelity::Lossy(_)
+        ));
     }
 }

@@ -3,9 +3,8 @@
 
 use std::io::Write;
 
-use crate::converter::{ConvertError, Converter, Fidelity, Input, Tier};
+use crate::converter::{ConvertError, Converter, Entry, Fidelity, Input, Tier};
 use crate::event::Context;
-use crate::format::Format;
 use crate::format::formats;
 use crate::io::markdown::MarkdownWriter;
 use crate::io::markdown::events_json::read_events_json;
@@ -15,26 +14,6 @@ const NAME: &str = "markdown-json-to-markdown";
 pub struct MarkdownJsonToMarkdown;
 
 impl Converter for MarkdownJsonToMarkdown {
-    fn name(&self) -> &'static str {
-        NAME
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::MARKDOWN_JSON
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::MARKDOWN
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Lossless
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         input: Input<'_>,
@@ -46,6 +25,19 @@ impl Converter for MarkdownJsonToMarkdown {
         writer.finish()?;
         output.flush()?;
         Ok(())
+    }
+}
+
+impl MarkdownJsonToMarkdown {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: NAME,
+            from: &formats::MARKDOWN_JSON,
+            to: &formats::MARKDOWN,
+            fidelity: Fidelity::Lossless,
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 

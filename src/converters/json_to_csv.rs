@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
 use crate::converter::{
-    ConvertError, Converter, Fidelity, Input, MemoryParts, Parts, RewindableRead, Tier,
+    ConvertError, Converter, Entry, Fidelity, Input, MemoryParts, Parts, RewindableRead, Tier,
 };
 use crate::event::Context;
 use crate::format::Format;
@@ -74,26 +74,6 @@ struct ColumnReports {
 }
 
 impl Converter for JsonToCsv {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn from(&self) -> &'static Format {
-        self.from
-    }
-
-    fn to(&self) -> &'static Format {
-        self.to
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(FIDELITY_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
-    }
-
     fn convert(
         &self,
         input: Input<'_>,
@@ -137,6 +117,19 @@ impl Converter for JsonToCsv {
             self.convert(Input::Stream(&mut source), output, context)?;
         }
         Ok(())
+    }
+}
+
+impl JsonToCsv {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: self.name,
+            from: self.from,
+            to: self.to,
+            fidelity: Fidelity::Conditional(FIDELITY_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -210,29 +203,9 @@ pub struct JsonToXlsx;
 pub static JSON_TO_XLSX: JsonToXlsx = JsonToXlsx;
 
 impl Converter for JsonToXlsx {
-    fn name(&self) -> &'static str {
-        "json-to-xlsx"
-    }
-
     /// Sheets are named after the JSON's members, not `--sheet`.
-    fn options(&self) -> Vec<crate::format::Setting> {
+    fn options(&self, _from: &'static Format, _to: &'static Format) -> Vec<crate::format::Setting> {
         vec![crate::format::Setting::Effort]
-    }
-
-    fn from(&self) -> &'static Format {
-        &formats::JSON
-    }
-
-    fn to(&self) -> &'static Format {
-        &formats::XLSX
-    }
-
-    fn fidelity(&self) -> Fidelity {
-        Fidelity::Conditional(JSON_TO_XLSX_NOTE)
-    }
-
-    fn tier(&self) -> Tier {
-        Tier::Native
     }
 
     fn convert(
@@ -269,6 +242,19 @@ impl Converter for JsonToXlsx {
         writer.finish()?;
         output.flush()?;
         Ok(())
+    }
+}
+
+impl JsonToXlsx {
+    pub const fn entry(&'static self) -> Entry {
+        Entry {
+            name: "json-to-xlsx",
+            from: &formats::JSON,
+            to: &formats::XLSX,
+            fidelity: Fidelity::Conditional(JSON_TO_XLSX_NOTE),
+            tier: Tier::Native,
+            converter: self,
+        }
     }
 }
 
@@ -737,10 +723,10 @@ mod tests {
     #[test]
     fn declares_contract() {
         let converter = &JSON_TO_CSV;
-        assert_eq!(converter.name(), "json-to-csv");
-        assert_eq!(converter.from().id, "json");
-        assert_eq!(converter.to().id, "csv");
-        assert_eq!(converter.fidelity().kind(), FidelityKind::Conditional);
-        assert_eq!(converter.tier(), Tier::Native);
+        assert_eq!(converter.entry().name, "json-to-csv");
+        assert_eq!(converter.entry().from.id, "json");
+        assert_eq!(converter.entry().to.id, "csv");
+        assert_eq!(converter.entry().fidelity.kind(), FidelityKind::Conditional);
+        assert_eq!(converter.entry().tier, Tier::Native);
     }
 }

@@ -22,7 +22,7 @@ pub fn run(
         strict: args.strict,
         via: None,
     };
-    let plan = planner::plan(registry::all_converters(), from, to, &options)?;
+    let plan = planner::plan(registry::converters_for(from, to, None), from, to, &options)?;
 
     let text = match log_format {
         LogFormat::Human => render_human(&plan),

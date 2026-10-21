@@ -41,13 +41,16 @@ Six places, and the compiler or a test catches anything you miss.
    Give it an id, display name, extensions, magic bytes if the format has a
    reliable signature, and a category (data, document, image, audio, video,
    archive). Categories only group listings and docs; code stays flat.
-2. `src/converters/<from>_to_<to>.rs`: a struct implementing `Converter`.
-   Declare `name`, `from`, `to`, `fidelity`, `tier`, and write `convert`.
-   Stream through the `Input` and the `Write` you are given. Call
+2. `src/converters/<from>_to_<to>.rs`: a struct implementing `Converter`
+   (write `convert`), and a `const fn entry` on it returning the `Entry`
+   that declares `name`, `from`, `to`, `fidelity`, and `tier`: data the
+   planner reads without running your code. Stream through the `Input`
+   and the `Write` you are given. Call
    `context.loss(...)` for every loss, `context.warning(...)` for tolerated
    oddities, `context.progress(...)` every few thousand records.
 3. `src/converters/mod.rs`: one `pub mod` line.
-4. `src/registry.rs`: one entry in `CONVERTERS` and bump the array length.
+4. `src/registry.rs`: your `entry()` in `CONVERTERS`, and bump the array
+   length.
 5. `tests/fixtures/<format>/`: real sample files, including nasty ones.
 6. `cargo run --release -- paths --markdown > DOCS/FORMATS.md` and
    `cargo run --release -- paths --conversions > DOCS/CONVERSIONS.md`, and

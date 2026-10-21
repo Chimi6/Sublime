@@ -1,6 +1,6 @@
 # CSV <-> Markdown table
 
-**Latest** (2026-09-25, first release of the bridge: csv -> markdown 202.9 MB/s of input at 3.0 MB peak; markdown -> csv 120.8 MB/s at 215 MB peak; every line PASSES against Miller and pulldown-cmark with the csv crate)
+**Latest** (2026-10-21, 1.0.0 release run: csv -> markdown 161.6 MB/s of input at 2.4 MB peak, PASS against Miller; markdown -> csv 49.6 MB/s at 636 MB peak; markdown -> csv throughput FAILS against pulldown-cmark with the csv crate (79.4), its memory passes)
 
 ## Purpose
 
@@ -62,6 +62,36 @@ follow `README.md`.
   the memory rows are that, not a limit of either.
 
 ## Results
+
+### 2026-10-21, `v1-wrapup` branch, the 1.0.0 release run
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| csv -> markdown, 1000000 rows (56.8 MB): throughput (MB/s of input) | 161.6 | 117.4 (Miller) | PASS |
+| csv -> markdown, 1000000 rows: peak memory (MB) | 2.4 | 405.6 (Miller) | PASS |
+| csv -> markdown, 1000000 rows: throughput against a bespoke printer in the harness (MB/s of input) [extra] | 161.6 | 193.0 (csv + table printer) | n/a |
+| markdown -> csv, 1000000 rows (70.9 MB): throughput (MB/s of input) | 49.6 | 79.4 (pulldown-cmark + csv) | FAIL |
+| markdown -> csv, 1000000 rows: peak memory (MB) | 635.9 | 822.7 (pulldown-cmark + csv) | PASS |
+
+markdown -> csv throughput FAILS: 49.6 MB/s against pulldown-cmark's
+79.4. It passed in the previous block, 120.8 against 107.1. Its peak
+memory also rose from 215.1 MB to 635.9 MB, still under the reference's
+822.7. The other lines pass. This run is on a different machine from the
+previous block (an M1 Max, not the Linux i7-13700K), and the machine was
+in use during it (load average 7 to 12 on 10 cores: a browser, a VPN
+client, a remote-desktop host), so the wall-clock rows are noisier than
+earlier blocks'. Miller was not installed at the first attempt, which
+read markdown -> csv at 68.4 against 104.7, also a FAIL; Miller 6.22.0
+was installed from Homebrew and the pair rerun, and this block is the
+rerun. A paired A/B of our binary at ec68950 against the commit before
+it (93a37d4), 9 alternated runs each, gave the same median on
+markdown -> csv (1.01 s against 1.02 s) and on csv -> markdown (0.31 s
+both): the registry change in ec68950 did not cause the failure. The drop
+against the previous block accrued over the releases since, or is load;
+this run does not separate the two.
 
 ### 2026-09-25, first release of the bridge
 

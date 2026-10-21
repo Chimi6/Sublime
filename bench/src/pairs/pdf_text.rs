@@ -12,9 +12,9 @@ pub fn run(mode: &str, args: &[String]) -> Result<(), String> {
         ("ours-pdf-text", [input, output]) => {
             let converter = registry::all_converters()
                 .iter()
-                .find(|converter| converter.name() == "pdf-to-text")
+                .find(|converter| converter.name == "pdf-to-text")
                 .ok_or("no pdf-to-text converter")?;
-            run_ours(*converter, input, output)
+            run_ours(converter.converter, input, output)
         }
         ("crates-pdf-text", [input, output]) => crates_pdf_text(input, output),
         _ => Err("pdf-text modes: ours-pdf-text, crates-pdf-text <in> <out>".to_string()),

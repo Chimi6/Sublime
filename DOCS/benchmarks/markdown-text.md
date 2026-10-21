@@ -1,6 +1,6 @@
 # Markdown -> plain text
 
-**Latest** (2026-09-25, 0.17.0 Markdown speedups: markdown -> text 118.9 MB/s of input on the markup-dense shape and 230.4 on prose, at 306 and 10.0 MB peak; all lines PASS against a pulldown-cmark text dump; the prose input is 4.7 MB and its median swings between runs)
+**Latest** (2026-10-21, 1.0.0 release run on the Apple M1 Max: markdown -> text 99.3 MB/s of input on the markup-dense shape (73.8 MB) and 272.9 on prose (56.6 MB), at 352.2 and 83.8 MB peak; all lines PASS against a pulldown-cmark text dump at 5.3 and 253.0)
 
 ## Purpose
 
@@ -50,6 +50,31 @@ units, three runs each, median wall clock, peak RSS from GNU `time`.
   `markdown-html` document). The prose input has no footnotes.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release run (`v1-wrapup` branch)
+
+commit: ec68950 (on the `v1-wrapup` branch, before the 1.0.0 release)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| markdown -> text, markup-dense (73.8 MB): throughput (MB/s of input) | 99.3 | 5.3 | PASS |
+| markdown -> text, prose (56.6 MB): throughput (MB/s of input) | 272.9 | 253.0 | PASS |
+| markdown -> text, markup-dense: peak memory (MB) | 352.2 | 733.2 (reference) | PASS |
+| markdown -> text, prose: peak memory (MB) | 83.8 | 316.6 (reference) | PASS |
+
+Every line passes. The first attempt at this run read stale, smaller
+inputs left in `bench/data` (2.2 MB dense, 1.7 MB prose: the scripts
+generate only when the file is missing, and several pairs share the
+names) and failed prose throughput on them (88.2 against 98.7); they
+were deleted, regenerated at the documented sizes, and the pair rerun.
+The machine was in use during the rerun, more heavily than during the
+rest of this run (load average 16 to 26 on 10 cores: a browser, a VPN
+client, a remote-desktop host), so the wall-clock rows are noisier than
+earlier blocks'. The machine is the Apple M1 Max, not the Linux one of
+the block below, and the prose input is the full 56.6 MB rather than
+that block's 4.7 MB, so the rows do not compare with it; on prose we
+are 8% ahead of the reference, against 2% below.
 
 ### 2026-09-25, 0.17.0 Markdown speedups
 

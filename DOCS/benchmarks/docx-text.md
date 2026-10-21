@@ -1,6 +1,6 @@
 # Word -> text
 
-**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run: every line PASSES; 110.0 MB/s of uncompressed input on the styled shape and 164.6 on prose, at 25.1 and 27.6 MB peak, against docx-rs at 38.1 and 59.9)
 
 ## Purpose
 
@@ -66,6 +66,32 @@ the per-file-byte rate as an extra row. Rows and units follow
   goes; it is a reference for a reader in Rust, not for a text extractor.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release run (`v1-wrapup` branch)
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| docx -> text, styled (6.0 MB uncompressed): throughput (MB/s of uncompressed input) | 110.0 | goal: 50 | PASS |
+| docx -> text, styled (0.2 MB file): throughput (MB/s of file bytes) [extra] | 3.7 | recorded | n/a |
+| docx -> text, styled: peak memory (MB) | 25.1 | goal: <= 64.0 | PASS |
+| docx -> text, styled: throughput (MB/s of uncompressed input) [extra] | 110.0 | 38.1 (docx-rs, paragraph text only) | PASS |
+| docx -> text, styled: peak memory (MB) [extra] | 25.1 | 146.8 (docx-rs) | PASS |
+| docx -> text, prose (7.5 MB uncompressed): throughput (MB/s of uncompressed input) | 164.6 | goal: 50 | PASS |
+| docx -> text, prose (0.2 MB file): throughput (MB/s of file bytes) [extra] | 4.8 | recorded | n/a |
+| docx -> text, prose: peak memory (MB) | 27.6 | goal: <= 64.0 | PASS |
+| docx -> text, prose: throughput (MB/s of uncompressed input) [extra] | 164.6 | 59.9 (docx-rs, paragraph text only) | PASS |
+| docx -> text, prose: peak memory (MB) [extra] | 27.6 | 137.9 (docx-rs) | PASS |
+
+commit: ec68950 (on the `v1-wrapup` branch, before the 1.0.0 release)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes. The machine was in use during this run (load average
+7 to 12 on 10 cores: a browser, a VPN client, a remote-desktop host), so
+the wall-clock rows are noisier than earlier blocks'. It ran on the
+Apple M1 Max with a 6.0 MB styled input, not the Linux machine and
+14.9 MB input of the block below, so the two blocks do not compare row
+for row; the ratio to `docx-rs` in the same session (2.9 times on styled,
+2.7 on prose) is the comparable figure, against 3.7 and 2.7 below.
 
 ### 2026-09-27, 0.24.0 release
 
