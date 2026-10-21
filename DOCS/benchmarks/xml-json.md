@@ -1,6 +1,6 @@
 # XML <-> JSON
 
-**Latest** (2026-09-25, arena tree: xml -> json 145.4 MB/s of input on the dense shape and 443.3 on prose, at 171 and 223 MB peak; json -> xml 140.4 and 373.9 MB/s at 168 and 222 MB peak; every line PASSES against quick-xml with serde_json, at 1.3 to 2 times its throughput and 27 to 52 percent of its memory)
+**Latest** (2026-10-21, 1.0.0 release run: xml -> json 88.0 MB/s of input on the dense shape and 239.4 on prose, at 260 and 251 MB peak; json -> xml 105.4 and 169.4 MB/s at 213 and 242 MB peak; every line PASSES against quick-xml with serde_json, at 1.06 to 1.7 times its throughput and 39 to 60 percent of its memory)
 
 ## Purpose
 
@@ -66,6 +66,36 @@ throughput in MB/s over the input file's bytes. Rows and units follow
 
 ## Results
 
+### 2026-10-21, `v1-wrapup` branch, the 1.0.0 release run
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| xml -> json, dense (80.0 MB): throughput (MB/s of input) | 88.0 | 66.0 (quick-xml + serde_json) | PASS |
+| xml -> json, dense: peak memory (MB) | 259.5 | 523.7 (quick-xml + serde_json) | PASS |
+| xml -> json, prose (194.4 MB): throughput (MB/s of input) | 239.4 | 225.3 (quick-xml + serde_json) | PASS |
+| xml -> json, prose: peak memory (MB) | 251.2 | 424.2 (quick-xml + serde_json) | PASS |
+| json -> xml, dense (58.2 MB): throughput (MB/s of input) | 105.4 | 60.6 (serde_json + quick-xml) | PASS |
+| json -> xml, dense: peak memory (MB) | 212.6 | 542.1 (serde_json + quick-xml) | PASS |
+| json -> xml, prose (180.6 MB): throughput (MB/s of input) | 169.4 | 137.1 (serde_json + quick-xml) | PASS |
+| json -> xml, prose: peak memory (MB) | 242.2 | 406.6 (serde_json + quick-xml) | PASS |
+
+Every line passes, at 1.06 to 1.7 times the reference's throughput and
+39 to 60 percent of its memory. The narrowest line is xml -> json prose,
+239.4 against 225.3 MB/s, 6 percent ahead where the previous block was
+34 percent ahead. This run is on a different machine from the previous
+blocks (an M1 Max, not the Linux i7-13700K), so its absolute MB/s do not
+compare with theirs. The machine was in use during the run (load
+average 7 to 12 on 10 cores: a browser, a VPN client, a remote-desktop
+host), so the wall-clock rows are noisier than earlier blocks'. Our peak
+memory is higher than in the previous block on every row: xml -> json
+171.4 -> 259.5 MB dense and 223.3 -> 251.2 MB prose, json -> xml
+168.4 -> 212.6 MB dense and 221.5 -> 242.2 MB prose, while the
+reference's fell slightly; this run does not say how much of the rise is
+the machine's allocator and how much is a change since.
+
 ### 2026-09-25, the value hub as an arena tree
 
 commit: bd7a134 (the working tree of this commit)
@@ -123,3 +153,8 @@ string per attribute and per text node before escaping; escaping
 straight into the chunked sink is the next small lever. The numbers do
 not justify claims about namespace-heavy, mixed-content, or deeply
 nested documents.
+
+On 2026-10-21, on an M1 Max under load, xml -> json read at 1.06 to
+1.3 times the reference rather than 1.3 to 1.6 (prose 239 against
+225 MB/s), and the dense row peaked at 260 MB for 80 MB of input, about
+three bytes per input byte rather than two.

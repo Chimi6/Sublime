@@ -1,6 +1,6 @@
 # Pages -> Markdown
 
-**Latest** (2026-09-24, reader cursors: pages -> markdown 38.7 MB/s of input on the dense shape and 33.4 on prose, at 45.4 and 27.9 MB peak; memory PASSES on both shapes, throughput FAILS on both, see Conclusions and `STATE.md`)
+**Latest** (2026-10-21, the 1.0.0 release run: pages -> markdown 31.5 MB/s of input on the styled shape and 26.1 on prose, at 26.2 and 44.2 MB peak; memory PASSES on both shapes, throughput FAILS on both, see Conclusions and `STATE.md`)
 
 ## Purpose
 
@@ -74,6 +74,28 @@ in-process runs; inputs come from the `pages-json` pair's generator.
   package decode more than the writer.
 
 ## Results
+
+### 2026-10-21, the `v1-wrapup` branch, the 1.0.0 release run
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| pages -> markdown, styled (1.4 MB): throughput (MB/s of input) | 31.5 | goal: 50 | FAIL |
+| pages -> markdown, styled: peak memory (MB) | 26.2 | goal: <= 64.0 | PASS |
+| pages -> markdown, prose (1.5 MB): throughput (MB/s of input) | 26.1 | goal: 50 | FAIL |
+| pages -> markdown, prose: peak memory (MB) | 44.2 | goal: <= 64.0 | PASS |
+
+The machine was in use during this run (load average 7 to 12 on 10
+cores: a browser, a VPN client, a remote-desktop host), so the
+wall-clock rows are noisier than they would be on an idle machine. This
+block is from the M1 Max laptop and the previous one from the Linux
+bench machine, and the styled package the generator makes is now
+1.4 MB where it was 2.5 MB, so the styled rows are not a like-for-like
+comparison. The standing is unchanged: throughput still FAILS on both
+shapes (31.5 and 26.1 MB/s against 50) and memory still passes (26.2
+and 44.2 MB against 64).
 
 ### 2026-09-24, reader cursors and one arena copy
 

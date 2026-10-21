@@ -31,13 +31,42 @@ and from WebP and PNG) or not at all. SQLite is out of v1. In order:
 7. ODS (done).
 8. N64 ROMs between `z64`, `v64`, and `n64` (decided 2026-10-09: in v1;
    done).
-9. Wrap-up: the registry held as data, lowering every conversion's
-   startup memory (STATE, Tech Debt); every benchmark pair re-run, size
-   budgets settled (HEIC grows the binary and the WebAssembly module),
-   this document current.
+9. Wrap-up (done): the registry held as data, and the image pairs built
+   only for conversions with an image at one end (a conversion's startup
+   memory 2.24 -> 1.95 MB); every benchmark pair re-run; size budgets
+   settled; this document current.
 
-N64 ROMs between `z64`, `v64`, and `n64` come before v1 (item 8 above);
-the other novelty formats wait until after it (Games and consoles below).
+v1 shipped as 1.0.0. The other novelty formats wait until after it
+(Games and consoles below).
+
+## After v1: audio and video
+
+Decided 2026-10-21: the next cycle is audio and video, with the goal of a
+universal converter for them: any file type. ffmpeg itself is mostly the
+codecs, and its best encoders are other projects (x264, x265, libvpx,
+SVT-AV1, LAME, libopus), so linking it would break zero runtime
+dependencies, the size budget, the WebAssembly module, and the release
+builds. Instead:
+
+- **Our own code first**, as HEIC was: each codec written here, judged by
+  a benchmark pair against ffmpeg and the codec's reference tool. A speed
+  tie or a slight miss counts as a win when the binary stays much smaller;
+  an encoder is still judged on quality for its size (a bigger file at
+  equal quality is a loss, not a tie).
+- **ffmpeg as the fallback** in the External tier: an installed `ffmpeg`
+  does what we have not written yet (the long tail above all), declared
+  lossy where it re-encodes, with a clear message when it is missing. Our
+  own route replaces it path by path; the planner prefers Native. A
+  download that bundles ffmpeg beside the binary (never linked) is a later
+  option if needing it installed proves a barrier.
+- **Order**, each step useful alone: the containers (ISO BMFF for MP4,
+  MOV, and M4A; EBML for MKV and WebM; RIFF) and remuxing; WAV, AIFF,
+  FLAC, and ALAC both ways; MP3, AAC, Vorbis, and Opus decoders; video
+  decoders (H.264, then HEVC video on the HEIC decoder, then VP9 and AV1);
+  then encoders one at a time (FLAC; Opus or AAC; H.264, HEVC video, AV1).
+- **Patents**: H.264, HEVC, and AAC are covered by patent pools, decoders
+  included, as HEIC's docs already say; VP9, AV1, Opus, FLAC, and Vorbis
+  are royalty-free.
 
 ## How to read this
 
@@ -202,6 +231,8 @@ lossless and universal.
 
 The audio hub is PCM samples plus channel layout and rate. Encoders for
 lossy codecs are the hardest code in this document; decoders are tractable.
+The plan for the cycle is under After v1, above; the External entries
+below are what ffmpeg covers until our own code replaces it.
 
 | Format | Extensions | Status | Tier | Effort | Directions and notes |
 |---|---|---|---|---|---|
@@ -222,8 +253,8 @@ lossy codecs are the hardest code in this document; decoders are tractable.
 
 ## Video and subtitles
 
-Codecs are External-tier work (ffmpeg wrapping, see `STATE.md` Future).
-Containers can be handled natively.
+Our own codecs, with ffmpeg in the External tier for what is not written
+yet (After v1, above). Containers are native from the start.
 
 | Format | Extensions | Status | Tier | Effort | Directions and notes |
 |---|---|---|---|---|---|
@@ -340,7 +371,7 @@ communities, and have no good cross-platform tool.
 | Mind maps, outlines | opml, mm | [ ] | C | S | OPML <-> Markdown outlines; FreeMind XML. |
 | Feeds | rss, atom | [ ] | B | S | XML to JSON/Markdown. |
 | Log formats | syslog, clf, json | [ ] | C | S | To CSV/JSON; open-ended. |
-| Spreadsheets to Markdown tables | — | [ ] | A | S | CSV/XLSX -> Markdown table and back; small and constantly wanted. |
+| Spreadsheets to Markdown tables | — | [x] | — | — | Shipped (0.17.0): rows from CSV, TSV, Excel, Numbers, and ODS become Markdown tables, and a document's tables come back as rows. |
 
 ## Tier list
 
@@ -349,9 +380,9 @@ listed.
 
 | Tier | Formats |
 |---|---|
-| **S** | HEIC both ways (v1) · ODT, EPUB, ODS (v1, done) · Images in documents to PDF (v1) · SQLite read (after v1) · WAV · ZIP and gzip (keystones) |
-| **A** | Semicolon and pipe CSV · INI · MessagePack and CBOR · plist · ODS and ODT · Numbers · Parquet read · NumPy · PEM/DER · vCard and iCalendar · RTF · EPUB · reStructuredText · AsciiDoc · Jupyter · Email (EML, MBOX) · Subtitles (SRT, VTT, ASS, TTML) · GIF · BMP · TIFF · Netpbm · ICO/ICNS · Exif and XMP · AIFF · FLAC · MP3 decode · MIDI · TAR · TrueType/OpenType · WOFF · STL · OBJ · glTF · GeoJSON · GPX · KML · FASTA/FASTQ · DICOM · Intel HEX and S-record · N64 ROM byte order · N64 saves · SNES headers · Genesis SMD/BIN · Minecraft NBT · Spreadsheet to Markdown table |
-| **B** | Java properties · .env · JSON5 · BSON · dBase · Arrow · Avro · MATLAB · R data · JWK/JWT · BibTeX/RIS · PGN · Keynote · MOBI/AZW3 · FictionBook · Org-mode · LaTeX · man pages · R Markdown · Outlook MSG · WebP decode · farbfeld and QOI · TGA · SVG subset rasterizer · PSD · Aseprite · DDS/KTX · Ogg Vorbis decode · Tracker modules · N64 audio · Video remuxing · Transcoding via External · bzip2 · XZ · Zstandard · ISO 9660 · WOFF2 · Glyphs to SVG · PLY · 3MF/AMF · Quake models · Minecraft schematics · Shapefile · WKT/WKB · GenBank/GFF/BED/VCF · PDB · FITS · NES headers · Game Boy saves · PlayStation images · Doom WAD · Quake PAK · PICO-8 · Base64 and hex · Feeds |
+| **S** | SQLite read · WAV · ZIP and gzip (keystones) · Video remuxing (the audio and video cycle) |
+| **A** | INI · MessagePack and CBOR · plist · Parquet read · NumPy · PEM/DER · vCard and iCalendar · reStructuredText · AsciiDoc · Jupyter · Email (EML, MBOX) · Subtitles (SRT, VTT, ASS, TTML) · GIF animation · ICNS · Exif and XMP · AIFF · FLAC · MP3 decode · MIDI · TAR · TrueType/OpenType · WOFF · STL · OBJ · glTF · GeoJSON · GPX · KML · FASTA/FASTQ · DICOM · Intel HEX and S-record · N64 saves · SNES headers · Genesis SMD/BIN · Minecraft NBT |
+| **B** | Java properties · .env · JSON5 · BSON · dBase · Arrow · Avro · MATLAB · R data · JWK/JWT · BibTeX/RIS · PGN · Keynote · MOBI/AZW3 · FictionBook · Org-mode · LaTeX · man pages · R Markdown · Outlook MSG · Lossy WebP output · farbfeld · SVG subset rasterizer · PSD · Aseprite · DDS/KTX · Ogg Vorbis decode · Tracker modules · N64 audio · Transcoding via External · bzip2 · XZ · Zstandard · ISO 9660 · WOFF2 · Glyphs to SVG · PLY · 3MF/AMF · Quake models · Minecraft schematics · Shapefile · WKT/WKB · GenBank/GFF/BED/VCF · PDB · FITS · NES headers · Game Boy saves · PlayStation images · Doom WAD · Quake PAK · PICO-8 · Base64 and hex · Feeds |
 | **C** | XLS · HDF5 · NetCDF · SPSS/Stata/SAS · Protobuf generic · Word `.doc` · Textile/MediaWiki · RTFD · PCX · XCF · ORA/Krita · Camera raw · IFF ILBM · legacy rasters · AU/VOC/CAF · Opus, AAC, ALAC · Chiptune (SID, NSF, SPC, GBS, VGM) · Animated GIF via External · 7z · cpio/ar/deb · CAB · Type 1 fonts · Bitmap fonts · OFF/X3D/VRML · COLLADA · Source SMD · TopoJSON · OSM · GeoTIFF · SAM/BAM · NIfTI · EDF · N64 textures · Retro disk images · Hex dumps · OPML · Log formats · Diagram text-to-text |
 | **D** | UBJSON · ORC · GraphQL/OpenAPI · DjVu · CHM · WordPerfect · AVIF/JXL · PICT · WavPack/APE · Speech codecs · RAR · LHA/ARJ/ZOO · StuffIt · FBX · ELF/PE · Save states · Pokémon saves · N64 models · Diagram rendering |
 

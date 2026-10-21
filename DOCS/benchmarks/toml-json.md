@@ -1,6 +1,6 @@
 # TOML <-> JSON
 
-**Latest** (2026-09-25, arena tree: toml -> json 148.2 MB/s of input on the dense shape and 323.5 on prose, at 237 and 421 MB peak; json -> toml 156.7 and 309.2 MB/s at 172 and 212 MB peak; every line PASSES against the `toml` crate with `serde_json`, at 1.9 to 3.7 times its throughput and 12 to 47 percent of its memory)
+**Latest** (2026-10-21, 1.0.0 release run: toml -> json 88.0 MB/s of input on the dense shape and 200.1 on prose, at 354 and 524 MB peak; json -> toml 107.0 and 199.6 MB/s at 197 and 230 MB peak; every line PASSES against the `toml` crate with `serde_json`, at 1.6 to 2.4 times its throughput and 14 to 50 percent of its memory)
 
 ## Purpose
 
@@ -66,6 +66,35 @@ throughput in MB/s over the input file's bytes. Rows and units follow
   the write (JSON to TOML) and the input held whole (TOML to JSON).
 
 ## Results
+
+### 2026-10-21, `v1-wrapup` branch, the 1.0.0 release run
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| toml -> json, dense (59.9 MB): throughput (MB/s of input) | 88.0 | 36.3 (toml + serde_json) | PASS |
+| toml -> json, dense: peak memory (MB) | 354.2 | 2543.0 (toml + serde_json) | PASS |
+| toml -> json, prose (182.0 MB): throughput (MB/s of input) | 200.1 | 126.9 (toml + serde_json) | PASS |
+| toml -> json, prose: peak memory (MB) | 523.7 | 1039.4 (toml + serde_json) | PASS |
+| json -> toml, dense (56.2 MB): throughput (MB/s of input) | 107.0 | 48.7 (serde_json + toml) | PASS |
+| json -> toml, dense: peak memory (MB) | 196.9 | 788.2 (serde_json + toml) | PASS |
+| json -> toml, prose (178.9 MB): throughput (MB/s of input) | 199.6 | 94.7 (serde_json + toml) | PASS |
+| json -> toml, prose: peak memory (MB) | 230.3 | 1040.8 (serde_json + toml) | PASS |
+
+Every line passes, at 1.6 to 2.4 times the reference's throughput and
+14 to 50 percent of its memory. This run is on a different machine from
+the previous blocks (an M1 Max, not the Linux i7-13700K), so its absolute
+MB/s do not compare with theirs. The machine was in use during the run
+(load average 7 to 12 on 10 cores: a browser, a VPN client, a
+remote-desktop host), so the wall-clock rows are noisier than earlier
+blocks'. Our peak memory is higher than in the previous block on every
+row: toml -> json 236.5 -> 354.2 MB dense and 420.7 -> 523.7 MB prose,
+json -> toml 172.4 -> 196.9 MB dense and 211.5 -> 230.3 MB prose. The
+reference's memory moved as well (1926.9 -> 2543.0 MB on the dense
+toml -> json row); this run does not say how much of the rise is the
+machine's allocator and how much is a change since.
 
 ### 2026-09-25, the value hub as an arena tree
 
@@ -138,3 +167,7 @@ the 421). A windowed reader like XML's would take the input out of the
 peak if a large TOML case ever matters. The numbers do not justify
 claiming anything about deeply nested documents or pathological key
 sets, which the inputs do not have.
+
+On 2026-10-21, on an M1 Max, the dense toml -> json row peaked at 354 MB
+for 60 MB of input, about six bytes per input byte rather than the
+three-plus-input above, and prose at 524 MB rather than 421.

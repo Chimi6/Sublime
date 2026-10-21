@@ -1,6 +1,6 @@
 # HTML -> text
 
-**Latest** (2026-09-24, references wired on an Apple M1 Max: html -> text 148.8 MB/s of input on the markup-dense shape and 271.3 on prose, at 29.5 and 14.2 MB peak, faster and far leaner than html2text and orders ahead of pandoc; every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run on an Apple M1 Max with 5.3 and 2.4 MB inputs: html -> text 117.7 MB/s of input on the markup-dense shape and 150.0 on prose, at 8.9 and 5.0 MB peak, against html2text's 16.1 and 28.0 and pandoc's 0.7 and 0.8; every line PASSES)
 
 ## Purpose
 
@@ -37,6 +37,28 @@ As `html-markdown.md`: our own writer's HTML is cleaner than a real page.
 
 ## Results
 
+### 2026-10-21, 1.0.0 release run (`v1-wrapup` branch)
+
+commit: ec68950 (on the `v1-wrapup` branch, before the 1.0.0 release)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | html2text | pandoc | Result |
+|---|---|---|---|---|
+| html -> text, markup-dense (5.3 MB): throughput (MB/s of input) | 117.7 | 16.1 | 0.7 | PASS |
+| html -> text, markup-dense: peak memory (MB) | 8.9 | 202.0 | 1823.8 | PASS |
+| html -> text, prose (2.4 MB): throughput (MB/s of input) | 150.0 | 28.0 | 0.8 | PASS |
+| html -> text, prose: peak memory (MB) | 5.0 | 42.9 | 552.7 | PASS |
+
+Every line passes. The machine was in use during this run (load average
+7 to 12 on 10 cores: a browser, a VPN client, a remote-desktop host), so
+the wall-clock rows are noisier than earlier blocks'. The harness printed
+20,000 units, but the HTML on this machine was the 4,000-unit files (5.3
+and 2.4 MB, not the 26.6 and 12.1 MB of the block below), so the rows do
+not compare with that block's: the smaller inputs run in tens of
+milliseconds, where process start weighs more. Against html2text in the
+same session we are 7.3 times faster on the dense shape and 5.4 on
+prose, against 9.4 and 8.2 below.
+
 ### 2026-09-24, references wired: html2text and pandoc
 
 commit: 64b08e7 (the reference wiring's working tree, before its commit)
@@ -69,3 +91,7 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus
 About nine times html2text's throughput at a few percent of its memory, and
 hundreds of times pandoc's. The text writer costs almost nothing over the
 reader.
+
+2026-10-21: on the 5.3 and 2.4 MB inputs of the 1.0.0 release run the
+lead over html2text is 7.3 and 5.4 times, not nine, at 4 and 12% of its
+memory.

@@ -1,12 +1,14 @@
 # PNG -> HEIC
 
-**Latest** (2026-10-12, `heic-gaps` branch: the default effort codes
+**Latest** (2026-10-21, 1.0.0 release run: the default effort codes
 the 12 photographs of 4032 pixels faster than libheif's `heif-enc` (x265,
-19.3 against 18.7 MB/s) and still in fewer bytes at equal quality (PSNR
-of luma and of RGB, SSIMULACRA2; a tie at SSIM), `--effort fast` 21%
-faster; Kodak's SSIMULACRA2 (+1.0%) is the one failing line; a fifth to
-a quarter of x265's memory; 12 to 17% smaller than Apple's hardware
-encoder (`sips`, context), which is far faster)
+19.1 against 18.5 MB/s) and still in fewer bytes at equal quality (PSNR
+of luma -1.4% and of RGB -1.8%, SSIMULACRA2 -0.5%; a tie at SSIM),
+`--effort fast` 22.2 MB/s; the synthetic photo 39.3 against 13.6 MB/s
+and the flat 194.5 against 58.7; Kodak's SSIMULACRA2 (+1.0%) is the one
+failing line; a fifth to a quarter of x265's memory (71.4 against 325.2
+MB on the photo); 12 to 17% smaller than Apple's hardware encoder
+(`sips`, context), which is far faster)
 
 ## Purpose
 
@@ -107,6 +109,42 @@ by up to 10% at equal RGB PSNR.
 - Peak resident memory counts what the allocator keeps of freed blocks.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release
+
+| Target | Ours | Reference (heif-enc) | Context (sips) | Result |
+|---|---|---|---|---|
+| png -> heic, jphoto (45.8 MB of pixels, quality 50): throughput (MB/s of pixels) | 39.3 | 13.6 | 126.5 | PASS |
+| png -> heic, jphoto: peak memory (MB) | 71.4 | 325.2 | 204.5 | PASS |
+| png -> heic, jflat (45.8 MB of pixels, quality 50): throughput (MB/s of pixels) | 194.5 | 58.7 | 183.6 | PASS |
+| png -> heic, jflat: peak memory (MB) | 71.9 | 301.5 | 174.0 | PASS |
+| png -> heic, hstock (103.5 MB of pixels, quality 50): throughput (MB/s of pixels) [stock] | 114.2 | 28.2 | 182.7 | PASS |
+| png -> heic, hstock: peak memory (MB) [stock] | 143.3 | 633.9 | 390.1 | PASS |
+| png -> heic, Kodak (24 photographs): BD-rate at equal PSNR of luma (negative: ours smaller) | -1.4% | 0% (itself) | ours -12.2% | PASS |
+| png -> heic, Kodak (24 photographs): BD-rate at equal SSIM (negative: ours smaller) | -0.3% | 0% (itself) | ours -13.3% | PASS |
+| png -> heic, Kodak (24 photographs): BD-rate at equal PSNR of RGB (negative: ours smaller) | -0.3% | 0% (itself) | ours -12.0% | PASS |
+| png -> heic, Kodak (24 photographs): BD-rate at equal SSIMULACRA2 (negative: ours smaller) | +1.0% | 0% (itself) | ours -13.2% | FAIL |
+| png -> heic, Kodak (24 photographs of 0.4 megapixels, quality 50): throughput (MB/s of pixels) | 8.3 | 6.5 | 11.7 | PASS |
+| png -> heic, 12 photographs of 4032 pixels: BD-rate at equal PSNR of luma (negative: ours smaller) | -1.4% | 0% (itself) | ours -11.5% | PASS |
+| png -> heic, 12 photographs of 4032 pixels: BD-rate at equal SSIM (negative: ours smaller) | -0.0% | 0% (itself) | ours -13.3% | PASS |
+| png -> heic, 12 photographs of 4032 pixels: BD-rate at equal PSNR of RGB (negative: ours smaller) | -1.8% | 0% (itself) | ours -14.6% | PASS |
+| png -> heic, 12 photographs of 4032 pixels: BD-rate at equal SSIMULACRA2 (negative: ours smaller) | -0.5% | 0% (itself) | ours -16.8% | PASS |
+| png -> heic, 12 photographs of 4032 pixels (quality 50, --effort fast): throughput (MB/s of pixels) | 22.2 | 18.5 | n/a | PASS |
+| png -> heic, 12 photographs of 4032 pixels (quality 50, --effort balanced): throughput (MB/s of pixels) | 19.1 | 18.5 | n/a | PASS |
+| png -> heic, 12 photographs of 4032 pixels (quality 50, --effort max): throughput (MB/s of pixels) | 10.0 | 18.5 | n/a | context |
+
+commit: ec68950 (the `v1-wrapup` branch, before the version bump)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+The pair ran in full (23 minutes). The BD-rate rows are identical to the
+previous block's, so the encoder writes the same files, and the one
+FAIL is the same line, Kodak's SSIMULACRA2 (+1.0%). The default effort
+still codes the 12 photographs faster than `heif-enc` (19.1 against
+18.5 MB/s, 19.3 against 18.7 before), the thinnest speed margin here.
+The machine was in use during this run (load average 7 to 12 on 10
+cores: a browser, a VPN client, a remote-desktop host), so wall-clock
+rows are noisier than earlier blocks', and our encoder, which uses
+every core, loses more to that load than `heif-enc` does.
 
 ### 2026-10-12, the default effort faster than x265 on photographs
 

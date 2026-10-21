@@ -1,6 +1,6 @@
 # Word -> HTML
 
-**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run: every line PASSES; 129.4 MB/s of uncompressed input on the styled shape and 162.5 on prose, at 24.3 and 29.1 MB peak, against pandoc's 1.3 on both)
 
 ## Purpose
 
@@ -51,6 +51,28 @@ Word files with larger style sheets and more properties per run will
 read somewhat slower; repeated text makes the per-file-byte row read low.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release run (`v1-wrapup` branch)
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| docx -> html, styled (6.0 MB uncompressed): throughput (MB/s of uncompressed input) | 129.4 | 1.3 (pandoc) | PASS |
+| docx -> html, styled (0.2 MB file): throughput (MB/s of file bytes) [extra] | 4.4 | recorded | n/a |
+| docx -> html, styled: peak memory (MB) | 24.3 | 549.6 (pandoc) | PASS |
+| docx -> html, prose (7.5 MB uncompressed): throughput (MB/s of uncompressed input) | 162.5 | 1.3 (pandoc) | PASS |
+| docx -> html, prose (0.2 MB file): throughput (MB/s of file bytes) [extra] | 4.7 | recorded | n/a |
+| docx -> html, prose: peak memory (MB) | 29.1 | 776.3 (pandoc) | PASS |
+
+commit: ec68950 (on the `v1-wrapup` branch, before the 1.0.0 release)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes. The machine was in use during this run (load average
+7 to 12 on 10 cores: a browser, a VPN client, a remote-desktop host), so
+the wall-clock rows are noisier than earlier blocks'. This run is on the
+Apple M1 Max with the 6.0 MB styled input, as in the 2026-09-24 pandoc
+block, not the Linux machine and 14.9 MB input of the block below, so
+its numbers read against that one: 129.4 and 162.5 MB/s against 102.6
+and 113.9.
 
 ### 2026-09-27, 0.24.0 release
 

@@ -30,6 +30,37 @@ a comparison. Startup is implemented in `bench/src/startup.rs`.
 
 ## Results
 
+### 2026-10-21, 1.0.0: the registry as data
+
+The gnu size and the module are CI's measurements on ec68950, the code
+1.0.0 ships (the release commit changes only the version). The musl
+asset and the gzipped module are not recorded here: the musl target and
+CI's toolchain are not on this Mac; they are read from the v1.0.0
+release assets in the next block. Startup was measured on a Mac with the
+harness's `startup` and `spawn-baseline` commands, five alternated rounds
+against the commit before (93a37d4), median.
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| Binary size, gnu (bytes) | 5596192 | <= 5620000 (size-budget, what CI checks) | PASS |
+| WebAssembly module (bytes) | 2951471 | <= 3140000 (wasm/size-budget, what CI checks) | PASS |
+| Startup above spawn floor (ms, 1 KB file) | 0.783 (spawn 2.053, floor 1.270) | < 1 | PASS |
+| Startup, the commit before (ms, 1 KB file) [extra] | 0.932 (spawn 2.202, floor 1.270) | recorded | n/a |
+
+commit: ec68950 (the `v1-wrapup` branch, code as released in v1.0.0)
+machine: CI (ubuntu-latest) for the gnu binary and the module; Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max for startup
+
+From 0.29.0 the binary grew 1,407,600 bytes (+34%) and the module
+670,352 over 0.30.0 to 0.33.0 (HEIC both ways, EPUB, the N64 orders and
+the rest; those releases have no block here). The registry change itself
+moved both by a few KB (binary 5,592,448 -> 5,596,192, module 2,952,440
+-> 2,951,471, CI) and cut startup by 0.15 ms and starting memory from
+2.24 to 1.95 MB. The machine was in use (load average 7 to 12): the
+harness's own single `bench/run.sh binary` runs read 1.11 to 1.26 ms
+above a 1.29 to 1.45 ms floor, FAIL; the alternated rounds above, where
+both binaries share the load, are the comparison this block stands on,
+and the line should be rerun on an idle machine.
+
 ### 2026-10-08, 0.29.0 with Numbers formats from Excel, pivot and categorised tables
 
 The gnu size and the module are CI's measurements on the release commit;

@@ -27,6 +27,8 @@ interleave() {
   crates=("$@")
   local ours_times=() crates_times=() start end
   # Microseconds from bash's clock (5.0 and later), no fork per reading.
+  # macOS's bash 3.2 has no EPOCHREALTIME: every time would read zero.
+  [ -n "${EPOCHREALTIME:-}" ] || { echo "bash 5 is needed (brew install bash)" >&2; return 1; }
   for _ in $(seq "$rounds"); do
     rm -f -- "$ours_out"
     start="${EPOCHREALTIME/[.,]/}"; "${ours[@]}" || return 1; end="${EPOCHREALTIME/[.,]/}"

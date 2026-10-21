@@ -1,6 +1,6 @@
 # Netpbm <-> PNG
 
-**Latest** (2026-09-27, 0.24.0 release: 1 line FAILS, the photo encode tie (0.23.1 decision))
+**Latest** (2026-10-21, 1.0.0 release run: ppm to png 152.4 MB/s against 58.7 on the photo and 1021.7 against 479.8 on the flat, png to ppm 436.7 against 205.6 and 837.0 against 744.0, peak memory 4.1 to 9.6 MB against 51.3 to 128.2; every line PASSES on this machine, the photo encode tie (0.23.1 decision) included)
 
 ## Purpose
 
@@ -43,6 +43,34 @@ repeated runs 10 to 20% behind on 48 MB outputs.
   The photo encode line is within noise either way.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| ppm -> png, photo (45.8 MB in): throughput (MB/s of input) | 152.4 | 58.7 (image + png) | PASS |
+| ppm -> png, photo: peak memory (MB) | 9.6 | 128.2 (image + png) | PASS |
+| ppm -> png, photo: output size (MB) [extra] | 25.0 | 27.1 (png) | n/a |
+| png -> ppm, photo (29.0 MB in + 45.8 MB out): throughput (MB/s of input plus output) | 436.7 | 205.6 (png + image) | PASS |
+| png -> ppm, photo: peak memory (MB) | 4.1 | 51.3 (png + image) | PASS |
+| ppm -> png, flat (45.8 MB in): throughput (MB/s of input) | 1021.7 | 479.8 (image + png) | PASS |
+| ppm -> png, flat: peak memory (MB) | 6.0 | 97.0 (image + png) | PASS |
+| ppm -> png, flat: output size (MB) [extra] | 0.1 | 0.3 (png) | n/a |
+| png -> ppm, flat (1.6 MB in + 45.8 MB out): throughput (MB/s of input plus output) | 837.0 | 744.0 (png + image) | PASS |
+| png -> ppm, flat: peak memory (MB) | 4.1 | 51.4 (png + image) | PASS |
+
+commit: ec68950 (the `v1-wrapup` branch, before the version bump)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes, the photo encode included (436.7 against 205.6
+MB/s), which failed as a tie in the previous block (853.3 against
+860.7). This is the first block on this machine; the earlier blocks are
+the Linux i7, so the rows do not compare like for like with them, and
+the photo encode's margin here is not evidence the tie is gone there.
+The machine was in use during this run (load average 7 to 12 on 10
+cores: a browser, a VPN client, a remote-desktop host), so wall-clock
+rows are noisier than earlier blocks'. `[stock]` rows are absent:
+`bench/data/stock.*` is not on this machine.
 
 ### 2026-09-27, 0.24.0 release
 

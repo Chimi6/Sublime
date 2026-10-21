@@ -1,6 +1,6 @@
 # HTML -> Word
 
-**Latest** (2026-09-27, the lazy deflate and the faster bit writer: 332.4 MB/s on the markup-dense shape (from 217.8) and 423.7 on prose (from 288.9); every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run on the Apple M1 Max at 4,000 units: 214.1 MB/s of input plus uncompressed output on the markup-dense shape and 198.8 on prose, at 19.0 and 10.5 MB peak, against pandoc's 2.1 and 2.3; every line PASSES)
 
 ## Purpose
 
@@ -52,6 +52,28 @@ bytes (`unzip -l`), with the rate per input byte as an extra row.
   the honest one.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release run (`v1-wrapup` branch)
+
+commit: ec68950 (on the `v1-wrapup` branch, before the 1.0.0 release)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| html -> docx, markup-dense (5.3 MB in + 18.1 MB out): throughput (MB/s of input plus uncompressed output) | 214.1 | 2.1 (pandoc) | PASS |
+| html -> docx, markup-dense: throughput (MB/s of input) [extra] | 48.4 | recorded | n/a |
+| html -> docx, markup-dense: peak memory (MB) | 19.0 | 2782.8 (pandoc) | PASS |
+| html -> docx, prose (2.4 MB in + 4.0 MB out): throughput (MB/s of input plus uncompressed output) | 198.8 | 2.3 (pandoc) | PASS |
+| html -> docx, prose: throughput (MB/s of input) [extra] | 74.4 | recorded | n/a |
+| html -> docx, prose: peak memory (MB) | 10.5 | 327.9 (pandoc) | PASS |
+
+Every line passes. The machine was in use during this run (load average
+7 to 12 on 10 cores: a browser, a VPN client, a remote-desktop host), so
+the wall-clock rows are noisier than earlier blocks'. The harness printed
+20,000 units, but the inputs were the 4,000-unit files of the 2026-09-24
+pandoc block (5.3 and 2.4 MB), on the same machine, so this block reads
+against that one rather than the Linux block below: 214.1 and 198.8 MB/s
+against 153.0 and 150.1, at 19.0 and 10.5 MB against 24.2 and 12.8.
 
 ### 2026-09-27, the lazy deflate and the faster bit writer
 

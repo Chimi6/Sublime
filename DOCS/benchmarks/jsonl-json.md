@@ -1,6 +1,6 @@
 # JSON Lines <-> JSON
 
-**Latest** (2026-09-25, first release of JSON Lines: jsonl -> json 301.7 MB/s of input at 2.8 MB peak; json -> jsonl 293.2 MB/s at 2.7 MB peak; every line PASSES against serde_json, at 1.8 to 3 times its throughput)
+**Latest** (2026-10-21, 1.0.0 release run: jsonl -> json 187.6 MB/s of input at 2.7 MB peak; json -> jsonl 193.6 MB/s at 2.7 MB peak; every line PASSES against serde_json, at 1.9 to 3.1 times its throughput)
 
 ## Purpose
 
@@ -51,6 +51,26 @@ follow `README.md`.
   costs both sides recursion and neither more than the other.
 
 ## Results
+
+### 2026-10-21, `v1-wrapup` branch, the 1.0.0 release run
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| jsonl -> json, 10M rows (1234.6 MB): throughput (MB/s of input) | 187.6 | 99.3 (serde_json) | PASS |
+| jsonl -> json, 10M rows: peak memory (MB) | 2.7 | 5.1 (serde_json) | PASS |
+| json -> jsonl, 10M rows (1234.6 MB): throughput (MB/s of input) | 193.6 | 61.6 (serde_json) | PASS |
+| json -> jsonl, 10M rows: peak memory (MB) | 2.7 | 7884.5 (serde_json) | PASS |
+
+Every line passes, at 1.9 and 3.1 times serde_json's throughput. This
+run is on a different machine from the previous block (an M1 Max, not
+the Linux i7-13700K), so its absolute MB/s do not compare with that
+block's; the ratios against the reference in the same session do. The
+machine was in use during the run (load average 7 to 12 on 10 cores: a
+browser, a VPN client, a remote-desktop host), so the wall-clock rows
+are noisier than earlier blocks'.
 
 ### 2026-09-25, first release of JSON Lines
 

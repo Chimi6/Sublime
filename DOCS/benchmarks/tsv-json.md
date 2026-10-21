@@ -1,6 +1,6 @@
 # TSV <-> JSON
 
-**Latest** (2026-09-25, first release of TSV: tsv -> json 325.1 MB/s of input at 2.7 MB peak; json -> tsv 191.8 MB/s at 2.6 MB peak; every line PASSES against the csv crate with serde_json, at 1.5 to 2 times its throughput)
+**Latest** (2026-10-21, 1.0.0 release run: tsv -> json 174.5 MB/s of input at 2.7 MB peak; json -> tsv 124.5 MB/s at 2.8 MB peak; every line PASSES against the csv crate with serde_json, at 1.5 to 2.1 times its throughput)
 
 ## Purpose
 
@@ -52,6 +52,26 @@ throughput in MB/s over the input file's bytes. Rows and units follow
 
 ## Results
 
+### 2026-10-21, `v1-wrapup` branch, the 1.0.0 release run
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| tsv -> json, 10M rows (594.3 MB): throughput (MB/s of input) | 174.5 | 114.2 (csv + serde_json) | PASS |
+| tsv -> json, 10M rows: peak memory (MB) | 2.7 | 4.7 (csv + serde_json) | PASS |
+| json -> tsv, 10M rows (1110.6 MB): throughput (MB/s of input) | 124.5 | 59.1 (serde_json + csv) | PASS |
+| json -> tsv, 10M rows: peak memory (MB) | 2.8 | 8012.1 (serde_json + csv) | PASS |
+
+Every line passes, at 1.5 and 2.1 times the reference's throughput. This
+run is on a different machine from the previous block (an M1 Max, not
+the Linux i7-13700K), so its absolute MB/s do not compare with that
+block's; the ratios against the reference in the same session do. The
+machine was in use during the run (load average 7 to 12 on 10 cores: a
+browser, a VPN client, a remote-desktop host), so the wall-clock rows
+are noisier than earlier blocks'.
+
 ### 2026-09-25, first release of TSV
 
 commit: 2f7e30d
@@ -69,3 +89,9 @@ machine: Linux 7.1.5-ogc5.1.fc44.x86_64 x86_64, 24 cpus, 13th Gen Intel(R) Core(
 The separator parameter cost nothing: the rows match `csv-json.md`'s
 within noise, and the reader's tab scanner is the same word-at-a-time
 scan with a different byte. Nothing here is close to a limit.
+
+On 2026-10-21 the rows did not match `csv-json.md`'s: tsv -> json ran at
+174.5 MB/s against csv -> json's 94.8, and json -> tsv at 124.5 against
+json -> csv's 88.5, on the same loaded machine in separate sessions. The
+references fell with them (114.2 here, 37.1 in the csv-json session), so
+the two runs saw different load; this run does not test the separator.

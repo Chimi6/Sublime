@@ -1,6 +1,6 @@
 # JPEG <-> PDF
 
-**Latest** (2026-09-27, 0.23.1 release: every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run: jpeg to pdf 383.7 MB/s against lopdf's 207.8 on the photo and 81.8 against 41.5 on the flat, pdf to jpeg 383.7 against 204.9 and 79.5 against 41.0, peak memory 2.7 to 4.2 MB against 5.6 to 8.9; every line PASSES)
 
 ## Purpose
 
@@ -46,6 +46,35 @@ runs from GNU `time`.
   creation on both sides; it ranks the whole command, not the copy.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| jpeg -> pdf, photo (1.6 MB): throughput (MB/s of JPEG, median of 101 alternated runs) | 383.7 | 207.8 (lopdf) | PASS |
+| jpeg -> pdf, photo: peak memory (MB) | 4.1 | 8.7 (lopdf) | PASS |
+| pdf -> jpeg, photo (1.6 MB): throughput (MB/s of JPEG, median of 101 alternated runs) | 383.7 | 204.9 (lopdf) | PASS |
+| pdf -> jpeg, photo: peak memory (MB) | 4.2 | 8.9 (lopdf) | PASS |
+| jpeg -> pdf, flat (0.3 MB): throughput (MB/s of JPEG, median of 101 alternated runs) | 81.8 | 41.5 (lopdf) | PASS |
+| jpeg -> pdf, flat: peak memory (MB) | 2.7 | 5.6 (lopdf) | PASS |
+| pdf -> jpeg, flat (0.3 MB): throughput (MB/s of JPEG, median of 101 alternated runs) | 79.5 | 41.0 (lopdf) | PASS |
+| pdf -> jpeg, flat: peak memory (MB) | 2.8 | 6.2 (lopdf) | PASS |
+
+commit: ec68950 (the `v1-wrapup` branch, before the version bump)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes. The first attempt at this run timed nothing: the
+alternating timer reads bash's microsecond clock (`EPOCHREALTIME`,
+bash 5.0 and later), and it ran under macOS's bash 3.2, which does not
+have it, so every run timed as zero and the throughput lines printed
+PASS on empty cells. The script now stops with "bash 5 is needed" when
+that clock is missing, and these rows are the rerun under bash 5.3.
+This is the first block on this machine; the earlier blocks are the
+Linux i7, so the rows do not compare like for like with them. The
+machine was in use during the rerun (load average about 16 on 10
+cores: a browser, a VPN client, a remote-desktop host), so these
+millisecond-scale lines are noisier than earlier blocks'. `[stock]`
+rows are absent: `bench/data/stock.*` is not on this machine.
 
 ### 2026-09-27, 0.23.1 release
 

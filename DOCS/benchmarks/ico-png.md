@@ -1,6 +1,6 @@
 # ICO <-> PNG
 
-**Latest** (2026-09-27, 0.24.0 release: 1 line FAILS, the 256-pixel icon (0.22.0 decision))
+**Latest** (2026-10-21, 1.0.0 release run: ico to png of the 256 icon 19.6 ms against 23.3, png to ico 18.0 ms against 14.8 for the 256 picture, 130.7 against 223.3 for the photo and 58.0 against 163.7 for the flat, peak memory 4.6 to 6.6 MB against 6.1 to 53.0; 1 line FAILS, the 256-pixel icon (0.22.0 decision))
 
 ## Purpose
 
@@ -43,6 +43,41 @@ wall clock of the whole process, peak resident memory from GNU `time`.
   deflate against its fast level), so the icons differ in bytes.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| ico -> png, 256 icon (0.1 MB): wall time (ms) | 19.6 | 23.3 (image + png) | PASS |
+| ico -> png, 256 icon: peak memory (MB) | 4.6 | 6.3 (image + png) | PASS |
+| png -> ico, icon256 (0.0 MB in): wall time (ms) | 18.0 | 14.8 (png + image) | FAIL |
+| png -> ico, icon256: peak memory (MB) | 5.1 | 6.1 (png + image) | PASS |
+| png -> ico, icon256: output size (KB) [extra] | 56.8 | 101.3 (image) | n/a |
+| png -> ico, jphoto (29.0 MB in): wall time (ms) | 130.7 | 223.3 (png + image) | PASS |
+| png -> ico, jphoto: peak memory (MB) | 6.2 | 52.9 (png + image) | PASS |
+| png -> ico, jphoto: output size (KB) [extra] | 56.4 | 103.0 (image) | n/a |
+| png -> ico, jflat (1.6 MB in): wall time (ms) | 58.0 | 163.7 (png + image) | PASS |
+| png -> ico, jflat: peak memory (MB) | 6.6 | 53.0 (png + image) | PASS |
+| png -> ico, jflat: output size (KB) [extra] | 108.0 | 153.3 (image) | n/a |
+
+commit: ec68950 (the `v1-wrapup` branch, before the version bump)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+This is the first block on this machine; the earlier blocks are the
+Linux i7, so the times are not a like-for-like comparison with them.
+The machine was in use during this run (load average 7 to 12 on 10
+cores: a browser, a VPN client, a remote-desktop host), so the wall
+times are noisier than earlier blocks', and the 256-pixel lines most of
+all. The first attempt could not make the inputs (Pillow was no longer
+installed); they were made with Pillow 13.0.0 in a fresh Python 3.13
+environment and the pair rerun, and these are the rerun's rows. The
+pair script's awk programs, quoted inside `"$(...)"`, are misread by
+macOS's bash 3.2; they are now the `ms` and `kb` helper functions, with
+no change to what is measured. The run ended with an `rm` error on a
+leftover directory after every row printed, so the harness did not print
+its commit and machine lines; the two above are the session's, which
+every other pair of the run printed. The one FAIL is the same line as
+the previous block's, the 256-pixel icon (18.0 against 14.8 ms).
 
 ### 2026-09-27, 0.24.0 release
 

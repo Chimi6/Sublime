@@ -1,6 +1,6 @@
 # Word -> Markdown
 
-**Latest** (2026-10-13, the `odt` branch with the Word reader fixes: every line PASSES; 110.2 MB/s on the styled shape and 147.0 on prose, within 1% of `main` measured side by side)
+**Latest** (2026-10-21, 1.0.0 release run: every line PASSES; 124.5 MB/s of uncompressed input on the styled shape and 147.3 on prose, at 24.5 and 28.2 MB peak, against pandoc's 1.2 on both)
 
 ## Purpose
 
@@ -51,6 +51,26 @@ Word files with larger style sheets and more properties per run will
 read somewhat slower; repeated text makes the per-file-byte row read low.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release run (`v1-wrapup` branch)
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| docx -> markdown, styled (6.0 MB uncompressed): throughput (MB/s of uncompressed input) | 124.5 | 1.2 (pandoc) | PASS |
+| docx -> markdown, styled (0.2 MB file): throughput (MB/s of file bytes) [extra] | 4.2 | recorded | n/a |
+| docx -> markdown, styled: peak memory (MB) | 24.5 | 821.7 (pandoc) | PASS |
+| docx -> markdown, prose (7.5 MB uncompressed): throughput (MB/s of uncompressed input) | 147.3 | 1.2 (pandoc) | PASS |
+| docx -> markdown, prose (0.2 MB file): throughput (MB/s of file bytes) [extra] | 4.3 | recorded | n/a |
+| docx -> markdown, prose: peak memory (MB) | 28.2 | 1331.5 (pandoc) | PASS |
+
+commit: ec68950 (on the `v1-wrapup` branch, before the 1.0.0 release)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes. The machine was in use during this run (load average
+7 to 12 on 10 cores: a browser, a VPN client, a remote-desktop host), so
+the wall-clock rows are noisier than earlier blocks'. Against the block
+below, on the same machine and inputs, styled is 124.5 MB/s against
+110.2 and prose 147.3 against 147.0; memory is level.
 
 ### 2026-10-13, the `odt` branch (Word reader fixes)
 

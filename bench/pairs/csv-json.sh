@@ -19,7 +19,7 @@ run_pair() {
   crates_j2c="$(time_cmd crates-json-csv "$bench" csv-json crates-json-csv "$data/big.json" "$data/out4.csv")"
 
   echo "== stdin memory" >&2
-  /usr/bin/time -f "%M" -o "$data/rss.txt" sh -c "$sublime -q convert - --from csv --to json < $data/big.csv > $data/out5.json"
+  "$time_bin" -f "%M" -o "$data/rss.txt" sh -c "$sublime -q convert - --from csv --to json < $data/big.csv > $data/out5.json"
   local stdin_rss
   stdin_rss="$(cat "$data/rss.txt")"
 

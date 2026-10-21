@@ -1,6 +1,6 @@
 # TGA <-> PNG
 
-**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run: tga to png 124.6 MB/s against 56.2 on the photo and 439.2 against 283.4 on the flat, png to tga 266.9 against 228.9 and 275.3 against 231.2, peak memory 4.1 to 57.3 MB against 52.3 to 128.3; every line PASSES, no `[stock]` rows on this machine)
 
 ## Purpose
 
@@ -39,6 +39,34 @@ outputs are removed before each run.
 - The flat decode line is within 1% and can flip with load.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| tga -> png, photo (45.8 MB of pixels, 45.9 MB on disk): throughput (MB/s of decoded pixels) | 124.6 | 56.2 (image + png) | PASS |
+| tga -> png, photo: peak memory (MB) | 57.3 | 128.3 (image + png) | PASS |
+| tga -> png, photo: output size (MB) [extra] | 25.0 | 27.1 (png) | n/a |
+| png -> tga, photo (29.0 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 266.9 | 228.9 (png + image) | PASS |
+| png -> tga, photo: peak memory (MB) | 4.1 | 96.9 (png + image) | PASS |
+| tga -> png, flat (45.8 MB of pixels, 1.0 MB on disk): throughput (MB/s of decoded pixels) | 439.2 | 283.4 (image + png) | PASS |
+| tga -> png, flat: peak memory (MB) | 7.5 | 52.3 (image + png) | PASS |
+| tga -> png, flat: output size (MB) [extra] | 0.1 | 0.3 (png) | n/a |
+| png -> tga, flat (1.6 MB in + 45.8 MB of pixels): throughput (MB/s of input plus pixels) | 275.3 | 231.2 (png + image) | PASS |
+| png -> tga, flat: peak memory (MB) | 4.2 | 97.3 (png + image) | PASS |
+
+commit: ec68950 (the `v1-wrapup` branch, before the version bump)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes. This is the first block on this machine; the earlier
+blocks are the Linux i7, so the rows do not compare like for like with
+them. The machine was in use during this run (load average 7 to 12 on
+10 cores: a browser, a VPN client, a remote-desktop host), so
+wall-clock rows are noisier than earlier blocks'. The first attempt
+could not make the inputs (Pillow was no longer installed); they were
+made with Pillow 13.0.0 in a fresh Python 3.13 environment and the pair
+rerun, and these are the rerun's rows. `[stock]` rows are absent:
+`bench/data/stock.*` is not on this machine.
 
 ### 2026-09-27, 0.24.0 release
 

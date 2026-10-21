@@ -1,6 +1,6 @@
 # Markdown -> Word
 
-**Latest** (2026-09-27, the lazy deflate and the faster bit writer: 307.4 MB/s of input plus uncompressed output on the markup-dense shape (from 206.7) and 397.0 on prose (from 288.8); every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run on the Apple M1 Max: 229.7 MB/s of input plus uncompressed output on the markup-dense shape and 306.7 on prose, at 104.5 and 36.1 MB peak, against the reference's 40.2 and 87.1; every line PASSES)
 
 ## Purpose
 
@@ -69,6 +69,30 @@ row. Rows and units follow `README.md`.
   block as it closes.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release run (`v1-wrapup` branch)
+
+commit: ec68950 (on the `v1-wrapup` branch, before the 1.0.0 release)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| markdown -> docx, markup-dense (14.7 MB in + 90.7 MB out): throughput (MB/s of input plus uncompressed output) | 229.7 | 40.2 (pulldown-cmark + docx-rs, paragraphs and runs only) | PASS |
+| markdown -> docx, markup-dense: throughput (MB/s of input) [extra] | 32.0 | 7.4 (reference) | n/a |
+| markdown -> docx, markup-dense: peak memory (MB) | 104.5 | 1660.8 (reference) | PASS |
+| markdown -> docx, prose (11.3 MB in + 20.2 MB out): throughput (MB/s of input plus uncompressed output) | 306.7 | 87.1 (pulldown-cmark + docx-rs, paragraphs and runs only) | PASS |
+| markdown -> docx, prose: throughput (MB/s of input) [extra] | 110.1 | 26.0 (reference) | n/a |
+| markdown -> docx, prose: peak memory (MB) | 36.1 | 466.7 (reference) | PASS |
+
+Every line passes. The machine was in use during this run (load average
+7 to 12 on 10 cores: a browser, a VPN client, a remote-desktop host), so
+the wall-clock rows are noisier than earlier blocks'. The inputs are the
+same as the block below, but the machine is the Apple M1 Max, not the
+Linux one, so the absolute rows do not compare. Against the reference in
+the same session we are 5.7 times faster on the dense shape and 3.5 on
+prose, against 6.7 and 4.6 below. Dense peak memory is 104.5 MB against
+91.0 below; the reference's grew on this machine too (1660.8 against
+1580.9).
 
 ### 2026-09-27, the lazy deflate and the faster bit writer
 

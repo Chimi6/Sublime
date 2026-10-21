@@ -1,6 +1,6 @@
 # Numbers -> Excel
 
-**Latest** (2026-10-06, 0.27.1: 144 to 146 MB/s of input plus uncompressed output on 200,000-row documents at 127 to 147 MB, against numbers-parser with openpyxl's 2.3 to 2.4 at 4.2 GB; on a real 65,000-row document 139 MB/s at 56 MB, against numbers-parser's 4.2 at 365 MB and LibreOffice's 1.4 at 1.4 GB; every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run: 115 to 116 MB/s of input plus uncompressed output on 200,000-row documents at 109 to 129 MB, against numbers-parser with openpyxl's 2.4 at 4.5 GB; on a real 65,000-row document 117 MB/s at 45 MB, against numbers-parser's 4.1 at 371 MB and LibreOffice's 1.4 at 1.4 GB; every line PASSES)
 
 ## Purpose
 
@@ -59,6 +59,35 @@ checked by reading both back with openpyxl).
 
 ## Results
 
+### 2026-10-21, `v1-wrapup` branch, the 1.0.0 release run
+
+| Target | Ours | numbers-parser | LibreOffice | Result |
+|---|---|---|---|---|
+| numbers -> xlsx, real (4.1 MB in + 6.4 MB out): throughput (MB/s of input plus uncompressed output) | 116.8 | 4.1 | 1.4 | PASS |
+| numbers -> xlsx, real: peak memory (MB) | 45.1 | 370.6 | 1407.8 | PASS |
+| numbers -> xlsx, dense (14.3 MB in + 83.1 MB out): throughput (MB/s of input plus uncompressed output) | 115.5 | 2.4 | n/a | PASS |
+| numbers -> xlsx, dense: peak memory (MB) | 128.8 | 4568.4 | n/a | PASS |
+| numbers -> xlsx, sheets (15.1 MB in + 80.1 MB out): throughput (MB/s of input plus uncompressed output) | 114.6 | 2.4 | n/a | PASS |
+| numbers -> xlsx, sheets: peak memory (MB) | 108.8 | 4475.9 | n/a | PASS |
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes. The reference column is numbers-parser with openpyxl,
+as before; the harness now heads it `numbers-parser`. The machine was in
+use during this run (load average 7 to 12 on 10 cores: a browser, a VPN
+client, a remote-desktop host), so the wall-clock rows are noisier than
+earlier blocks'. Against 0.27.1 on the same machine, throughput is lower
+on every row (real 139.1 -> 116.8, dense 146.1 -> 115.5, sheets
+144.3 -> 114.6) and the output is about 3 MB smaller on the generated
+documents (86.2 -> 83.1 MB dense, 83.2 -> 80.1 sheets). Peak memory is
+lower on every row (real 56.1 -> 45.1 MB, dense 146.6 -> 128.8, sheets
+126.8 -> 108.8). The commit, ec68950, holds the registry as a const
+table (converter metadata as data, the image pairs built only when an
+image format is an end), which lowered every conversion's starting
+memory by about 0.3 MB; the rest of the drop came with the releases
+since 0.27.1.
+
 ### 2026-10-06, 0.27.1
 
 With typed dates and booleans: the output is smaller than 0.27.0's (86.2
@@ -101,3 +130,8 @@ twenty-ninth of numbers-parser's memory and a twenty-fifth of
 LibreOffice's. Memory is the reader's, the same as `numbers -> csv`: the
 workbook writer streams each sheet. The levers left are the reader's
 (`numbers-csv.md`, Conclusions).
+
+On 2026-10-21, under load, the margins were 28 to 48 times
+numbers-parser with openpyxl and 83 times LibreOffice, at an eighth to a
+forty-first of numbers-parser's memory and a thirty-first of
+LibreOffice's.

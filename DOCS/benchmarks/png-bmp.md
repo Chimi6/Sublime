@@ -1,6 +1,6 @@
 # PNG <-> BMP
 
-**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run: png to bmp 453.5 MB/s against 276.8 on the photo and 684.2 against 366.6 on the flat, bmp to png 130.2 against 110.0 and 2246.0 against 439.7, peak memory 4.9 to 10.6 MB against 66.5 to 165.9; every line PASSES, no `[stock]` rows on this machine)
 
 ## Purpose
 
@@ -85,6 +85,35 @@ median wall clock of the whole process, peak resident memory from GNU
   is one run of three-run medians.
 
 ## Results
+
+### 2026-10-21, 1.0.0 release
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| png -> bmp, photo (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 453.5 | 276.8 (png + image) | PASS |
+| png -> bmp, photo (32.8 MB on disk): throughput (MB/s of file bytes) [extra] | 243.7 | 148.8 (png + image) | n/a |
+| png -> bmp, photo: peak memory (MB) | 4.9 | 66.5 (png + image) | PASS |
+| bmp -> png, photo (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 130.2 | 110.0 (image + png) | PASS |
+| bmp -> png, photo: peak memory (MB) | 10.6 | 165.9 (image + png) | PASS |
+| bmp -> png, photo: output size (MB) [extra] | 31.6 | 32.2 (png) | n/a |
+| bmp -> png, photo: the png crate's fast level, throughput and size [extra] | - | 439.1 MB/s, 32.8 MB (png fast) | n/a |
+| png -> bmp, flat (61.0 MB of pixels): throughput (MB/s of decoded pixels) | 684.2 | 366.6 (png + image) | PASS |
+| png -> bmp, flat (1.7 MB on disk): throughput (MB/s of file bytes) [extra] | 19.0 | 10.2 (png + image) | n/a |
+| png -> bmp, flat: peak memory (MB) | 4.9 | 66.7 (png + image) | PASS |
+| bmp -> png, flat (61.0 MB in + 61.0 MB of pixels): throughput (MB/s of input plus pixels) | 2246.0 | 439.7 (image + png) | PASS |
+| bmp -> png, flat: peak memory (MB) | 5.5 | 127.9 (image + png) | PASS |
+| bmp -> png, flat: output size (MB) [extra] | 0.1 | 0.4 (png) | n/a |
+| bmp -> png, flat: the png crate's fast level, throughput and size [extra] | - | 592.7 MB/s, 1.7 MB (png fast) | n/a |
+
+commit: ec68950 (the `v1-wrapup` branch, before the version bump)
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes. This is the first block on this machine; the earlier
+blocks are the Linux i7, so the rows do not compare like for like with
+them. The machine was in use during this run (load average 7 to 12 on
+10 cores: a browser, a VPN client, a remote-desktop host), so
+wall-clock rows are noisier than earlier blocks'. `[stock]` rows are
+absent: `bench/data/stock.*` is not on this machine.
 
 ### 2026-09-27, 0.24.0 release
 

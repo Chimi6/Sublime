@@ -1,6 +1,6 @@
 # ODS <-> CSV
 
-**Latest** (2026-10-17, branch `ods`: every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run: ods -> csv 322.3 MB/s of uncompressed input at 206 MB on the generated sheet and 940.5 MB/s at 51 MB on the real one, against calamine's 277.6 and 310.1 and LibreOffice's 75.7 and 39.9; csv -> ods 531.1 MB/s at 6.4 MB against LibreOffice's 49.2; every line PASSES)
 
 ## Purpose
 
@@ -60,6 +60,28 @@ wall clock of the whole process, peak resident memory from GNU `time`.
 - LibreOffice's times include its start (about a second).
 
 ## Results
+
+2026-10-21, `v1-wrapup` branch, the 1.0.0 release run:
+
+| Target | Ours | calamine | LibreOffice | Result |
+|---|---|---|---|---|
+| ods -> csv, generated (764.0 MB uncompressed): throughput (MB/s of uncompressed input) | 322.3 | 277.6 | 75.7 | PASS |
+| ods -> csv, generated: peak memory (MB) | 206.4 | 990.5 | 850.2 | PASS |
+| ods -> csv, real (710.1 MB uncompressed): throughput (MB/s of uncompressed input) | 940.5 | 310.1 | 39.9 | PASS |
+| ods -> csv, real: peak memory (MB) | 51.3 | 898.5 | 396.1 | PASS |
+| csv -> ods, generated (56.8 MB in + 583.7 MB out): throughput (MB/s of input plus uncompressed output) | 531.1 | n/a | 49.2 | PASS |
+| csv -> ods, generated: peak memory (MB) | 6.4 | n/a | 786.1 | PASS |
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes, and the throughput rows are within 1 percent of the
+`ods` branch's final run. The machine was in use during this run (load
+average 7 to 12 on 10 cores: a browser, a VPN client, a remote-desktop
+host), so the wall-clock rows are noisier than earlier blocks'. Peak
+memory on the real document rose from 40.1 to 51.3 MB, still under a
+seventh of LibreOffice's; csv -> ods fell from 7.4 to 6.4 MB, and the
+generated read is level (204.8 -> 206.4 MB).
 
 2026-10-17, `ods` branch, final code:
 

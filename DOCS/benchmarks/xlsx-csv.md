@@ -1,6 +1,6 @@
 # XLSX <-> CSV
 
-**Latest** (2026-09-27, 0.24.0 release: every line PASSES)
+**Latest** (2026-10-21, 1.0.0 release run: xlsx -> csv 136.6 MB/s of uncompressed input at 469 MB peak, against calamine's 86.7 at 756 MB; csv -> xlsx 415.6 MB/s of input plus uncompressed output at 6.7 MB, against rust_xlsxwriter's 96.5 at 1313 MB; every line PASSES)
 
 ## Purpose
 
@@ -64,6 +64,29 @@ median wall clock of the whole process, peak resident memory from GNU
   scales with the sheet; that is the row to watch.
 
 ## Results
+
+### 2026-10-21, `v1-wrapup` branch, the 1.0.0 release run
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| xlsx -> csv, 1000000 rows (326.4 MB uncompressed): throughput (MB/s of uncompressed input) | 136.6 | 86.7 (calamine + csv) | PASS |
+| xlsx -> csv, 1000000 rows (39.5 MB on disk): throughput (MB/s of file bytes) [extra] | 16.5 | 10.5 (calamine + csv) | n/a |
+| xlsx -> csv, 1000000 rows: peak memory (MB) | 468.8 | 756.1 (calamine + csv) | PASS |
+| csv -> xlsx, 1000000 rows (56.8 MB in + 387.7 MB out): throughput (MB/s of input plus uncompressed output) | 415.6 | 96.5 (csv + rust_xlsxwriter) | PASS |
+| csv -> xlsx, 1000000 rows: peak memory (MB) | 6.7 | 1313.3 (csv + rust_xlsxwriter) | PASS |
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+Every line passes, at 1.6 times calamine's throughput reading and 4.3
+times rust_xlsxwriter's writing. This run is on a different machine from
+the previous blocks (an M1 Max, not the Linux i7-13700K), so its absolute
+MB/s and memory do not compare with theirs. The machine was in use during
+the run (load average 7 to 12 on 10 cores: a browser, a VPN client, a
+remote-desktop host), so the wall-clock rows are noisier than earlier
+blocks'. Peak memory is higher than in the previous block on both rows
+(xlsx -> csv 415.9 -> 468.8 MB, csv -> xlsx 4.6 -> 6.7 MB), and the
+reference's read rose with it (593.9 -> 756.1 MB).
 
 ### 2026-09-27, 0.24.0 release
 
@@ -131,3 +154,6 @@ is the lever, recorded in `STATE.md`, and would make the read memory
 constant the way the CSV and JSON readers are. The numbers do not
 justify claims about workbooks heavy in shared strings, styles, or
 merged cells.
+
+On 2026-10-21, on an M1 Max, the read peaked at 469 MB rather than 415,
+and the writer at 6.7 MB rather than under 5.

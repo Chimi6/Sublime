@@ -1,6 +1,6 @@
 # ODT <-> Word
 
-**Latest** (2026-10-13, the `odt` branch: docx -> odt at 161.4 MB/s of input plus output on the styled shape and 168.6 on prose, odt -> docx at 192.7 and 243.4; every line PASSES against pandoc at 77 to 122 times its speed and a fifteenth to a thirty-first of its memory)
+**Latest** (2026-10-21, the 1.0.0 release run: docx -> odt at 176.4 MB/s of input plus output on the styled shape and 171.4 on prose, odt -> docx at 181.1 and 231.5; every line PASSES against pandoc at 88 to 122 times its speed and a sixteenth to a thirtieth of its memory)
 
 ## Purpose
 
@@ -53,6 +53,34 @@ larger style sheets, so both directions will run somewhat slower on them.
 
 ## Results
 
+### 2026-10-21, the `v1-wrapup` branch, the 1.0.0 release run
+
+| Target | Ours | Reference | Result |
+|---|---|---|---|
+| docx -> odt, styled (6.0 MB in + 3.8 MB out, uncompressed): throughput (MB/s of input plus output) | 176.4 | 2.0 (pandoc) | PASS |
+| docx -> odt, styled: throughput (MB/s of uncompressed input) [extra] | 108.1 | 1.2 (pandoc) | n/a |
+| docx -> odt, styled: peak memory (MB) | 33.0 | 619.1 (pandoc) | PASS |
+| odt -> docx, styled (3.8 MB in + 5.9 MB out, uncompressed): throughput (MB/s of input plus output) | 181.1 | 1.5 (pandoc) | PASS |
+| odt -> docx, styled: throughput (MB/s of uncompressed input) [extra] | 71.0 | 0.6 (pandoc) | n/a |
+| odt -> docx, styled: peak memory (MB) | 21.8 | 371.5 (pandoc) | PASS |
+| docx -> odt, prose (7.5 MB in + 5.7 MB out, uncompressed): throughput (MB/s of input plus output) | 171.4 | 1.6 (pandoc) | PASS |
+| docx -> odt, prose: throughput (MB/s of uncompressed input) [extra] | 97.5 | 0.9 (pandoc) | n/a |
+| docx -> odt, prose: peak memory (MB) | 49.0 | 1503.4 (pandoc) | PASS |
+| odt -> docx, prose (5.7 MB in + 7.2 MB out, uncompressed): throughput (MB/s of input plus output) | 231.5 | 1.9 (pandoc) | PASS |
+| odt -> docx, prose: throughput (MB/s of uncompressed input) [extra] | 102.9 | 0.8 (pandoc) | n/a |
+| odt -> docx, prose: peak memory (MB) | 34.3 | 561.1 (pandoc) | PASS |
+
+commit: ec68950
+machine: Darwin 24.5.0 arm64, 10 cpus, Apple M1 Max
+
+The machine was in use during this run (load average 7 to 12 on 10
+cores: a browser, a VPN client, a remote-desktop host), so the
+wall-clock rows are noisier than the previous block's. Every line still
+passes. The rates moved by up to 10% either way against 2026-10-13
+(`docx -> odt` styled 161.4 to 176.4, `odt -> docx` styled 192.7 to
+181.1), and peak memory by up to 3.1 MB either way, the most still `docx -> odt` on
+prose at 49.0 MB.
+
 ### 2026-10-13, the `odt` branch
 
 | Target | Ours | Reference | Result |
@@ -81,3 +109,7 @@ prose shape. The ODT writer builds the body before the styles part (which
 names every automatic style the body used), so it holds the body until
 the end; a streaming writer would need the styles first. Re-run on the
 Linux bench machine for the record beside the other pairs.
+
+2026-10-21, the 1.0.0 release run: `docx -> odt` on prose peaked at
+49.0 MB, at the 49 MB mark rather than under it; every line still
+passes, inside the 64 MB.
