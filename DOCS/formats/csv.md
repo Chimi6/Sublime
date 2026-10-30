@@ -3,7 +3,10 @@
 Delimited rows, read and written a record at a time in constant memory
 (`src/io/csv`): RFC 4180 quoting (a field with the delimiter, a quote, or
 a line break is quoted, a quote doubled), any line ending read, `\n`
-written, a UTF-8 byte order mark skipped. TSV is the same with a tab.
+written, a UTF-8 byte order mark skipped. Input that is not UTF-8 but
+reads as Japanese (Shift_JIS, as Excel saves a Japanese CSV, or EUC-JP)
+is decoded as it is read (`src/io/cjk`); a Western code page is still
+refused. TSV is the same with a tab.
 Every row format reaches every other (JSON, JSON Lines, Excel, Numbers,
 Markdown tables and the documents through them).
 

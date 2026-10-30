@@ -38,7 +38,7 @@ as their text, aside).
 | Feature | RTF | Notes |
 |---|---|---|
 | Fonts, colours | `\fonttbl`, `\colortbl` | A font's `\fcharset` picks the code page of its `\'hh` bytes; Symbol and Wingdings bytes map to their private-use characters, and bullets among them to real bullets. |
-| Text | text, `\'hh`, `\uN` with `\ucN` | Code pages 437, 850, 874, 1250-1258, and Mac Roman; surrogate pairs; the Asian double-byte pages only through `\uN` (Word always writes it). |
+| Text | text, `\'hh`, `\uN` with `\ucN` | Code pages 437, 850, 874, 1250-1258, and Mac Roman; Japanese code page 932 (Shift_JIS byte pairs and half-width katakana, under `\ansicpg932` or a `\fcharset128` font); surrogate pairs; the Chinese and Korean double-byte pages only through `\uN` (Word always writes it). |
 | Styles | `\stylesheet`, `\sN`, `\csN`, `\sbasedon` | Style 0 is the default; a paragraph naming no style is in it. Built-in heading names give outline levels where the writer left them out. |
 | Character formatting | `\b \i \ul \strike \f \fs \cf \chcbpat \highlight \super \sub \up \dn \caps \scaps \v \lang \expndtw \charscalex` | Formatting in RTF is absolute: the reader keeps on a run only what differs from its paragraph's style, and gives text RTF's defaults where the style sets something the text does not. |
 | Paragraph formatting | `\q* \li \ri \fi \sb \sa \sl \slmult \keepn \keep \widctlpar \outlinelevel \pagebb \contextualspace \cbpat \brdr* \tx` | |
@@ -65,6 +65,7 @@ the header: LibreOffice spaces paragraphs by older rules without
 
 Equations (written as their text), charts, OLE objects (their result
 picture is kept), drawn shapes with neither fill nor outline, form fields
-(their shown text is kept), and text in double-byte code pages without
-`\uN` escapes (each such character becomes U+FFFD). RTFD (TextEdit's
+(their shown text is kept), and text in the Chinese and Korean
+double-byte code pages without `\uN` escapes (each such character
+becomes U+FFFD; Japanese, code page 932, is decoded). RTFD (TextEdit's
 bundle of RTF and attachments) is a later step.

@@ -35,6 +35,22 @@ const SYMBOLS: &[&str] = &[
 ];
 
 /// Fonts that cover whole large scripts (CJK), tried last of the known.
+/// Japanese fonts, preferred for Japanese text over the broad fallbacks:
+/// the Mac's Hiragino (whose files are named in Japanese), Noto Sans CJK
+/// and Source Han Sans, and Windows' Yu Gothic, Meiryo, and MS Gothic.
+const JAPANESE: &[&str] = &[
+    "ヒラギノ角ゴシック w3",
+    "hiraginosans-w3",
+    "notosanscjk-regular",
+    "notosanscjkjp-regular",
+    "notosansjp-regular",
+    "sourcehansans-regular",
+    "sourcehansansjp-regular",
+    "yugothr",
+    "meiryo",
+    "msgothic",
+];
+
 const FALLBACKS: &[&str] = &[
     "arialuni",
     "arial unicode",
@@ -54,6 +70,14 @@ fn rank(path: &Path) -> (usize, usize) {
     if let Some(index) = BROAD.iter().position(|name| *name == stem) {
         return (0, index);
     }
+    if let Some(index) = JAPANESE.iter().position(|name| *name == stem) {
+        return (1, index);
+    }
+    // Hiragino Kaku Gothic W3 by its file's Japanese name, matched on the
+    // parts no Unicode normalization changes (ギ may be stored decomposed).
+    if stem.starts_with("ヒラ") && stem.contains('角') && stem.ends_with("w3") {
+        return (1, 0);
+    }
     if let Some(index) = SYMBOLS.iter().position(|name| *name == stem) {
         return (2, index);
     }
@@ -65,7 +89,7 @@ fn rank(path: &Path) -> (usize, usize) {
         || stem.starts_with("droidsans"))
         && (stem.ends_with("-regular") || !stem.contains('-'));
     if script_sans {
-        return (1, 0);
+        return (1, JAPANESE.len());
     }
     (4, 0)
 }
@@ -166,13 +190,13 @@ impl SystemFonts {
     }
 
     /// A loaded font that covers `char`, the first found in preference
-    /// order; `None` when no installed font with TrueType outlines does.
+    /// order; `None` when no installed font that can be embedded does.
     pub fn font_for(&mut self, char: char) -> Option<(PathBuf, Arc<Font>)> {
         let count = self.files().len();
         for index in 0..count {
             if index == self.probed.len() {
                 let path = self.files()[index].clone();
-                let coverage = probe(&path).filter(|coverage| coverage.glyf);
+                let coverage = probe(&path).filter(|coverage| coverage.glyf || coverage.cid_cff);
                 self.probed.push(coverage);
             }
             let covers = self.probed[index]

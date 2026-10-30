@@ -75,4 +75,6 @@ gets one.
   table cells.
 - Character references are decoded only with their `;`, as the writer
   produces them; legacy forms without it stay as written.
-- Encodings other than UTF-8 are not sniffed; the input is read as text.
+- Encodings: UTF-8 and UTF-16 (by its byte order mark), and Japanese
+  (Shift_JIS, EUC-JP, ISO-2022-JP): the `charset` the page declares, else
+  detected when the input is not UTF-8. Western code pages are refused.

@@ -105,10 +105,10 @@ impl Converter for ToPdf {
             )?)),
             None => None,
         };
-        if forced.as_ref().is_some_and(|font| !font.has_glyf()) {
+        if forced.as_ref().is_some_and(|font| !font.embeddable()) {
             return Err(ConvertError::Malformed {
                 location: Location::default(),
-                message: "the font has CFF outlines; only TrueType-outline fonts (.ttf) are embedded so far".to_string(),
+                message: "the font has name-keyed CFF outlines; TrueType and CID-keyed CFF fonts (every CJK font) are embedded so far".to_string(),
             });
         }
         let faces = Faces::new(forced, true);

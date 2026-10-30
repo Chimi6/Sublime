@@ -1126,9 +1126,51 @@ fn win_ansi(text: &str) -> (Vec<u8>, usize) {
     (bytes, missing)
 }
 
+/// Characters a Japanese line may not start with (gyōtō kinsoku): closing
+/// brackets and punctuation, small kana, the long-vowel mark, and the
+/// iteration marks.
+const NO_LINE_START: &str = "、。，．,.・：；？！!?)]}ー‐–〜～…‥」』）〕］｝〉》】〙〗｣’”ゝゞヽヾ々ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶ゛゜｡､ｧｨｩｪｫｬｭｮｯｰ";
+
+/// Characters a Japanese line may not end with (gyōmatsu kinsoku):
+/// opening brackets and quotes.
+const NO_LINE_END: &str = "「『（〔［｛〈《【〘〖｢‘“([{";
+
+/// A word split where Japanese allows a line break: between two
+/// characters either of which is Japanese (or full width), unless the
+/// second may not start a line or the first may not end one. Latin runs
+/// stay whole. A word with no Japanese is one segment.
+fn japanese_segments(word: &str) -> Vec<&str> {
+    if word.is_ascii() {
+        return if word.is_empty() {
+            Vec::new()
+        } else {
+            vec![word]
+        };
+    }
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut previous: Option<char> = None;
+    for (at, char) in word.char_indices() {
+        if let Some(before) = previous {
+            let japanese = crate::io::pdf::text::is_cjk_char(before)
+                || crate::io::pdf::text::is_cjk_char(char);
+            if japanese && !NO_LINE_START.contains(char) && !NO_LINE_END.contains(before) {
+                segments.push(&word[start..at]);
+                start = at;
+            }
+        }
+        previous = Some(char);
+    }
+    if start < word.len() {
+        segments.push(&word[start..]);
+    }
+    segments
+}
+
 /// Breaks runs into lines at most `width` wide, first fit: words go on a
-/// line while they fit; a word wider than a line is split by characters;
-/// a `"\n"` run ends the line.
+/// line while they fit (Japanese breaking between characters by its
+/// kinsoku rules); a word wider than a line is split by characters; a
+/// `"\n"` run ends the line.
 fn break_lines(runs: &[Run], width: f64, size: f64, faces: &mut Faces) -> Vec<Line> {
     // Words: pieces of one or more styles with no space between them,
     // each with the space that follows it.
@@ -1168,8 +1210,24 @@ fn break_lines(runs: &[Run], width: f64, size: f64, faces: &mut Faces) -> Vec<Li
                     },
                 ));
             }
-            if !part.is_empty() {
-                current.pieces.push((part.to_string(), run.style.clone()));
+            // Japanese breaks between characters (kinsoku rules kept):
+            // each piece but the last ends a word with no space after it.
+            let segments = japanese_segments(part);
+            let last = segments.len().saturating_sub(1);
+            for (position, segment) in segments.into_iter().enumerate() {
+                current
+                    .pieces
+                    .push((segment.to_string(), run.style.clone()));
+                if position < last {
+                    words.push(std::mem::replace(
+                        &mut current,
+                        Word {
+                            pieces: Vec::new(),
+                            space_after: None,
+                            hard_break: false,
+                        },
+                    ));
+                }
             }
         }
     }
@@ -1263,6 +1321,19 @@ mod tests {
             text: text.to_string(),
             style: Style::default(),
         }
+    }
+
+    #[test]
+    fn japanese_breaks_between_characters_keeping_kinsoku() {
+        let segments = japanese_segments("「日本語」です。English語");
+        // The opening bracket stays with what follows, the closing one and
+        // the full stop with what precedes, and Latin stays whole.
+        assert_eq!(
+            segments,
+            vec!["「日", "本", "語」", "で", "す。", "English", "語"]
+        );
+        assert_eq!(japanese_segments("plain"), vec!["plain"]);
+        assert_eq!(japanese_segments("ちょっと"), vec!["ちょっ", "と"]);
     }
 
     #[test]
