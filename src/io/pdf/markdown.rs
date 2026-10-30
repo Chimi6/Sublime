@@ -11,7 +11,7 @@ use std::borrow::Cow;
 
 use crate::io::markdown::{Event, EventSink, Tag, TagEnd};
 use crate::io::pdf::PdfError;
-use crate::io::pdf::text::{Block, TextNotes, for_each_page, hyphen_break};
+use crate::io::pdf::text::{Block, TextNotes, for_each_page, hyphen_break, is_cjk_char};
 
 /// Sizes within this many points are one size.
 const SIZE_TOLERANCE: f64 = 0.5;
@@ -247,9 +247,12 @@ fn joined<'a>(lines: impl Iterator<Item = &'a str>) -> String {
             continue;
         }
         let hyphenated = hyphen_break(&out, line);
+        // Japanese runs on across a line break; other text takes a space.
+        let wide = out.chars().last().is_some_and(is_cjk_char)
+            || line.chars().next().is_some_and(is_cjk_char);
         if hyphenated {
             out.pop();
-        } else {
+        } else if !wide {
             out.push(' ');
         }
         out.push_str(line);
@@ -277,6 +280,7 @@ mod tests {
         Line {
             text: text.to_string(),
             size,
+            vertical: false,
             bold,
             x: 0.0,
             y: 0.0,

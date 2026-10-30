@@ -3,7 +3,9 @@
 //! Tf Ts`, `Td TD Tm T*`), and the text-showing operators (`Tj TJ ' "`),
 //! into glyphs placed in page space. Form XObjects are run with their
 //! matrix and resources; inline images are skipped; everything that
-//! paints is ignored.
+//! paints is ignored. Marked content with `/ActualText` (a ligature, a
+//! hyphen, or a glyph drawn for a character the font lacks) reads as that
+//! text in place of its glyphs', as viewers copy it.
 
 use std::rc::Rc;
 
@@ -14,6 +16,8 @@ use crate::io::pdf::object::{Dictionary, Object};
 
 /// One shown glyph: where it starts and ends on its baseline, in page
 /// space (points, y up), its size there, and its text in `PageText::text`.
+/// A glyph of a vertical font starts at `y` and ends at `end` down the
+/// page instead, `x` its column.
 #[derive(Debug, Clone)]
 pub struct Glyph {
     pub x: f64,
@@ -23,8 +27,11 @@ pub struct Glyph {
     pub text: std::ops::Range<usize>,
     pub bold: bool,
     pub italic: bool,
-    /// The text runs left to right along the x axis (not rotated).
+    /// The text runs left to right along the x axis (not rotated), or
+    /// down the page for a vertical font.
     pub upright: bool,
+    /// Set by a vertical font (a `-V` CMap): it advances down the page.
+    pub vertical: bool,
 }
 
 #[derive(Default)]
@@ -74,6 +81,15 @@ pub struct Interpreter<'d, 'a> {
     fonts: &'d mut FontCache,
     out: PageText,
     codes: Vec<Code>,
+    /// Open marked-content sequences, innermost last: the replacement
+    /// text of those with `/ActualText`.
+    marked: Vec<Option<ActualText>>,
+}
+
+/// A span's replacement text, and whether it has been shown yet.
+struct ActualText {
+    text: String,
+    shown: bool,
 }
 
 impl<'d, 'a> Interpreter<'d, 'a> {
@@ -83,6 +99,7 @@ impl<'d, 'a> Interpreter<'d, 'a> {
             fonts,
             out: PageText::default(),
             codes: Vec::new(),
+            marked: Vec::new(),
         }
     }
 
@@ -226,6 +243,35 @@ impl<'d, 'a> Interpreter<'d, 'a> {
                     }
                 }
                 b"BI" => skip_inline_image(&mut lexer),
+                b"BMC" => self.marked.push(None),
+                b"BDC" => {
+                    let properties = match operands.get(1) {
+                        Some(Object::Dictionary(dictionary)) => Some(dictionary.clone()),
+                        Some(Object::Name(name)) => resources
+                            .and_then(|resources| resources.get(b"Properties"))
+                            .and_then(|object| self.document.resolve(object).ok())
+                            .and_then(|object| object.as_dictionary().cloned())
+                            .and_then(|all| all.get(name).cloned())
+                            .and_then(|object| self.document.resolve(&object).ok())
+                            .and_then(|object| object.as_dictionary().cloned()),
+                        _ => None,
+                    };
+                    let actual = properties
+                        .and_then(|properties| properties.get(b"ActualText").cloned())
+                        .and_then(|object| match object {
+                            Object::String(bytes) => Some(ActualText {
+                                text: text_string(&bytes),
+                                shown: false,
+                            }),
+                            _ => None,
+                        });
+                    if self.marked.len() < 64 {
+                        self.marked.push(actual);
+                    }
+                }
+                b"EMC" => {
+                    self.marked.pop();
+                }
                 _ => {}
             }
             operands.clear();
@@ -299,11 +345,21 @@ impl<'d, 'a> Interpreter<'d, 'a> {
                 ],
                 &multiply(text_matrix, &state.ctm),
             );
-            let mut advance = code.advance * state.size + state.char_spacing;
-            if code.word_space {
-                advance += state.word_spacing;
+            if font.vertical {
+                // Down by a full em (the default vertical displacement),
+                // with the spacings as the specification adds them.
+                let mut advance = -state.size + state.char_spacing;
+                if code.word_space {
+                    advance += state.word_spacing;
+                }
+                *text_matrix = multiply(&translate(0.0, advance), text_matrix);
+            } else {
+                let mut advance = code.advance * state.size + state.char_spacing;
+                if code.word_space {
+                    advance += state.word_spacing;
+                }
+                *text_matrix = multiply(&translate(advance * state.scale, 0.0), text_matrix);
             }
-            *text_matrix = multiply(&translate(advance * state.scale, 0.0), text_matrix);
             let after = multiply(
                 &[
                     state.size * state.scale,
@@ -316,24 +372,52 @@ impl<'d, 'a> Interpreter<'d, 'a> {
                 &multiply(text_matrix, &state.ctm),
             );
             let start = self.out.text.len();
-            font.text(code.code, &mut self.out.text);
+            // Inside `/ActualText` the span's text stands for its glyphs:
+            // written once, at the first glyph.
+            if let Some(actual) = self.marked.iter_mut().rev().flatten().next() {
+                if actual.shown {
+                    continue;
+                }
+                actual.shown = true;
+                self.out.text.push_str(&actual.text);
+            } else {
+                font.text(code.code, &mut self.out.text);
+            }
             if self.out.text.len() == start {
                 continue;
             }
             let size = render[2].hypot(render[3]) * font.size_factor;
             self.out.glyphs.push(Glyph {
                 x: render[4],
-                end: after[4],
+                end: if font.vertical { after[5] } else { after[4] },
                 y: render[5],
                 size,
                 text: start..self.out.text.len(),
                 bold: font.bold,
                 italic: font.italic,
                 upright: render[1].abs() < 1e-6 * size.max(1.0) && render[0] > 0.0,
+                vertical: font.vertical,
             });
         }
         self.codes = codes;
     }
+}
+
+/// A PDF text string: UTF-16 after its byte-order mark, UTF-8 after its
+/// (PDF 2.0), and otherwise PDFDocEncoding, read here as Latin-1.
+fn text_string(bytes: &[u8]) -> String {
+    if let Some(units) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        let units = units
+            .chunks(2)
+            .map(|pair| u16::from_be_bytes([pair[0], *pair.get(1).unwrap_or(&0)]));
+        return char::decode_utf16(units)
+            .map(|unit| unit.unwrap_or('\u{FFFD}'))
+            .collect();
+    }
+    if let Some(text) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8_lossy(text).into_owned();
+    }
+    bytes.iter().map(|byte| char::from(*byte)).collect()
 }
 
 /// Moves past an inline image: its dictionary, `ID`, the data, and `EI`

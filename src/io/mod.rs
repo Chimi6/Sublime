@@ -2,6 +2,7 @@
 
 pub mod base64;
 pub mod bmp;
+pub mod cjk;
 pub mod csv;
 pub mod deflate;
 pub mod docx;
