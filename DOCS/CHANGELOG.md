@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-30
+
 ### Fixed
 
 - Japanese text in PDFs reads in full. A PDF made on a Mac (Hiragino and the other Japanese fonts the Mac embeds without a ToUnicode map) read as almost nothing, and one using the standard Japanese CMaps (`UniJIS-UCS2-H`, Shift_JIS `90ms-RKSJ-H`, `EUC-H`) read as nothing; both now read as poppler and PyMuPDF read them. A composite font is read through its own encoding: its CIDs through Adobe-Japan1 when the font is in that collection, the Unicode CMaps (for Chinese and Korean too) as Unicode, and the Shift_JIS, EUC-JP, and JIS CMaps decoded as browsers decode them. Kangxi radicals that a ToUnicode map gives for ideographs (Chrome's PDFs) read as the ideographs.
