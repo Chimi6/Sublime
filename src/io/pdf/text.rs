@@ -4,6 +4,12 @@
 //! order the page draws its text in, which is reading order for the
 //! producers that matter (word processors, LaTeX, browsers); a page that
 //! draws its text out of order reads out of order.
+//!
+//! Japanese written top to bottom reads as columns: a vertical font's
+//! glyphs, or Japanese characters set one under another in one column
+//! (as the Mac's text system places them), make one line per column, and
+//! columns side by side one block, in the order they are drawn (right to
+//! left, as they are read).
 
 use std::io::Write;
 
@@ -19,6 +25,8 @@ pub struct Line {
     pub text: String,
     /// The largest glyph size on the line, in points.
     pub size: f64,
+    /// A column of vertical text: `x` is the column, `y` its top.
+    pub vertical: bool,
     /// Every glyph on the line is bold.
     pub bold: bool,
     pub x: f64,
@@ -54,9 +62,28 @@ pub fn blocks(page: &PageText) -> Vec<Block> {
     let mut last: Option<&Glyph> = None;
     for glyph in &page.glyphs {
         let text = &page.text[glyph.text.clone()];
+        let down = last.is_some_and(|previous| {
+            let open_vertical = lines.last().is_some_and(|(line, _)| line.vertical);
+            let open_single = lines
+                .last()
+                .is_some_and(|(line, _)| line.text.chars().count() <= 1);
+            column_follows(previous, glyph, &page.text[previous.text.clone()], text)
+                && (open_vertical || open_single)
+        });
+        if down {
+            let (line, all_bold) = lines.last_mut().expect("a line is open");
+            line.vertical = true;
+            line.text.push_str(text);
+            line.size = line.size.max(glyph.size);
+            *all_bold &= glyph.bold;
+            last = Some(glyph);
+            continue;
+        }
         let continues = last.is_some_and(|previous| {
             let size = previous.size.max(glyph.size);
-            (previous.y - glyph.y).abs() < SAME_LINE * size
+            !previous.vertical
+                && !glyph.vertical
+                && (previous.y - glyph.y).abs() < SAME_LINE * size
                 && glyph.x > previous.x - SAME_LINE * size
         });
         if continues {
@@ -76,6 +103,7 @@ pub fn blocks(page: &PageText) -> Vec<Block> {
                 Line {
                     text: text.to_string(),
                     size: glyph.size,
+                    vertical: glyph.vertical,
                     bold: glyph.bold,
                     x: glyph.x,
                     y: glyph.y,
@@ -105,6 +133,33 @@ pub fn blocks(page: &PageText) -> Vec<Block> {
     let spacing = common_spacing(&kept);
     let mut blocks: Vec<Block> = Vec::new();
     for (index, line) in kept.iter().enumerate() {
+        if index > 0 && (kept[index - 1].vertical || line.vertical) {
+            // Columns side by side, the next to the left, at about the
+            // same top.
+            let before = &kept[index - 1];
+            let size = before.size.max(line.size);
+            let step = before.x - line.x;
+            let similar =
+                (before.size - line.size).abs() <= 0.15 * size && before.bold == line.bold;
+            let beside = before.vertical
+                && line.vertical
+                && similar
+                && step > 0.0
+                && step < 2.5 * size
+                && (before.y - line.y).abs() < 3.0 * size;
+            if beside {
+                blocks
+                    .last_mut()
+                    .expect("a block is open")
+                    .lines
+                    .push(line.clone());
+            } else {
+                blocks.push(Block {
+                    lines: vec![line.clone()],
+                });
+            }
+            continue;
+        }
         let joins = index > 0 && {
             let above = &kept[index - 1];
             let drop = above.y - line.y;
@@ -130,6 +185,48 @@ pub fn blocks(page: &PageText) -> Vec<Block> {
         }
     }
     blocks
+}
+
+/// Whether `glyph` is the next one down the column `previous` stands in:
+/// both from a vertical font, or both Japanese (or full width) and set one
+/// under the other, about a size apart, in the same column.
+fn column_follows(previous: &Glyph, glyph: &Glyph, previous_text: &str, text: &str) -> bool {
+    let size = previous.size.max(glyph.size);
+    let same_column = (previous.x - glyph.x).abs() < 0.3 * size;
+    if previous.vertical && glyph.vertical {
+        // The next glyph starts about where the last one ended.
+        return same_column && glyph.y <= previous.y && (glyph.y - previous.end).abs() < 1.5 * size;
+    }
+    if previous.vertical != glyph.vertical {
+        return false;
+    }
+    let drop = previous.y - glyph.y;
+    same_column
+        && drop > 0.6 * size
+        && drop < 1.8 * size
+        && is_cjk_text(previous_text)
+        && is_cjk_text(text)
+}
+
+/// Text that is Japanese or full width: kana, ideographs, their
+/// punctuation, and the full- and half-width forms.
+fn is_cjk_text(text: &str) -> bool {
+    let mut chars = text.chars().filter(|ch| !ch.is_whitespace()).peekable();
+    chars.peek().is_some() && chars.all(is_cjk_char)
+}
+
+/// A Japanese or full-width character (one written without spaces
+/// between words).
+pub fn is_cjk_char(ch: char) -> bool {
+    matches!(u32::from(ch),
+        0x3000..=0x30FF
+        | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF
+        | 0xF900..=0xFAFF
+        | 0xFE10..=0xFE1F
+        | 0xFE30..=0xFE4F
+        | 0xFF00..=0xFFEF
+        | 0x20000..=0x3134F)
 }
 
 /// The most common drop from one line to the next among lines of one

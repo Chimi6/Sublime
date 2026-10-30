@@ -5,8 +5,13 @@
 //! producers write one), else, for a simple font, from its encoding: a
 //! base encoding (Standard, WinAnsi, MacRoman, or the Symbol and Zapf
 //! Dingbats built-ins) with `/Differences` glyph names looked up in the
-//! glyph list or read as `uniXXXX`/`uXXXX`. A composite (Type0) font
-//! without ToUnicode has only glyph ids, which mean nothing as text.
+//! glyph list or read as `uniXXXX`/`uXXXX`. A composite (Type0) font is
+//! read through its encoding CMap: `Identity` and embedded CMaps give
+//! glyph ids (CIDs), which read as text through the font's character
+//! collection when it is Adobe-Japan1; the Unicode CMaps (`UniJIS-UCS2-H`
+//! and the like, for every CJK collection) give Unicode itself; and the
+//! Shift_JIS, EUC-JP, and JIS CMaps give Japanese bytes, decoded. CJK
+//! radicals a ToUnicode map gives for ideographs read as the ideographs.
 
 use std::collections::HashMap;
 
@@ -17,8 +22,14 @@ use crate::io::pdf::object::{Dictionary, Object};
 use crate::io::pdf::tables::{self, Widths};
 
 pub struct Font {
-    /// Two-byte codes (a Type0 font with an Identity or two-byte CMap).
+    /// A Type0 font: its codes come from its encoding CMap.
     composite: bool,
+    /// How a composite font's codes are split and what they are.
+    code_map: CodeMap,
+    /// The composite font's glyphs are in the Adobe-Japan1 collection.
+    japan1: bool,
+    /// The composite font writes top to bottom (a `-V` CMap).
+    pub vertical: bool,
     to_unicode: Option<ToUnicode>,
     /// A simple font's code -> Unicode, 0 where the code means nothing.
     encoding: [u16; 256],
@@ -106,6 +117,12 @@ impl Font {
             .and_then(|object| document.stream_data(object).ok())
             .map(|(_, data)| ToUnicode::parse(&data));
         let composite = subtype == "Type0";
+        let (code_map, vertical) = if composite {
+            code_map(document, dictionary)
+        } else {
+            (CodeMap::Unknown, false)
+        };
+        let japan1 = composite && is_japan1(document, dictionary, &code_map);
         // A Type3 font's matrix maps its glyph space to text space: its
         // first entry scales the widths, its fourth the glyphs' height.
         let matrix: Vec<f64> = if subtype == "Type3" {
@@ -145,6 +162,9 @@ impl Font {
         };
         Font {
             composite,
+            code_map,
+            japan1,
+            vertical,
             to_unicode,
             encoding,
             spelled,
@@ -162,10 +182,20 @@ impl Font {
         out.clear();
         let mut at = 0;
         while at < bytes.len() {
-            let length = match (&self.to_unicode, self.composite) {
-                (Some(map), _) if !map.spaces.is_empty() => map.code_length(&bytes[at..]),
-                (_, true) => 2,
-                _ => 1,
+            let rest = &bytes[at..];
+            let length = if self.composite {
+                match &self.code_map {
+                    CodeMap::Unknown => match &self.to_unicode {
+                        Some(map) if !map.spaces.is_empty() => map.code_length(rest),
+                        _ => 2,
+                    },
+                    known => known.code_length(rest),
+                }
+            } else {
+                match &self.to_unicode {
+                    Some(map) if !map.spaces.is_empty() => map.code_length(rest),
+                    _ => 1,
+                }
             };
             let length = length.min(bytes.len() - at).max(1);
             let code = bytes[at..at + length]
@@ -182,12 +212,40 @@ impl Font {
 
     /// Appends the Unicode text of a code; nothing when it has none.
     pub fn text(&self, code: u32, out: &mut String) {
+        let start = out.len();
+        self.raw_text(code, out);
+        // A radical in place of the ideograph it is drawn as.
+        if out[start..]
+            .chars()
+            .any(|ch| crate::io::cjk::unify_radical(ch) != ch)
+        {
+            let unified: String = out[start..]
+                .chars()
+                .map(crate::io::cjk::unify_radical)
+                .collect();
+            out.truncate(start);
+            out.push_str(&unified);
+        }
+    }
+
+    fn raw_text(&self, code: u32, out: &mut String) {
         if let Some(map) = &self.to_unicode
             && map.text(code, out)
         {
             return;
         }
-        if self.composite || code > 255 {
+        if self.composite {
+            if self.code_map.text(code, out) {
+                return;
+            }
+            if self.japan1
+                && let Some(cid) = self.code_map.cid(code)
+            {
+                crate::io::cjk::japan1(cid, out);
+            }
+            return;
+        }
+        if code > 255 {
             return;
         }
         let byte = code as u8;
@@ -233,13 +291,336 @@ impl Font {
                 ranges,
                 singles,
                 default,
-            } => singles.get(&code).copied().unwrap_or_else(|| {
-                ranges
-                    .iter()
-                    .find(|(low, high, _)| (*low..=*high).contains(&code))
-                    .map_or(*default, |range| range.2)
-            }),
+            } => {
+                // Widths are by CID; an encoding whose CIDs are not known
+                // here (Shift_JIS, Unicode) is half or full width by text.
+                let Some(cid) = self.code_map.cid(code).or(match self.code_map {
+                    CodeMap::Unknown => Some(code),
+                    _ => None,
+                }) else {
+                    let mut text = String::new();
+                    self.code_map.text(code, &mut text);
+                    let half = text.chars().next().is_some_and(|ch| {
+                        (' '..='~').contains(&ch) || ('\u{FF61}'..='\u{FF9F}').contains(&ch)
+                    });
+                    return if half { 500.0 } else { *default };
+                };
+                singles.get(&cid).copied().unwrap_or_else(|| {
+                    ranges
+                        .iter()
+                        .find(|(low, high, _)| (*low..=*high).contains(&cid))
+                        .map_or(*default, |range| range.2)
+                })
+            }
         }
+    }
+}
+
+/// A composite font's encoding: how its strings split into codes, and
+/// what a code is (a CID, or text in some encoding).
+enum CodeMap {
+    /// `Identity-H`/`-V`: two-byte codes that are the CIDs.
+    Identity,
+    /// A Unicode CMap (`UniJIS-UCS2-H`, `UniGB-UTF16-H`, ...): codes that
+    /// are text in one of Unicode's forms.
+    Unicode(UnicodeForm),
+    /// The Shift_JIS CMaps (`90ms-RKSJ-H` and the other `RKSJ` ones).
+    ShiftJis,
+    /// The EUC-JP CMaps (`EUC-H`, `EUC-V`).
+    EucJp,
+    /// The ISO-2022-JP CMaps (`H`, `V`): two-byte JIS X 0208 codes.
+    Jis,
+    /// A CMap embedded in the file: its code space and code -> CID, with
+    /// the predefined CMap it builds on (`usecmap`), if any.
+    Embedded(Box<EmbeddedCMap>),
+    /// Anything else: two-byte codes taken as CIDs only for widths.
+    Unknown,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UnicodeForm {
+    Ucs2,
+    Utf16,
+    Utf8,
+    Utf32,
+}
+
+struct EmbeddedCMap {
+    /// (length in bytes, low, high)
+    spaces: Vec<(usize, u32, u32)>,
+    singles: HashMap<u32, u32>,
+    /// (low, high, first CID)
+    ranges: Vec<(u32, u32, u32)>,
+    parent: CodeMap,
+}
+
+impl CodeMap {
+    /// The predefined CMap a name gives, and whether it writes vertically.
+    fn named(name: &str) -> (CodeMap, bool) {
+        let vertical = name.ends_with("-V") || name == "V";
+        let map = if name.starts_with("Identity-") {
+            CodeMap::Identity
+        } else if name.starts_with("Uni") {
+            if name.contains("UCS2") {
+                CodeMap::Unicode(UnicodeForm::Ucs2)
+            } else if name.contains("UTF16") {
+                CodeMap::Unicode(UnicodeForm::Utf16)
+            } else if name.contains("UTF8") {
+                CodeMap::Unicode(UnicodeForm::Utf8)
+            } else if name.contains("UTF32") {
+                CodeMap::Unicode(UnicodeForm::Utf32)
+            } else {
+                CodeMap::Unknown
+            }
+        } else if name.contains("RKSJ") {
+            CodeMap::ShiftJis
+        } else if name.starts_with("EUC-") {
+            CodeMap::EucJp
+        } else if matches!(name, "H" | "V") {
+            CodeMap::Jis
+        } else {
+            CodeMap::Unknown
+        };
+        (map, vertical)
+    }
+
+    /// How many bytes the code at the front of `bytes` takes.
+    fn code_length(&self, bytes: &[u8]) -> usize {
+        let lead = bytes.first().copied().unwrap_or(0);
+        match self {
+            CodeMap::Identity | CodeMap::Jis | CodeMap::Unknown => 2,
+            CodeMap::Unicode(UnicodeForm::Ucs2) => 2,
+            CodeMap::Unicode(UnicodeForm::Utf16) => {
+                if (0xD8..=0xDB).contains(&lead) {
+                    4
+                } else {
+                    2
+                }
+            }
+            CodeMap::Unicode(UnicodeForm::Utf8) => match lead {
+                0xF0..=0xF7 => 4,
+                0xE0..=0xEF => 3,
+                0xC0..=0xDF => 2,
+                _ => 1,
+            },
+            CodeMap::Unicode(UnicodeForm::Utf32) => 4,
+            CodeMap::ShiftJis => crate::io::cjk::shift_jis_length(lead),
+            CodeMap::EucJp => crate::io::cjk::euc_jp_length(lead),
+            CodeMap::Embedded(map) => {
+                for length in 1..=4 {
+                    if bytes.len() < length {
+                        break;
+                    }
+                    let value = be(&bytes[..length]);
+                    if map
+                        .spaces
+                        .iter()
+                        .any(|(size, low, high)| *size == length && (*low..=*high).contains(&value))
+                    {
+                        return length;
+                    }
+                }
+                if map.spaces.is_empty() {
+                    map.parent.code_length(bytes)
+                } else {
+                    map.spaces.iter().map(|space| space.0).min().unwrap_or(2)
+                }
+            }
+        }
+    }
+
+    /// The CID a code selects, when the encoding says.
+    fn cid(&self, code: u32) -> Option<u32> {
+        match self {
+            CodeMap::Identity => Some(code),
+            CodeMap::Embedded(map) => map
+                .singles
+                .get(&code)
+                .copied()
+                .or_else(|| {
+                    map.ranges
+                        .iter()
+                        .find(|(low, high, _)| (*low..=*high).contains(&code))
+                        .map(|(low, _, first)| first + (code - low))
+                })
+                .or_else(|| map.parent.cid(code)),
+            _ => None,
+        }
+    }
+
+    /// Appends the text a code is in an encoding of text; false for an
+    /// encoding of CIDs or a code that means nothing.
+    fn text(&self, code: u32, out: &mut String) -> bool {
+        let pushed = |ch: Option<char>, out: &mut String| match ch {
+            Some(ch) if ch != '\0' => {
+                out.push(ch);
+                true
+            }
+            _ => false,
+        };
+        match self {
+            CodeMap::Unicode(form) => {
+                let text = match form {
+                    UnicodeForm::Ucs2 => char::from_u32(code).map(String::from),
+                    UnicodeForm::Utf32 => char::from_u32(code).map(String::from),
+                    UnicodeForm::Utf16 => {
+                        if code > 0xFFFF {
+                            let units = [(code >> 16) as u16, code as u16];
+                            char::decode_utf16(units)
+                                .collect::<Result<String, _>>()
+                                .ok()
+                        } else {
+                            char::from_u32(code).map(String::from)
+                        }
+                    }
+                    UnicodeForm::Utf8 => {
+                        let bytes = code.to_be_bytes();
+                        let start = bytes.iter().position(|byte| *byte != 0).unwrap_or(3);
+                        std::str::from_utf8(&bytes[start..])
+                            .ok()
+                            .map(str::to_string)
+                    }
+                };
+                match text {
+                    Some(text) if !text.is_empty() && text != "\0" => {
+                        out.push_str(&text);
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            CodeMap::ShiftJis => {
+                let bytes = code_bytes(code);
+                pushed(crate::io::cjk::shift_jis_char(&bytes).0, out)
+            }
+            CodeMap::EucJp => {
+                let bytes = code_bytes(code);
+                pushed(crate::io::cjk::euc_jp_char(&bytes).0, out)
+            }
+            CodeMap::Jis => pushed(crate::io::cjk::jis_code(code), out),
+            CodeMap::Embedded(map) => map.parent.text(code, out),
+            CodeMap::Identity | CodeMap::Unknown => false,
+        }
+    }
+}
+
+/// A code's bytes, most significant first, without leading zeros (one
+/// byte for a code under 256).
+fn code_bytes(code: u32) -> Vec<u8> {
+    let bytes = code.to_be_bytes();
+    let start = bytes.iter().position(|byte| *byte != 0).unwrap_or(3);
+    bytes[start..].to_vec()
+}
+
+/// A composite font's encoding CMap: a name, or an embedded stream.
+fn code_map(document: &Document<'_>, dictionary: &Dictionary) -> (CodeMap, bool) {
+    let Some(encoding) = dictionary
+        .get(b"Encoding")
+        .and_then(|object| document.resolve(object).ok())
+    else {
+        return (CodeMap::Identity, false);
+    };
+    if let Some(name) = encoding.as_name() {
+        return CodeMap::named(&String::from_utf8_lossy(name));
+    }
+    let Some(entry) = dictionary.get(b"Encoding") else {
+        return (CodeMap::Unknown, false);
+    };
+    let Ok((stream, data)) = document.stream_data(entry) else {
+        return (CodeMap::Unknown, false);
+    };
+    let mut vertical = stream
+        .get(b"WMode")
+        .and_then(Object::as_integer)
+        .is_some_and(|mode| mode == 1);
+    let mut parent = CodeMap::Unknown;
+    if let Some(name) = stream.get(b"UseCMap").and_then(Object::as_name) {
+        let (named, named_vertical) = CodeMap::named(&String::from_utf8_lossy(name));
+        parent = named;
+        vertical |= named_vertical;
+    }
+    let mut map = EmbeddedCMap {
+        spaces: Vec::new(),
+        singles: HashMap::new(),
+        ranges: Vec::new(),
+        parent: CodeMap::Unknown,
+    };
+    let mut lexer = Lexer::new(&data);
+    let mut operands: Vec<Object> = Vec::new();
+    while let Some(token) = lexer.next_token() {
+        match token {
+            Token::Operand(object) => operands.push(object),
+            Token::Operator(b"endcodespacerange") => {
+                for pair in operands.chunks_exact(2) {
+                    if let (Object::String(low), Object::String(high)) = (&pair[0], &pair[1]) {
+                        map.spaces.push((low.len().max(1), be(low), be(high)));
+                    }
+                }
+                operands.clear();
+            }
+            Token::Operator(b"endcidchar") => {
+                for pair in operands.chunks_exact(2) {
+                    if let (Object::String(code), Some(cid)) = (&pair[0], pair[1].as_integer()) {
+                        map.singles.insert(be(code), cid.max(0) as u32);
+                    }
+                }
+                operands.clear();
+            }
+            Token::Operator(b"endcidrange") => {
+                for triple in operands.chunks_exact(3) {
+                    if let (Object::String(low), Object::String(high), Some(cid)) =
+                        (&triple[0], &triple[1], triple[2].as_integer())
+                    {
+                        map.ranges.push((be(low), be(high), cid.max(0) as u32));
+                    }
+                }
+                operands.clear();
+            }
+            Token::Operator(b"usecmap") => {
+                if let Some(Object::Name(name)) = operands.last() {
+                    let (named, named_vertical) = CodeMap::named(&String::from_utf8_lossy(name));
+                    parent = named;
+                    vertical |= named_vertical;
+                }
+                operands.clear();
+            }
+            Token::Operator(b"def") => {
+                // `/WMode 1 def` in the CMap's own dictionary.
+                if let [Object::Name(key), Object::Integer(value)] = operands.as_slice()
+                    && key.as_slice() == b"WMode"
+                {
+                    vertical |= *value == 1;
+                }
+                operands.clear();
+            }
+            Token::Operator(_) => operands.clear(),
+        }
+    }
+    map.parent = parent;
+    (CodeMap::Embedded(Box::new(map)), vertical)
+}
+
+/// Whether a composite font's glyph ids are Adobe-Japan1's: its CID
+/// font says so, or its CMap is one of Japan1's.
+fn is_japan1(document: &Document<'_>, dictionary: &Dictionary, code_map: &CodeMap) -> bool {
+    if matches!(code_map, CodeMap::ShiftJis | CodeMap::EucJp | CodeMap::Jis) {
+        return true;
+    }
+    let ordering = dictionary
+        .get(b"DescendantFonts")
+        .and_then(|object| document.resolve(object).ok())
+        .and_then(|object| object.as_array().and_then(|items| items.first().cloned()))
+        .and_then(|object| document.resolve(&object).ok())
+        .and_then(|object| object.as_dictionary().cloned())
+        .and_then(|descendant| descendant.get(b"CIDSystemInfo").cloned())
+        .and_then(|object| document.resolve(&object).ok())
+        .and_then(|object| object.as_dictionary().cloned())
+        .and_then(|info| info.get(b"Ordering").cloned())
+        .and_then(|object| document.resolve(&object).ok());
+    match ordering {
+        Some(Object::String(text)) => text.as_slice() == b"Japan1",
+        Some(Object::Name(name)) => name.as_slice() == b"Japan1",
+        _ => false,
     }
 }
 

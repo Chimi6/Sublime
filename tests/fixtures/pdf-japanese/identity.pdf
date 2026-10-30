@@ -1,0 +1,44 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 7 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /KozMinPr6N-Regular /Encoding /Identity-H /DescendantFonts [5 0 R] >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /CIDFontType0 /BaseFont /KozMinPr6N-Regular /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 6 >> /DW 1000 /W [1 95 500] /FontDescriptor 6 0 R >>
+endobj
+6 0 obj
+<< /Type /FontDescriptor /FontName /KozMinPr6N-Regular /Flags 4 /FontBBox [-100 -200 1100 900] /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 740 /StemV 80 >>
+endobj
+7 0 obj
+<< /Length 423 >>
+stream
+BT /F1 14 Tf
+1 0 0 1 50 750 Tm <0CD40E8A07A002260E0809B7024B021A027B02280234023E0222027A03A703BB03A703C6027A05FD08C80204061A022D022C021A027B> Tj
+1 0 0 1 50 726 Tm <0C6606980C4E094C0B6906E0024B02AE03C203B503C402AF020407E6020F022C0219021D02A2030E030C030E03120CE5030D030C074402A3027B> Tj
+1 0 0 1 50 702 Tm <0D5205AF015C0166015C016B02210026004F0048004D004A00540049000100550046005900550230081E0243020D0220020F022C021A0282> Tj
+ET
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000367 00000 n 
+0000000570 00000 n 
+0000000749 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+1223
+%%EOF
