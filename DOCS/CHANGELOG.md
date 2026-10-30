@@ -13,6 +13,10 @@ section under a version heading.
 - Marked content with `/ActualText` reads as that text, as viewers copy it: LibreOffice's PDFs of Japanese without a Japanese font read as one repeated character before.
 - Japanese lines that wrap within a paragraph join without a space when a PDF becomes Markdown, Word, HTML, or another document.
 
+### Changed
+
+- The Japanese tables (Adobe-Japan1 CIDs, JIS X 0208, radical equivalents) add 100,768 bytes to the binary on CI's Linux build (5,696,960) and 97,509 to the WebAssembly module (3,048,980); the binary's size budget rises from 5.62 to 5.78 MB.
+
 ## [1.0.0] - 2026-10-21
 
 ### Changed
