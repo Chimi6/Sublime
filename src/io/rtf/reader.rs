@@ -677,10 +677,15 @@ impl<'a> Reader<'a> {
         let mut text = String::with_capacity(bytes.len());
         for &byte in bytes {
             if let Some(lead) = self.pending_lead.take() {
-                // A double-byte character the single-byte tables cannot
-                // decode; Word writes `\uN` for these, so this is rare.
-                let _ = (lead, byte);
-                text.push('\u{FFFD}');
+                // A double-byte character: Japanese (code page 932,
+                // Shift_JIS) is decoded; the Chinese and Korean pages have
+                // no tables here (Word writes `\uN` for them).
+                let character = if code_page == 932 {
+                    crate::io::cjk::shift_jis_char(&[lead, byte]).0
+                } else {
+                    None
+                };
+                text.push(character.unwrap_or('\u{FFFD}'));
                 continue;
             }
             if byte < 0x80 {
@@ -697,6 +702,15 @@ impl<'a> Reader<'a> {
             }
             if is_lead_byte(code_page, byte) {
                 self.pending_lead = Some(byte);
+                continue;
+            }
+            // Code page 932's single bytes above 0x80 are half-width katakana.
+            if code_page == 932 {
+                text.push(
+                    crate::io::cjk::shift_jis_char(&[byte])
+                        .0
+                        .unwrap_or('\u{FFFD}'),
+                );
                 continue;
             }
             let character =

@@ -152,6 +152,36 @@ fn a_given_font_is_subset_and_embedded() {
     );
 }
 
+/// A CID-keyed CFF font (as every CJK font is: Noto Sans CJK here) given
+/// for the body is subset and embedded as a CIDFontType0 with its CFF
+/// program, and Japanese set in it reads back as written.
+#[test]
+fn a_cid_keyed_cff_font_is_subset_and_embedded() {
+    let font = fixture("tests/fixtures/fonts/NotoSansCJKjp-Subset.otf");
+    let options = ConvertOptions {
+        font: Some(std::sync::Arc::new(font)),
+        ..ConvertOptions::default()
+    };
+    let text = "日本語の文章です。ひらがな、カタカナ、漢字を含みます。\n";
+    let pdf = convert_with(&MARKDOWN_TO_PDF, text.as_bytes(), options);
+    let raw = String::from_utf8_lossy(&pdf);
+    assert!(raw.contains("/Subtype /CIDFontType0 "));
+    assert!(raw.contains("/Subtype /CIDFontType0C"));
+    assert!(raw.contains("/FontFile3"));
+    assert!(raw.contains("+NotoSansCJKJP"));
+    let mut out = Vec::new();
+    write_pdf_text(&pdf, None, &mut out).expect("reads");
+    let read: String = String::from_utf8(out)
+        .unwrap()
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    assert_eq!(
+        read,
+        "日本語の文章です。ひらがな、カタカナ、漢字を含みます。"
+    );
+}
+
 /// A Pages document's pictures are set on the page at the size the
 /// document shows each (one shown at twice the size takes twice the
 /// room); a Markdown image by path, from the input's folder, and by a

@@ -18,10 +18,13 @@ pub struct XmlToJson;
 impl Converter for XmlToJson {
     fn convert(
         &self,
-        mut input: Input<'_>,
+        input: Input<'_>,
         output: &mut dyn Write,
         context: &mut Context<'_>,
     ) -> Result<(), ConvertError> {
+        // Japanese XML (`encoding="Shift_JIS"`) is decoded as it is read.
+        let mut rest = None;
+        let mut input = crate::converters::input::decoded_input(input, &mut rest)?;
         let parsed = tree::parse_reader(&mut input)?;
         for note in parsed.notes {
             context.loss(NAME, Location::default(), note);

@@ -384,7 +384,15 @@ impl<'a> PdfDocument<'a> {
         let number = self.embedded[index].number;
         let invalid = |error: FontError| io::Error::new(io::ErrorKind::InvalidData, error.0);
         let glyphs: BTreeSet<u16> = used.keys().copied().collect();
-        let program = font.subset(&glyphs).map_err(invalid)?;
+        // TrueType outlines go in as FontFile2 under a CIDFontType2; CFF
+        // outlines (CID-keyed, every glyph's CID its id) as FontFile3
+        // under a CIDFontType0.
+        let truetype = font.has_glyf();
+        let program = if truetype {
+            font.subset(&glyphs).map_err(invalid)?
+        } else {
+            font.cff_subset(&glyphs).map_err(invalid)?
+        };
         let name = subset_name(&font.family, &glyphs);
         let mut compressed = vec![0x78, 0x9c];
         self.deflate(&program, &mut compressed);
@@ -392,11 +400,18 @@ impl<'a> PdfDocument<'a> {
         let file = self.allocate();
         self.object(
             file,
-            &format!(
-                "<< /Length {} /Length1 {} /Filter /FlateDecode >>",
-                compressed.len(),
-                program.len()
-            ),
+            &if truetype {
+                format!(
+                    "<< /Length {} /Length1 {} /Filter /FlateDecode >>",
+                    compressed.len(),
+                    program.len()
+                )
+            } else {
+                format!(
+                    "<< /Length {} /Subtype /CIDFontType0C /Filter /FlateDecode >>",
+                    compressed.len()
+                )
+            },
             Some(&compressed),
         )?;
         let scale = |units: i16| number_text(font.to_thousandths(f64::from(units)));
@@ -411,7 +426,7 @@ impl<'a> PdfDocument<'a> {
         self.object(
             descriptor,
             &format!(
-                "<< /Type /FontDescriptor /FontName /{name} /Flags {flags} /FontBBox [{} {} {} {}] /ItalicAngle {} /Ascent {} /Descent {} /CapHeight {} /StemV {} /FontFile2 {file} 0 R >>",
+                "<< /Type /FontDescriptor /FontName /{name} /Flags {flags} /FontBBox [{} {} {} {}] /ItalicAngle {} /Ascent {} /Descent {} /CapHeight {} /StemV {} /{} {file} 0 R >>",
                 scale(font.bbox[0]),
                 scale(font.bbox[1]),
                 scale(font.bbox[2]),
@@ -420,7 +435,8 @@ impl<'a> PdfDocument<'a> {
                 scale(font.ascent),
                 scale(font.descent),
                 scale(font.cap_height),
-                if font.weight >= 600 { 140 } else { 80 }
+                if font.weight >= 600 { 140 } else { 80 },
+                if truetype { "FontFile2" } else { "FontFile3" }
             ),
             None,
         )?;
@@ -433,7 +449,9 @@ impl<'a> PdfDocument<'a> {
         self.object(
             cid_font,
             &format!(
-                "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{name} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {descriptor} 0 R /CIDToGIDMap /Identity /DW 1000 /W [{widths}] >>"
+                "<< /Type /Font /Subtype /{} /BaseFont /{name} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {descriptor} 0 R {}/DW 1000 /W [{widths}] >>",
+                if truetype { "CIDFontType2" } else { "CIDFontType0" },
+                if truetype { "/CIDToGIDMap /Identity " } else { "" }
             ),
             None,
         )?;

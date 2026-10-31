@@ -5,9 +5,11 @@
 //! outlines (glyf), a subset holding only the glyphs used.
 //!
 //! A collection (`.ttc`) holds several faces; each is opened by index.
-//! Fonts with CFF outlines (`OTTO`) are read for their metrics and
-//! coverage but not subset.
+//! Fonts with CFF outlines (`OTTO`) are subset when they are CID-keyed
+//! (every CJK font is; `cff`); name-keyed ones are read for their metrics
+//! and coverage only.
 
+pub mod cff;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod system;
 
@@ -191,6 +193,8 @@ pub struct Coverage {
     map: CharMap,
     /// Whether the face has TrueType outlines (and so can be subset).
     pub glyf: bool,
+    /// Whether the face has CID-keyed CFF outlines (and so can be subset).
+    pub cid_cff: bool,
 }
 
 impl Coverage {
@@ -211,6 +215,12 @@ impl Coverage {
         Ok(Coverage {
             map: CharMap::from_cmap(&cmap)?,
             glyf: tables.iter().any(|(tag, _, _)| tag == b"glyf"),
+            // The CFF table's first kilobytes hold its Top DICT.
+            cid_cff: tables
+                .iter()
+                .find(|(tag, _, _)| tag == b"CFF ")
+                .and_then(|(_, offset, length)| read_at(*offset, (*length).min(8192)))
+                .is_some_and(|prefix| cff::is_cid_keyed(&prefix)),
         })
     }
 
@@ -330,6 +340,29 @@ impl Font {
     /// Whether the face has TrueType outlines (and so can be subset).
     pub fn has_glyf(&self) -> bool {
         self.table(b"glyf").is_some() && self.table(b"loca").is_some()
+    }
+
+    /// Whether the face has CID-keyed CFF outlines (and so can be subset).
+    pub fn has_cid_cff(&self) -> bool {
+        self.table(b"CFF ").is_some_and(cff::is_cid_keyed)
+    }
+
+    /// Whether the face can be embedded in a PDF as a subset.
+    pub fn embeddable(&self) -> bool {
+        self.has_glyf() || self.has_cid_cff()
+    }
+
+    /// The CFF table holding only `glyphs`, each glyph's CID its id.
+    pub fn cff_subset(&self, glyphs: &BTreeSet<u16>) -> Result<Vec<u8>, FontError> {
+        let table = self
+            .table(b"CFF ")
+            .ok_or_else(|| fail("the font has no CFF table"))?;
+        cff::subset(table, glyphs)
+    }
+
+    /// A CID-keyed font's Registry, Ordering, and Supplement.
+    pub fn cff_ordering(&self) -> Option<(String, String, i32)> {
+        cff::registry_ordering(self.table(b"CFF ")?)
     }
 
     /// The glyph for a character; `None` when the font lacks it.
