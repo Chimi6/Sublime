@@ -6,6 +6,8 @@ section under a version heading.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-31
+
 ### Added
 
 - Japanese in the legacy encodings reads everywhere. Plain text, Markdown, and HTML in Shift_JIS, EUC-JP, or ISO-2022-JP (an HTML `charset` or XML `encoding` is followed; otherwise the encoding is detected), CSV and TSV in Shift_JIS (as Excel saves a Japanese CSV) or EUC-JP, decoded as they stream, and XML declaring Shift_JIS. Detection takes bytes for Japanese only when they read as Japanese does (common kana and kanji), so a Western file is still refused with an error rather than turned into kanji. Word's RTF with Japanese as Shift_JIS byte pairs (`\ansicpg932`, `\fcharset128`) reads in full; it read as replacement characters before.
