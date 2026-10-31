@@ -11,6 +11,7 @@ section under a version heading.
 - Japanese in the legacy encodings reads everywhere. Plain text, Markdown, and HTML in Shift_JIS, EUC-JP, or ISO-2022-JP (an HTML `charset` or XML `encoding` is followed; otherwise the encoding is detected), CSV and TSV in Shift_JIS (as Excel saves a Japanese CSV) or EUC-JP, decoded as they stream, and XML declaring Shift_JIS. Detection takes bytes for Japanese only when they read as Japanese does (common kana and kanji), so a Western file is still refused with an error rather than turned into kanji. Word's RTF with Japanese as Shift_JIS byte pairs (`\ansicpg932`, `\fcharset128`) reads in full; it read as replacement characters before.
 - PDFs embed the fonts CJK systems ship: CID-keyed CFF OpenType (Hiragino on the Mac, Noto Sans CJK and Source Han Sans on Linux), subset to the glyphs and subroutines used (a Japanese page with Noto Sans CJK is 264 KB from a 16 MB font). Japanese text prefers a Japanese font (Hiragino, Noto Sans CJK, Yu Gothic, Meiryo, MS Gothic) over the broad fallbacks such as Arial Unicode. `--font` takes a CID-keyed CFF font too.
 - Japanese in PDFs breaks lines between characters with the kinsoku rules: no line starts with closing brackets, punctuation, small kana, or the long-vowel mark, and none ends with an opening bracket.
+- `DOCS/LANGUAGES.md`: which scripts each path handles (text and documents, legacy encodings, PDF to text, text to PDF) and what is not yet supported, linked from the README and `FORMATS.md`.
 
 ## [1.0.1] - 2026-10-30
 
