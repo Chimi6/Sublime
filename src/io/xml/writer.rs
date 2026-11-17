@@ -8,8 +8,8 @@ use crate::io::xml::{escape_attribute, escape_text};
 use crate::value::{ChunkedText, Data, NONE, Tree, push_float};
 
 /// Writes the subtree at `root` as a document. The root object's one
-/// member is the root element; anything else is wrapped in `<root>` with
-/// a warning. Keys that are not XML names and attributes that are not
+/// member is the root element (unless it is an array, which would repeat
+/// it); anything else is wrapped in `<root>` with a warning. Keys that are not XML names and attributes that are not
 /// scalars are errors.
 pub fn write_document(
     tree: &Tree,
@@ -23,6 +23,12 @@ pub fn write_document(
             let member = tree.children(root).next().unwrap_or(NONE);
             if tree.key(member).starts_with(['@', '#']) {
                 warnings.push("the JSON root has no single member; wrapped in <root>".to_string());
+                return write_element(tree, "root", root, 0, out);
+            }
+            if matches!(tree.data(member), Data::Array(_)) {
+                // An array would repeat the element: several roots, or none.
+                warnings
+                    .push("the JSON root's one member is an array; wrapped in <root>".to_string());
                 return write_element(tree, "root", root, 0, out);
             }
             write_member(tree, tree.key(member), member, 0, out)

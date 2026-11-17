@@ -173,3 +173,16 @@ fn control_characters_are_dropped_with_a_loss_from_ods_and_xml() {
     let xml = String::from_utf8_lossy(&out.stdout);
     assert!(xml.contains("<a>xy</a>"), "{xml}");
 }
+
+#[test]
+fn xml_root_member_that_is_an_array_is_wrapped_in_one_root() {
+    for json in [
+        r#"{"r":[1,2]}"#,
+        r#"{"r":[]}"#,
+        r#"{"rows":[{"a":1},{"a":2}]}"#,
+    ] {
+        let out = text("json", "xml", json);
+        assert_eq!(out.matches("<root>").count(), 1, "{out}");
+        assert!(out.trim_end().ends_with("</root>"), "{out}");
+    }
+}
