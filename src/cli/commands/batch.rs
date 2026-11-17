@@ -234,7 +234,8 @@ fn convert_all(
         for _ in 0..workers {
             let next = &next;
             let finished = &finished;
-            scope.spawn(move || {
+            let worker = std::thread::Builder::new().stack_size(crate::limits::STACK);
+            let started = worker.spawn_scoped(scope, move || {
                 loop {
                     let index = {
                         let Ok(mut cursor) = next.lock() else {
@@ -261,6 +262,7 @@ fn convert_all(
                     finished.ready.notify_one();
                 }
             });
+            started.expect("a batch worker starts");
         }
         let mut reported = 0usize;
         while reported < jobs.len() {

@@ -15,6 +15,11 @@ use std::io;
 /// wide margin; no real document nests anywhere near it.
 pub const NESTING: u32 = 256;
 
+/// The stack a conversion runs on (its own thread, and each hop's and
+/// batch worker's): what Linux and macOS give the main thread. Windows
+/// gives 1 MiB, too little for `NESTING` levels of the debug build.
+pub const STACK: usize = 8 << 20;
+
 /// The most bytes a conversion may decode, expand or hold for one input:
 /// the hub's guard against a header or a compressed stream that asks for
 /// more memory than any real file needs (2 GiB).

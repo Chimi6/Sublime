@@ -38,8 +38,12 @@ pub(super) fn run_chain(
             let (pipe_writer, pipe_reader) = pipe();
             let source = std::mem::replace(&mut next_source, HopSource::Pipe(pipe_reader));
             let thread_options = options.clone();
-            let handle = scope
-                .spawn(move || run_hop_into_pipe(converter, source, pipe_writer, &thread_options));
+            let handle = std::thread::Builder::new()
+                .stack_size(crate::limits::STACK)
+                .spawn_scoped(scope, move || {
+                    run_hop_into_pipe(converter, source, pipe_writer, &thread_options)
+                })
+                .expect("a hop's thread starts");
             handles.push(handle);
         }
         let last_converter = plan.hops[hop_count - 1];

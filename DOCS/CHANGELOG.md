@@ -19,6 +19,7 @@ section under a version heading.
 - Ragged Markdown tables stop padding short rows after 524,288 invented cells (cmark-gfm's cap), and HTML `colspan` and `rowspan` filler cells stop at the same count; a 132 KB table had become 879 MB of HTML.
 - ZIP-based formats (Word, Excel, OpenDocument, EPUB, Pages, Numbers) refuse entries that together inflate past 2 GiB, and a ZIP64 size near 2^64 no longer aborts; iWork streams stop at 512 MiB of Snappy output.
 - Images: a PNG, BMP, JPEG, TIFF, Netpbm, QOI, TGA, or WebP animation canvas wider or taller than 1,048,576 pixels, or over 2 GiB as 8-bit RGBA, is refused before anything is allocated (PNG row buffers took gigabytes from 69 bytes; Netpbm, QOI, TGA, and TIFF counted pixels, not bytes); a progressive JPEG whose coefficients would pass 2 GiB, a TIFF strip or tile larger than that, and a HEIC grid whose tiles are not coded pictures (one naming itself crashed) are refused.
+- Conversions run on an 8 MiB stack on every platform (Windows gave the main thread 1 MiB), so the nesting limits hold the same everywhere.
 - The browser module recovers from a trap: a conversion that exhausts the engine's stack or memory returns `failed` with `crashed: true`, the instance is replaced, and later conversions work (one trap broke every later call until the page reloaded).
 
 ## [1.1.0] - 2026-10-31
