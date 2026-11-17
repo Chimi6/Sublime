@@ -48,3 +48,21 @@ fn html_comment_does_not_leak() {
     let out = text("html", "markdown", "<p>a<!--x-->tail</p>");
     assert!(out.contains("atail") && !out.contains("-->"), "{out}");
 }
+
+fn fixture(name: &str) -> Vec<u8> {
+    let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("tests/fixtures/audit");
+    path.push(name);
+    std::fs::read(path).expect("fixture readable")
+}
+
+#[test]
+fn nested_table_text_flows_into_the_outer_cell() {
+    let docx = fixture("nested-table.docx");
+    for to in ["text", "markdown", "html"] {
+        let out = String::from_utf8_lossy(&convert("docx", to, &docx).stdout).into_owned();
+        for word in ["Inner 1", "Inner 2", "Inner 3", "Inner 4", "Outer B end"] {
+            assert!(out.contains(word), "{to}: missing {word}: {out}");
+        }
+    }
+}

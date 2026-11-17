@@ -756,18 +756,33 @@ impl<'a> Emitter<'a, '_> {
             if let Some(cell) = cells.get(column)
                 && cell.merge == Merge::Origin
             {
-                let mut first = true;
-                for block in &cell.blocks {
-                    if let Block::Paragraph(paragraph) = block {
-                        if !first {
-                            self.sink.event(Event::Text(Cow::Borrowed(" ")));
-                        }
-                        first = false;
-                        self.inlines(paragraph, header);
+                let mut paragraphs = Vec::new();
+                cell_paragraphs(&cell.blocks, &mut paragraphs);
+                for (index, paragraph) in paragraphs.into_iter().enumerate() {
+                    if index > 0 {
+                        self.sink.event(Event::Text(Cow::Borrowed(" ")));
                     }
+                    self.inlines(paragraph, header);
                 }
             }
             self.sink.event(Event::End(TagEnd::TableCell));
+        }
+    }
+}
+
+/// A cell's paragraphs in order. A nested table has no Markdown form, so
+/// its cells' paragraphs flow into the outer cell.
+fn cell_paragraphs<'a>(blocks: &'a [Block], out: &mut Vec<&'a Paragraph>) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => out.push(paragraph),
+            Block::Table(table) => {
+                for cell in table.rows.iter().flat_map(|row| &row.cells) {
+                    if cell.merge == Merge::Origin {
+                        cell_paragraphs(&cell.blocks, out);
+                    }
+                }
+            }
         }
     }
 }
