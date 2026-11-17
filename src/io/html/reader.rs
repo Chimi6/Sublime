@@ -143,7 +143,7 @@ impl<'a> Reader<'a, '_> {
         let rest = &html[self.position..];
         let after = &rest[1..];
         if let Some(comment) = after.strip_prefix("!--") {
-            let end = comment.find("-->").map_or(after.len(), |index| index + 3);
+            let end = comment.find("-->").map_or(after.len(), |index| index + 6);
             self.position += 1 + end;
             return;
         }

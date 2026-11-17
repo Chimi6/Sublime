@@ -1748,10 +1748,10 @@ fn scan_email_literal(text: &str, at_position: usize) -> Option<(usize, usize, &
     let prefix_at_boundary =
         |prefix_start: usize| prefix_start == 0 || !bytes[prefix_start - 1].is_ascii_alphanumeric();
     let mailto = start >= 7
-        && text[start - 7..start].eq_ignore_ascii_case("mailto:")
+        && bytes[start - 7..start].eq_ignore_ascii_case(b"mailto:")
         && prefix_at_boundary(start - 7);
     let xmpp = start >= 5
-        && text[start - 5..start].eq_ignore_ascii_case("xmpp:")
+        && bytes[start - 5..start].eq_ignore_ascii_case(b"xmpp:")
         && prefix_at_boundary(start - 5);
     if xmpp && bytes.get(end) == Some(&b'/') {
         // An XMPP address may carry a resource after a slash.
