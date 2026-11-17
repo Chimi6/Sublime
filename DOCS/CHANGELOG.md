@@ -6,6 +6,10 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Fixed
+
+- PDFs made by Adobe's tools (Acrobat PDFMaker, InDesign, the Adobe PDF Library) read in full. Their one-byte fonts state a two-byte code space in the ToUnicode map, and most of their text was silently dropped (40 to 97% of the words on Adobe's own sample files).
+
 ## [1.1.0] - 2026-10-31
 
 ### Added

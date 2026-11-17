@@ -192,10 +192,10 @@ impl Font {
                     known => known.code_length(rest),
                 }
             } else {
-                match &self.to_unicode {
-                    Some(map) if !map.spaces.is_empty() => map.code_length(rest),
-                    _ => 1,
-                }
+                // A simple font's codes are one byte (PDF 32000 9.4.3), whatever
+                // code space its ToUnicode CMap states: Adobe's tools write
+                // <0000> <FFFF> there for one-byte fonts.
+                1
             };
             let length = length.min(bytes.len() - at).max(1);
             let code = bytes[at..at + length]
