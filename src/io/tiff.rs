@@ -7,7 +7,7 @@
 
 use std::io::{self, Read, Write};
 
-use crate::image::{ColorType, Image, MAX_PIXELS};
+use crate::image::{ColorType, Image};
 use crate::io::deflate::inflate;
 use crate::io::png::{Collect, PngError, RowSink, RowsError, adler32};
 
@@ -338,7 +338,7 @@ fn layout(tags: &Tags, big: bool) -> Result<Layout, TiffError> {
     if tags.width == 0 || tags.height == 0 {
         return Err(error("TIFF image has no width or height"));
     }
-    if u64::from(tags.width) * u64::from(tags.height) > MAX_PIXELS {
+    if !Image::dimensions_fit(tags.width, tags.height, 4) {
         return Err(error("TIFF image too large"));
     }
     if tags.sample_format != 1 {
@@ -557,6 +557,9 @@ fn decode(bytes: &[u8], sink: &mut dyn RowSink) -> Result<TiffNotes, RowsError> 
     let planes = if planar { layout.samples } else { 1 };
     let bits = layout.bits as usize;
     let tiled = tags.tile_width > 0 && tags.tile_height > 0;
+    if tags.tile_width.max(tags.tile_height) > crate::limits::SIDE {
+        return Err(fail(error("TIFF tile too large")));
+    }
     let (chunk_width, chunk_height) = if tiled {
         (tags.tile_width as usize, tags.tile_height as usize)
     } else {
@@ -586,7 +589,11 @@ fn decode(bytes: &[u8], sink: &mut dyn RowSink) -> Result<TiffNotes, RowsError> 
         } else {
             chunk_height.min(layout.height - (index % per_plane) * chunk_height)
         };
-        let mut data = decompress(&tags, &bytes[start..end], chunk_row_bytes * rows)?;
+        // A strip or tile is inflated whole; its declared size (a tile may
+        // be far larger than the image) must fit the budget.
+        let size = crate::limits::bytes(chunk_row_bytes as u64, rows as u64)
+            .map_err(|_| error("TIFF strip or tile too large"))?;
+        let mut data = decompress(&tags, &bytes[start..end], size)?;
         if tags.predictor == 2 {
             for row in data.chunks_exact_mut(chunk_row_bytes) {
                 unpredict(row, plane_samples, layout.bits, file.big);

@@ -5,7 +5,7 @@
 
 use std::io::{self, Read, Write};
 
-use crate::image::{ColorType, Image, MAX_PIXELS};
+use crate::image::{ColorType, Image};
 use crate::io::png::{Collect, PngError, RowSink, RowsError};
 
 /// Input read and output written in pieces this large.
@@ -135,7 +135,7 @@ fn read_layout(source: &mut Source<'_>) -> Result<Layout, RowsError> {
     if width == 0 || height == 0 {
         return fail("TGA image has no pixels");
     }
-    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+    if !Image::dimensions_fit(width, height, 4) {
         return fail("TGA image too large");
     }
     if map_type > 1 {
