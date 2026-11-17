@@ -29,5 +29,10 @@ pipes.
   through CSV) keep whatever delimiter they were written with, read back
   the same way.
 
+- **Header to JSON keys.** Converting to JSON or JSON Lines, a blank header
+  cell becomes `column_N` (its 1-based position) and a repeated name gets
+  `_2`, `_3`, and so on, so no object has two equal keys. The renaming is
+  reported as a loss (exit 2).
+
 A file whose first record is a single field with a stray semicolon (and
 whose second has none) stays comma-separated: the counts have to agree.

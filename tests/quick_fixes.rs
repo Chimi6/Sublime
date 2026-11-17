@@ -186,3 +186,15 @@ fn xml_root_member_that_is_an_array_is_wrapped_in_one_root() {
         assert!(out.trim_end().ends_with("</root>"), "{out}");
     }
 }
+
+#[test]
+fn csv_header_keys_are_made_unique_with_a_loss() {
+    let out = convert("csv", "json", b"a,a,,b,a\n1,2,3,4,5\n");
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        r#"[{"a":"1","a_2":"2","column_3":"3","b":"4","a_3":"5"}]"#
+    );
+    let out = convert("csv", "json", b"x,y\n1,2\n");
+    assert_eq!(out.status.code(), Some(0));
+}
