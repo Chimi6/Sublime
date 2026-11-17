@@ -86,10 +86,12 @@ pub struct Interpreter<'d, 'a> {
     marked: Vec<Option<ActualText>>,
 }
 
-/// A span's replacement text, and whether it has been shown yet.
+/// A span's replacement text, whether it has been shown yet, and the
+/// glyph that carries it.
 struct ActualText {
     text: String,
     shown: bool,
+    glyph: Option<usize>,
 }
 
 impl<'d, 'a> Interpreter<'d, 'a> {
@@ -262,6 +264,7 @@ impl<'d, 'a> Interpreter<'d, 'a> {
                             Object::String(bytes) => Some(ActualText {
                                 text: text_string(&bytes),
                                 shown: false,
+                                glyph: None,
                             }),
                             _ => None,
                         });
@@ -372,24 +375,45 @@ impl<'d, 'a> Interpreter<'d, 'a> {
                 &multiply(text_matrix, &state.ctm),
             );
             let start = self.out.text.len();
+            let end = if font.vertical { after[5] } else { after[4] };
             // Inside `/ActualText` the span's text stands for its glyphs:
-            // written once, at the first glyph.
+            // written once, at the first glyph, which then reaches to the
+            // end of the span's last (or a ligature drawn as two glyphs
+            // would leave a word gap after its text).
+            let mut carrier = None;
             if let Some(actual) = self.marked.iter_mut().rev().flatten().next() {
                 if actual.shown {
+                    if let Some(glyph) = actual.glyph.and_then(|at| self.out.glyphs.get_mut(at)) {
+                        glyph.end = if font.vertical {
+                            glyph.end.min(end)
+                        } else {
+                            glyph.end.max(end)
+                        };
+                    }
                     continue;
                 }
                 actual.shown = true;
                 self.out.text.push_str(&actual.text);
+                carrier = Some(actual);
             } else {
                 font.text(code.code, &mut self.out.text);
             }
             if self.out.text.len() == start {
                 continue;
             }
+            // A span that stands for spacing (a tab, a control character)
+            // keeps its own end: the gap after it is a real one.
+            if let Some(actual) = carrier
+                && !actual
+                    .text
+                    .ends_with(|ch: char| ch.is_whitespace() || ch.is_control())
+            {
+                actual.glyph = Some(self.out.glyphs.len());
+            }
             let size = render[2].hypot(render[3]) * font.size_factor;
             self.out.glyphs.push(Glyph {
                 x: render[4],
-                end: if font.vertical { after[5] } else { after[4] },
+                end,
                 y: render[5],
                 size,
                 text: start..self.out.text.len(),
