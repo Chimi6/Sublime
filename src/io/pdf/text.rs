@@ -236,9 +236,11 @@ pub fn is_cjk_char(ch: char) -> bool {
         | 0x20000..=0x3134F)
 }
 
-/// The most common drop from one line to the next among lines of one
-/// size (to half a point), the smaller on a tie; `None` when no two lines
-/// follow each other down the page.
+/// The page's line spacing: the smallest drop from one line to the next
+/// (to half a point, among lines of one size) that happens at least
+/// twice; `None` when none does. Not the most common drop: on a page of
+/// one- and two-line paragraphs (lists, short paragraphs) that is the
+/// space between paragraphs, and every paragraph would join.
 fn common_spacing(lines: &[Line]) -> Option<f64> {
     let mut counts: Vec<(i64, usize)> = Vec::new();
     for pair in lines.windows(2) {
@@ -256,9 +258,10 @@ fn common_spacing(lines: &[Line]) -> Option<f64> {
     }
     counts
         .iter()
-        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
         .filter(|entry| entry.1 >= 2)
-        .map(|entry| entry.0 as f64 / 2.0)
+        .map(|entry| entry.0)
+        .min()
+        .map(|key| key as f64 / 2.0)
 }
 
 /// What receives each page: its index and its blocks.
@@ -390,5 +393,39 @@ mod tests {
             ("आप", 24.0, 36.0, 700.0),
         ]));
         assert_eq!(texts(&blocks), vec![vec!["कृपया आप"]]);
+    }
+
+    /// Paragraphs of one and two lines at 11 pt, 12.65 apart inside a
+    /// paragraph and 19.85 between them (LibreOffice's 0.1 in spacing): the
+    /// drop between paragraphs is the most common one, and still parts
+    /// them.
+    #[test]
+    fn paragraph_spacing_parts_short_paragraphs() {
+        let mut glyphs = Vec::new();
+        let mut y = 700.0;
+        for (index, lines) in [2, 1, 1, 1, 2, 1].into_iter().enumerate() {
+            for line in 0..lines {
+                let text = ["a", "b", "c", "d", "e", "f"][index];
+                glyphs.push((text, 72.0 + f64::from(line), 80.0, y));
+                y -= 12.65;
+            }
+            y -= 19.85 - 12.65;
+        }
+        let mut page = page(&glyphs);
+        for glyph in &mut page.glyphs {
+            glyph.size = 11.0;
+        }
+        let blocks = blocks(&page);
+        assert_eq!(
+            texts(&blocks),
+            vec![
+                vec!["a", "a"],
+                vec!["b"],
+                vec!["c"],
+                vec!["d"],
+                vec!["e", "e"],
+                vec!["f"]
+            ]
+        );
     }
 }

@@ -12,6 +12,7 @@ section under a version heading.
 - Reading a PDF takes a fraction of the memory and less time: each compressed stream was given a zeroed buffer sized for the worst compression ratio (8 MB for a 5 KB page). A 1,390-page PDF to text went from 234 MB and 1.64 s to 23 MB and 0.94 s.
 - Ligatures and Indic or Thai clusters that a PDF draws as several glyphs under one `/ActualText` (LibreOffice, Quartz) no longer read with a false space inside the word (`offic e`, `कृ पया`).
 - Bullets, arrows, and math symbols in PDFs made by pdfTeX (every LaTeX document) read: a font with no `/Encoding` and no ToUnicode map is read through the encoding built into its embedded Type 1 or Type 1C program. They were dropped, so LaTeX lists read as plain lines.
+- PDF to Markdown, HTML, or Word keeps paragraphs and lists apart. On a page of short paragraphs or list items (LibreOffice's lists with paragraph spacing) every paragraph and item ran into one, and a list set right under a paragraph line joined it; text output had no blank lines between those paragraphs either.
 
 ## [1.1.0] - 2026-10-31
 

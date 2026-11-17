@@ -38,12 +38,15 @@ pub fn pdf_events(
 ) -> Result<TextNotes, PdfError> {
     let mut blocks: Vec<Block> = Vec::new();
     let notes = for_each_page(bytes, page, &mut |_, page_blocks| {
-        blocks.extend(
-            page_blocks
-                .iter()
-                .filter(|block| !is_page_number(block))
-                .cloned(),
-        );
+        // A block of only tabs or other blanks (an `/ActualText` tab) would
+        // be an empty paragraph.
+        let blank = |block: &&Block| block.lines.iter().all(|line| line.text.trim().is_empty());
+        for block in page_blocks
+            .iter()
+            .filter(|block| !is_page_number(block) && !blank(block))
+        {
+            split_at_items(block, &mut blocks);
+        }
         Ok(())
     })?;
     let body = body_size(&blocks);
@@ -177,10 +180,44 @@ fn classify(block: &Block, body: f64, levels: &[f64]) -> Kind {
         .sum();
     let bold = block.lines.iter().all(|line| line.bold);
     let sentence = first.trim_end().ends_with(['.', ':', ';', ',']);
-    if bold && block.lines.len() <= 2 && text_length <= BOLD_HEADING_CHARS && !sentence {
+    // A lone mark or letter (a table's `X`, a checkbox) is no heading.
+    if bold
+        && block.lines.len() <= 2
+        && text_length <= BOLD_HEADING_CHARS
+        && text_length >= 2
+        && !sentence
+    {
         return Kind::Heading((levels.len() + 1).min(6) as u8);
     }
     Kind::Paragraph
+}
+
+/// Pushes a block, split where a line inside it starts a list item: a
+/// list set right under a paragraph, or items one under another at the
+/// paragraph spacing, are one block of lines. A line starts an item when
+/// it begins with a round or square bullet, or with another marker (a
+/// dash, a number) and is indented from the line above or follows the
+/// end of a sentence; a dash or number that only wraps onto a line's
+/// start stays in its paragraph.
+fn split_at_items(block: &Block, out: &mut Vec<Block>) {
+    let mut start = 0;
+    for (index, pair) in block.lines.windows(2).enumerate() {
+        let (above, line) = (&pair[0], &pair[1]);
+        let text = line.text.as_str();
+        let round = text.starts_with(['•', '◦', '▪', '‣', '●', '○', '■', '□']);
+        let marked = bullet_marker(text).is_some() || number_marker(text).is_some();
+        let indented = (line.x - above.x).abs() > 1.0;
+        let after_sentence = above.text.trim_end().ends_with(['.', ':', ';', '!', '?']);
+        if marked && (round || indented || after_sentence) {
+            out.push(Block {
+                lines: block.lines[start..=index].to_vec(),
+            });
+            start = index + 1;
+        }
+    }
+    out.push(Block {
+        lines: block.lines[start..].to_vec(),
+    });
 }
 
 /// A leading bullet and the text after it.
@@ -302,6 +339,51 @@ mod tests {
             lines: vec![line("- 3 -", 9.0, false)],
         };
         assert!(is_page_number(&page));
+    }
+
+    /// A list set right under a paragraph line, or after a sentence, is
+    /// split from it; a number that only wraps onto a line's start is not.
+    #[test]
+    fn items_inside_a_block_start_their_own() {
+        let at = |text: &str, x: f64| Line {
+            x,
+            ..line(text, 11.0, false)
+        };
+        let block = Block {
+            lines: vec![
+                at("Do this:", 72.0),
+                at("• first", 72.0),
+                at("• second", 72.0),
+                at("and then the total came to", 72.0),
+                at("3. per cent of the sum, then", 72.0),
+                at("ended.", 72.0),
+                at("2. Next step", 72.0),
+            ],
+        };
+        let mut blocks = Vec::new();
+        split_at_items(&block, &mut blocks);
+        let texts: Vec<Vec<&str>> = blocks
+            .iter()
+            .map(|block| block.lines.iter().map(|line| line.text.as_str()).collect())
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                vec!["Do this:"],
+                vec!["• first"],
+                vec![
+                    "• second",
+                    "and then the total came to",
+                    "3. per cent of the sum, then",
+                    "ended."
+                ],
+                vec!["2. Next step"],
+            ]
+        );
+        let lone = Block {
+            lines: vec![line("X", 11.0, true)],
+        };
+        assert!(matches!(classify(&lone, 11.0, &[]), Kind::Paragraph));
     }
 
     #[test]

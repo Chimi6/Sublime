@@ -111,3 +111,17 @@ Output rose in every quarter. Costs held steady.
 "
     );
 }
+
+/// pdfTeX's way of setting a list: each bullet a CMSY10 glyph named only
+/// in the embedded program's encoding, the items under a line of text at
+/// the paragraph spacing. The bullets read, and the items leave the line
+/// above as a list of their own.
+#[test]
+fn bullets_from_a_built_in_encoding_make_a_list() {
+    let markdown =
+        String::from_utf8(convert(&PDF_TO_MARKDOWN, "builtin-encoding.pdf")).expect("utf-8");
+    assert_eq!(
+        markdown,
+        "Items:\n\n- first item\n- second item\n\nleft → right a ←↔ b\n"
+    );
+}
