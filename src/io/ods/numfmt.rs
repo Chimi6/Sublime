@@ -1633,8 +1633,12 @@ fn render_section(section: &Section, value: f64, signed: bool) -> String {
             return if value != 0.0 { "TRUE" } else { "FALSE" }.to_string();
         }
         // A number that falls to a text section shows its literal text
-        // only (`0;-0;;@` hides zeros).
+        // only (`0;-0;;@` hides zeros); a format that is only a text
+        // section (`@`) shows the number as it is.
         Kind::Text => {
+            if signed {
+                return plain(value);
+            }
             return section
                 .parts
                 .iter()

@@ -79,3 +79,10 @@ fn word_symbol_characters_follow_their_font() {
 fn text_of(from: &str, to: &str, input: &[u8]) -> String {
     String::from_utf8_lossy(&convert(from, to, input).stdout).into_owned()
 }
+
+#[test]
+fn ods_number_in_text_format_cell_keeps_its_value() {
+    let out = text_of("ods", "csv", &fixture("textfmt.ods"));
+    assert!(out.contains("123,num with @ format"), "{out}");
+    assert!(out.contains("45.5,x"), "{out}");
+}
