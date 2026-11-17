@@ -146,3 +146,30 @@ fn xlsx_durations_survive_to_ods() {
         "{content}"
     );
 }
+
+#[test]
+fn control_characters_round_trip_through_xlsx_as_escapes() {
+    let csv = "a,b\nx,a\u{1}b\ny,vt\u{b}z _x0041_ end\n";
+    let xlsx = convert("csv", "xlsx", csv.as_bytes());
+    let sheet = zip_part(&xlsx.stdout, "xl/worksheets/sheet1.xml");
+    assert!(sheet.contains("a_x0001_b"), "{sheet}");
+    assert!(
+        !sheet.contains('\u{1}') && !sheet.contains('\u{b}'),
+        "{sheet}"
+    );
+    let back = text_of("xlsx", "csv", &xlsx.stdout);
+    assert_eq!(back, csv);
+}
+
+#[test]
+fn control_characters_are_dropped_with_a_loss_from_ods_and_xml() {
+    let out = convert("csv", "ods", "a\nx\u{1}y\n".as_bytes());
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let content = zip_part(&out.stdout, "content.xml");
+    assert!(!content.contains('\u{1}'), "{content}");
+    assert!(content.contains(">xy<"), "{content}");
+    let out = convert("json", "xml", br#"{"r":{"a":"x\u0001y"}}"#);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let xml = String::from_utf8_lossy(&out.stdout);
+    assert!(xml.contains("<a>xy</a>"), "{xml}");
+}

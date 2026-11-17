@@ -6,7 +6,7 @@ use std::io::Write;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-use crate::converter::{ConvertError, Entry, Input, MemoryParts, Parts};
+use crate::converter::{ConvertError, Entry, Input, Location, MemoryParts, Parts};
 use crate::event::{Context, Event};
 use crate::planner::Plan;
 #[cfg(not(target_arch = "wasm32"))]
@@ -148,7 +148,9 @@ fn run_hop_parts(
     });
     #[cfg(not(target_arch = "wasm32"))]
     let started = Instant::now();
+    crate::io::xml::take_dropped();
     let result = converter.converter.convert_parts(input, parts, context);
+    report_dropped(converter.name, context);
     #[cfg(not(target_arch = "wasm32"))]
     let elapsed = started.elapsed();
     #[cfg(target_arch = "wasm32")]
@@ -158,6 +160,18 @@ fn run_hop_parts(
         elapsed,
     });
     result
+}
+
+/// Reports the characters an XML writer dropped during the step as a loss.
+fn report_dropped(converter: &'static str, context: &mut Context<'_>) {
+    let dropped = crate::io::xml::take_dropped();
+    if dropped > 0 {
+        context.loss(
+            converter,
+            Location::default(),
+            format!("{dropped} character(s) XML 1.0 cannot carry (control characters) dropped"),
+        );
+    }
 }
 
 pub(super) fn run_hop(
@@ -171,7 +185,9 @@ pub(super) fn run_hop(
     });
     #[cfg(not(target_arch = "wasm32"))]
     let started = Instant::now();
+    crate::io::xml::take_dropped();
     let result = converter.converter.convert(input, output, context);
+    report_dropped(converter.name, context);
     #[cfg(not(target_arch = "wasm32"))]
     let elapsed = started.elapsed();
     #[cfg(target_arch = "wasm32")]
