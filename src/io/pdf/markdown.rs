@@ -183,8 +183,7 @@ fn classify(block: &Block, body: f64, levels: &[f64]) -> Kind {
     // A lone mark or letter (a table's `X`, a checkbox) is no heading.
     if bold
         && block.lines.len() <= 2
-        && text_length <= BOLD_HEADING_CHARS
-        && text_length >= 2
+        && (2..=BOLD_HEADING_CHARS).contains(&text_length)
         && !sentence
     {
         return Kind::Heading((levels.len() + 1).min(6) as u8);
