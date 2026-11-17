@@ -80,9 +80,17 @@ impl Converter for CsvToJson {
             writer.flush()?;
             return Ok(());
         }
-        let keys: Vec<PreparedKey> = record
-            .fields()
-            .map(JsonWriter::<&mut dyn Write>::prepare_key)
+        let (names, renamed) = unique_keys(record.fields());
+        if renamed > 0 {
+            let location = Location { line: 1, column: 1 };
+            let description = format!(
+                "{renamed} header cell(s) blank or repeated; keys made unique (`name_2`, `column_N`)"
+            );
+            context.loss(self.name, location, description);
+        }
+        let keys: Vec<PreparedKey> = names
+            .iter()
+            .map(|name| JsonWriter::<&mut dyn Write>::prepare_key(name))
             .collect();
 
         let mut record_count: u64 = 0;
@@ -119,6 +127,35 @@ impl CsvToJson {
             converter: self,
         }
     }
+}
+
+/// The header cells as JSON keys that are all different: a blank cell
+/// becomes `column_N` (its 1-based position) and a repeat of an earlier key
+/// gets `_2`, `_3`, and so on. Also the count of cells renamed.
+fn unique_keys<'a>(header: impl Iterator<Item = &'a str>) -> (Vec<String>, usize) {
+    let header: Vec<&str> = header.collect();
+    let mut names: Vec<String> = Vec::with_capacity(header.len());
+    let mut renamed = 0;
+    for (index, cell) in header.iter().enumerate() {
+        let mut name = match cell.is_empty() {
+            true => format!("column_{}", index + 1),
+            false => cell.to_string(),
+        };
+        // A made-up key steps aside for a later header cell spelled like it.
+        let mut made_up = cell.is_empty();
+        let base = name.clone();
+        let mut count = 1;
+        while names.contains(&name) || (made_up && header[index + 1..].contains(&name.as_str())) {
+            count += 1;
+            name = format!("{base}_{count}");
+            made_up = true;
+        }
+        if made_up {
+            renamed += 1;
+        }
+        names.push(name);
+    }
+    (names, renamed)
 }
 
 fn write_object<W: Write>(

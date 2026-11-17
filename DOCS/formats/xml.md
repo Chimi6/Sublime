@@ -13,7 +13,8 @@ tests that prove it.
   processing instructions, the doctype, and the order of text against
   elements in mixed content are dropped and reported once each).
 - `json -> xml`: shipped, conditional (the inverse mapping; a root
-  without exactly one member is wrapped in `<root>` with a warning;
+  without exactly one member, or whose one member is an array, is
+  wrapped in `<root>` with a warning;
   numbers, booleans, and nulls become text).
 - `xml -> toml`, `xml -> yaml`, and back: shipped directly (0.14.0), conditional; CSV reaches XML through JSON.
 
@@ -45,7 +46,8 @@ Surrounding whitespace of text is trimmed; whitespace-only text between
 elements is dropped; line endings become `\n`.
 
 Writing runs the table backwards: the root object's single member is
-the root element, `@` members attributes, `#text` the text (written
+the root element (an array member would repeat it, so that case is
+wrapped in `<root>` with a warning like any other), `@` members attributes, `#text` the text (written
 first, on its own line, when children follow), arrays repeated elements
 (nested arrays flatten into more repeats), scalars text with `&`, `<`,
 `>`, and `"` escaped. The output is pretty printed two spaces per level

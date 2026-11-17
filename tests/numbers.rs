@@ -161,7 +161,7 @@ fn json_and_markdown_hold_every_table() {
     let document = fixture("sheets.numbers");
     let json = String::from_utf8(convert(&NUMBERS_TO_JSON, &document)).expect("utf-8");
     assert!(
-        json.starts_with("{\"ZZZ_Sheet_1 - ZZZ_Table_1\":[{\"\":\"YYY_ROW_1\","),
+        json.starts_with("{\"ZZZ_Sheet_1 - ZZZ_Table_1\":[{\"column_1\":\"YYY_ROW_1\","),
         "{json}"
     );
     assert!(json.contains(",\"ZZZ_Sheet_2\":[{"), "{json}");

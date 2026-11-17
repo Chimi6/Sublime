@@ -476,15 +476,26 @@ impl Converter for ToOds {
                     for (row, column, rows, columns) in workbook.merges(sheet) {
                         writer.merge(row, column, rows, columns);
                     }
-                    workbook.read_sheet(
+                    workbook.read_sheet_kinds(
                         sheet,
                         &mut |cells: &[String],
-                              styles: &[Option<usize>]|
+                              styles: &[Option<usize>],
+                              texts: &[bool]|
                          -> Result<(), ConvertError> {
                             let typed: Vec<(XlsxCell<'_>, Option<&str>, Option<&str>)> = cells
                                 .iter()
                                 .zip(styles)
-                                .map(|(text, style)| {
+                                .zip(texts)
+                                .map(|((text, style), &is_text)| {
+                                    if is_text {
+                                        // A string cell stays a string, whatever it looks like.
+                                        return match text.is_empty() {
+                                            true => (XlsxCell::Empty, None, None),
+                                            false => {
+                                                (XlsxCell::Text(text), None, Some(text.as_str()))
+                                            }
+                                        };
+                                    }
                                     typed_xlsx_cell(
                                         text,
                                         style.and_then(|style| workbook.style_format(style)),
@@ -637,6 +648,10 @@ fn typed_xlsx_cell<'a>(
             }
         }
     }
+    // A duration the reader prints as `30:05:00`, hours uncapped.
+    if dated && let Some(serial) = elapsed_serial(text) {
+        return (XlsxCell::Number(serial), code, None);
+    }
     if let Some((serial, kind)) = iso_serial(text) {
         let code = if dated {
             code
@@ -663,6 +678,27 @@ fn typed_xlsx_cell<'a>(
         }
     }
     (XlsxCell::Text(text), None, Some(text))
+}
+
+/// `H:MM:SS` with any number of hours as days.
+fn elapsed_serial(text: &str) -> Option<f64> {
+    let mut parts = text.splitn(3, ':');
+    let (hours, minutes, seconds) = (parts.next()?, parts.next()?, parts.next()?);
+    let digits = |part: &str, length: Option<usize>| {
+        !part.is_empty()
+            && length.is_none_or(|length| part.len() == length)
+            && part.bytes().all(|byte| byte.is_ascii_digit())
+    };
+    if !digits(hours, None) || !digits(minutes, Some(2)) || !digits(seconds, Some(2)) {
+        return None;
+    }
+    let (hours, minutes, seconds) = (
+        hours.parse::<f64>().ok()?,
+        minutes.parse::<f64>().ok()?,
+        seconds.parse::<f64>().ok()?,
+    );
+    (minutes < 60.0 && seconds < 60.0)
+        .then(|| (hours * 3600.0 + minutes * 60.0 + seconds) / 86_400.0)
 }
 
 /// A decimal as a workbook stores a number: an optional minus, digits

@@ -113,9 +113,11 @@ same text, as for Excel:
 | a decimal with an exponent (`2.59E+005`) | a float with the scientific format that shows it so; text when none does |
 | an ISO 8601 date, date and time, or time | a date or duration with a format showing the same form |
 | `TRUE` or `FALSE` | a boolean |
-| anything else | a string: paragraphs per line, `text:s` for runs of spaces, `text:tab` |
+| anything else | a string: paragraphs per line, `text:s` for runs of spaces, `text:tab` (characters XML 1.0 cannot carry are dropped and reported as a loss) |
 
-From Excel and Numbers, values keep their types and number formats
+From Excel, a cell the workbook stores as a string stays a string
+whatever it looks like (`1.50`, `007`, `2024-01-05`), and an elapsed time
+past a day stays a duration. From Excel and Numbers, values keep their types and number formats
 (Excel codes become data styles, a `[$-407]` language tag becomes the
 style's language) and merged ranges become spanned and covered cells.
 Sheet names are cleaned to what LibreOffice accepts (none of

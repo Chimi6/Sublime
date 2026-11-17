@@ -61,6 +61,10 @@ fn decode_text(bytes: Vec<u8>) -> Result<String, (Vec<u8>, usize)> {
         }
     }
     let (bytes, offset) = match String::from_utf8(bytes) {
+        // ISO-2022-JP is 7-bit, so it passes as UTF-8: read it by its escapes.
+        Ok(text) if crate::io::cjk::has_iso_2022_jp_escape(text.as_bytes()) => {
+            return Ok(crate::io::cjk::Encoding::Iso2022Jp.decode(text.as_bytes()));
+        }
         Ok(text) => return Ok(text),
         Err(error) => {
             let offset = error.utf8_error().valid_up_to();
@@ -112,6 +116,9 @@ pub fn delimited_input<'a: 'b, 'b>(
         .read_to_end(&mut head)?
         < SNIFF_BYTES;
     let encoding = match std::str::from_utf8(&head) {
+        Ok(_) if crate::io::cjk::has_iso_2022_jp_escape(&head) => {
+            Some(crate::io::cjk::Encoding::Iso2022Jp)
+        }
         Ok(_) => None,
         // Cut at the end of the sample: still UTF-8.
         Err(error) if error.error_len().is_none() && !whole => None,
@@ -170,7 +177,11 @@ pub fn decoded_input<'a: 'b, 'b>(
         < SNIFF_BYTES;
     let encoding = match std::str::from_utf8(&head) {
         Ok(_) => crate::io::cjk::declared(&head)
-            .filter(|_| head.iter().any(|byte| *byte >= 0x80 || *byte == 0x1B)),
+            .filter(|_| head.iter().any(|byte| *byte >= 0x80 || *byte == 0x1B))
+            .or_else(|| {
+                crate::io::cjk::has_iso_2022_jp_escape(&head)
+                    .then_some(crate::io::cjk::Encoding::Iso2022Jp)
+            }),
         Err(error) if error.error_len().is_none() && !whole => None,
         Err(_) => crate::io::cjk::declared(&head).or_else(|| crate::io::cjk::sniff(&head)),
     };

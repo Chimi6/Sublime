@@ -1547,7 +1547,10 @@ impl Reader<'_> {
                         });
                     }
                     "w:sym" if !hidden => {
-                        if let Some(text) = symbol_text(attribute(&attributes, "w:char")) {
+                        if let Some(text) = symbol_text(
+                            attribute(&attributes, "w:font"),
+                            attribute(&attributes, "w:char"),
+                        ) {
                             let span = self.document.push_text(&text);
                             paragraph.runs.push(Run {
                                 style,
@@ -3863,16 +3866,115 @@ fn highlight_color(name: &str) -> Option<Color> {
 }
 
 /// The character of a `w:sym`, given as hex; the private-use range the
-/// symbol fonts use is folded to the same code in the basic plane.
-fn symbol_text(code: Option<&str>) -> Option<String> {
+/// symbol fonts use is folded to the same code in the basic plane. In the
+/// Symbol and Wingdings fonts that code is a glyph position, not a Unicode
+/// value, so the common ones map to the characters they draw.
+fn symbol_text(font: Option<&str>, code: Option<&str>) -> Option<String> {
     let code = u32::from_str_radix(code?, 16).ok()?;
     let code = if (0xF000..=0xF0FF).contains(&code) {
         code - 0xF000
     } else {
         code
     };
-    let ch = char::from_u32(code)?;
-    Some(ch.to_string())
+    let mapped = match font.map(str::to_ascii_lowercase).as_deref() {
+        Some("symbol") => symbol_font_char(code),
+        Some("wingdings") => wingdings_char(code),
+        _ => None,
+    };
+    Some(mapped.or_else(|| char::from_u32(code))?.to_string())
+}
+
+/// The Unicode character the Symbol font draws at `code`.
+fn symbol_font_char(code: u32) -> Option<char> {
+    const UPPER: [char; 26] = [
+        'Α', 'Β', 'Χ', 'Δ', 'Ε', 'Φ', 'Γ', 'Η', 'Ι', 'ϑ', 'Κ', 'Λ', 'Μ', 'Ν', 'Ο', 'Π', 'Θ', 'Ρ',
+        'Σ', 'Τ', 'Υ', 'ς', 'Ω', 'Ξ', 'Ψ', 'Ζ',
+    ];
+    const LOWER: [char; 26] = [
+        'α', 'β', 'χ', 'δ', 'ε', 'φ', 'γ', 'η', 'ι', 'ϕ', 'κ', 'λ', 'μ', 'ν', 'ο', 'π', 'θ', 'ρ',
+        'σ', 'τ', 'υ', 'ϖ', 'ω', 'ξ', 'ψ', 'ζ',
+    ];
+    Some(match code {
+        0x41..=0x5A => UPPER[code as usize - 0x41],
+        0x61..=0x7A => LOWER[code as usize - 0x61],
+        0x22 => '\u{2200}',
+        0x24 => '\u{2203}',
+        0x27 => '\u{220B}',
+        0x2A => '\u{2217}',
+        0x2D => '\u{2212}',
+        0x40 => '\u{2245}',
+        0x5C => '\u{2234}',
+        0x7E => '\u{223C}',
+        0xA2 => '\u{2032}',
+        0xA3 => '\u{2264}',
+        0xA5 => '\u{221E}',
+        0xA7 => '\u{2663}',
+        0xA8 => '\u{2666}',
+        0xA9 => '\u{2665}',
+        0xAA => '\u{2660}',
+        0xAB => '\u{2194}',
+        0xAC => '\u{2190}',
+        0xAD => '\u{2191}',
+        0xAE => '\u{2192}',
+        0xAF => '\u{2193}',
+        0xB0 => '\u{00B0}',
+        0xB1 => '\u{00B1}',
+        0xB2 => '\u{2033}',
+        0xB3 => '\u{2265}',
+        0xB4 => '\u{00D7}',
+        0xB5 => '\u{221D}',
+        0xB6 => '\u{2202}',
+        0xB7 => '\u{2022}',
+        0xB8 => '\u{00F7}',
+        0xB9 => '\u{2260}',
+        0xBA => '\u{2261}',
+        0xBB => '\u{2248}',
+        0xBC => '\u{2026}',
+        0xC5 => '\u{2295}',
+        0xC6 => '\u{2205}',
+        0xC7 => '\u{2229}',
+        0xC8 => '\u{222A}',
+        0xCE => '\u{2208}',
+        0xCF => '\u{2209}',
+        0xD5 => '\u{220F}',
+        0xD6 => '\u{221A}',
+        0xD7 => '\u{22C5}',
+        0xD8 => '\u{00AC}',
+        0xD9 => '\u{2227}',
+        0xDA => '\u{2228}',
+        0xDB => '\u{21D4}',
+        0xDC => '\u{21D0}',
+        0xDD => '\u{21D1}',
+        0xDE => '\u{21D2}',
+        0xDF => '\u{21D3}',
+        0xE5 => '\u{2211}',
+        0xF2 => '\u{222B}',
+        _ => return None,
+    })
+}
+
+/// The Unicode character the Wingdings font draws at `code`, for the
+/// checks, boxes, bullets, arrows, and faces documents use.
+fn wingdings_char(code: u32) -> Option<char> {
+    Some(match code {
+        0x4A => '\u{263A}',
+        0x4C => '\u{2639}',
+        0x6C => '\u{25CF}',
+        0x6E => '\u{25A0}',
+        0x6F => '\u{25A1}',
+        0x71 => '\u{2751}',
+        0x76 => '\u{2756}',
+        0xA7 => '\u{25AA}',
+        0xA8 => '\u{25FB}',
+        0xD8 => '\u{27A2}',
+        0xE0 => '\u{27A4}',
+        0xE8 => '\u{2794}',
+        0xFB => '\u{2717}',
+        0xFC => '\u{2713}',
+        0xFD => '\u{2612}',
+        0xFE => '\u{2611}',
+        _ => return None,
+    })
 }
 
 /// A bullet as its Unicode character: Word draws the common bullets from the

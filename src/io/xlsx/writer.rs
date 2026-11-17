@@ -248,7 +248,7 @@ impl<W: Write> XlsxWriter<W> {
             Value::Text(text) => {
                 self.part
                     .push_str(" t=\"inlineStr\"><is><t xml:space=\"preserve\">");
-                escape_text(&mut self.part, text);
+                escape_text(&mut self.part, &excel_escapes(text));
                 self.part.push_str("</t></is></c>");
             }
         }
@@ -475,6 +475,36 @@ pub fn iso_serial(text: &str) -> Option<(f64, u8)> {
         8 => Some((f64::from(time(0)?) / 86_400.0, STYLE_TIME)),
         _ => None,
     }
+}
+
+/// Excel's `_xHHHH_` escapes for what a worksheet cannot carry: a character
+/// XML 1.0 forbids (a control other than tab, line feed, and carriage
+/// return), and an underscore that would otherwise start an escape.
+fn excel_escapes(text: &str) -> std::borrow::Cow<'_, str> {
+    let bytes = text.as_bytes();
+    let starts_escape = |at: usize| {
+        bytes.get(at + 1) == Some(&b'x')
+            && bytes
+                .get(at + 2..at + 6)
+                .is_some_and(|hex| hex.iter().all(u8::is_ascii_hexdigit))
+            && bytes.get(at + 6) == Some(&b'_')
+    };
+    let escaped =
+        |at: usize, ch: char| !crate::io::xml::is_xml_char(ch) || (ch == '_' && starts_escape(at));
+    if !text.char_indices().any(|(at, ch)| escaped(at, ch)) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len() + 8);
+    for (at, ch) in text.char_indices() {
+        if !escaped(at, ch) {
+            out.push(ch);
+        } else if ch == '_' {
+            out.push_str("_x005F_");
+        } else {
+            out.push_str(&format!("_x{:04X}_", ch as u32));
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// Days from 1970-01-01 to a calendar date (Howard Hinnant's algorithm,

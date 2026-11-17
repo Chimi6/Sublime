@@ -57,7 +57,7 @@ in as text).
 | `w:p`, `w:pPr` | paragraph: style, `numPr` (list item), alignment, indents (hanging as a negative first line), spacing (line rule to relative/minimum/exact), keep flags, outline level, shading; the paragraph mark's `rPr` |
 | `w:r`, `w:rPr` | runs: character style, fonts (`ascii`, else `hAnsi`, else `cs`), size (half points), bold, italic, underline, strike, color, highlight or shading, vertical alignment, caps, language |
 | `w:t`, `w:delText` | text, whitespace kept (the XML reader hands whitespace-only nodes through) |
-| `w:tab`, `w:br`, `w:cr`, `w:noBreakHyphen`, `w:sym` | tab, line or page break, line break, a non-breaking hyphen, a symbol character |
+| `w:tab`, `w:br`, `w:cr`, `w:noBreakHyphen`, `w:sym` | tab, line or page break, line break, a non-breaking hyphen, a symbol character (in the Symbol and Wingdings fonts, the common Greek letters, math signs, arrows, checks, boxes, and faces by the Unicode character they draw) |
 | `w:hyperlink` | link by relationship id or `#anchor` |
 | `w:fldSimple`, `w:fldChar` + `w:instrText` | `HYPERLINK` (with `\l` as a bookmark), `PAGE`, `NUMPAGES`; other fields keep their result text |
 | `w:ins`, `w:del` | revisions with author and date; deleted runs stay in the model as deleted |

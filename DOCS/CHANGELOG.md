@@ -6,6 +6,22 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Fixed
+
+- A bare email address after non-ASCII text in Markdown no longer crashes the converter.
+- A closing `-->` of an HTML comment no longer shows in the output.
+- Text in a table nested inside a table cell is kept in Markdown, HTML, and plain text output; it flowed nowhere before.
+- Word symbol characters (`w:sym`) in the Symbol and Wingdings fonts come out as the character they draw (alpha, a check mark, an arrow) instead of the wrong letter.
+- A number in an ODS cell with the Text format reads as its value, not as an empty cell.
+- Excel to ODS keeps cells stored as text as text (`1.50`, `1e5`, long digit strings were turned into numbers), and elapsed times past a day (`[h]:mm:ss`) stay durations.
+- JSON, YAML, or TOML to XML whose one root member is an array writes one `<root>` element, with the warning, instead of several roots or none.
+- Control characters XML 1.0 cannot carry no longer corrupt files: Excel files write them as `_xHHHH_` (and read those escapes back), and ODS, XML, and the other XML-based writers drop them and report a loss.
+- Excel reading: a time within half a second of midnight no longer shows the wrong day or `24:00:00`; elapsed-time formats (`[h]:mm:ss`) read as `30:05:00`, not as a date in 1900; a worksheet whose elements carry a namespace prefix reads instead of coming out empty.
+- Blank or repeated header cells in CSV, TSV, or Excel make unique JSON keys (`column_3`, `name_2`) and report a loss, instead of objects with duplicate keys.
+- BMP files with a V4 or V5 header and no bit-fields compression read as the picture (they came out black), and a 16-bit BMP's alpha mask (ARGB4444, ARGB1555) is kept.
+- EUC-KR and GBK text is refused as before instead of being misread as Japanese EUC-JP: legacy text now counts as Japanese only when it carries kana. Japanese written entirely in kanji, with no kana, is refused too (`DOCS/LANGUAGES.md`).
+- ISO-2022-JP is decoded in text, Markdown, HTML, and CSV (it is 7-bit, so it was read as the raw escape codes).
+
 ## [1.1.0] - 2026-10-31
 
 ### Added

@@ -9,7 +9,7 @@ setting it into a new PDF.
 | Script | Text and documents | Legacy encodings read | PDF to text | Text to PDF |
 |---|:-:|---|:-:|---|
 | Latin, Greek, Cyrillic | ✓ | RTF code pages (437, 850, 1250-1258, Mac Roman) | ✓ | ✓ |
-| Japanese | ✓ | Shift_JIS, EUC-JP, ISO-2022-JP in text, Markdown, HTML, XML, CSV, TSV; RTF code page 932 | ✓ incl. vertical writing and fonts with no ToUnicode map | ✓ Japanese line breaking (kinsoku), horizontal only |
+| Japanese | ✓ | Shift_JIS, EUC-JP, ISO-2022-JP in text, Markdown, HTML, XML, CSV, TSV (ISO-2022-JP is found by its escape sequences even though it is valid UTF-8); RTF code page 932 | ✓ incl. vertical writing and fonts with no ToUnicode map | ✓ Japanese line breaking (kinsoku), horizontal only |
 | Chinese | ✓ | RTF through `\uN` only | ✓ when the PDF carries a ToUnicode map or a Unicode CMap | ✓ may be set in a Japanese font |
 | Korean | ✓ | RTF through `\uN` only | ✓ when the PDF carries a ToUnicode map or a Unicode CMap | ✓ |
 | Hebrew, Arabic | ✓ | RTF code pages 1255, 1256 | in drawing order | left to right, isolated letter forms |
@@ -22,7 +22,12 @@ character no installed font has is `?` and reported.
 ## Not yet
 
 - Chinese and Korean legacy encodings (GBK, GB18030, Big5, EUC-KR) in
-  text and CSV files: rejected with an error, not misread.
+  text and CSV files: rejected with an error, not misread. Legacy text is
+  taken for Japanese only when it reads cleanly and carries kana (at
+  least one in twenty of its two-byte characters, half-width katakana
+  included), which Korean and Chinese text lacks; Japanese written
+  entirely in kanji, with no kana at all, reads the same as Chinese and
+  is refused too (save it as UTF-8, or declare the charset in HTML or XML).
 - Chinese and Korean PDFs whose fonts have no ToUnicode map and a
   non-Unicode CMap (the Adobe-GB1, -CNS1, -Korea1 tables).
 - Western code page detection in text and CSV files (a Windows-1252 CSV

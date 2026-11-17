@@ -135,9 +135,23 @@ impl<'a> Workbook<'a> {
     where
         E: From<XlsxError>,
     {
+        self.read_sheet_kinds(sheet, &mut |cells, styles, _| on_row(cells, styles))
+    }
+
+    /// As `read_sheet`, and says which cells are stored as text.
+    pub fn read_sheet_kinds<E>(
+        &self,
+        sheet: usize,
+        on_row: &mut KindedRow<'_, E>,
+    ) -> Result<Vec<(usize, usize, usize, usize)>, E>
+    where
+        E: From<XlsxError>,
+    {
         let mut merges = Vec::new();
         let mut styles: Vec<Option<usize>> = Vec::new();
         let mut no_styles: Vec<Option<usize>> = Vec::new();
+        let mut texts: Vec<bool> = Vec::new();
+        let mut no_texts: Vec<bool> = Vec::new();
         let part = &self.sheets[sheet].1;
         let xml = read_text(&self.archive, part).ok_or(XlsxError::Part("worksheet part"))?;
         let reader = XmlReader::new(&xml);
@@ -155,7 +169,7 @@ impl<'a> Workbook<'a> {
                     name,
                     attributes,
                     self_closing,
-                } => match name {
+                } => match local(name) {
                     "dimension" => {
                         if let Some(reference) = attribute(&attributes, "ref") {
                             width = dimension_width(reference);
@@ -169,15 +183,18 @@ impl<'a> Workbook<'a> {
                             .unwrap_or(next_row);
                         while next_row < number {
                             no_styles.resize(gap.len(), None);
-                            on_row(&gap, &no_styles)?;
+                            no_texts.resize(gap.len(), false);
+                            on_row(&gap, &no_styles, &no_texts)?;
                             next_row += 1;
                         }
                         cells.clear();
                         styles.clear();
+                        texts.clear();
                         if self_closing {
                             pad(&mut cells, width);
                             styles.resize(cells.len(), None);
-                            on_row(&cells, &styles)?;
+                            texts.resize(cells.len(), false);
+                            on_row(&cells, &styles, &texts)?;
                             next_row = number + 1;
                         }
                     }
@@ -192,7 +209,7 @@ impl<'a> Workbook<'a> {
                         };
                         if self_closing {
                             self.place(&mut cells, &current);
-                            place_style(&mut styles, &current);
+                            place_style(&mut styles, &mut texts, &current);
                         }
                     }
                     "mergeCell" => {
@@ -213,16 +230,17 @@ impl<'a> Workbook<'a> {
                         current.value.push_str(&text);
                     }
                 }
-                XmlEvent::End { name } => match name {
+                XmlEvent::End { name } => match local(name) {
                     "v" | "t" => text_target = TextTarget::None,
                     "c" if in_sheet_data => {
                         self.place(&mut cells, &current);
-                        place_style(&mut styles, &current);
+                        place_style(&mut styles, &mut texts, &current);
                     }
                     "row" if in_sheet_data => {
                         pad(&mut cells, width);
                         styles.resize(cells.len(), None);
-                        on_row(&cells, &styles)?;
+                        texts.resize(cells.len(), false);
+                        on_row(&cells, &styles, &texts)?;
                         next_row += 1;
                     }
                     "sheetData" => in_sheet_data = false,
@@ -239,16 +257,16 @@ impl<'a> Workbook<'a> {
         let Some(xml) = read_text(&self.archive, &self.sheets[sheet].1) else {
             return Vec::new();
         };
-        let Some(start) = xml.find("<mergeCells") else {
+        let Some(start) = xml.find("mergeCells").and_then(|at| xml[..at].rfind('<')) else {
             return Vec::new();
         };
         XmlReader::new(&xml[start..])
             .filter_map(|event| match &event {
                 XmlEvent::Start {
-                    name: "mergeCell",
-                    attributes,
-                    ..
-                } => attribute(attributes, "ref").and_then(merge_range),
+                    name, attributes, ..
+                } if local(name) == "mergeCell" => {
+                    attribute(attributes, "ref").and_then(merge_range)
+                }
                 _ => None,
             })
             .collect()
@@ -287,14 +305,63 @@ impl<'a> Workbook<'a> {
                     .unwrap_or(false);
                 if is_date {
                     if let Ok(serial) = cell.value.trim().parse::<f64>() {
+                        let elapsed = cell
+                            .style
+                            .and_then(|style| self.style_formats.get(style)?.as_deref())
+                            .is_some_and(format_code_is_elapsed);
+                        if elapsed && serial >= 0.0 {
+                            return elapsed_text(serial);
+                        }
                         return serial_to_iso(serial, self.date1904);
                     }
                 }
                 cell.value.trim().to_string()
             }
+            "inlineStr" | "str" => decode_escapes(&cell.value),
             _ => cell.value.clone(),
         }
     }
+}
+
+/// Excel's `_xHHHH_` escapes in a string: a control character it cannot
+/// write raw, a surrogate pair as two escapes, or `_x005F_` for a literal
+/// underscore that would otherwise start one.
+fn decode_escapes(text: &str) -> String {
+    if !text.contains("_x") {
+        return text.to_string();
+    }
+    let escape = |at: usize| -> Option<u32> {
+        let bytes = text.as_bytes();
+        let hex = text.get(at + 2..at + 6)?;
+        (bytes[at] == b'_'
+            && bytes[at + 1] == b'x'
+            && bytes.get(at + 6) == Some(&b'_')
+            && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| u32::from_str_radix(hex, 16).ok())?
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    while at < text.len() {
+        if let Some(code) = escape(at) {
+            let mut used = 7;
+            let mut code = code;
+            if (0xD800..0xDC00).contains(&code)
+                && let Some(low) = escape(at + 7).filter(|low| (0xDC00..0xE000).contains(low))
+            {
+                code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                used = 14;
+            }
+            if let Some(character) = char::from_u32(code) {
+                out.push(character);
+                at += used;
+                continue;
+            }
+        }
+        let character = text[at..].chars().next().unwrap_or('_');
+        out.push(character);
+        at += character.len_utf8();
+    }
+    out
 }
 
 #[derive(Default)]
@@ -314,12 +381,22 @@ enum TextTarget {
 /// A handler of a row's cells and their styles (`Workbook::read_sheet`).
 pub type StyledRow<'a, E> = dyn FnMut(&[String], &[Option<usize>]) -> Result<(), E> + 'a;
 
-/// Puts the cell's style at its column, as `place` puts its text.
-fn place_style(styles: &mut Vec<Option<usize>>, cell: &Cell) {
+/// A handler of a row's cells, their styles, and which of them the file
+/// stores as text (shared, inline, and formula strings) rather than as
+/// numbers, dates, or booleans (`Workbook::read_sheet_kinds`).
+pub type KindedRow<'a, E> = dyn FnMut(&[String], &[Option<usize>], &[bool]) -> Result<(), E> + 'a;
+
+/// Puts the cell's style, and whether it is text, at its column, as
+/// `place` puts its text.
+fn place_style(styles: &mut Vec<Option<usize>>, texts: &mut Vec<bool>, cell: &Cell) {
     if styles.len() <= cell.column {
         styles.resize(cell.column + 1, None);
     }
     styles[cell.column] = cell.style;
+    if texts.len() <= cell.column {
+        texts.resize(cell.column + 1, false);
+    }
+    texts[cell.column] = matches!(cell.kind.as_str(), "s" | "inlineStr" | "str");
 }
 
 /// `B2:C4` as (row, column, rows, columns) from 0.
@@ -348,6 +425,11 @@ fn read_text(archive: &ZipArchive<'_>, name: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+/// An element's name without its namespace prefix (`x:row` is `row`).
+fn local(name: &str) -> &str {
+    name.rsplit(':').next().unwrap_or(name)
+}
+
 fn attribute<'e>(attributes: &'e [(&str, Cow<'_, str>)], name: &str) -> Option<&'e str> {
     attributes
         .iter()
@@ -360,10 +442,9 @@ fn sheet_list(workbook_xml: &str, rels: &str) -> Vec<(String, String)> {
     let mut targets: Vec<(String, String)> = Vec::new();
     for event in XmlReader::new(rels) {
         if let XmlEvent::Start {
-            name: "Relationship",
-            attributes,
-            ..
+            name, attributes, ..
         } = &event
+            && local(name) == "Relationship"
         {
             if let (Some(id), Some(target)) =
                 (attribute(attributes, "Id"), attribute(attributes, "Target"))
@@ -380,10 +461,9 @@ fn sheet_list(workbook_xml: &str, rels: &str) -> Vec<(String, String)> {
     let mut fallback = 1;
     for event in XmlReader::new(workbook_xml) {
         if let XmlEvent::Start {
-            name: "sheet",
-            attributes,
-            ..
+            name, attributes, ..
         } = &event
+            && local(name) == "sheet"
         {
             let name = attribute(attributes, "name").unwrap_or("Sheet").to_string();
             let id = attribute(attributes, "r:id").or_else(|| attribute(attributes, "id"));
@@ -409,7 +489,7 @@ fn shared_strings(xml: &str) -> Vec<String> {
         match event {
             XmlEvent::Start {
                 name, self_closing, ..
-            } => match name {
+            } => match local(name) {
                 "si" => {
                     in_item = true;
                     current.clear();
@@ -427,11 +507,11 @@ fn shared_strings(xml: &str) -> Vec<String> {
                     current.push_str(&text);
                 }
             }
-            XmlEvent::End { name } => match name {
+            XmlEvent::End { name } => match local(name) {
                 "t" => in_text = false,
                 "rPh" => in_phonetic = false,
                 "si" => {
-                    strings.push(std::mem::take(&mut current));
+                    strings.push(decode_escapes(&std::mem::take(&mut current)));
                     in_item = false;
                 }
                 _ => {}
@@ -455,7 +535,7 @@ fn cell_styles(xml: &str) -> (Vec<bool>, Vec<Option<String>>) {
                 name,
                 attributes,
                 self_closing,
-            } => match name {
+            } => match local(name) {
                 "numFmt" => {
                     let id = attribute(&attributes, "numFmtId")
                         .and_then(|text| text.parse::<u32>().ok());
@@ -484,7 +564,7 @@ fn cell_styles(xml: &str) -> (Vec<bool>, Vec<Option<String>>) {
                 }
                 _ => {}
             },
-            XmlEvent::End { name: "cellXfs" } => in_cell_xfs = false,
+            XmlEvent::End { name } if local(name) == "cellXfs" => in_cell_xfs = false,
             _ => {}
         }
     }
@@ -557,6 +637,44 @@ fn format_code_is_date(code: &str) -> bool {
     false
 }
 
+/// A format code that counts elapsed time (`[h]:mm:ss`, `[mm]:ss`): a
+/// duration, not a point on the calendar.
+fn format_code_is_elapsed(code: &str) -> bool {
+    let mut in_quotes = false;
+    let mut chars = code.chars();
+    while let Some(character) = chars.next() {
+        match character {
+            '\\' => {
+                chars.next();
+            }
+            '"' => in_quotes = !in_quotes,
+            '[' if !in_quotes => {
+                let name: String = chars.by_ref().take_while(|&c| c != ']').collect();
+                let mut letters = name.chars();
+                if let Some(first) = letters.next()
+                    && matches!(first, 'h' | 'H' | 'm' | 'M' | 's' | 'S')
+                    && letters.all(|c| c.eq_ignore_ascii_case(&first))
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A duration in days as `H:MM:SS` with the hours uncapped (`30:05:00`).
+fn elapsed_text(serial: f64) -> String {
+    let total = (serial * 86_400.0).round() as u64;
+    format!(
+        "{:02}:{:02}:{:02}",
+        total / 3600,
+        (total / 60) % 60,
+        total % 60
+    )
+}
+
 /// `A1` -> 0, `AB12` -> 27.
 fn column_index(reference: &str) -> usize {
     let mut index = 0usize;
@@ -578,15 +696,24 @@ fn dimension_width(reference: &str) -> usize {
 /// An Excel serial as ISO 8601: a date when it has no time part, a time
 /// when it has no date part, otherwise both.
 pub fn serial_to_iso(serial: f64, date1904: bool) -> String {
-    let days = serial.floor();
-    let fraction = serial - days;
-    let seconds_total = (fraction * 86_400.0).round() as u64;
+    // Rounded to whole seconds first, so a moment just before midnight
+    // carries into the next day instead of showing the old one.
+    let rounded = (serial * 86_400.0).round();
+    let (days, seconds_total) = if serial < 1.0 && !date1904 {
+        // A time of day never reaches 24:00:00.
+        (0.0, (rounded as u64).min(86_399))
+    } else {
+        (
+            (rounded / 86_400.0).floor(),
+            rounded.rem_euclid(86_400.0) as u64,
+        )
+    };
     let (hour, minute, second) = (
         seconds_total / 3600,
         (seconds_total / 60) % 60,
         seconds_total % 60,
     );
-    let has_time = seconds_total > 0 && seconds_total < 86_400;
+    let has_time = seconds_total > 0;
     if days < 1.0 && !date1904 {
         return format!("{hour:02}:{minute:02}:{second:02}");
     }

@@ -250,6 +250,15 @@ pub fn declared(head: &[u8]) -> Option<Encoding> {
     None
 }
 
+/// Whether `bytes` switch to a Japanese character set the way ISO-2022-JP
+/// does (ESC `$B`, ESC `$@`, or ESC `(J`). The encoding is 7-bit, so such
+/// bytes can be valid UTF-8 and must be looked for there too.
+pub fn has_iso_2022_jp_escape(bytes: &[u8]) -> bool {
+    bytes
+        .windows(3)
+        .any(|window| matches!(window, b"\x1b$B" | b"\x1b$@" | b"\x1b(J"))
+}
+
 /// The Japanese encoding bytes that are not UTF-8 are most plausibly in:
 /// ISO-2022-JP when its escape is there, else Shift_JIS or EUC-JP,
 /// whichever reads with fewer bad sequences (then fewer half-width
@@ -261,10 +270,7 @@ pub fn declared(head: &[u8]) -> Option<Encoding> {
 /// rows instead, and are not taken for it. A sequence cut off at the end
 /// of `bytes` (a sample of a longer input) does not count against it.
 pub fn sniff(bytes: &[u8]) -> Option<Encoding> {
-    if bytes
-        .windows(3)
-        .any(|window| window == b"\x1b$B" || window == b"\x1b$@")
-    {
+    if has_iso_2022_jp_escape(bytes) {
         return Some(Encoding::Iso2022Jp);
     }
     let shift_jis = tally(bytes, Encoding::ShiftJis);
@@ -275,13 +281,21 @@ pub fn sniff(bytes: &[u8]) -> Option<Encoding> {
         shift_jis
     };
     let pairs = best.common + best.rare;
-    let plausible =
-        best.bad * 100 < best.characters.max(1) && pairs > 0 && best.common * 10 >= pairs * 7;
+    // Kana: Japanese text has hiragana or katakana in it, and EUC-KR or GBK
+    // text read as Japanese has almost none (the Hangul and Hanzi land in
+    // the kanji rows), so at least one in twenty of the two-byte characters
+    // (half-width katakana count too).
+    let plausible = best.bad * 100 < best.characters.max(1)
+        && pairs > 0
+        && best.common * 10 >= pairs * 7
+        && best.kana + best.half_kana > 0
+        && (best.kana + best.half_kana) * 20 >= pairs;
     plausible.then_some(best.encoding)
 }
 
 /// How bytes read in one encoding: characters, bad sequences, half-width
-/// katakana, and two-byte characters in the common rows and the rest.
+/// katakana, two-byte characters in the common rows and the rest, and the
+/// hiragana and katakana among them.
 #[derive(Clone, Copy)]
 struct Tally {
     encoding: Encoding,
@@ -290,6 +304,7 @@ struct Tally {
     half_kana: usize,
     common: usize,
     rare: usize,
+    kana: usize,
 }
 
 fn tally(bytes: &[u8], encoding: Encoding) -> Tally {
@@ -302,6 +317,7 @@ fn tally(bytes: &[u8], encoding: Encoding) -> Tally {
         half_kana: 0,
         common: 0,
         rare: 0,
+        kana: 0,
     };
     let mut at = 0;
     while at < bytes.len() {
@@ -318,7 +334,10 @@ fn tally(bytes: &[u8], encoding: Encoding) -> Tally {
             None if !cut => tally.bad += 1,
             None => {}
             Some(ch) if ('\u{FF61}'..='\u{FF9F}').contains(&ch) => tally.half_kana += 1,
-            Some(_) if length == 2 => {
+            Some(ch) if length == 2 => {
+                if matches!(ch, 'ぁ'..='ゖ' | 'ァ'..='ヺ' | 'ー') {
+                    tally.kana += 1;
+                }
                 let pointer = match encoding {
                     Encoding::ShiftJis => {
                         let (lead, trail) = (rest[0], rest[1]);
@@ -500,6 +519,26 @@ mod tests {
         // ESC $ B, 日 (0x467C), ESC ( B, then ASCII.
         let bytes = [0x1B, b'$', b'B', 0x46, 0x7C, 0x1B, b'(', b'B', b'!'];
         assert_eq!(decode_iso_2022_jp(&bytes), "日!");
+    }
+
+    #[test]
+    fn iso_2022_jp_escapes_are_found_in_seven_bit_text() {
+        assert!(has_iso_2022_jp_escape(b"a\x1b$Bb\x1b(Bc"));
+        assert!(has_iso_2022_jp_escape(b"\x1b$@x"));
+        assert!(has_iso_2022_jp_escape(b"\x1b(J"));
+        assert!(!has_iso_2022_jp_escape(b"plain \x1b[0m text"));
+    }
+
+    #[test]
+    fn euc_kr_and_gbk_are_not_japanese() {
+        // "안녕하세요 세계" in EUC-KR; "你好，世界" in GBK.
+        let korean = [
+            0xBE, 0xC8, 0xB3, 0xE7, 0xC7, 0xCF, 0xBC, 0xBC, 0xBF, 0xE4, 0x20, 0xBC, 0xBC, 0xB0,
+            0xE8,
+        ];
+        let chinese = [0xC4, 0xE3, 0xBA, 0xC3, 0xA3, 0xAC, 0xCA, 0xC0, 0xBD, 0xE7];
+        assert_eq!(sniff(&korean), None);
+        assert_eq!(sniff(&chinese), None);
     }
 
     #[test]

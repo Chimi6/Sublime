@@ -4,8 +4,8 @@ Delimited rows, read and written a record at a time in constant memory
 (`src/io/csv`): RFC 4180 quoting (a field with the delimiter, a quote, or
 a line break is quoted, a quote doubled), any line ending read, `\n`
 written, a UTF-8 byte order mark skipped. Input that is not UTF-8 but
-reads as Japanese (Shift_JIS, as Excel saves a Japanese CSV, or EUC-JP)
-is decoded as it is read (`src/io/cjk`); a Western code page is still
+reads as Japanese (Shift_JIS, as Excel saves a Japanese CSV, EUC-JP, or
+ISO-2022-JP) is decoded as it is read (`src/io/cjk`); a Western code page is still
 refused. TSV is the same with a tab.
 Every row format reaches every other (JSON, JSON Lines, Excel, Numbers,
 Markdown tables and the documents through them).
@@ -28,6 +28,11 @@ pipes.
 - Rows one conversion hands another inside a path (JSON to Excel goes
   through CSV) keep whatever delimiter they were written with, read back
   the same way.
+
+- **Header to JSON keys.** Converting to JSON or JSON Lines, a blank header
+  cell becomes `column_N` (its 1-based position) and a repeated name gets
+  `_2`, `_3`, and so on, so no object has two equal keys. The renaming is
+  reported as a loss (exit 2).
 
 A file whose first record is a single field with a stray semicolon (and
 whose second has none) stays comma-separated: the counts have to agree.
