@@ -86,3 +86,63 @@ fn ods_number_in_text_format_cell_keeps_its_value() {
     assert!(out.contains("123,num with @ format"), "{out}");
     assert!(out.contains("45.5,x"), "{out}");
 }
+
+fn zip_part(bytes: &[u8], name: &str) -> String {
+    let zip = sublime::io::zip::ZipArchive::parse(bytes).expect("a ZIP");
+    let entry = zip.find(name).expect("part present");
+    let mut out = Vec::new();
+    zip.read(entry, &mut out).expect("part reads");
+    String::from_utf8(out).expect("UTF-8 part")
+}
+
+#[test]
+fn xlsx_text_cells_stay_text_in_ods() {
+    let ods = convert("xlsx", "ods", &fixture("txt.xlsx")).stdout;
+    let content = zip_part(&ods, "content.xml");
+    assert!(
+        content.contains("office:value-type=\"string\""),
+        "{content}"
+    );
+    assert!(
+        !content.contains("office:value-type=\"float\""),
+        "{content}"
+    );
+}
+
+#[test]
+fn xlsx_prefixed_worksheet_reads() {
+    let out = text_of("xlsx", "csv", &fixture("prefixed.xlsx"));
+    assert!(out.contains("inline,2,TRUE"), "{out}");
+}
+
+#[test]
+fn xlsx_midnight_rounding_durations_and_escapes() {
+    let out = text_of("xlsx", "csv", &fixture("date_round.xlsx"));
+    assert!(out.contains("2024-08-09"), "{out}");
+    assert!(out.contains("30:05:00"), "{out}");
+    assert!(
+        out.contains("23:59:59") && !out.contains("24:00:00"),
+        "{out}"
+    );
+    let out = text_of("xlsx", "csv", &fixture("hand.xlsx"));
+    assert!(out.contains("2400:00:01"), "{out}");
+    assert!(
+        out.contains("\"\rescA_x\"") || out.contains("escA_x"),
+        "{out}"
+    );
+    assert!(!out.contains("_x000D_"), "{out}");
+}
+
+#[test]
+fn xlsx_durations_survive_to_ods() {
+    let ods = convert("xlsx", "ods", &fixture("date_round.xlsx")).stdout;
+    let content = zip_part(&ods, "content.xml");
+    assert!(
+        content.contains("office:time-value=\"PT30H05M00S\""),
+        "{content}"
+    );
+    assert!(
+        content.contains("office:date-value=\"2024-08-09\""),
+        "{content}"
+    );
+}
