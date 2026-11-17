@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Builds the WebAssembly module, runs its smoke test under node, and fails
-# when the module is larger than the byte count in wasm/size-budget.
+# Builds the WebAssembly module, runs its smoke and hostile-input tests
+# under node, and fails when the module is larger than the byte count in
+# wasm/size-budget.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 cargo build --release --quiet --target wasm32-unknown-unknown --manifest-path wasm/Cargo.toml
 module="wasm/target/wasm32-unknown-unknown/release/sublime_wasm.wasm"
 node wasm/smoke.mjs
+node wasm/hostile.mjs
 actual="$(wc -c < "$module" | tr -d ' ')"
 budget="$(tr -d '[:space:]' < wasm/size-budget)"
 echo "wasm module: ${actual} bytes (budget ${budget})"
