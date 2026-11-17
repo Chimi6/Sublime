@@ -534,7 +534,7 @@ impl Inflater {
     fn reserve_room(&mut self, room: usize) {
         let needed = self.filled + room;
         if self.out.len() < needed {
-            let grown = needed.max(self.out.len() * 2).max(SLAB);
+            let grown = needed.max(self.out.len() * 2);
             let mut larger = vec![0u8; grown];
             larger[..self.filled].copy_from_slice(&self.out[..self.filled]);
             self.out = larger;
@@ -1055,21 +1055,25 @@ impl Inflater {
 /// stream used. `limit` caps the output.
 pub fn inflate(input: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<usize, InflateError> {
     let mut inflater = Inflater::new();
-    // The slab sized for the expected output (no more than deflate's
-    // largest ratio allows) plus the fast loop's headroom of a megabyte
+    // When the caller knows the output's size (a ZIP entry's recorded
+    // size: the limit binds before deflate's largest ratio does), the
+    // slab is sized for it plus the fast loop's headroom of a megabyte
     // and a match, so it never doubles (a doubling held the old slab and
     // a new one twice its size at once) and is moved out, not copied.
     let expected = limit.min(input.len().saturating_mul(1032));
-    // A small input starts from a slab a few times its size and asks for
-    // output that much at a time, doubling: the fast loop's megabyte per
-    // call cost a fresh map, its faults, and an unmap for every small
-    // stream (a PDF page's content streams, small ZIP entries).
+    let known = limit <= input.len().saturating_mul(1032);
+    // Otherwise (a small input, or a loose limit such as a PDF stream's
+    // 2 GB) the slab starts a few times the input's size and output is
+    // asked for that much at a time, doubling: sizing for the worst
+    // ratio gave every PDF content stream megabytes, zeroed and freed,
+    // and the fast loop's megabyte per call cost a fresh map, its
+    // faults, and an unmap for every small stream.
     let mut want = usize::MAX;
     inflater.packs = input.len() >= PACK_FROM;
-    if expected > SLAB {
+    if expected > SLAB && known {
         inflater.out = vec![0u8; expected + SLAB + MAX_MATCH + 16];
     } else {
-        want = input.len().saturating_mul(4).clamp(4096, SLAB);
+        want = input.len().saturating_mul(6).clamp(4096, SLAB);
         inflater.out = vec![0u8; want + MAX_MATCH + 16];
     }
     let mut at = 0usize;
@@ -1210,7 +1214,7 @@ mod tests {
         assert_eq!(run(&input).unwrap(), b"hello");
     }
 
-    /// A small input that inflates far past its first slab (4x the input,
+    /// A small input that inflates far past its first slab (6x the input,
     /// at least 4 KB) grows by doubling, and a small dynamic-block input
     /// decodes without the packed literal table.
     #[test]
@@ -1239,6 +1243,30 @@ mod tests {
         let mut out = Vec::new();
         inflate(&compressed, &mut out, usize::MAX).expect("inflates");
         assert_eq!(out, text);
+    }
+
+    /// A loose limit (a PDF stream's 2 GB) does not size the slab for
+    /// deflate's worst ratio: a 5 KB page of text took an 8 MB slab. A
+    /// limit that binds (a ZIP entry's size) still takes one slab.
+    #[test]
+    fn loose_limit_starts_small() {
+        let text: Vec<u8> = (0..20_000u32)
+            .flat_map(|index| format!("word{} ", index % 97).into_bytes())
+            .collect();
+        let mut compressed = Vec::new();
+        crate::io::deflate::deflate(&text, &mut compressed);
+        let mut out = Vec::new();
+        inflate(&compressed, &mut out, 2 << 30).expect("inflates");
+        assert!(out == text);
+        assert!(
+            out.capacity() < 2 * text.len() + SLAB / 4,
+            "slab {} for {} bytes",
+            out.capacity(),
+            text.len()
+        );
+        let mut out = Vec::new();
+        inflate(&compressed, &mut out, text.len()).expect("inflates");
+        assert!(out == text);
     }
 
     #[test]
