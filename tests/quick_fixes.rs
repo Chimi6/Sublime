@@ -66,3 +66,16 @@ fn nested_table_text_flows_into_the_outer_cell() {
         }
     }
 }
+
+#[test]
+fn word_symbol_characters_follow_their_font() {
+    let out = text_of("docx", "text", &fixture("sym.docx"));
+    assert!(out.contains("alpha=α"), "{out}");
+    assert!(out.contains("check=✓"), "{out}");
+    assert!(out.contains("lessequal=≤"), "{out}");
+    assert!(out.contains("smile=☺"), "{out}");
+}
+
+fn text_of(from: &str, to: &str, input: &[u8]) -> String {
+    String::from_utf8_lossy(&convert(from, to, input).stdout).into_owned()
+}
