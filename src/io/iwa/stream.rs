@@ -19,8 +19,10 @@ use crate::io::protobuf::reader::packed_varints;
 use crate::io::protobuf::{FieldReader, ProtobufError, Value, read_varint};
 use crate::io::snappy::{SnappyError, decompress_block};
 
-/// Largest decompressed stream accepted, to bound memory on corrupt input.
-const STREAM_LIMIT: usize = 1 << 31;
+/// Largest decompressed stream accepted, to bound memory on corrupt input
+/// (512 MiB: Snappy copies expand a chunk about twentyfold, and iWork
+/// splits large documents over many streams).
+const STREAM_LIMIT: usize = (crate::limits::BUDGET / 4) as usize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IwaError {
