@@ -63,7 +63,8 @@ Refuses, with the line and column: a mismatched or missing end tag, more
 than one root or content after it, no root, an undefined entity, an
 unquoted attribute, an attribute given twice, `<` in an attribute value
 or in text, `]]>` in text, `--` inside a comment, and an unterminated
-comment, CDATA section, instruction, doctype, or tag. Names are checked
+comment, CDATA section, instruction, doctype, or tag, and elements
+nested more than 256 deep. Names are checked
 by byte class (ASCII letters, digits, `_`, `:`, `-`, `.`, and any
 non-ASCII byte), not against the Unicode name tables.
 

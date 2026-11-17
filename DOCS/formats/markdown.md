@@ -77,6 +77,11 @@ arrays, and searched by binary search.
   long s, final sigma). Other multi-character foldings are not applied.
 - **NUL bytes** are replaced with U+FFFD before parsing, per the
   specification's security note.
+- **Limits on hostile input.** Block quotes and list items nest 256 deep;
+  a marker past that stays text. Emphasis, links, and the like nested
+  past 256 keep their text without the nesting. A table pads short rows
+  to the header's width until 524,288 cells have been invented (cmark-gfm's
+  cap on table autocompletion); later short rows keep their own cells.
 
 ## Renderers
 

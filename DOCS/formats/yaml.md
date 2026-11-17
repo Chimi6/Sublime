@@ -43,8 +43,10 @@ Refused, with the line and column: tabs as indentation, a duplicate key,
 a line indented under no node, a mapping key inside a plain scalar (`a:
 b` followed by an indented `c: d`), `a: b: c`, a sequence entry where a
 mapping key was expected, an unknown alias, a bad escape, an unclosed
-quote or flow collection, a directive without a `---` after it, and a
-scalar that a `!!int`, `!!float`, or `!!bool` tag cannot parse.
+quote or flow collection, a directive without a `---` after it, a
+scalar that a `!!int`, `!!float`, or `!!bool` tag cannot parse,
+collections nested more than 256 deep, and aliases and merges that copy
+more than 128 MiB of nodes (a "billion laughs").
 
 ## What the writer does
 
@@ -70,7 +72,7 @@ as such.
   specification allows (`a: 1` followed by an indented `- b` reads as
   the string `1 - b`).
 - Anchors are copied, not shared: a document that aliases a large node
-  many times costs a copy per alias.
+  many times costs a copy per alias, up to the 128 MiB of copies above.
 - Only the core schema resolves; `2001-12-14` and `1_000` are strings,
   `010` is the integer 10.
 
