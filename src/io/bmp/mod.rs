@@ -107,13 +107,15 @@ fn layout(bytes: &[u8]) -> Result<Layout, BmpError> {
             "compression {compression} (RLE or JPEG) is not supported"
         )));
     }
-    // Channel masks: from the header (V4+ or bit fields), else the defaults.
+    // Channel masks: from the header when the compression is bit fields
+    // (under BI_RGB a V4 or V5 header's mask fields mean nothing and writers
+    // leave them zero), else the defaults.
     let (mut red, mut green, mut blue, mut alpha) = match bits {
         16 => (0x7c00u32, 0x03e0u32, 0x001fu32, 0u32),
         32 => (0x00ff_0000, 0x0000_ff00, 0x0000_00ff, 0),
         _ => (0, 0, 0, 0),
     };
-    if bit_fields || header_size >= 108 {
+    if bit_fields {
         let masks_at = 14 + 40;
         if bytes.len() >= masks_at + 12 {
             red = u32_at(bytes, masks_at);
@@ -150,10 +152,10 @@ fn layout(bytes: &[u8]) -> Result<Layout, BmpError> {
         palette.push([bytes[at + 2], bytes[at + 1], bytes[at]]);
     }
     let row_bytes = (width as usize * bits as usize).div_ceil(32) * 4;
-    let has_alpha = bits == 32 && alpha != 0;
+    let has_alpha = matches!(bits, 16 | 32) && alpha != 0;
     let color = match bits {
-        1 | 4 | 8 | 16 | 24 => ColorType::Rgb,
-        32 => {
+        1 | 4 | 8 | 24 => ColorType::Rgb,
+        16 | 32 => {
             if has_alpha {
                 ColorType::Rgba
             } else {
@@ -232,6 +234,9 @@ fn decode_row(layout: &Layout, source: &[u8], target: &mut [u8]) {
                 cell[0] = masks[0].map_or(0, |mask| mask.extract(pixel));
                 cell[1] = masks[1].map_or(0, |mask| mask.extract(pixel));
                 cell[2] = masks[2].map_or(0, |mask| mask.extract(pixel));
+                if layout.has_alpha {
+                    cell[3] = masks[3].map_or(255, |mask| mask.extract(pixel));
+                }
             }
             _ => {
                 let per_byte = 8 / bits as usize;

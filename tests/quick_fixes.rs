@@ -198,3 +198,49 @@ fn csv_header_keys_are_made_unique_with_a_loss() {
     let out = convert("csv", "json", b"x,y\n1,2\n");
     assert_eq!(out.status.code(), Some(0));
 }
+
+#[test]
+fn bmp_v5_header_with_zero_masks_and_no_bitfields_is_not_black() {
+    for name in ["h124-16-rgb-zeromasks.bmp", "h124-32-rgb-zeromasks.bmp"] {
+        let ppm = convert("bmp", "ppm", &fixture(name)).stdout;
+        let header_end = ppm
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b == b'\n')
+            .nth(2)
+            .unwrap()
+            .0;
+        assert!(
+            ppm[header_end..].iter().any(|&byte| byte > 0),
+            "{name} decoded black"
+        );
+    }
+}
+
+#[test]
+fn bmp_16_bit_alpha_mask_is_kept() {
+    // 2x1, 16 bits, BI_BITFIELDS, V4 header, ARGB4444 masks.
+    let mut bmp = b"BM".to_vec();
+    let pixel_offset = 14 + 108u32;
+    bmp.extend((pixel_offset + 4).to_le_bytes());
+    bmp.extend([0; 4]);
+    bmp.extend(pixel_offset.to_le_bytes());
+    bmp.extend(108u32.to_le_bytes());
+    bmp.extend(2i32.to_le_bytes());
+    bmp.extend(1i32.to_le_bytes());
+    bmp.extend(1u16.to_le_bytes());
+    bmp.extend(16u16.to_le_bytes());
+    bmp.extend(3u32.to_le_bytes());
+    bmp.extend([0; 20]);
+    for mask in [0x0f00u32, 0x00f0, 0x000f, 0xf000] {
+        bmp.extend(mask.to_le_bytes());
+    }
+    bmp.resize(14 + 108, 0);
+    bmp.extend(0xff00u16.to_le_bytes()); // opaque-looking red, alpha 15
+    bmp.extend(0x0f00u16.to_le_bytes()); // red, alpha 0
+    let pam = convert("bmp", "pam", &bmp).stdout;
+    let text = String::from_utf8_lossy(&pam);
+    assert!(text.contains("RGB_ALPHA"), "{text}");
+    let pixels = &pam[pam.len() - 8..];
+    assert_eq!(pixels, [255, 0, 0, 255, 255, 0, 0, 0]);
+}
