@@ -767,7 +767,8 @@ fn a_package_saved_as_a_folder_is_one_document() {
         std::fs::write(path, data).unwrap();
     }
     let output = run(&["convert", package.to_str().unwrap(), "-", "--to", "json"]);
-    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+    // Exit 2: a table's blank header cell is renamed `column_N`.
+    assert_eq!(code(&output), 2, "stderr: {}", stderr(&output));
     assert!(
         stdout(&output).starts_with("{\"ZZZ_Sheet_1 - ZZZ_Table_1\":["),
         "{}",
@@ -783,7 +784,7 @@ fn a_package_saved_as_a_folder_is_one_document() {
         "--out-dir",
         out_dir.to_str().unwrap(),
     ]);
-    assert_eq!(code(&batch), 0, "stderr: {}", stderr(&batch));
+    assert_eq!(code(&batch), 2, "stderr: {}", stderr(&batch));
     assert!(out_dir.join("sheets.json").is_file());
     let _ = std::fs::remove_dir_all(&directory);
 }
