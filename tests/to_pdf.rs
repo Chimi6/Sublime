@@ -217,3 +217,69 @@ fn images_are_set_on_the_page() {
     assert!(text.contains("[gone]"), "{text}");
     assert!(!text.contains("[a photo]"), "{text}");
 }
+
+/// Every line a PDF's pages hold starts inside the one-inch margins of a
+/// Letter page; its text, read back, without whitespace.
+fn inside_margins(pdf: &[u8]) -> String {
+    let mut text = String::new();
+    sublime::io::pdf::text::for_each_page(pdf, None, &mut |_, blocks| {
+        for line in blocks.iter().flat_map(|block| &block.lines) {
+            assert!(
+                (71.9..540.0).contains(&line.x) && line.y >= 72.0 && line.y <= 720.0,
+                "{line:?}"
+            );
+            text.extend(line.text.chars().filter(|char| !char.is_whitespace()));
+        }
+        Ok(())
+    })
+    .expect("pages");
+    text
+}
+
+/// A table row taller than a page breaks between lines across pages; a
+/// table wider than the text area narrows its columns and breaks words
+/// by characters; one with too many columns for that is set as lines of
+/// text. No text is lost off the page.
+#[test]
+fn tables_stay_on_the_page() {
+    let words: Vec<String> = (0..1500).map(|index| format!("word{index}")).collect();
+    let tall = format!("| a | b |\n|---|---|\n| x | {} |\n", words.join(" "));
+    let pdf = convert(&MARKDOWN_TO_PDF, tall.as_bytes());
+    let text = inside_margins(&pdf);
+    assert!(text.ends_with(&words[1300..].concat()), "{text}");
+    let mut notes = Vec::new();
+    assert!(write_pdf_text(&pdf, None, &mut notes).expect("reads").pages >= 4);
+
+    let header: Vec<String> = (0..14).map(|index| format!("Column{index}")).collect();
+    let row: Vec<String> = (0..14).map(|index| format!("v{index}.longish")).collect();
+    let wide = format!(
+        "| {} |\n|{}\n| {} |\n\n| a | b |\n|---|---|\n| {} | LASTCELL |\n",
+        header.join(" | "),
+        "---|".repeat(14),
+        row.join(" | "),
+        "W".repeat(120)
+    );
+    let text = inside_margins(&convert(&MARKDOWN_TO_PDF, wide.as_bytes()));
+    let sorted = |text: &str| {
+        let mut chars: Vec<char> = text.chars().collect();
+        chars.sort_unstable();
+        chars
+    };
+    let cells = format!(
+        "{}{}ab{}LASTCELL",
+        header.concat(),
+        row.concat(),
+        "W".repeat(120)
+    );
+    assert_eq!(sorted(&text), sorted(&cells), "{text}");
+    assert!(text.ends_with("LASTCELL"), "{text}");
+    let many: Vec<String> = (0..40).map(|index| format!("c{index}")).collect();
+    let many = format!(
+        "| {} |\n|{}\n| {} |\n",
+        many.join(" | "),
+        "---|".repeat(40),
+        many.join(" | ")
+    );
+    let text = inside_margins(&convert(&MARKDOWN_TO_PDF, many.as_bytes()));
+    assert_eq!(text.matches("c39").count(), 2, "{text}");
+}
