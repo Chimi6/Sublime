@@ -105,10 +105,10 @@ impl ScalingLists {
                         next = dc;
                         lists.dc[size][matrix] = dc.clamp(1, 255) as u8;
                     }
-                    for index in 0..count {
+                    for entry in lists.lists[size][matrix].iter_mut().take(count) {
                         let delta = reader.se()?;
                         next = (next + delta + 256).rem_euclid(256);
-                        lists.lists[size][matrix][index] = next as u8;
+                        *entry = next as u8;
                     }
                 }
                 matrix += step;
@@ -724,11 +724,11 @@ impl Pps {
             pps.tile_column_widths = vec![0; columns as usize];
             pps.tile_row_heights = vec![0; rows as usize];
             if !pps.tile_uniform {
-                for index in 0..columns as usize - 1 {
-                    pps.tile_column_widths[index] = reader.ue()? + 1;
+                for width in pps.tile_column_widths.iter_mut().take(columns as usize - 1) {
+                    *width = reader.ue()? + 1;
                 }
-                for index in 0..rows as usize - 1 {
-                    pps.tile_row_heights[index] = reader.ue()? + 1;
+                for height in pps.tile_row_heights.iter_mut().take(rows as usize - 1) {
+                    *height = reader.ue()? + 1;
                 }
             }
             pps.loop_filter_across_tiles = reader.flag()?;

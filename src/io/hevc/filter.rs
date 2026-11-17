@@ -802,8 +802,5 @@ fn sao_crosses<N: Neighbourhood + ?Sized>(
             return false;
         }
     }
-    if !layout.pps.loop_filter_across_tiles && layout.tile_of[a] != layout.tile_of[b] {
-        return false;
-    }
-    true
+    layout.pps.loop_filter_across_tiles || layout.tile_of[a] == layout.tile_of[b]
 }
