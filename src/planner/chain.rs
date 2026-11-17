@@ -33,8 +33,7 @@ pub(super) fn run_chain(
     let outcomes: Vec<HopOutcome> = std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(hop_count - 1);
         let mut next_source = HopSource::Original(input);
-        for hop_index in 0..hop_count - 1 {
-            let converter = plan.hops[hop_index];
+        for &converter in &plan.hops[..hop_count - 1] {
             let (pipe_writer, pipe_reader) = pipe();
             let source = std::mem::replace(&mut next_source, HopSource::Pipe(pipe_reader));
             let thread_options = options.clone();

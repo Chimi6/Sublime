@@ -3145,9 +3145,10 @@ impl ObjectIndex {
                 *self = ObjectIndex::default();
                 return self.learn(package);
             }
-            for position in self.learned[index]..stream.objects.len() {
+            let learned = self.learned[index];
+            for (position, object) in stream.objects.iter().enumerate().skip(learned) {
                 self.at
-                    .entry(stream.objects[position].identifier)
+                    .entry(object.identifier)
                     .or_insert((index, position));
             }
             self.learned[index] = stream.objects.len();

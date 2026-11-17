@@ -3029,8 +3029,8 @@ fn build_table(builder: TableBuilder) -> Option<Table> {
                 // its left.
                 let span = end - origin;
                 row.cells[origin].column_span = span as u32;
-                for column in start..end {
-                    row.cells[column] = Cell {
+                for cell in &mut row.cells[start..end] {
+                    *cell = Cell {
                         merge: Merge::Left,
                         ..Cell::default()
                     };
@@ -3056,8 +3056,8 @@ fn build_table(builder: TableBuilder) -> Option<Table> {
                 margins: cell_def.margins,
             };
             row.cells[start] = cell;
-            for column in start + 1..end {
-                row.cells[column] = Cell {
+            for cell in &mut row.cells[start + 1..end] {
+                *cell = Cell {
                     merge: Merge::Left,
                     ..Cell::default()
                 };
