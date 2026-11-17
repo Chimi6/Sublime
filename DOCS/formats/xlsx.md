@@ -78,8 +78,12 @@ or styles, an empty sheet, and relationship ids out of order.
 Cell text by type: `s` the shared string; `inlineStr` and `str` the
 text; `b` `TRUE` or `FALSE`; `e` the error code; `n` (or no type) the
 value as stored, or, when the cell's style is a date format, the serial
-as `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`, or `HH:MM:SS` (seconds rounded).
-Serials follow the 1900 system with its February 29 quirk, or the 1904
+as `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`, or `HH:MM:SS` (rounded to the
+second, a moment just before midnight carrying into the next day); an
+elapsed-time format (`[h]:mm:ss`, `[mm]:ss`) reads as `HH:MM:SS` with the
+hours uncapped (`30:05:00`, `2400:00:01`). Text carries Excel's `_xHHHH_`
+escapes decoded (`_x000D_` is a carriage return, `_x005F_` an underscore).
+Elements may carry a namespace prefix (`x:sheetData`). Serials follow the 1900 system with its February 29 quirk, or the 1904
 system when the workbook says so.
 
 ## What the writer does
@@ -97,7 +101,7 @@ writing and reading back a set of near misses):
 | an ISO 8601 date (`2024-08-08`), date and time (`2024-08-08T14:35:09`, not midnight), or time (`14:35:09`), from 1900-03-01 to 9999-12-31 | a date serial with a style that shows it in the same form (`yyyy-mm-dd`, `yyyy-mm-dd"T"hh:mm:ss`, `[hh]:mm:ss`) |
 | `TRUE` or `FALSE` | a boolean |
 | empty | a cell without a value, so a row keeps its width |
-| anything else | an inline string with whitespace preserved, so no shared string table is held |
+| anything else | an inline string with whitespace preserved, so no shared string table is held; characters XML 1.0 cannot carry (controls other than tab, line feed, and carriage return) as `_xHHHH_`, and an underscore that would start such an escape as `_x005F_` |
 
 These are the forms the readers write (Excel's and Numbers' dates as ISO
 8601, booleans as `TRUE` and `FALSE`), so a workbook's dates and booleans
