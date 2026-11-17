@@ -220,6 +220,7 @@ fn set(dict: &mut Dict, operator: u16, operands: Vec<Operand>) {
 }
 
 const CHARSET: u16 = 15;
+const ENCODING: u16 = 16;
 const CHAR_STRINGS: u16 = 17;
 const PRIVATE: u16 = 18;
 const SUBRS: u16 = 19;
@@ -686,9 +687,225 @@ pub fn subset(cff: &[u8], glyphs: &BTreeSet<u16>) -> Result<Vec<u8>, FontError> 
     Ok(out)
 }
 
+/// The glyph names a name-keyed font's own encoding gives its codes (a
+/// PDF's Type 1C font without an `/Encoding` of its own): the custom
+/// encoding through the charset. `None` for the predefined Standard and
+/// Expert encodings and charsets, and for a CID-keyed font.
+pub fn encoding_names(cff: &[u8]) -> Option<Vec<(u8, String)>> {
+    let header_size = usize::from(*cff.get(2)?);
+    let names = read_index(cff, header_size).ok()?;
+    let tops = read_index(cff, names.end).ok()?;
+    let strings = read_index(cff, tops.end).ok()?;
+    let top = read_dict(&cff[tops.items.first()?.clone()]).ok()?;
+    if get(&top, ROS).is_some() {
+        return None;
+    }
+    let offset = |operator: u16| -> Option<usize> {
+        let value = get(&top, operator).map_or(Some(0), |operands| operands.last()?.integer())?;
+        usize::try_from(value).ok()
+    };
+    let (encoding_at, charset_at) = (offset(ENCODING)?, offset(CHARSET)?);
+    if encoding_at <= 1 || charset_at <= 2 {
+        return None;
+    }
+    let glyph_count = read_index(cff, offset(CHAR_STRINGS)?).ok()?.items.len();
+    let byte = |at: usize| cff.get(at).copied();
+    let word = |at: usize| Some(u16::from_be_bytes([byte(at)?, byte(at + 1)?]));
+    // The charset: each glyph's SID, glyph 0 (.notdef) left out.
+    let mut sids = vec![0u16];
+    let format = byte(charset_at)?;
+    let mut at = charset_at + 1;
+    while sids.len() < glyph_count {
+        match format {
+            0 => {
+                sids.push(word(at)?);
+                at += 2;
+            }
+            1 | 2 => {
+                let first = word(at)?;
+                let left = if format == 1 {
+                    u16::from(byte(at + 2)?)
+                } else {
+                    word(at + 2)?
+                };
+                at += if format == 1 { 3 } else { 4 };
+                sids.extend((0..=left).map(|step| first.wrapping_add(step)));
+            }
+            _ => return None,
+        }
+    }
+    let name = |sid: u16| -> Option<String> {
+        let sid = usize::from(sid);
+        match sid.checked_sub(STANDARD_STRINGS_COUNT) {
+            None => STANDARD_STRINGS
+                .split_ascii_whitespace()
+                .nth(sid)
+                .map(str::to_string),
+            Some(index) => {
+                let range = strings.items.get(index)?.clone();
+                Some(String::from_utf8_lossy(&cff[range]).into_owned())
+            }
+        }
+    };
+    // The encoding: codes for glyphs 1 on, then supplements by SID.
+    let mut codes = Vec::new();
+    let format = byte(encoding_at)?;
+    let mut at = encoding_at + 1;
+    match format & 0x7F {
+        0 => {
+            let count = usize::from(byte(at)?);
+            for glyph in 1..=count {
+                codes.push((byte(at + glyph)?, *sids.get(glyph)?));
+            }
+            at += 1 + count;
+        }
+        1 => {
+            let ranges = usize::from(byte(at)?);
+            let mut glyph = 1;
+            for range in 0..ranges {
+                let first = byte(at + 1 + 2 * range)?;
+                let left = byte(at + 2 + 2 * range)?;
+                for step in 0..=left {
+                    if let Some(sid) = sids.get(glyph) {
+                        codes.push((first.wrapping_add(step), *sid));
+                    }
+                    glyph += 1;
+                }
+            }
+            at += 1 + 2 * ranges;
+        }
+        _ => return None,
+    }
+    if format & 0x80 != 0 {
+        let count = usize::from(byte(at)?);
+        for index in 0..count {
+            codes.push((byte(at + 1 + 3 * index)?, word(at + 2 + 3 * index)?));
+        }
+    }
+    Some(
+        codes
+            .into_iter()
+            .filter_map(|(code, sid)| Some((code, name(sid)?)))
+            .collect(),
+    )
+}
+
+/// The CFF standard strings, SIDs 0 to 390 (the CFF specification's
+/// Appendix A).
+const STANDARD_STRINGS_COUNT: usize = 391;
+const STANDARD_STRINGS: &str = "\
+    .notdef space exclam quotedbl numbersign dollar percent ampersand quoteright parenleft \
+    parenright asterisk plus comma hyphen period slash zero one two three four five six \
+    seven eight nine colon semicolon less equal greater question at A B C D E F G H I J K L \
+    M N O P Q R S T U V W X Y Z bracketleft backslash bracketright asciicircum underscore \
+    quoteleft a b c d e f g h i j k l m n o p q r s t u v w x y z braceleft bar braceright \
+    asciitilde exclamdown cent sterling fraction yen florin section currency quotesingle \
+    quotedblleft guillemotleft guilsinglleft guilsinglright fi fl endash dagger daggerdbl \
+    periodcentered paragraph bullet quotesinglbase quotedblbase quotedblright \
+    guillemotright ellipsis perthousand questiondown grave acute circumflex tilde macron \
+    breve dotaccent dieresis ring cedilla hungarumlaut ogonek caron emdash AE ordfeminine \
+    Lslash Oslash OE ordmasculine ae dotlessi lslash oslash oe germandbls onesuperior \
+    logicalnot mu trademark Eth onehalf plusminus Thorn onequarter divide brokenbar degree \
+    thorn threequarters twosuperior registered minus eth multiply threesuperior copyright \
+    Aacute Acircumflex Adieresis Agrave Aring Atilde Ccedilla Eacute Ecircumflex Edieresis \
+    Egrave Iacute Icircumflex Idieresis Igrave Ntilde Oacute Ocircumflex Odieresis Ograve \
+    Otilde Scaron Uacute Ucircumflex Udieresis Ugrave Yacute Ydieresis Zcaron aacute \
+    acircumflex adieresis agrave aring atilde ccedilla eacute ecircumflex edieresis egrave \
+    iacute icircumflex idieresis igrave ntilde oacute ocircumflex odieresis ograve otilde \
+    scaron uacute ucircumflex udieresis ugrave yacute ydieresis zcaron exclamsmall \
+    Hungarumlautsmall dollaroldstyle dollarsuperior ampersandsmall Acutesmall \
+    parenleftsuperior parenrightsuperior twodotenleader onedotenleader zerooldstyle \
+    oneoldstyle twooldstyle threeoldstyle fouroldstyle fiveoldstyle sixoldstyle \
+    sevenoldstyle eightoldstyle nineoldstyle commasuperior threequartersemdash \
+    periodsuperior questionsmall asuperior bsuperior centsuperior dsuperior esuperior \
+    isuperior lsuperior msuperior nsuperior osuperior rsuperior ssuperior tsuperior ff ffi \
+    ffl parenleftinferior parenrightinferior Circumflexsmall hyphensuperior Gravesmall \
+    Asmall Bsmall Csmall Dsmall Esmall Fsmall Gsmall Hsmall Ismall Jsmall Ksmall Lsmall \
+    Msmall Nsmall Osmall Psmall Qsmall Rsmall Ssmall Tsmall Usmall Vsmall Wsmall Xsmall \
+    Ysmall Zsmall colonmonetary onefitted rupiah Tildesmall exclamdownsmall centoldstyle \
+    Lslashsmall Scaronsmall Zcaronsmall Dieresissmall Brevesmall Caronsmall Dotaccentsmall \
+    Macronsmall figuredash hypheninferior Ogoneksmall Ringsmall Cedillasmall \
+    questiondownsmall oneeighth threeeighths fiveeighths seveneighths onethird twothirds \
+    zerosuperior foursuperior fivesuperior sixsuperior sevensuperior eightsuperior \
+    ninesuperior zeroinferior oneinferior twoinferior threeinferior fourinferior \
+    fiveinferior sixinferior seveninferior eightinferior nineinferior centinferior \
+    dollarinferior periodinferior commainferior Agravesmall Aacutesmall Acircumflexsmall \
+    Atildesmall Adieresissmall Aringsmall AEsmall Ccedillasmall Egravesmall Eacutesmall \
+    Ecircumflexsmall Edieresissmall Igravesmall Iacutesmall Icircumflexsmall Idieresissmall \
+    Ethsmall Ntildesmall Ogravesmall Oacutesmall Ocircumflexsmall Otildesmall \
+    Odieresissmall OEsmall Oslashsmall Ugravesmall Uacutesmall Ucircumflexsmall \
+    Udieresissmall Yacutesmall Thornsmall Ydieresissmall 001.000 001.001 001.002 001.003 \
+    Black Bold Book Light Medium Regular Roman Semibold \
+";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A name-keyed CFF whose glyphs are .notdef, bullet, A, fi, and a
+    /// custom name: the charset in format 0, the encoding in format 1 with
+    /// a supplement giving the bullet a second code.
+    #[test]
+    fn a_custom_encoding_names_its_codes() {
+        let wide = |value: usize| {
+            let mut bytes = vec![29];
+            bytes.extend_from_slice(&(value as i32).to_be_bytes());
+            bytes
+        };
+        let header = [1u8, 0, 4, 1];
+        let mut names = Vec::new();
+        write_index(&[b"T"], &mut names);
+        // Three five-byte offsets and their operators: a fixed size.
+        let top_size = 3 * 6;
+        let mut top_index_size = Vec::new();
+        write_index(&[&vec![0u8; top_size]], &mut top_index_size);
+        let mut strings = Vec::new();
+        write_index(&[b"custom1"], &mut strings);
+        let global = [0u8, 0];
+        let mut char_strings = Vec::new();
+        write_index(&[&[14u8][..]; 5], &mut char_strings);
+        let charset = [0u8, 0, 116, 0, 34, 0, 109, 1, 135];
+        // Format 1 | supplement: codes 15 (bullet), then 65 to 67 (A, fi,
+        // custom1); code 7 is the bullet too.
+        let encoding = [0x81u8, 2, 15, 0, 65, 2, 1, 7, 0, 116];
+        let char_strings_at =
+            header.len() + names.len() + top_index_size.len() + strings.len() + global.len();
+        let charset_at = char_strings_at + char_strings.len();
+        let encoding_at = charset_at + charset.len();
+        let mut top = Vec::new();
+        for (value, operator) in [
+            (charset_at, CHARSET),
+            (encoding_at, ENCODING),
+            (char_strings_at, CHAR_STRINGS),
+        ] {
+            top.extend(wide(value));
+            top.push(operator as u8);
+        }
+        let mut cff = header.to_vec();
+        cff.extend(names);
+        write_index(&[&top], &mut cff);
+        for part in [&strings[..], &global, &char_strings, &charset, &encoding] {
+            cff.extend_from_slice(part);
+        }
+        let names = encoding_names(&cff).expect("a custom encoding");
+        let expected = [
+            (15, "bullet"),
+            (65, "A"),
+            (66, "fi"),
+            (67, "custom1"),
+            (7, "bullet"),
+        ];
+        let expected: Vec<(u8, String)> = expected
+            .iter()
+            .map(|(code, name)| (*code, name.to_string()))
+            .collect();
+        assert_eq!(names, expected);
+        // The predefined Standard encoding (offset 0) is left to the caller.
+        assert_eq!(
+            STANDARD_STRINGS.split_ascii_whitespace().count(),
+            STANDARD_STRINGS_COUNT
+        );
+    }
 
     #[test]
     fn indexes_round_trip() {

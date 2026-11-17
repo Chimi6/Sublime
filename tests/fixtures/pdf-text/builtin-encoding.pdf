@@ -1,0 +1,62 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 341 >>
+stream
+BT /F1 12 Tf 72 700 Td (Items:) Tj ET
+BT /F2 12 Tf 72 680 Td (\017) Tj ET BT /F1 12 Tf 84 680 Td (first item) Tj ET
+BT /F2 12 Tf 72 664 Td (\017) Tj ET BT /F1 12 Tf 84 664 Td (second item) Tj ET
+BT /F1 12 Tf 72 640 Td (left ) Tj /F2 12 Tf (!) Tj /F1 12 Tf ( right) Tj ET
+BT /F1 12 Tf 72 620 Td (a ) Tj /F2 12 Tf ( $) Tj /F1 12 Tf ( b) Tj ET
+
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /ABCDEF+CMSY10 /FirstChar 15 /LastChar 36 /Widths [500 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1000 1000 0 0 1000] /FontDescriptor 7 0 R >>
+endobj
+7 0 obj
+<< /Type /FontDescriptor /FontName /ABCDEF+CMSY10 /Flags 4 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 750 /Descent -250 /CapHeight 683 /StemV 40 /FontFile 8 0 R >>
+endobj
+8 0 obj
+<< /Length 233 /Length1 233 /Length2 0 /Length3 0 >>
+stream
+%!PS-AdobeFont-1.0: CMSY10 003.002
+/FontName /CMSY10 def
+/Encoding 256 array
+0 1 255 {1 index exch /.notdef put} for
+dup 15 /bullet put
+dup 33 /arrowright put
+dup 32/arrowleft put
+dup 36 /arrowboth put
+readonly def
+currentfile eexec
+
+endstream
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000251 00000 n 
+0000000643 00000 n 
+0000000740 00000 n 
+0000000928 00000 n 
+0000001113 00000 n 
+trailer
+<< /Size 9 /Root 1 0 R >>
+startxref
+1432
+%%EOF
