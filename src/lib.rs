@@ -13,6 +13,7 @@ pub mod image;
 #[cfg(feature = "dev-tools")]
 pub mod inspect;
 pub mod io;
+pub mod limits;
 pub mod planner;
 pub mod registry;
 pub mod value;
