@@ -45,7 +45,9 @@ impl<'a> Found<'a> {
                 .unwrap_or(0)
                 .max(0) as u64
         };
-        let area = side(b"Width").max(side(b"W")) * side(b"Height").max(side(b"H"));
+        let area = side(b"Width")
+            .max(side(b"W"))
+            .saturating_mul(side(b"Height").max(side(b"H")));
         Found {
             dictionary,
             raw,
@@ -223,6 +225,12 @@ impl Space {
 }
 
 fn space(document: &Document<'_>, object: &Object) -> Result<Space, PdfError> {
+    space_of(document, object, true)
+}
+
+/// A color space; an Indexed base may not itself be Indexed (the
+/// specification forbids it, and one that names itself would recurse).
+fn space_of(document: &Document<'_>, object: &Object, indexed: bool) -> Result<Space, PdfError> {
     let object = document.resolve(object)?;
     let name = match &object {
         Object::Name(name) => name.clone(),
@@ -257,12 +265,14 @@ fn space(document: &Document<'_>, object: &Object) -> Result<Space, PdfError> {
         b"Indexed" | b"I" => {
             let items = object
                 .as_array()
+                .filter(|_| indexed)
                 .ok_or_else(|| fail("bad Indexed color space"))?;
-            let base = space(
+            let base = space_of(
                 document,
                 items
                     .get(1)
                     .ok_or_else(|| fail("bad Indexed color space"))?,
+                false,
             )?;
             let lookup = items
                 .get(3)
@@ -340,7 +350,11 @@ impl Converter {
             _ => ColorType::Rgb,
         };
         Ok(Converter {
-            stride: (width * components * bits).div_ceil(8),
+            stride: crate::limits::bytes(
+                (width as u64 * (components * bits) as u64).div_ceil(8),
+                1,
+            )
+            .map_err(|_| fail("PDF image is too large"))?,
             levels: (1u32 << bits.min(16)) - 1,
             space,
             bits,
@@ -482,11 +496,12 @@ fn open<'a>(
 ) -> Result<Opened<'a>, PdfError> {
     let dictionary = &found.dictionary;
     let number = |key: &[u8]| dictionary.get(key).and_then(Object::as_integer);
-    let width = number(b"Width").unwrap_or(0).max(0) as usize;
-    let height = number(b"Height").unwrap_or(0).max(0) as usize;
-    if width == 0 || height == 0 {
-        return Err(fail("PDF image has no size"));
-    }
+    let side = |key: &[u8]| number(key).and_then(|side| u32::try_from(side).ok());
+    let (width, height) = (side(b"Width").unwrap_or(0), side(b"Height").unwrap_or(0));
+    // The rows are written as RGB: they must fit the hub's budget.
+    crate::limits::Dimensions::new(width, height, 24)
+        .map_err(|_| fail("PDF image has no size or is too large"))?;
+    let (width, height) = (width as usize, height as usize);
     if filter::ends_in_dct(dictionary) {
         let jpeg = filter::decode(dictionary, &found.raw)?;
         let (image, _) =

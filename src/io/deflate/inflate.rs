@@ -1074,7 +1074,9 @@ pub fn inflate(input: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<usize, I
     }
     let mut at = 0usize;
     loop {
-        let (consumed, progress) = inflater.push(&input[at..], want)?;
+        // Never asks past the limit, so a bomb stops there.
+        let (consumed, progress) =
+            inflater.push(&input[at..], want.min(limit.saturating_add(1)))?;
         at += consumed;
         if inflater.output().len() > limit {
             return Err(InflateError::TooLarge);

@@ -94,8 +94,13 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+    /// A parser at `at`; an offset past the end (from a damaged
+    /// cross-reference) starts at the end, where every read fails.
     pub fn new(bytes: &'a [u8], at: usize) -> Parser<'a> {
-        Parser { bytes, at }
+        Parser {
+            bytes,
+            at: at.min(bytes.len()),
+        }
     }
 
     /// Skips whitespace and comments.
