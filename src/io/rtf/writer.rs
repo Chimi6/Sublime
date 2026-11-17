@@ -60,6 +60,9 @@ struct Writer<'a> {
     comments_written: Vec<bool>,
     /// Writing a section that a `\sect` ends.
     section_end: bool,
+    /// The notes being written, innermost last: a note that refers to
+    /// itself, or nests past the limit, gets its mark only.
+    open_notes: Vec<usize>,
 }
 
 /// One `\listoverride`: the list it uses and the number it starts at.
@@ -86,6 +89,7 @@ impl<'a> Writer<'a> {
             authors: Vec::new(),
             comments_written: vec![false; document.comments.len()],
             section_end: false,
+            open_notes: Vec::new(),
         }
     }
 
@@ -740,7 +744,7 @@ impl<'a> Writer<'a> {
     fn list_label(&mut self, instance: usize, item: crate::document::ListItem) -> Option<String> {
         let document = self.document;
         let style = document.styles.list.get(item.style)?;
-        let level = usize::from(item.level);
+        let level = usize::from(item.level).min(8);
         let definition = style.levels.get(level).or_else(|| style.levels.last())?;
         let start = self
             .list_overrides
@@ -751,7 +755,7 @@ impl<'a> Writer<'a> {
         if counters[level] == 0 {
             counters[level] = if level == 0 { start } else { 1 };
         } else {
-            counters[level] += 1;
+            counters[level] = counters[level].saturating_add(1);
         }
         for deeper in counters.iter_mut().skip(level + 1) {
             *deeper = 0;
@@ -877,14 +881,21 @@ impl<'a> Writer<'a> {
         self.out.push('}');
     }
 
-    fn footnote(&mut self, note: usize) {
+    fn footnote(&mut self, index: usize) {
         let document = self.document;
-        let Some(note) = document.footnotes.get(note) else {
+        let Some(note) = document.footnotes.get(index) else {
             return;
         };
+        let too_deep = self.open_notes.len() >= crate::limits::NESTING as usize;
+        if too_deep || self.open_notes.contains(&index) {
+            self.out.push_str("{\\super\\chftn}");
+            return;
+        }
         self.out
             .push_str("{\\super\\chftn}{\\footnote{\\super\\chftn}");
+        self.open_notes.push(index);
         let _ = self.blocks(&note.blocks, Place { depth: 0 }, false);
+        self.open_notes.pop();
         self.out.push('}');
     }
 

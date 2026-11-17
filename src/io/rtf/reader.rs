@@ -1798,7 +1798,9 @@ impl<'a> Reader<'a> {
                 }
             }
             "itap" => {
-                para.depth = value.max(0) as usize;
+                // Word nests tables 64 deep at most; a larger value is
+                // damage, and each level is a table builder.
+                para.depth = value.clamp(0, 64) as usize;
                 para.in_table = value > 0;
             }
             "tqr" => para.tab_alignment = Some(TabAlignment::Right),

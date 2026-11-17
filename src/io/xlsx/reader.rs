@@ -164,9 +164,11 @@ impl<'a> Workbook<'a> {
                     }
                     "sheetData" => in_sheet_data = !self_closing,
                     "row" if in_sheet_data => {
+                        // Past Excel's last row is damage, not a gap to fill.
                         let number = attribute(&attributes, "r")
                             .and_then(|text| text.parse::<u64>().ok())
-                            .unwrap_or(next_row);
+                            .unwrap_or(next_row)
+                            .min(MAX_ROWS);
                         while next_row < number {
                             no_styles.resize(gap.len(), None);
                             on_row(&gap, &no_styles)?;
@@ -343,7 +345,7 @@ fn pad(cells: &mut Vec<String>, width: usize) {
 
 fn read_text(archive: &ZipArchive<'_>, name: &str) -> Option<String> {
     let entry = archive.find(name)?;
-    let mut bytes = Vec::with_capacity(entry.uncompressed_size as usize);
+    let mut bytes = Vec::new();
     archive.read(entry, &mut bytes).ok()?;
     String::from_utf8(bytes).ok()
 }
@@ -557,6 +559,11 @@ fn format_code_is_date(code: &str) -> bool {
     false
 }
 
+/// Excel's last row and column (`XFD1048576`): a reference past them is
+/// damage, and rows and columns are padded out to it.
+const MAX_ROWS: u64 = 1 << 20;
+const MAX_COLUMNS: usize = 1 << 14;
+
 /// `A1` -> 0, `AB12` -> 27.
 fn column_index(reference: &str) -> usize {
     let mut index = 0usize;
@@ -564,7 +571,7 @@ fn column_index(reference: &str) -> usize {
         if !byte.is_ascii_alphabetic() {
             break;
         }
-        index = index * 26 + (byte.to_ascii_uppercase() - b'A') as usize + 1;
+        index = (index * 26 + (byte.to_ascii_uppercase() - b'A') as usize + 1).min(MAX_COLUMNS);
     }
     index.saturating_sub(1)
 }

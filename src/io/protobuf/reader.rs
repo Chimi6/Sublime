@@ -154,8 +154,10 @@ impl<'a> FieldReader<'a> {
     }
 
     /// Skips to the end-group tag matching `number`, nesting allowed, and
-    /// returns the offset where the group's content ends.
+    /// returns the offset where the group's content ends. Inner groups are
+    /// tracked on a stack, not by recursion, so nesting costs no stack.
     fn skip_group(&mut self, number: u32, field_start: usize) -> Result<usize, ProtobufError> {
+        let mut open = vec![number];
         loop {
             if self.position >= self.bytes.len() {
                 return Err(ProtobufError::Truncated {
@@ -164,19 +166,22 @@ impl<'a> FieldReader<'a> {
             }
             let content_end = self.position;
             let (tag, tag_length) = read_varint(self.bytes, self.position)?;
-            if tag & 7 == 4 {
-                self.position += tag_length;
-                if (tag >> 3) as u32 == number {
-                    return Ok(content_end);
+            match tag & 7 {
+                4 => {
+                    self.position += tag_length;
+                    if open.last() == Some(&((tag >> 3) as u32)) {
+                        open.pop();
+                        if open.is_empty() {
+                            return Ok(content_end);
+                        }
+                    }
                 }
-                continue;
-            }
-            match self.read_field()? {
-                Some(_) => {}
-                None => {
-                    return Err(ProtobufError::Truncated {
-                        offset: field_start,
-                    });
+                3 => {
+                    self.position += tag_length;
+                    open.push((tag >> 3) as u32);
+                }
+                _ => {
+                    self.read_field()?;
                 }
             }
         }
@@ -280,6 +285,22 @@ mod tests {
             Some(Err(ProtobufError::Truncated { offset: 0 }))
         );
         assert_eq!(reader.next(), None);
+    }
+
+    #[test]
+    fn deep_groups_are_skipped_without_recursion() {
+        // 300,000 nested starts of group 1 overflowed the stack when each
+        // was skipped by a recursive call.
+        let depth = 300_000;
+        let mut bytes = vec![0x0B; depth];
+        bytes.extend(std::iter::repeat_n(0x0C, depth));
+        let mut reader = FieldReader::new(&bytes);
+        let field = reader.next().unwrap().unwrap();
+        assert_eq!(field.number, 1);
+        assert!(matches!(field.value, Value::Group(inner) if inner.len() == 2 * depth - 2));
+        assert_eq!(reader.next(), None);
+        let truncated = FieldReader::new(&bytes[..depth]).next();
+        assert!(matches!(truncated, Some(Err(_))));
     }
 
     #[test]
