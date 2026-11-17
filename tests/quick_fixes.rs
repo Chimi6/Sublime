@@ -244,3 +244,58 @@ fn bmp_16_bit_alpha_mask_is_kept() {
     let pixels = &pam[pam.len() - 8..];
     assert_eq!(pixels, [255, 0, 0, 255, 255, 0, 0, 0]);
 }
+
+#[test]
+fn korean_and_chinese_legacy_text_is_not_misread_as_japanese() {
+    for (name, from) in [
+        ("korean-euc-kr.txt", "text"),
+        ("korean-euc-kr.csv", "csv"),
+        ("chinese-gbk.txt", "text"),
+        ("chinese-gbk.csv", "csv"),
+        ("chinese-gb18030.txt", "text"),
+    ] {
+        let to = if from == "csv" { "json" } else { "markdown" };
+        let out = convert(from, to, &fixture(name));
+        assert!(!out.status.success(), "{name} was read as Japanese");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("invalid UTF-8"),
+            "{name}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn japanese_legacy_text_still_reads() {
+    let euc = text_of("text", "markdown", &fixture("japanese-euc-jp.txt"));
+    assert!(euc.contains("今朝は雨が降っていました"), "{euc}");
+    let sjis = text_of("text", "markdown", &fixture("japanese-shift-jis.txt"));
+    assert!(sjis.contains("吾輩は猫である"), "{sjis}");
+}
+
+#[test]
+fn iso_2022_jp_reads_in_text_markdown_html_and_csv() {
+    let jis = fixture("japanese-iso-2022-jp.txt");
+    for (from, to, want) in [
+        (
+            "text",
+            "markdown",
+            "日本語のテキストをISO-2022-JPで書き出します",
+        ),
+        (
+            "markdown",
+            "html",
+            "日本語のテキストをISO-2022-JPで書き出します",
+        ),
+        (
+            "html",
+            "markdown",
+            "日本語のテキストをISO-2022-JPで書き出します",
+        ),
+    ] {
+        let out = text_of(from, to, &jis);
+        assert!(out.contains(want), "{from}->{to}: {out}");
+    }
+    let out = text_of("csv", "json", &fixture("japanese-iso-2022-jp.csv"));
+    assert_eq!(out, r#"[{"名前":"あい","値":"1"}]"#);
+}
