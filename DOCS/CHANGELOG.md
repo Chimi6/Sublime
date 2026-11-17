@@ -6,6 +6,22 @@ section under a version heading.
 
 ## [Unreleased]
 
+### Fixed
+
+- Deeply nested input no longer crashes: JSON, JSON Lines, YAML, TOML, and XML nested more than 256 levels are refused with "nested more than 256 levels deep"; Markdown block quotes and lists past 256 levels stay text and emphasis past 256 levels keeps its text without the nesting; tables and text boxes in Word and blocks and spans in OpenDocument past 256 levels are skipped. Each crashed with a stack overflow from a few kilobytes of input, and the browser module from fewer still.
+- A YAML file whose aliases expand exponentially (a "billion laughs") is refused once the copies pass 128 MiB, instead of using all memory.
+- PDFs with a stream whose `/Length` or object stream refers back to itself, an Indexed color space over itself, a cross-reference stream with bad `/W` widths, an object stream with a huge `/N`, predictor parameters that overflow, an image with a huge `/Width` or `/Height`, or an offset past the end of the file no longer crash; decoded streams stop at 512 MiB (Flate, LZW, and RunLength alike, every filter stage counted).
+- A self-referencing or mutually referencing footnote no longer crashes the RTF and ODT writers; the inner reference is written as a mark (RTF) or left out (ODT).
+- Counts from a file can no longer size memory without bound: Word's `w:gridSpan` and `w:gridBefore` (63 at most), list levels past 8, and chart point indices (32,000); Excel cell columns and rows past `XFD1048576`, and style indices the workbook does not define (Excel to Numbers crashed); OpenDocument `text:s` spaces and cell spans (1,024), and copies of repeated table rows and cells; an ODS sheet whose repeats multiply past 134 million cells is refused; Pages and Numbers tables declared larger than they hold; RTF `\itap` table depth (64).
+- Numbers files with a number format of huge digit widths no longer crash.
+- A list numbered with letters or Roman numerals past 780 and 3,999 numbers in decimal (as Word does), instead of writing gigabytes of label text from a huge start value.
+- A Word "Quote" paragraph with a huge indent opens at most 16 block quotes, instead of millions.
+- Ragged Markdown tables stop padding short rows after 524,288 invented cells (cmark-gfm's cap), and HTML `colspan` and `rowspan` filler cells stop at the same count; a 132 KB table had become 879 MB of HTML.
+- ZIP-based formats (Word, Excel, OpenDocument, EPUB, Pages, Numbers) refuse entries that together inflate past 2 GiB, and a ZIP64 size near 2^64 no longer aborts; iWork streams stop at 512 MiB of Snappy output.
+- Images: a PNG, BMP, JPEG, TIFF, Netpbm, QOI, TGA, or WebP animation canvas wider or taller than 1,048,576 pixels, or over 2 GiB as 8-bit RGBA, is refused before anything is allocated (PNG row buffers took gigabytes from 69 bytes; Netpbm, QOI, TGA, and TIFF counted pixels, not bytes); a progressive JPEG whose coefficients would pass 2 GiB, a TIFF strip or tile larger than that, and a HEIC grid whose tiles are not coded pictures (one naming itself crashed) are refused.
+- Conversions run on an 8 MiB stack on every platform (Windows gave the main thread 1 MiB), so the nesting limits hold the same everywhere.
+- The browser module recovers from a trap: a conversion that exhausts the engine's stack or memory returns `failed` with `crashed: true`, the instance is replaced, and later conversions work (one trap broke every later call until the page reloaded).
+
 ## [1.1.0] - 2026-10-31
 
 ### Added

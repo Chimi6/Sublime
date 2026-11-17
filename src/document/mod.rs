@@ -335,8 +335,18 @@ impl NumberFormat {
 
 impl NumberKind {
     /// `number` in this style: 4, d, D, iv, IV. Letters run a..z, then aa..zz
-    /// as Word counts them.
+    /// as Word counts them. Past what each style can write in reason (780,
+    /// thirty `z`s; 3,999, `mmmcmxcix`) a number is decimal, as in Word, so
+    /// a start value from the file cannot make a label of millions.
     pub fn format(self, number: u32) -> String {
+        let too_long = match self {
+            NumberKind::Decimal => false,
+            NumberKind::LowerLetter | NumberKind::UpperLetter => number > 780,
+            NumberKind::LowerRoman | NumberKind::UpperRoman => number > 3999,
+        };
+        if too_long {
+            return number.to_string();
+        }
         match self {
             NumberKind::Decimal => number.to_string(),
             NumberKind::LowerLetter | NumberKind::UpperLetter => {

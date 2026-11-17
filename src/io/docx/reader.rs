@@ -97,6 +97,7 @@ pub fn read_docx(bytes: &[u8]) -> Result<Document, DocxError> {
         section_widths: None,
         in_body_part: false,
         table_depth: 0,
+        depth: crate::limits::Depth::default(),
     };
     // The theme first: styles name its fonts and colours.
     reader.rels = reader.relationships(&document_part);
@@ -150,7 +151,7 @@ fn font_key(text: &str) -> Option<[u8; 16]> {
 
 fn read_text(archive: &ZipArchive<'_>, name: &str) -> Option<String> {
     let entry = archive.find(name)?;
-    let mut bytes = Vec::with_capacity(entry.uncompressed_size as usize);
+    let mut bytes = Vec::new();
     archive.read(entry, &mut bytes).ok()?;
     String::from_utf8(bytes).ok()
 }
@@ -310,6 +311,9 @@ struct Reader<'a> {
     /// How deep in tables the reader is (a nested table's share is of its
     /// cell, not the page).
     table_depth: usize,
+    /// Tables in cells and text boxes in paragraphs: past the nesting
+    /// limit the inner one is skipped.
+    depth: crate::limits::Depth,
 }
 
 impl Reader<'_> {
@@ -923,8 +927,9 @@ impl Reader<'_> {
                     self_closing: false,
                     ..
                 } if in_body => {
-                    let table = self.read_table(&mut reader);
-                    blocks.push(Block::Table(Box::new(table)));
+                    if let Some(table) = self.read_table(&mut reader) {
+                        blocks.push(Block::Table(Box::new(table)));
+                    }
                 }
                 XmlEvent::Start {
                     name: "w:sectPr",
@@ -1106,6 +1111,16 @@ impl Reader<'_> {
 
     /// Paragraphs and tables until the end tag of `until`.
     fn read_blocks(&mut self, reader: &mut XmlReader<'_>, until: &str) -> Vec<Block> {
+        if self.depth.enter().is_err() {
+            skip_element(reader, until);
+            return Vec::new();
+        }
+        let blocks = self.read_blocks_inner(reader, until);
+        self.depth.leave();
+        blocks
+    }
+
+    fn read_blocks_inner(&mut self, reader: &mut XmlReader<'_>, until: &str) -> Vec<Block> {
         let mut blocks = Vec::new();
         while let Some(event) = reader.next() {
             match event {
@@ -1125,8 +1140,9 @@ impl Reader<'_> {
                     self_closing: false,
                     ..
                 } => {
-                    let table = self.read_table(reader);
-                    blocks.push(Block::Table(Box::new(table)));
+                    if let Some(table) = self.read_table(reader) {
+                        blocks.push(Block::Table(Box::new(table)));
+                    }
                 }
                 XmlEvent::Start {
                     name: "w:sdtPr", ..
@@ -2183,11 +2199,17 @@ impl Reader<'_> {
     // ----- tables -----
 
     #[inline(never)]
-    fn read_table(&mut self, reader: &mut XmlReader<'_>) -> Table {
+    /// A table, or nothing (skipped) past the nesting limit.
+    fn read_table(&mut self, reader: &mut XmlReader<'_>) -> Option<Table> {
+        if self.depth.enter().is_err() {
+            skip_element(reader, "w:tbl");
+            return None;
+        }
         self.table_depth += 1;
         let table = self.read_table_inner(reader);
         self.table_depth -= 1;
-        table
+        self.depth.leave();
+        Some(table)
     }
 
     fn read_table_inner(&mut self, reader: &mut XmlReader<'_>) -> Table {
@@ -2324,7 +2346,7 @@ impl Reader<'_> {
                     "w:tblHeader" => is_header = toggle(attribute(&attributes, "w:val")),
                     "w:gridBefore" => {
                         before = attribute(&attributes, "w:val")
-                            .and_then(|value| value.parse().ok())
+                            .and_then(|value| crate::limits::count(value, MAX_COLUMNS))
                             .unwrap_or(0);
                     }
                     "w:trHeight" => {
@@ -2375,8 +2397,9 @@ impl Reader<'_> {
                         }
                     }
                     "w:tbl" if !self_closing => {
-                        let table = self.read_table(reader);
-                        cell.blocks.push(Block::Table(Box::new(table)));
+                        if let Some(table) = self.read_table(reader) {
+                            cell.blocks.push(Block::Table(Box::new(table)));
+                        }
                     }
                     "w:sdtPr" if !self_closing => skip_element(reader, name),
                     "mc:Fallback" if !self_closing => skip_element(reader, name),
@@ -2946,7 +2969,8 @@ impl Reader<'_> {
                         part_of = name;
                     }
                     "c:pt" => {
-                        point = attribute(&attributes, "idx").and_then(|idx| idx.parse().ok())
+                        point = attribute(&attributes, "idx")
+                            .and_then(|idx| crate::limits::count(idx, MAX_POINTS))
                     }
                     "a:t" if in_title => title.push_str(&read_element_text(&mut reader, name)),
                     "c:v" => {
@@ -2984,31 +3008,22 @@ impl Reader<'_> {
             })
             .max()
             .map_or(0, |last| last + 1);
-        let categories = (0..count)
-            .map(|index| {
-                series
-                    .iter()
-                    .find_map(|(_, categories, _)| {
-                        categories
-                            .iter()
-                            .find(|(at, _)| *at == index)
-                            .map(|(_, text)| text.clone())
-                    })
-                    .unwrap_or_default()
-            })
-            .collect();
+        // Placed by index, walking backwards so the first point given for
+        // an index (in the first series that has it) is the one kept.
+        let mut categories = vec![String::new(); count];
+        for (_, points, _) in series.iter().rev() {
+            for (index, text) in points.iter().rev() {
+                categories[*index].clone_from(text);
+            }
+        }
         let series = series
             .into_iter()
-            .map(|(name, _, values)| crate::document::ChartSeries {
-                name,
-                values: (0..count)
-                    .map(|index| {
-                        values
-                            .iter()
-                            .find(|(at, _)| *at == index)
-                            .and_then(|(_, text)| text.parse::<f64>().ok())
-                    })
-                    .collect(),
+            .map(|(name, _, points)| {
+                let mut values = vec![None; count];
+                for (index, text) in points.iter().rev() {
+                    values[*index] = text.parse::<f64>().ok();
+                }
+                crate::document::ChartSeries { name, values }
             })
             .collect();
         let chart = Chart {
@@ -3205,7 +3220,7 @@ impl Reader<'_> {
                 let Some(entry) = self.archive.find(&target) else {
                     continue;
                 };
-                let mut bytes = Vec::with_capacity(entry.uncompressed_size as usize);
+                let mut bytes = Vec::new();
                 if self.archive.read(entry, &mut bytes).is_err() {
                     continue;
                 }
@@ -3232,7 +3247,7 @@ impl Reader<'_> {
             return Some(*id);
         }
         let entry = self.archive.find(&part)?;
-        let mut bytes = Vec::with_capacity(entry.uncompressed_size as usize);
+        let mut bytes = Vec::new();
         self.archive.read(entry, &mut bytes).ok()?;
         let name = part.rsplit('/').next().unwrap_or(&part).to_string();
         let id = self.document.media.len();
@@ -3411,6 +3426,12 @@ fn read_abstract_numbering(reader: &mut XmlReader<'_>, id: i64) -> AbstractNumbe
                     let level_index: usize = attribute(&attributes, "w:ilvl")
                         .and_then(|value| value.parse().ok())
                         .unwrap_or(numbering.levels.len());
+                    // Word defines levels 0 to 8; a level past them is
+                    // damage, and the level list is sized by it.
+                    if level_index > 8 {
+                        skip_element(reader, "w:lvl");
+                        continue;
+                    }
                     let (level, start) = read_level(reader, level_index);
                     while numbering.levels.len() <= level_index {
                         numbering.levels.push(ListLevel::default());
@@ -3583,8 +3604,8 @@ fn read_cell_properties(reader: &mut XmlReader<'_>) -> CellProperties {
             } => match name {
                 "w:gridSpan" => {
                     span = attribute(&attributes, "w:val")
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(1);
+                        .and_then(|value| crate::limits::count(value, MAX_COLUMNS))
+                        .map_or(1, |span| span as u32);
                 }
                 "w:vMerge" => {
                     merge = match attribute(&attributes, "w:val") {
@@ -3825,6 +3846,14 @@ fn is_raster(name: &str) -> bool {
 
 /// A footer line's height, to place what sits on it from the page foot.
 const FOOTER_LINE: f32 = 14.0;
+
+/// The most points a chart series holds (Excel's 32,000), so a point
+/// index from the file cannot size the chart's table.
+const MAX_POINTS: usize = 32_000;
+
+/// The most grid columns a cell spans or a row skips: Word's 63, so a
+/// span from the file cannot become billions of covered cells.
+const MAX_COLUMNS: usize = 63;
 
 fn parse_color(value: &str) -> Option<Color> {
     let hex = value.trim_start_matches('#');

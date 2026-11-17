@@ -8,9 +8,11 @@ use crate::io::deflate::{Inflater, Progress, inflate};
 use crate::io::pdf::PdfError;
 use crate::io::pdf::object::{Dictionary, Object};
 use crate::io::png::reader::unfilter_row;
+use crate::limits::Budget;
 
-/// Decoded data is capped here (a stream claiming more is refused).
-const LIMIT: usize = 1 << 31;
+/// What one stream's filters may produce, every stage counted, so a chain
+/// of small bombs cannot multiply (512 MiB).
+const STREAM_BUDGET: u64 = crate::limits::BUDGET / 4;
 
 fn fail(message: impl Into<String>) -> PdfError {
     PdfError(message.into())
@@ -54,9 +56,11 @@ pub fn ends_in_dct(dictionary: &Dictionary) -> bool {
 /// Applies every filter but a final DCT.
 pub fn decode(dictionary: &Dictionary, raw: &[u8]) -> Result<Vec<u8>, PdfError> {
     let mut data = raw.to_vec();
+    let mut budget = Budget::new(STREAM_BUDGET);
     for (name, parameters) in filters(dictionary) {
+        let limit = budget.left() as usize;
         data = match name.as_slice() {
-            b"FlateDecode" | b"Fl" => predict(flate(&data)?, parameters.as_ref())?,
+            b"FlateDecode" | b"Fl" => predict(flate(&data, limit)?, parameters.as_ref())?,
             b"LZWDecode" | b"LZW" => {
                 let early = parameters
                     .as_ref()
@@ -64,21 +68,29 @@ pub fn decode(dictionary: &Dictionary, raw: &[u8]) -> Result<Vec<u8>, PdfError> 
                     .and_then(Object::as_integer)
                     .unwrap_or(1)
                     != 0;
-                let decoded = crate::io::lzw::decode(&data, None, early)
+                let decoded = crate::io::lzw::decode(&data, Some(limit), early)
                     .map_err(|failure| fail(format!("PDF {failure}")))?;
+                if decoded.len() >= limit {
+                    return Err(over_budget());
+                }
                 predict(decoded, parameters.as_ref())?
             }
             b"ASCIIHexDecode" | b"AHx" => ascii_hex(&data)?,
             b"ASCII85Decode" | b"A85" => ascii85(&data)?,
-            b"RunLengthDecode" | b"RL" => run_length(&data)?,
+            b"RunLengthDecode" | b"RL" => run_length(&data, limit)?,
             b"DCTDecode" | b"DCT" => return Ok(data),
             other => {
                 let other = String::from_utf8_lossy(other);
                 return Err(fail(format!("the PDF filter /{other} is not supported")));
             }
         };
+        budget.take(data.len() as u64).map_err(|_| over_budget())?;
     }
     Ok(data)
+}
+
+fn over_budget() -> PdfError {
+    fail("PDF stream decodes past the 512 MiB limit")
 }
 
 /// Inflated output asked for per push.
@@ -166,11 +178,9 @@ impl Predictor {
         if predictor < 2 {
             return Some(Predictor::None);
         }
-        let colors = number(b"Colors", 1).max(1) as usize;
-        let bits = number(b"BitsPerComponent", 8).max(1) as usize;
-        let columns = number(b"Columns", 1).max(1) as usize;
-        let unit = (colors * bits).div_ceil(8).max(1);
-        if (colors * bits * columns).div_ceil(8) != stride || !matches!(unit, 1..=4 | 6 | 8) {
+        let bits = number(b"BitsPerComponent", 8);
+        let (unit, row) = predictor_shape(&number)?;
+        if row != stride || !matches!(unit, 1..=4 | 6 | 8) {
             return None;
         }
         match predictor {
@@ -179,6 +189,15 @@ impl Predictor {
             _ => None,
         }
     }
+}
+
+/// A predictor's bytes per pixel and per row from `/Colors`,
+/// `/BitsPerComponent` and `/Columns`, or `None` when they overflow.
+fn predictor_shape(number: &dyn Fn(&[u8], i64) -> i64) -> Option<(usize, usize)> {
+    let factor = |key: &[u8], default: i64| usize::try_from(number(key, default).max(1)).ok();
+    let pixel = factor(b"Colors", 1)?.checked_mul(factor(b"BitsPerComponent", 8)?)?;
+    let row = pixel.checked_mul(factor(b"Columns", 1)?)?.div_ceil(8);
+    Some((pixel.div_ceil(8).max(1), row))
 }
 
 /// Flate data inflated a row at a time, its predictor undone as it goes.
@@ -258,11 +277,13 @@ fn zlib_body(data: &[u8]) -> &[u8] {
     }
 }
 
-fn flate(data: &[u8]) -> Result<Vec<u8>, PdfError> {
+fn flate(data: &[u8], limit: usize) -> Result<Vec<u8>, PdfError> {
     let body = zlib_body(data);
     let mut out = Vec::new();
-    inflate(body, &mut out, LIMIT)
-        .map_err(|failure| fail(format!("bad PDF Flate data: {failure:?}")))?;
+    inflate(body, &mut out, limit).map_err(|failure| match failure {
+        crate::io::deflate::InflateError::TooLarge => over_budget(),
+        failure => fail(format!("bad PDF Flate data: {failure:?}")),
+    })?;
     Ok(out)
 }
 
@@ -281,11 +302,13 @@ fn predict(data: Vec<u8>, parameters: Option<&Dictionary>) -> Result<Vec<u8>, Pd
     if predictor < 2 {
         return Ok(data);
     }
-    let colors = number(b"Colors", 1).max(1) as usize;
-    let bits = number(b"BitsPerComponent", 8).max(1) as usize;
-    let columns = number(b"Columns", 1).max(1) as usize;
-    let unit = (colors * bits).div_ceil(8).max(1);
-    let stride = (colors * bits * columns).div_ceil(8);
+    if data.is_empty() {
+        return Ok(data);
+    }
+    let (unit, stride) = predictor_shape(&number)
+        .filter(|(_, stride)| *stride <= data.len())
+        .ok_or_else(|| fail("PDF predictor parameters do not fit the data"))?;
+    let bits = number(b"BitsPerComponent", 8);
     if predictor == 2 {
         if bits != 8 {
             return Err(fail("PDF TIFF predictor below 8 bits is not supported"));
@@ -406,10 +429,13 @@ fn ascii85(data: &[u8]) -> Result<Vec<u8>, PdfError> {
     Ok(out)
 }
 
-fn run_length(data: &[u8]) -> Result<Vec<u8>, PdfError> {
+fn run_length(data: &[u8], limit: usize) -> Result<Vec<u8>, PdfError> {
     let mut out = Vec::new();
     let mut at = 0;
     while at < data.len() {
+        if out.len() > limit {
+            return Err(over_budget());
+        }
         let length = data[at];
         at += 1;
         match length {
@@ -489,7 +515,7 @@ mod tests {
             assert_eq!(streamed, whole);
         }
         assert_eq!(
-            run_length(&[2, b'a', b'b', b'c', 254, b'x', 128]).unwrap(),
+            run_length(&[2, b'a', b'b', b'c', 254, b'x', 128], usize::MAX).unwrap(),
             b"abcxxx"
         );
     }

@@ -24,7 +24,8 @@ corrupt files are refused.
 
 Chunks are decoded as the input arrives, a 64 KiB piece at a time; a
 row goes to the sink as it completes. The colorspace byte is
-informative and ignored. Images over 2^31 pixels, zero dimensions, and
+informative and ignored. Images over 2 GiB as 8-bit RGBA or 2^20 pixels
+on a side, zero dimensions, and
 channel counts other than 3 and 4 are refused; data that ends before
 the last pixel is an error. A missing end marker is not.
 

@@ -226,13 +226,14 @@ impl<'a> Emitter<'a, '_> {
             self.close_lists(0);
             return;
         }
-        // A quote's depth is its indent in quote steps, at least one.
+        // A quote's depth is its indent in quote steps, at least one; an
+        // indent from the file could otherwise open millions.
         let wanted_depth = if kind == StyleKind::Quote {
             let indent = self
                 .effective_paragraph(paragraph)
                 .left_indent
                 .unwrap_or(0.0);
-            ((indent / QUOTE_INDENT).round() as u32).max(1)
+            ((indent / QUOTE_INDENT).round() as u32).clamp(1, 16)
         } else {
             0
         };

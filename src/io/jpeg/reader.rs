@@ -1349,6 +1349,15 @@ impl Decoder<'_> {
     /// position of it for progressive ones (libjpeg's `jdphuff`).
     fn buffered_scan(&mut self, frame: &Frame, scan: &Scan) -> Result<(), JpegError> {
         if self.coefficients.is_empty() {
+            // Two bytes a coefficient over padded planes: the frame's size
+            // check counts eight-bit output, which is less than half this.
+            let mut budget = crate::limits::Budget::default();
+            for component in &frame.components {
+                let blocks = (component.blocks_wide as u64) * (component.blocks_high as u64);
+                if budget.take(blocks * 128).is_err() {
+                    return fail("image is too large");
+                }
+            }
             self.coefficients = frame
                 .components
                 .iter()

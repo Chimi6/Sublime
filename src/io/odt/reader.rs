@@ -67,6 +67,8 @@ pub fn read_odt(bytes: &[u8]) -> Result<Document, OdtError> {
         changes: HashMap::new(),
         comments: HashMap::new(),
         pending: Vec::new(),
+        depth: crate::limits::Depth::default(),
+        copies: crate::limits::Budget::new(1 << 20),
         default_list: None,
         last_master: "Standard".to_string(),
         replies: Vec::new(),
@@ -200,6 +202,11 @@ struct Reader<'z> {
     /// Blocks met inside a paragraph (text boxes, shapes' text) that
     /// follow it.
     pending: Vec<Block>,
+    /// Blocks in blocks and spans in spans: past the nesting limit the
+    /// inner element is skipped.
+    depth: crate::limits::Depth,
+    /// Cells and blocks that repeated rows and cells may still copy.
+    copies: crate::limits::Budget,
     default_list: Option<StyleId>,
     /// The master page of the section being filled.
     last_master: String,
@@ -925,6 +932,23 @@ impl Reader<'_> {
         self_closing: bool,
         blocks: &mut Vec<Block>,
     ) {
+        if !self_closing && self.depth.enter().is_err() {
+            return skip(reader, name);
+        }
+        self.read_block_in(reader, name, attributes, self_closing, blocks);
+        if !self_closing {
+            self.depth.leave();
+        }
+    }
+
+    fn read_block_in(
+        &mut self,
+        reader: &mut XmlReader<'_>,
+        name: &str,
+        attributes: &[(&str, std::borrow::Cow<'_, str>)],
+        self_closing: bool,
+        blocks: &mut Vec<Block>,
+    ) {
         match name {
             "text:p" | "text:h" => {
                 let paragraph = self.read_paragraph(reader, name, attributes, self_closing, None);
@@ -1029,7 +1053,13 @@ impl Reader<'_> {
                                 attributes,
                                 self_closing: false,
                             } => {
-                                self.read_list(reader, &attributes, level + 1, Some(style), blocks)
+                                if self.depth.enter().is_err() {
+                                    skip(reader, "text:list");
+                                    continue;
+                                }
+                                let level = level.saturating_add(1);
+                                self.read_list(reader, &attributes, level, Some(style), blocks);
+                                self.depth.leave();
                             }
                             XmlEvent::Start {
                                 name: paragraph @ ("text:p" | "text:h"),
@@ -1173,6 +1203,24 @@ impl Reader<'_> {
         para: &mut Para,
         style: RunStyle,
     ) {
+        if !self_closing && self.depth.enter().is_err() {
+            return skip(reader, name);
+        }
+        self.read_inline_in(reader, name, attributes, self_closing, para, style);
+        if !self_closing {
+            self.depth.leave();
+        }
+    }
+
+    fn read_inline_in(
+        &mut self,
+        reader: &mut XmlReader<'_>,
+        name: &str,
+        attributes: &[(&str, std::borrow::Cow<'_, str>)],
+        self_closing: bool,
+        para: &mut Para,
+        style: RunStyle,
+    ) {
         match name {
             "text:span" => {
                 let mut inner = style;
@@ -1200,7 +1248,7 @@ impl Reader<'_> {
             }
             "text:s" => {
                 let count = attribute(attributes, "text:c")
-                    .and_then(|count| count.parse::<usize>().ok())
+                    .and_then(|count| crate::limits::count(count, MAX_REPEAT))
                     .unwrap_or(1);
                 self.push_literal(para, style, &" ".repeat(count));
                 para.space = true;
@@ -1787,6 +1835,9 @@ impl Reader<'_> {
                         .min(1024);
                     let row = self.read_row(reader, height);
                     for _ in 0..repeated {
+                        if self.copies.take(copy_cost(&row.0.cells)).is_err() {
+                            break;
+                        }
                         grid.push(row.clone());
                         if in_header {
                             table.header_rows += 1;
@@ -1831,14 +1882,18 @@ impl Reader<'_> {
                     self_closing,
                 } => {
                     let covered = element == "table:covered-table-cell";
-                    let columns = attribute(&attributes, "table:number-columns-spanned")
-                        .and_then(|count| count.parse::<u32>().ok())
-                        .unwrap_or(1)
-                        .max(1);
-                    let rows = attribute(&attributes, "table:number-rows-spanned")
-                        .and_then(|count| count.parse::<u32>().ok())
-                        .unwrap_or(1)
-                        .max(1);
+                    // A span past what any table holds is damage; writers
+                    // walk the columns a span covers.
+                    let span = |key: &str| {
+                        attribute(&attributes, key)
+                            .and_then(|count| crate::limits::count(count, MAX_REPEAT))
+                            .unwrap_or(1)
+                            .max(1) as u32
+                    };
+                    let (columns, rows) = (
+                        span("table:number-columns-spanned"),
+                        span("table:number-rows-spanned"),
+                    );
                     let repeated = attribute(&attributes, "table:number-columns-repeated")
                         .and_then(|count| count.parse::<usize>().ok())
                         .unwrap_or(1)
@@ -1868,6 +1923,13 @@ impl Reader<'_> {
                         margins: style.padding,
                     };
                     for _ in 0..repeated {
+                        if self
+                            .copies
+                            .take(copy_cost(std::slice::from_ref(&cell)))
+                            .is_err()
+                        {
+                            break;
+                        }
                         row.cells.push(cell.clone());
                         spans.push((columns, rows, covered));
                     }
@@ -1880,6 +1942,16 @@ impl Reader<'_> {
         }
         (row, spans)
     }
+}
+
+/// The most a count from the file repeats (spaces, rows, cells, spans).
+const MAX_REPEAT: usize = 1024;
+
+/// What a repeated row or cell costs to copy: a unit per cell and per
+/// block in it. Repeats copy their content, and the two 1024 caps
+/// multiply, so all copies share one budget (`Reader::copies`).
+fn copy_cost(cells: &[Cell]) -> u64 {
+    cells.iter().map(|cell| 1 + cell.blocks.len() as u64).sum()
 }
 
 /// A row's cells' column and row spans, and whether each is covered.

@@ -5,7 +5,7 @@
 
 use std::io::{self, Read, Write};
 
-use crate::image::{ColorType, Image, MAX_PIXELS, flatten, luma_of};
+use crate::image::{ColorType, Image, flatten, luma_of};
 use crate::io::png::{Collect, PngError, RowSink, RowsError};
 
 /// Input read and output written in pieces this large.
@@ -193,7 +193,7 @@ fn read_header(source: &mut Source<'_>) -> Result<Layout, RowsError> {
     if layout.width == 0 || layout.height == 0 {
         return fail("Netpbm image has no pixels");
     }
-    if u64::from(layout.width) * u64::from(layout.height) > MAX_PIXELS {
+    if !Image::dimensions_fit(layout.width, layout.height, 4) {
         return fail("Netpbm image too large");
     }
     if layout.maxval == 0 || layout.maxval > 65_535 {

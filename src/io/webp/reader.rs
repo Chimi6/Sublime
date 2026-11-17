@@ -192,6 +192,13 @@ fn decode_frame(
             "no image in the first animation frame".to_string(),
         )));
     }
+    // The canvas comes from `VP8X` alone (up to 2^24 a side), and every
+    // one of its rows is written.
+    if !Image::dimensions_fit(canvas_width, canvas_height, 4) {
+        return Err(to_rows(WebpError(
+            "animation canvas is too large".to_string(),
+        )));
+    }
     sink.start(canvas_width, canvas_height, ColorType::Rgba)?;
     let channels = piece.color.channels();
     let mut row = vec![0u8; canvas_width as usize * 4];

@@ -263,6 +263,9 @@ impl<'a> Renderer<'_, 'a> {
         let column_count = data.alignments.len();
         self.sink
             .event(Event::Start(Tag::Table(data.alignments.to_vec())));
+        // Short rows are padded to the header's width until the padding
+        // passes the cap; later short rows keep only their own cells.
+        let mut padding = crate::limits::Budget::new(crate::limits::FILLER_CELLS);
         let mut rows = data.rows();
         if let Some(header) = rows.next() {
             self.sink.event(Event::Start(Tag::TableHead));
@@ -271,7 +274,12 @@ impl<'a> Renderer<'_, 'a> {
         }
         for row in rows {
             self.sink.event(Event::Start(Tag::TableRow));
-            self.table_cells(row, column_count);
+            let missing = column_count.saturating_sub(row.len());
+            let width = match padding.take(missing as u64) {
+                Ok(()) => column_count,
+                Err(_) => row.len().min(column_count),
+            };
+            self.table_cells(row, width);
             self.sink.event(Event::End(TagEnd::TableRow));
         }
         self.sink.event(Event::End(TagEnd::Table));
@@ -502,6 +510,8 @@ struct InlineParser<'t, 'd> {
     references: &'d HashMap<String, Reference>,
     footnotes: &'d HashMap<String, String>,
     options: Options,
+    /// Spans open while emitting: past the limit the rest is flattened.
+    depth: crate::limits::Depth,
 }
 
 const SPECIAL: [bool; 256] = {
@@ -544,6 +554,7 @@ impl<'t, 'd> InlineParser<'t, 'd> {
             references: &document.references,
             footnotes: &document.footnote_labels,
             options,
+            depth: crate::limits::Depth::default(),
         }
     }
 
@@ -1470,10 +1481,32 @@ impl<'t, 'd> InlineParser<'t, 'd> {
     }
 
     fn emit_container<F: FnMut(Event<'t>)>(&mut self, node: usize, tag: Tag<'t>, events: &mut F) {
+        if self.depth.enter().is_err() {
+            self.emit_flat(node, events);
+            return;
+        }
         let end = tag.end();
         events(Event::Start(tag));
         self.emit_children(node, events);
         events(Event::End(end));
+        self.depth.leave();
+    }
+
+    /// The leaves under `node` without their spans, walked with a stack:
+    /// emphasis nested past the limit keeps its text, not its nesting.
+    fn emit_flat<F: FnMut(Event<'t>)>(&mut self, node: usize, events: &mut F) {
+        let mut stack = vec![node];
+        while let Some(parent) = stack.pop() {
+            if parent != node && self.nodes[parent].first_child == NO_NODE {
+                self.emit_node(parent, events);
+                continue;
+            }
+            let mut child = link_get(self.nodes[parent].last_child);
+            while let Some(at) = child {
+                stack.push(at);
+                child = link_get(self.nodes[at].prev);
+            }
+        }
     }
 }
 

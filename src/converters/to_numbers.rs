@@ -218,6 +218,9 @@ fn workbook_table(workbook: &Workbook, sheet: usize) -> Result<NumbersTable, Con
         for style in styles {
             let key = match *style {
                 None => 0,
+                // A style the workbook does not define (or one with no
+                // format) has nothing to keep; its index may be anything.
+                Some(style) if workbook.style_format(style).is_none() => 0,
                 Some(style) => {
                     if keys.len() <= style {
                         keys.resize(style + 1, None);

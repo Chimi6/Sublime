@@ -40,7 +40,9 @@ TOML beside it and reports its dropped nulls.
 | `true`, `false` | booleans |
 | comments, CRLF line endings, a leading BOM | skipped |
 
-Refused, with the line and column: a key or table defined twice, a
+Refused, with the line and column: values nested more than 256 deep
+(header and dotted-key segments, arrays, and inline tables together), a
+key or table defined twice, a
 header on a table that dotted keys defined, dotted keys into a table a
 header defined, an inline table or static array extended later, a value
 on the same line as another, leading zeros, a bare fraction (`.5`),

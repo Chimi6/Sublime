@@ -117,6 +117,12 @@ time, the soft mask alongside, so a page reads in about the file's size
 plus a few rows. JPEG images and other filter chains decode whole
 first.
 
+Hostile files are bounded: a stream's filters stop at 512 MiB (every
+stage of a chain counted), lookups that lead back to themselves (a
+`/Length` or an object stream that refers to itself) stop after 16
+levels, an Indexed color space over Indexed is refused, and an image
+wider or taller than 2^20 pixels or over 2 GiB as RGB is refused.
+
 ## What the text reader does
 
 | Part | Handling |

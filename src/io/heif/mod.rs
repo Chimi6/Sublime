@@ -258,12 +258,18 @@ impl Grid {
             (usize::from(reader.u16()?), usize::from(reader.u16()?))
         };
         // A gigapixel and more is refused before anything is decoded.
-        if width == 0 || height == 0 || width * height > 1 << 30 {
+        if width == 0 || height == 0 || width as u64 * height as u64 > 1 << 30 {
             return Err(HeifError::new("a grid too large to read"));
         }
         let tiles = meta.referenced(b"dimg", item.id);
         if tiles.len() != rows * columns {
             return Err(HeifError::new("a grid without one tile per cell"));
+        }
+        // A tile is a coded picture: a grid in a grid (or one naming
+        // itself) would recurse without end.
+        let coded = |tile: &u32| meta.item(*tile).is_some_and(|tile| &tile.kind == b"hvc1");
+        if !tiles.iter().all(coded) {
+            return Err(HeifError::new("a grid tile that is not a coded picture"));
         }
         Ok(Grid {
             rows,

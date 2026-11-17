@@ -13,6 +13,7 @@
 
 use crate::converter::Location;
 use crate::io::json::from_tree::compact_text;
+use crate::limits::{BUDGET, Budget, Depth, LimitError};
 use crate::value::{Data, MemberIndex, Span, Tree, push_float};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +85,15 @@ struct Lookahead {
     is_comment: bool,
 }
 
+/// The collections a node can open, each a level of nesting.
+#[derive(Clone, Copy)]
+enum Collection {
+    BlockSequence,
+    BlockMapping,
+    FlowSequence,
+    FlowMapping,
+}
+
 struct Parser<'a> {
     text: &'a str,
     bytes: &'a [u8],
@@ -95,6 +105,9 @@ struct Parser<'a> {
     anchors: Vec<(String, u32)>,
     notes: Vec<String>,
     flow_depth: u32,
+    depth: Depth,
+    /// Node bytes that aliases and merges may still copy.
+    copies: Budget,
 }
 
 impl<'a> Parser<'a> {
@@ -111,6 +124,8 @@ impl<'a> Parser<'a> {
             anchors: Vec::new(),
             notes: Vec::new(),
             flow_depth: 0,
+            depth: Depth::default(),
+            copies: Budget::new(BUDGET / 16),
         }
     }
 
@@ -134,6 +149,32 @@ impl<'a> Parser<'a> {
         self.tree.nodes[node as usize].key = self.tree.intern(key);
         self.tree.append(table, node);
         self.index.record(&self.tree, table, node);
+    }
+
+    /// Parses one collection a level deeper, refusing past the nesting
+    /// limit before the stack runs out. `indent` is a block collection's.
+    fn nested(&mut self, collection: Collection, indent: i64) -> Result<u32, YamlError> {
+        if self.depth.enter().is_err() {
+            return self.error(LimitError::TooDeep.message());
+        }
+        let node = match collection {
+            Collection::BlockSequence => self.block_sequence(indent),
+            Collection::BlockMapping => self.block_mapping(indent),
+            Collection::FlowSequence => self.flow_sequence(),
+            Collection::FlowMapping => self.flow_mapping(),
+        };
+        self.depth.leave();
+        node
+    }
+
+    /// Charges the nodes an alias or merge copied since the tree held
+    /// `before`: nested aliases grow exponentially (a billion laughs).
+    fn charge_copies(&mut self, before: usize) -> Result<(), YamlError> {
+        let copied = (self.tree.nodes.len() - before) * std::mem::size_of::<crate::value::Node>();
+        match self.copies.take(copied as u64) {
+            Ok(()) => Ok(()),
+            Err(_) => self.error("aliases expand past the limit"),
+        }
     }
 
     // ---- errors and position ----
@@ -500,12 +541,12 @@ impl<'a> Parser<'a> {
         let column = self.column() as i64;
         let compact_sequence = after != After::MapValue && self.dash_entry_at(self.pos);
         if compact_sequence {
-            let node = self.block_sequence(column)?;
+            let node = self.nested(Collection::BlockSequence, column)?;
             return self.finish_properties(props, node);
         }
         let compact_mapping = after != After::MapValue && self.block_mapping_starts_here();
         if compact_mapping {
-            let node = self.block_mapping(column)?;
+            let node = self.nested(Collection::BlockMapping, column)?;
             return self.finish_properties(props, node);
         }
         self.inline_node(parent_indent, props)
@@ -515,10 +556,10 @@ impl<'a> Parser<'a> {
     /// column `indent`.
     fn block_node(&mut self, indent: i64, parent_indent: i64) -> Result<u32, YamlError> {
         if self.dash_entry_at(self.pos) {
-            return self.block_sequence(indent);
+            return self.nested(Collection::BlockSequence, indent);
         }
         if self.block_mapping_starts_here() {
-            return self.block_mapping(indent);
+            return self.nested(Collection::BlockMapping, indent);
         }
         let props = self.properties()?;
         self.skip_spaces();
@@ -753,7 +794,7 @@ impl<'a> Parser<'a> {
                 _ => break,
             }
         }
-        self.resolve_merges(table, merges);
+        self.resolve_merges(table, merges)?;
         Ok(table)
     }
 
@@ -783,7 +824,8 @@ impl<'a> Parser<'a> {
 
     /// Applies `<<` merges: a mapping's own keys win wherever they sit;
     /// merged keys take the merge's position, earlier sources first.
-    fn resolve_merges(&mut self, table: u32, merges: Vec<(u32, u32)>) {
+    fn resolve_merges(&mut self, table: u32, merges: Vec<(u32, u32)>) -> Result<(), YamlError> {
+        let before = self.tree.nodes.len();
         for (placeholder, source) in merges {
             let sources: Vec<u32> = match self.tree.data(source) {
                 Data::Array(_) => self.tree.children(source).collect(),
@@ -807,6 +849,7 @@ impl<'a> Parser<'a> {
             }
             self.tree.unlink(table, placeholder);
         }
+        self.charge_copies(before)
     }
 
     /// A single-line key: plain (as written), quoted, or an alias.
@@ -869,8 +912,8 @@ impl<'a> Parser<'a> {
                 let node = self.alias()?;
                 return self.finish_properties(props, node);
             }
-            Some(b'[') => self.flow_sequence()?,
-            Some(b'{') => self.flow_mapping()?,
+            Some(b'[') => self.nested(Collection::FlowSequence, 0)?,
+            Some(b'{') => self.nested(Collection::FlowMapping, 0)?,
             Some(b'"') => {
                 self.pos += 1;
                 let text = self.double_quoted()?;
@@ -1058,7 +1101,12 @@ impl<'a> Parser<'a> {
             .find(|(anchor, _)| anchor == name)
             .map(|(_, node)| *node);
         match anchored {
-            Some(node) => Ok(self.tree.copy_subtree(node)),
+            Some(node) => {
+                let before = self.tree.nodes.len();
+                let copy = self.tree.copy_subtree(node);
+                self.charge_copies(before)?;
+                Ok(copy)
+            }
             None => Err(self.error_at(start, "unknown anchor")),
         }
     }
@@ -1546,7 +1594,7 @@ impl<'a> Parser<'a> {
         }
         self.pos += 1;
         self.flow_depth -= 1;
-        self.resolve_merges(table, merges);
+        self.resolve_merges(table, merges)?;
         Ok(table)
     }
 

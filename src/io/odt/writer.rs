@@ -213,6 +213,9 @@ struct OdtWriter<'d> {
     graphic_styles: String,
     frames: usize,
     notes: usize,
+    /// The notes being written: a note that refers to itself, or nests
+    /// past the limit, is left out of its own body.
+    open_notes: Vec<usize>,
     /// Tracked changes, in order, and the model's revision ids to them.
     changes: Vec<ChangeRegion>,
     change_ids: HashMap<u32, usize>,
@@ -240,6 +243,7 @@ impl<'d> OdtWriter<'d> {
             graphic_styles: String::new(),
             frames: 0,
             notes: 0,
+            open_notes: Vec::new(),
             changes: Vec::new(),
             change_ids: HashMap::new(),
             column_sections: String::new(),
@@ -637,6 +641,9 @@ impl<'d> OdtWriter<'d> {
                 );
                 *after_space = false;
             }
+            Inline::Footnote(note)
+                if self.open_notes.contains(&note)
+                    || self.open_notes.len() >= crate::limits::NESTING as usize => {}
             Inline::Footnote(note) => {
                 self.notes += 1;
                 let _ = write!(
@@ -644,9 +651,11 @@ impl<'d> OdtWriter<'d> {
                     "<text:note text:id=\"ftn{}\" text:note-class=\"footnote\"><text:note-citation>{}</text:note-citation><text:note-body>",
                     self.notes, self.notes
                 );
-                if let Some(note) = document.footnotes.get(note) {
+                if let Some(body) = document.footnotes.get(note) {
                     let mut none = None;
-                    self.blocks(&note.blocks, out, &mut none);
+                    self.open_notes.push(note);
+                    self.blocks(&body.blocks, out, &mut none);
+                    self.open_notes.pop();
                 }
                 out.push_str("</text:note-body></text:note>");
                 *after_space = false;

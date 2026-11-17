@@ -32,6 +32,9 @@ pub struct Document<'a> {
     trailer: Dictionary,
     /// Decoded object streams, by object number.
     object_streams: RefCell<HashMap<u32, Vec<(u32, Object)>>>,
+    /// Lookups under way: a stream's `/Length` or an object stream that
+    /// leads back to itself is refused instead of overflowing the stack.
+    lookups: std::cell::Cell<u32>,
 }
 
 impl<'a> Document<'a> {
@@ -43,6 +46,7 @@ impl<'a> Document<'a> {
             bytes,
             entries: HashMap::new(),
             trailer: Dictionary::default(),
+            lookups: std::cell::Cell::new(0),
             object_streams: RefCell::new(HashMap::new()),
         };
         let read = document.read_cross_references();
@@ -141,11 +145,17 @@ impl<'a> Document<'a> {
                 items
                     .iter()
                     .filter_map(Object::as_integer)
-                    .map(|w| w as usize)
+                    .map(|w| {
+                        usize::try_from(w)
+                            .ok()
+                            .filter(|w| *w <= 8)
+                            .unwrap_or(usize::MAX)
+                    })
                     .collect()
             })
             .unwrap_or_default();
-        if widths.len() != 3 {
+        // A field is at most 8 bytes; a negative or larger width is damage.
+        if widths.len() != 3 || widths.contains(&usize::MAX) {
             return Err(fail("bad cross-reference stream widths"));
         }
         let size = dictionary
@@ -165,7 +175,7 @@ impl<'a> Document<'a> {
         };
         let mut rows = data.chunks_exact(row.max(1));
         for pair in index.chunks_exact(2) {
-            for number in pair[0]..pair[0] + pair[1] {
+            for number in pair[0]..pair[0].saturating_add(pair[1]) {
                 let Some(entry) = rows.next() else { break };
                 let kind = if widths[0] == 0 {
                     1
@@ -290,7 +300,8 @@ impl<'a> Document<'a> {
             .unwrap_or(0)
             .max(0) as usize;
         let mut header = Parser::new(&data, 0);
-        let mut places = Vec::with_capacity(count);
+        // Each entry takes at least two bytes, whatever `/N` claims.
+        let mut places = Vec::with_capacity(count.min(data.len() / 2));
         for _ in 0..count {
             let number = header
                 .object()?
@@ -302,7 +313,7 @@ impl<'a> Document<'a> {
                 .ok_or_else(|| fail("bad object stream"))? as usize;
             places.push((number, offset));
         }
-        let mut objects = Vec::with_capacity(count);
+        let mut objects = Vec::with_capacity(places.len());
         for (number, offset) in places {
             let object = Parser::new(&data, first + offset).object()?;
             objects.push((number, object));
@@ -315,6 +326,17 @@ impl<'a> Document<'a> {
 
     /// An object by number. A stream's range is into the file's bytes.
     pub fn get(&self, number: u32) -> Result<Object, PdfError> {
+        let lookups = self.lookups.get();
+        if lookups >= 16 {
+            return Err(fail("PDF objects refer to each other in a loop"));
+        }
+        self.lookups.set(lookups + 1);
+        let object = self.get_in(number);
+        self.lookups.set(lookups);
+        object
+    }
+
+    fn get_in(&self, number: u32) -> Result<Object, PdfError> {
         match self.entries.get(&number) {
             Some(Entry::Offset(offset)) => {
                 let bytes = self.bytes;

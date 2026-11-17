@@ -17,6 +17,16 @@ use crate::document::{FloatingContent, FloatingObject, Id, Revision, RevisionKin
 use crate::io::protobuf::reader::{FieldReader, Value};
 use crate::io::protobuf::tree::{Node, Tree};
 
+/// The most cells a document table builds (each is a full cell) and a
+/// sheet emits: the declared row and column counts are each capped, but
+/// their product would be billions.
+const TABLE_CELLS: usize = 1 << 20;
+const SHEET_CELLS: usize = 1 << 27;
+
+/// The widest digit run and longest custom format a number format keeps.
+const FORMAT_WIDTH: u32 = 64;
+const FORMAT_LENGTH: usize = 1024;
+
 /// Pages marks a line break, a page break, and an attachment with these.
 const LINE_SEPARATOR: char = '\u{2028}';
 const PAGE_BREAK: char = '\u{5}';
@@ -2350,6 +2360,8 @@ impl Reader<'_> {
         let view = View::of(message);
         let row_count = view.integer("number_of_rows")?.clamp(0, 1 << 20) as usize;
         let column_count = view.integer("number_of_columns")?.clamp(0, 1 << 16) as usize;
+        // Every cell is built up front, so the declared size is capped.
+        let row_count = row_count.min(TABLE_CELLS / column_count.max(1));
         let header_rows = view.integer("number_of_header_rows").unwrap_or(0) as u32;
         let store = view.message("base_data_store")?;
         let mut columns = vec![view.float("default_column_width").unwrap_or(100.0); column_count];
@@ -3751,6 +3763,9 @@ impl<'p> WorkbookReader<'p> {
                     let view = View::of(reader.graph.object(model)?);
                     let rows = view.integer("number_of_rows")?.clamp(0, 1 << 20) as usize;
                     let columns = view.integer("number_of_columns")?.clamp(0, 1 << 16) as usize;
+                    // Every row is emitted, empty ones too: the declared
+                    // size is capped as a sheet's (`ods::reader`'s cap).
+                    let rows = rows.min(SHEET_CELLS / columns.max(1));
                     let layout = reader.pivot_layout(info, view, (rows, columns));
                     Some(WorkbookTable {
                         name: view.string("table_name").unwrap_or_default().to_string(),
@@ -4400,9 +4415,12 @@ fn shown_cell(record: &CellRecord, lists: &TableLists) -> Option<WorkbookCell> {
     }
 }
 
-/// A `TSK.FormatStructArchive`.
+/// A `TSK.FormatStructArchive`. Widths become runtime format widths,
+/// which panic past 65,535, so they and the custom format are capped far
+/// above what Numbers writes.
 fn format_of(view: View<'_>) -> Format {
     let unsigned = |name: &str| view.integer(name).unwrap_or(0).max(0) as u32;
+    let width = |name: &str| unsigned(name).min(FORMAT_WIDTH);
     let flag = |name: &str| view.boolean(name).unwrap_or(false);
     Format {
         kind: unsigned("format_type"),
@@ -4413,7 +4431,7 @@ fn format_of(view: View<'_>) -> Format {
         use_accounting_style: flag("use_accounting_style"),
         duration_style: unsigned("duration_style"),
         base: unsigned("base"),
-        base_places: unsigned("base_places"),
+        base_places: width("base_places"),
         base_use_minus_sign: flag("base_use_minus_sign"),
         fraction_accuracy: view.integer("fraction_accuracy").unwrap_or(0) as u32,
         date_time_format: view
@@ -4427,15 +4445,17 @@ fn format_of(view: View<'_>) -> Format {
         custom_format_string: view
             .string("custom_format_string")
             .unwrap_or_default()
-            .to_string(),
+            .chars()
+            .take(FORMAT_LENGTH)
+            .collect(),
         scale_factor: view.double("scale_factor").unwrap_or(1.0),
         requires_fraction_replacement: flag("requires_fraction_replacement"),
         num_nonspace_integer_digits: unsigned("num_nonspace_integer_digits"),
         num_nonspace_decimal_digits: unsigned("num_nonspace_decimal_digits"),
         is_complex: flag("is_complex"),
         contains_integer_token: flag("contains_integer_token"),
-        min_integer_width: unsigned("min_integer_width"),
-        decimal_width: unsigned("decimal_width"),
+        min_integer_width: width("min_integer_width"),
+        decimal_width: width("decimal_width"),
     }
 }
 

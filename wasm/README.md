@@ -29,7 +29,7 @@ The API (`sublime.js`):
 
 - `Sublime.load(source)`: `source` is a URL, a `Response`, or the bytes.
 - `sublime.convert(bytes, from, to, options)` returns
-  `{ status, bytes, message, parts, warnings }`. `options` is optional and
+  `{ status, bytes, message, parts, warnings, crashed }`. `options` is optional and
   takes the command line's flags without their dashes, with the same
   meanings: `{ quality: 60, effort: "fast", sheet: "Data", page: 2,
   delimiter: ";" }` (`DOCS/FORMATS.md` lists which formats honour which).
@@ -42,6 +42,13 @@ The API (`sublime.js`):
   tables) into a one-table format such as CSV give one file per part,
   returned together as a ZIP (`parts` above 1), named as the command line
   names them (`Sales.csv`, `Costs.csv`).
+  `crashed` is true when the conversion trapped (the engine's stack or
+  memory ran out): that call is `failed`, the module is reloaded from its
+  compiled code, and later calls work; when the browser only allows the
+  reload asynchronously, `await sublime.ready()` before the next call.
+  The readers refuse nesting past 256 levels and sizes past 2 GiB, so a
+  trap should not happen; `wasm/hostile.mjs` runs the hostile-input
+  corpus through the module to keep it so.
 - `sublime.formats()`: `[{ id, name, extensions, category, read_options,
   write_options }]`, the options as their flags (`--quality`).
 - `sublime.paths()`: `[{ from, to, fidelity }]`.

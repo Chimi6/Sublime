@@ -2,10 +2,12 @@
 //! any entry on demand. Handles stored and deflated entries and the ZIP64
 //! extensions for sizes and offsets.
 
+use std::cell::Cell;
 use std::fmt;
 
 use super::crc32::crc32;
 use crate::io::deflate::{InflateError, inflate};
+use crate::limits::{Budget, LimitError};
 
 const EOCD_SIGNATURE: u32 = 0x0605_4B50;
 const EOCD64_LOCATOR_SIGNATURE: u32 = 0x0706_4B50;
@@ -41,6 +43,10 @@ pub enum ZipError {
     BadData {
         name: String,
     },
+    /// The archive's entries together inflate past the budget.
+    TooLarge {
+        name: String,
+    },
     Inflate {
         name: String,
         error: InflateError,
@@ -66,6 +72,9 @@ impl fmt::Display for ZipError {
                 write!(formatter, "ZIP entry {name:?} failed its checksum")
             }
             ZipError::Inflate { name, error } => write!(formatter, "ZIP entry {name:?}: {error}"),
+            ZipError::TooLarge { name } => {
+                write!(formatter, "ZIP entry {name:?}: {}", LimitError::OverBudget)
+            }
         }
     }
 }
@@ -92,6 +101,9 @@ impl Entry {
 pub struct ZipArchive<'a> {
     bytes: &'a [u8],
     entries: Vec<Entry>,
+    /// What the entries read may still inflate to, all together: a
+    /// package of bombs, or one entry read many times, stops here.
+    budget: Cell<Budget>,
 }
 
 impl<'a> ZipArchive<'a> {
@@ -155,7 +167,11 @@ impl<'a> ZipArchive<'a> {
             });
             offset = name_start + name_length + extra_length + comment_length;
         }
-        Ok(ZipArchive { bytes, entries })
+        Ok(ZipArchive {
+            bytes,
+            entries,
+            budget: Cell::new(Budget::default()),
+        })
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -191,6 +207,7 @@ impl<'a> ZipArchive<'a> {
             entry.compressed_size as usize,
             "entry data",
         )?;
+        self.spend(entry)?;
         let inflater = match entry.method {
             METHOD_STORED => None,
             METHOD_DEFLATE => Some(crate::io::deflate::Inflater::new()),
@@ -212,6 +229,19 @@ impl<'a> ZipArchive<'a> {
             expected_size: entry.uncompressed_size,
             done: false,
         })
+    }
+
+    /// Charges the size `entry` declares (and must inflate to) to the
+    /// archive's budget.
+    fn spend(&self, entry: &Entry) -> Result<(), ZipError> {
+        let mut budget = self.budget.get();
+        budget
+            .take(entry.uncompressed_size)
+            .map_err(|_| ZipError::TooLarge {
+                name: entry.name.clone(),
+            })?;
+        self.budget.set(budget);
+        Ok(())
     }
 
     /// Decompresses `entry` into `out` and verifies its checksum.
@@ -237,6 +267,7 @@ impl<'a> ZipArchive<'a> {
             entry.compressed_size as usize,
             "entry data",
         )?;
+        self.spend(entry)?;
         let start = out.len();
         match entry.method {
             METHOD_STORED => out.extend_from_slice(data),

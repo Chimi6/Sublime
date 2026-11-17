@@ -47,10 +47,6 @@ pub struct Image {
     pub pixels: Vec<u8>,
 }
 
-/// The largest image the hub will hold: a guard against a header that
-/// asks for more memory than any picture needs.
-pub const MAX_PIXELS: u64 = 1 << 31;
-
 impl Image {
     pub fn new(width: u32, height: u32, color: ColorType) -> Image {
         let size = width as usize * height as usize * color.channels();
@@ -72,14 +68,10 @@ impl Image {
         &self.pixels[start..start + stride]
     }
 
-    /// True when the dimensions fit the hub's guard.
+    /// True when the dimensions fit the hub's guard: no side zero or past
+    /// `limits::SIDE`, and `channels` bytes a pixel within the budget.
     pub fn dimensions_fit(width: u32, height: u32, channels: usize) -> bool {
-        width > 0
-            && height > 0
-            && (width as u64)
-                .saturating_mul(height as u64)
-                .saturating_mul(channels as u64)
-                <= MAX_PIXELS
+        crate::limits::Dimensions::new(width, height, channels as u64 * 8).is_ok()
     }
 }
 

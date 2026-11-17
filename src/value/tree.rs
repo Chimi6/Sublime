@@ -331,8 +331,20 @@ impl TreeSink {
     }
 }
 
+impl TreeSink {
+    /// Refuses a container past the nesting limit, so a reader that
+    /// recurses per container stops before the stack does.
+    fn nest(&self) -> io::Result<()> {
+        if self.open.len() >= crate::limits::NESTING as usize {
+            return Err(crate::limits::LimitError::TooDeep.into());
+        }
+        Ok(())
+    }
+}
+
 impl ValueSink for TreeSink {
     fn begin_table(&mut self) -> io::Result<()> {
+        self.nest()?;
         let id = self.place(Data::Table(Children::EMPTY));
         self.open.push(id);
         Ok(())
@@ -349,6 +361,7 @@ impl ValueSink for TreeSink {
     }
 
     fn begin_array(&mut self) -> io::Result<()> {
+        self.nest()?;
         let id = self.place(Data::Array(Children::EMPTY));
         self.open.push(id);
         Ok(())

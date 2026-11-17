@@ -38,7 +38,7 @@ since its rows arrive out of order).
 
 | Part | Read |
 |---|---|
-| signature, IHDR | width, height, bit depth, color type, interlace; refused when the combination is not one the specification allows or the image is empty or larger than 2^31 pixels |
+| signature, IHDR | width, height, bit depth, color type, interlace; refused when the combination is not one the specification allows or the image is empty, wider or taller than 2^20 pixels, or over 2 GiB as 8-bit RGBA |
 | PLTE, tRNS | the palette; palette alpha, or a transparency key for gray and RGB images |
 | IDAT (any number) | the zlib stream, inflated as the chunks arrive; each row unfiltered the moment it is complete, straight into the image for 8-bit gray, gray+alpha, RGB, and RGBA, through an expansion row otherwise |
 | IEND | the end; a file cut short before it is refused |

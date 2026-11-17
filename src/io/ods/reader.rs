@@ -33,6 +33,8 @@ pub enum OdsError {
         wanted: String,
         available: Vec<String>,
     },
+    /// Repeated rows and columns multiply past `MAX_CELLS`.
+    TooLarge,
 }
 
 impl fmt::Display for OdsError {
@@ -48,6 +50,7 @@ impl fmt::Display for OdsError {
                 "no sheet '{wanted}' (the sheets are: {})",
                 available.join(", ")
             ),
+            OdsError::TooLarge => write!(formatter, "a sheet repeats past {MAX_CELLS} cells"),
         }
     }
 }
@@ -107,6 +110,10 @@ pub enum Need {
 /// dropped on loading, so it is not read.
 const MAX_ROWS: usize = 1_048_576;
 const MAX_COLUMNS: usize = 16_384;
+
+/// The most cells a sheet's repeats may make: each axis is capped above,
+/// but one cell repeated across both would be billions.
+const MAX_CELLS: usize = 1 << 27;
 
 /// How much of `content.xml` is inflated at a time, and how large a row
 /// may grow before the reader parses inside it, at a cell's end.
@@ -356,13 +363,16 @@ impl Building {
         self.row_first = sheet.cells.len();
     }
 
-    fn finish(mut self) -> Sheet {
+    fn finish(mut self) -> Result<Sheet, OdsError> {
         let (height, width) = (self.sheet.height, self.sheet.width);
+        if height.saturating_mul(width) > MAX_CELLS {
+            return Err(OdsError::TooLarge);
+        }
         // Merged ranges count where they start inside the content.
         self.sheet
             .merges
             .retain(|(top, left, _, _)| *top < height && *left < width);
-        self.sheet
+        Ok(self.sheet)
     }
 }
 
@@ -581,7 +591,7 @@ impl<'a> Spreadsheet<'a> {
                         }
                         let building = Building::new(index, name, need);
                         if self_closing {
-                            if !on_sheet(building.finish())? {
+                            if !on_sheet(building.finish()?)? {
                                 pass.stopped = true;
                                 return Ok(());
                             }
@@ -593,7 +603,7 @@ impl<'a> Spreadsheet<'a> {
                         name: "table:table",
                     } => {
                         if let Some(building) = pass.building.take() {
-                            if !on_sheet(building.finish())? {
+                            if !on_sheet(building.finish()?)? {
                                 pass.stopped = true;
                                 return Ok(());
                             }

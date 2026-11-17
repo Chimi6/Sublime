@@ -35,6 +35,7 @@ pub fn parse_into<'a>(html: &'a str, sink: &mut dyn EventSink<'a>) {
         at_start: true,
         table: None,
         scratch: String::new(),
+        filler: crate::limits::Budget::new(crate::limits::FILLER_CELLS),
     };
     reader.run();
 }
@@ -112,6 +113,10 @@ struct Reader<'a, 's> {
     at_start: bool,
     table: Option<TableBuffer<'a>>,
     scratch: String,
+    /// Empty cells that row and column spans may still add: a few
+    /// hundred bytes of `colspan` and `rowspan` would otherwise make
+    /// billions.
+    filler: crate::limits::Budget,
 }
 
 /// A parsed start tag's attributes: (name, raw value).
@@ -977,6 +982,10 @@ impl<'a> Reader<'a, '_> {
                     .iter()
                     .any(|rows| *rows > 0);
             if covered == 0 && !later {
+                return;
+            }
+            if self.filler.take(1).is_err() {
+                table.spans.clear();
                 return;
             }
             if covered > 0 {

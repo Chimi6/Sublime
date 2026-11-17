@@ -8,7 +8,10 @@
 pub fn decode(input: &[u8], limit: Option<usize>, early_change: bool) -> Result<Vec<u8>, String> {
     const CLEAR: usize = 256;
     const END: usize = 257;
-    let mut out = Vec::with_capacity(limit.unwrap_or(input.len() * 3));
+    // A code expands to at most 4096 bytes, so a declared size past that
+    // ratio is not reserved up front.
+    let reserve = limit.unwrap_or(input.len() * 3);
+    let mut out = Vec::with_capacity(reserve.min(input.len().saturating_mul(4096)));
     // Each code: its prefix code, last byte, first byte, and length.
     let mut prefix = vec![0u16; 4096];
     let mut last = vec![0u8; 4096];

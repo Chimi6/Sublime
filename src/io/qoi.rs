@@ -5,7 +5,7 @@
 
 use std::io::{self, Read, Write};
 
-use crate::image::{ColorType, Image, MAX_PIXELS};
+use crate::image::{ColorType, Image};
 use crate::io::png::{Collect, PngError, RowSink, RowsError};
 
 const MAGIC: &[u8; 4] = b"qoif";
@@ -94,7 +94,7 @@ pub fn read_qoi_rows(reader: &mut dyn Read, sink: &mut dyn RowSink) -> Result<()
     if width == 0 || height == 0 {
         return fail("QOI image has no pixels");
     }
-    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+    if !Image::dimensions_fit(width, height, 4) {
         return fail("QOI image too large");
     }
     let color = match channels {
