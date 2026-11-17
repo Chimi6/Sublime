@@ -766,6 +766,9 @@ impl<'s> BlockParser<'s> {
         // 1. Match open containers.
         let mut container = 0usize;
         let mut line_consumed = false;
+        // Containers open around this line: past the nesting limit a
+        // marker stays text, as cmark leaves it, so the tree stays shallow.
+        let mut nesting = 0u32;
         while let Some(child) = self.last_open_child(container) {
             container = child;
             self.find_first_nonspace(line);
@@ -870,6 +873,7 @@ impl<'s> BlockParser<'s> {
                 };
                 break;
             }
+            nesting += 1;
         }
         let last_matched_container = container;
 
@@ -880,9 +884,10 @@ impl<'s> BlockParser<'s> {
                 self.shape(container),
                 Shape::IndentedCode | Shape::FencedCode { .. } | Shape::HtmlBlock { .. }
             );
-            if is_code_or_html {
+            if is_code_or_html || nesting >= crate::limits::NESTING {
                 break;
             }
+            nesting += 1;
             self.find_first_nonspace(line);
             let indented = self.indented();
             let first = self.peek(line, self.first_nonspace);

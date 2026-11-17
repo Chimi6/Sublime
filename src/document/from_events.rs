@@ -681,9 +681,13 @@ impl<'s> DocumentBuilder<'s> {
                     TEXT_WIDTH / columns as f32
                 };
                 let mut rows = table.rows;
+                // Padding stops at the cap, so a ragged table cannot grow
+                // quadratically; later short rows stay short.
+                let mut padding = crate::limits::Budget::new(crate::limits::FILLER_CELLS);
                 for row in &mut rows {
-                    while row.cells.len() < columns {
-                        row.cells.push(empty_cell());
+                    let missing = columns.saturating_sub(row.cells.len());
+                    if padding.take(missing as u64).is_ok() {
+                        row.cells.resize_with(columns, empty_cell);
                     }
                 }
                 self.push_block(Block::Table(Box::new(Table {

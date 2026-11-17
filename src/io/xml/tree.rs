@@ -73,6 +73,7 @@ struct Parser<'a> {
     path: String,
     tree: Tree,
     index: MemberIndex,
+    depth: crate::limits::Depth,
 }
 
 impl<'a> Parser<'a> {
@@ -91,6 +92,7 @@ impl<'a> Parser<'a> {
             path: String::new(),
             tree: Tree::new(),
             index: MemberIndex::default(),
+            depth: crate::limits::Depth::default(),
         }
     }
 
@@ -460,7 +462,11 @@ impl<'a> Parser<'a> {
             has_children: false,
         };
         if !self_closing {
+            if let Err(error) = self.depth.enter() {
+                return self.error(error.message());
+            }
             self.content(&name, &mut node)?;
+            self.depth.leave();
         }
         self.finish_node(node);
         self.path.truncate(path_length);

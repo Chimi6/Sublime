@@ -7,6 +7,7 @@
 //! document of one huge table both stay linear.
 
 use crate::converter::Location;
+use crate::limits::{Depth, LimitError};
 use crate::value::{Data, MemberIndex, NONE, Span, Tree};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +52,9 @@ struct Parser<'a> {
     kinds: Vec<Kind>,
     index: MemberIndex,
     current: u32,
+    /// How deep the value being read sits in the tree: the header's
+    /// path, dotted keys, and open arrays and inline tables.
+    depth: Depth,
 }
 
 impl<'a> Parser<'a> {
@@ -69,6 +73,23 @@ impl<'a> Parser<'a> {
             kinds: vec![Kind::Header],
             index: MemberIndex::default(),
             current: root,
+            depth: Depth::default(),
+        }
+    }
+
+    /// Goes `levels` deeper, refusing past the nesting limit.
+    fn enter(&mut self, levels: usize) -> Result<(), TomlError> {
+        for _ in 0..levels {
+            if self.depth.enter().is_err() {
+                return self.error(LimitError::TooDeep.message());
+            }
+        }
+        Ok(())
+    }
+
+    fn leave(&mut self, levels: usize) {
+        for _ in 0..levels {
+            self.depth.leave();
         }
     }
 
@@ -247,6 +268,8 @@ impl<'a> Parser<'a> {
         }
         self.skip_ws();
         let path = self.key_path()?;
+        self.depth = Depth::default();
+        self.enter(path.len())?;
         self.skip_ws();
         let closing: &[u8] = if is_array { b"]]" } else { b"]" };
         if !self.starts_with(closing) {
@@ -362,7 +385,9 @@ impl<'a> Parser<'a> {
         }
         self.pos += 1;
         self.skip_ws();
+        self.enter(path.len())?;
         let value = self.value()?;
+        self.leave(path.len());
         let (last, parents) = split_last(&path);
         let mut node = table;
         let inside_inline = self.kind(table) == Kind::Inline;
@@ -463,8 +488,16 @@ impl<'a> Parser<'a> {
                     Ok(self.text_leaf(text))
                 }
             }
-            Some(b'[') => self.array(),
-            Some(b'{') => self.inline_table(),
+            Some(b'[') | Some(b'{') => {
+                self.enter(1)?;
+                let node = if self.peek() == Some(b'[') {
+                    self.array()
+                } else {
+                    self.inline_table()
+                };
+                self.leave(1);
+                node
+            }
             Some(b't') if self.starts_with(b"true") => {
                 self.pos += 4;
                 Ok(self.leaf(Data::Bool(true)))
