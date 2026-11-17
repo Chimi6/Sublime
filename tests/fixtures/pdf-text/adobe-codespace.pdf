@@ -1,0 +1,39 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 172 >>
+stream
+BT /F1 12 Tf 72 700 Td [(A)1.7 (D)1.5 (OB)2.8 (E)-4.9 ( A)1.7 (C)3.8 (R)-10.2 (OB)2.8 (A)-10.3 (T)6.1 ( PR)1.8 (O D)-10.5 (C)]TJ 0 -20 Td (Polished and professional.) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding /ToUnicode 6 0 R >>
+endobj
+6 0 obj
+<< /Length 286 >>
+stream
+/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /Adobe-Identity-UCS def /CMapType 2 def 1 begincodespacerange <0000> <FFFF> endcodespacerange 2 beginbfrange <20> <7E> <0020> <A0> <FF> <00A0> endbfrange endcmap CMapName currentdict /CMap defineresource pop end end
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000464 00000 n 
+0000000578 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+915
+%%EOF

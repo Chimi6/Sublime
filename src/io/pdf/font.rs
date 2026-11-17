@@ -192,10 +192,10 @@ impl Font {
                     known => known.code_length(rest),
                 }
             } else {
-                match &self.to_unicode {
-                    Some(map) if !map.spaces.is_empty() => map.code_length(rest),
-                    _ => 1,
-                }
+                // A simple font's codes are one byte (PDF 32000 9.4.3), whatever
+                // code space its ToUnicode CMap states: Adobe's tools write
+                // <0000> <FFFF> there for one-byte fonts.
+                1
             };
             let length = length.min(bytes.len() - at).max(1);
             let code = bytes[at..at + length]
@@ -763,7 +763,13 @@ fn simple_encoding(
     dictionary: &Dictionary,
     lower: &str,
 ) -> ([u16; 256], HashMap<u8, &'static str>) {
-    let built_in: &[u16; 256] = if lower.contains("symbol") {
+    let mut spelled = HashMap::new();
+    // The font's built-in encoding: an embedded program's own, else the
+    // Symbol and Zapf Dingbats tables by name, else Standard.
+    let program = program_encoding(document, dictionary, &mut spelled);
+    let built_in: &[u16; 256] = if let Some(program) = &program {
+        program
+    } else if lower.contains("symbol") {
         &tables::SYMBOL
     } else if lower.contains("dingbats") {
         &tables::ZAPF_DINGBATS
@@ -782,11 +788,11 @@ fn simple_encoding(
         .get(b"Encoding")
         .and_then(|object| document.resolve(object).ok());
     let mut table = *built_in;
-    let mut spelled = HashMap::new();
     match encoding {
         Some(Object::Name(name)) => {
             if let Some(base) = base_named(&name) {
                 table = *base;
+                spelled.clear();
             }
         }
         Some(Object::Dictionary(encoding)) => {
@@ -796,6 +802,7 @@ fn simple_encoding(
                 .and_then(base_named)
             {
                 table = *base;
+                spelled.clear();
             }
             let differences = encoding
                 .get(b"Differences")
@@ -809,6 +816,7 @@ fn simple_encoding(
                     Object::Name(name) => {
                         if (0..256).contains(&code) {
                             let slot = code as usize;
+                            spelled.remove(&(slot as u8));
                             match glyph_unicode(&name) {
                                 Glyph::One(value) => table[slot] = value,
                                 Glyph::Spelled(text) => {
@@ -826,6 +834,93 @@ fn simple_encoding(
         _ => {}
     }
     (table, spelled)
+}
+
+/// The encoding built into an embedded Type 1 or Type 1C font program
+/// (pdfTeX's math fonts carry no `/Encoding` and no ToUnicode: their
+/// bullets and arrows are known only from it), as Unicode by glyph name;
+/// ligatures go to `spelled`. `None` when nothing is embedded or the
+/// program uses the Standard encoding.
+fn program_encoding(
+    document: &Document<'_>,
+    dictionary: &Dictionary,
+    spelled: &mut HashMap<u8, &'static str>,
+) -> Option<[u16; 256]> {
+    let descriptor = dictionary
+        .get(b"FontDescriptor")
+        .and_then(|object| document.resolve(object).ok())?;
+    let descriptor = descriptor.as_dictionary()?;
+    let names = if let Some(file) = descriptor.get(b"FontFile") {
+        let (_, data) = document.stream_data(file).ok()?;
+        type1_encoding(&data)?
+    } else {
+        let (stream, data) = document.stream_data(descriptor.get(b"FontFile3")?).ok()?;
+        if stream.get(b"Subtype").and_then(Object::as_name) != Some(b"Type1C") {
+            return None;
+        }
+        crate::io::font::cff::encoding_names(&data)?
+    };
+    let mut table = [0u16; 256];
+    for (code, name) in names {
+        match glyph_unicode(name.as_bytes()) {
+            Glyph::One(value) => table[usize::from(code)] = value,
+            Glyph::Spelled(text) => {
+                spelled.insert(code, text);
+            }
+            Glyph::Unknown => {}
+        }
+    }
+    Some(table)
+}
+
+/// The `dup code /name put` entries of a Type 1 program's `/Encoding`
+/// array, from its clear-text part; `None` for `StandardEncoding`.
+fn type1_encoding(program: &[u8]) -> Option<Vec<(u8, String)>> {
+    let start = program
+        .windows(9)
+        .position(|window| window == b"/Encoding")?
+        + 9;
+    let end = program[start..]
+        .windows(5)
+        .position(|window| window == b"eexec")
+        .map_or(program.len(), |at| start + at);
+    let delimiter = |byte: u8| b"()<>[]{}/%".contains(&byte) || byte.is_ascii_whitespace();
+    let mut tokens: Vec<&[u8]> = Vec::new();
+    let mut at = start;
+    while at < end {
+        let byte = program[at];
+        if byte.is_ascii_whitespace() {
+            at += 1;
+            continue;
+        }
+        let from = at;
+        at += 1;
+        if byte == b'/' || !delimiter(byte) {
+            while at < end && !delimiter(program[at]) {
+                at += 1;
+            }
+        }
+        let token = &program[from..at];
+        if token == b"def" {
+            break;
+        }
+        tokens.push(token);
+    }
+    if tokens.first() == Some(&&b"StandardEncoding"[..]) {
+        return None;
+    }
+    let mut names = Vec::new();
+    for entry in tokens.windows(4) {
+        if let [b"dup", code, name, b"put"] = entry
+            && let Some(name) = name.strip_prefix(b"/")
+            && let Some(code) = std::str::from_utf8(code)
+                .ok()
+                .and_then(|code| code.parse::<u8>().ok())
+        {
+            names.push((code, String::from_utf8_lossy(name).into_owned()));
+        }
+    }
+    (!names.is_empty()).then_some(names)
 }
 
 enum Glyph {
@@ -1059,5 +1154,29 @@ impl FontCache {
             self.loaded.insert(number, font.clone());
         }
         Ok(Some(font))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// pdfTeX's CMSY10: an array filled with .notdef, then entries, some
+    /// written without a space before the name.
+    #[test]
+    fn a_type1_program_names_its_codes() {
+        let program = b"%!PS-AdobeFont-1.0: CMSY10\n/Encoding 256 array\n\
+            0 1 255 {1 index exch /.notdef put} for\n\
+            dup 15 /bullet put\ndup 33/arrowright put\nreadonly def\n\
+            currentfile eexec\n\x80\x01dup 40 /never put";
+        assert_eq!(
+            type1_encoding(program),
+            Some(vec![
+                (15, "bullet".to_string()),
+                (33, "arrowright".to_string())
+            ])
+        );
+        let standard = b"/FontName /Times def /Encoding StandardEncoding def\ndup 1 /a put";
+        assert_eq!(type1_encoding(standard), None);
     }
 }

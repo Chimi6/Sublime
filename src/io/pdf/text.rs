@@ -60,6 +60,10 @@ const BLOCK_GAP: f64 = 1.6;
 pub fn blocks(page: &PageText) -> Vec<Block> {
     let mut lines: Vec<(Line, bool)> = Vec::new();
     let mut last: Option<&Glyph> = None;
+    // How far right the open line reaches: a combining mark set back
+    // over its letter ends short of it, and the gap to the next letter
+    // is measured from the letter, not the mark.
+    let mut reach = f64::NEG_INFINITY;
     for glyph in &page.glyphs {
         let text = &page.text[glyph.text.clone()];
         let down = last.is_some_and(|previous| {
@@ -76,6 +80,7 @@ pub fn blocks(page: &PageText) -> Vec<Block> {
             line.text.push_str(text);
             line.size = line.size.max(glyph.size);
             *all_bold &= glyph.bold;
+            reach = glyph.end;
             last = Some(glyph);
             continue;
         }
@@ -89,7 +94,7 @@ pub fn blocks(page: &PageText) -> Vec<Block> {
         if continues {
             let previous = last.expect("checked");
             let (line, all_bold) = lines.last_mut().expect("a line is open");
-            let gap = glyph.x - previous.end;
+            let gap = glyph.x - previous.end.max(reach);
             let size = previous.size.max(glyph.size);
             let spaced = line.text.ends_with(' ') || text.starts_with(' ');
             if gap > WORD_GAP * size && !spaced {
@@ -98,7 +103,9 @@ pub fn blocks(page: &PageText) -> Vec<Block> {
             line.text.push_str(text);
             line.size = line.size.max(glyph.size);
             *all_bold &= glyph.bold;
+            reach = reach.max(glyph.end);
         } else {
+            reach = glyph.end;
             lines.push((
                 Line {
                     text: text.to_string(),
@@ -229,9 +236,11 @@ pub fn is_cjk_char(ch: char) -> bool {
         | 0x20000..=0x3134F)
 }
 
-/// The most common drop from one line to the next among lines of one
-/// size (to half a point), the smaller on a tie; `None` when no two lines
-/// follow each other down the page.
+/// The page's line spacing: the smallest drop from one line to the next
+/// (to half a point, among lines of one size) that happens at least
+/// twice; `None` when none does. Not the most common drop: on a page of
+/// one- and two-line paragraphs (lists, short paragraphs) that is the
+/// space between paragraphs, and every paragraph would join.
 fn common_spacing(lines: &[Line]) -> Option<f64> {
     let mut counts: Vec<(i64, usize)> = Vec::new();
     for pair in lines.windows(2) {
@@ -249,9 +258,10 @@ fn common_spacing(lines: &[Line]) -> Option<f64> {
     }
     counts
         .iter()
-        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
         .filter(|entry| entry.1 >= 2)
-        .map(|entry| entry.0 as f64 / 2.0)
+        .map(|entry| entry.0)
+        .min()
+        .map(|key| key as f64 / 2.0)
 }
 
 /// What receives each page: its index and its blocks.
@@ -337,4 +347,85 @@ pub fn write_pdf_text(
         }
         out.write_all(b"\x0c").map_err(io)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A page of glyphs at 10 pt: (text, x, end, baseline).
+    fn page(glyphs: &[(&str, f64, f64, f64)]) -> PageText {
+        let mut page = PageText::default();
+        for (text, x, end, y) in glyphs {
+            let start = page.text.len();
+            page.text.push_str(text);
+            page.glyphs.push(Glyph {
+                x: *x,
+                end: *end,
+                y: *y,
+                size: 10.0,
+                text: start..page.text.len(),
+                bold: false,
+                italic: false,
+                upright: true,
+                vertical: false,
+            });
+        }
+        page
+    }
+
+    fn texts(blocks: &[Block]) -> Vec<Vec<&str>> {
+        blocks
+            .iter()
+            .map(|block| block.lines.iter().map(|line| line.text.as_str()).collect())
+            .collect()
+    }
+
+    /// A vowel sign set back over its consonant ends short of it; the next
+    /// letter, at the consonant's end, is no word break (Quartz's Hindi).
+    #[test]
+    fn a_mark_set_back_opens_no_gap() {
+        let blocks = blocks(&page(&[
+            ("क", 0.0, 6.0, 700.0),
+            ("ृ", 3.0, 3.0, 700.0),
+            ("प", 6.0, 12.0, 700.0),
+            ("या", 12.0, 20.0, 700.0),
+            ("आप", 24.0, 36.0, 700.0),
+        ]));
+        assert_eq!(texts(&blocks), vec![vec!["कृपया आप"]]);
+    }
+
+    /// Paragraphs of one and two lines at 11 pt, 12.65 apart inside a
+    /// paragraph and 19.85 between them (LibreOffice's 0.1 in spacing): the
+    /// drop between paragraphs is the most common one, and still parts
+    /// them.
+    #[test]
+    fn paragraph_spacing_parts_short_paragraphs() {
+        let mut glyphs = Vec::new();
+        let mut y = 700.0;
+        for (index, lines) in [2, 1, 1, 1, 2, 1].into_iter().enumerate() {
+            for line in 0..lines {
+                let text = ["a", "b", "c", "d", "e", "f"][index];
+                glyphs.push((text, 72.0 + f64::from(line), 80.0, y));
+                y -= 12.65;
+            }
+            y -= 19.85 - 12.65;
+        }
+        let mut page = page(&glyphs);
+        for glyph in &mut page.glyphs {
+            glyph.size = 11.0;
+        }
+        let blocks = blocks(&page);
+        assert_eq!(
+            texts(&blocks),
+            vec![
+                vec!["a", "a"],
+                vec!["b"],
+                vec!["c"],
+                vec!["d"],
+                vec!["e", "e"],
+                vec!["f"]
+            ]
+        );
+    }
 }

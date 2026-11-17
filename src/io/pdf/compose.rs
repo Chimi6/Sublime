@@ -804,12 +804,18 @@ impl<'w, 'a> Composer<'w, 'a> {
             }
         }
         let pad = 2.0 * CELL_PAD;
+        // Too many columns for even a character each: the rows as lines
+        // of text, cells between bars, so nothing runs off the page.
+        if columns as f64 * (pad + BODY) > available {
+            self.table_as_text(table);
+            return;
+        }
         let natural_total: f64 = natural.iter().map(|width| width + pad).sum();
+        let least_total: f64 = least.iter().map(|width| width + pad).sum();
         let widths: Vec<f64> = if natural_total <= available {
             natural.iter().map(|width| width + pad).collect()
-        } else {
-            let least_total: f64 = least.iter().map(|width| width + pad).sum();
-            let extra = (available - least_total).max(0.0);
+        } else if least_total <= available {
+            let extra = available - least_total;
             let wants: f64 = natural
                 .iter()
                 .zip(&least)
@@ -821,7 +827,22 @@ impl<'w, 'a> Composer<'w, 'a> {
                 .zip(&least)
                 .map(|(n, l)| l + pad + extra * (n - l) / wants)
                 .collect()
+        } else {
+            // The longest words do not fit side by side: each column gets
+            // a character's width and a share of the rest by its longest
+            // word, and words wider than their column break by characters.
+            let floor = pad + BODY;
+            let over: Vec<f64> = least.iter().map(|l| (l + pad - floor).max(0.0)).collect();
+            let over_total = over.iter().sum::<f64>().max(1.0);
+            let share = available - columns as f64 * floor;
+            over.iter()
+                .map(|over| floor + share * over / over_total)
+                .collect()
         };
+        // A row taller than a page is split between lines across pages.
+        let page_lines = ((self.setup.height - 2.0 * self.setup.margin - pad) / BODY_LEADING)
+            .floor()
+            .max(1.0) as usize;
         self.room(BODY_LEADING + pad);
         for (header, cells) in &table.rows {
             let mut cell_lines: Vec<Vec<Line>> = Vec::new();
@@ -834,57 +855,103 @@ impl<'w, 'a> Composer<'w, 'a> {
                 }
                 cell_lines.push(break_lines(&runs, width - pad, BODY, &mut self.faces));
             }
-            let height = cell_lines.iter().map(Vec::len).max().unwrap_or(1).max(1) as f64
-                * BODY_LEADING
-                + pad;
-            if self.page_has_content && self.top - height < self.setup.margin {
+            let count = cell_lines.iter().map(Vec::len).max().unwrap_or(1).max(1);
+            let height = count as f64 * BODY_LEADING + pad;
+            if self.page_has_content && self.top - height < self.setup.margin && count <= page_lines
+            {
                 self.end_page();
             }
-            let row_top = self.top;
-            let mut x = left;
-            for (column, lines) in cell_lines.iter().enumerate() {
-                let width = widths[column];
-                let alignment = table
-                    .alignments
-                    .get(column)
-                    .copied()
-                    .unwrap_or(Alignment::None);
-                self.top = row_top - CELL_PAD;
-                for line in lines {
-                    let used = line.last().map_or(0.0, |piece| piece.x + piece.width);
-                    let shift = match alignment {
-                        Alignment::Right => width - pad - used,
-                        Alignment::Center => (width - pad - used) / 2.0,
-                        _ => 0.0,
-                    };
-                    self.set_line(line, x + CELL_PAD + shift.max(0.0), BODY, BODY_LEADING);
+            let mut from = 0;
+            loop {
+                let margin = self.setup.margin;
+                let lines_left = |top: f64| ((top - margin - pad) / BODY_LEADING).floor();
+                if lines_left(self.top) < 1.0 && self.page_has_content {
+                    self.end_page();
                 }
-                x += width;
+                let to = count.min(from + lines_left(self.top).max(1.0) as usize);
+                self.table_row(&cell_lines, from..to, &widths, left, &table.alignments);
+                from = to;
+                if from >= count {
+                    break;
+                }
+                self.end_page();
             }
-            // The row's grid.
-            let bottom = row_top - height;
-            let right = left + widths.iter().sum::<f64>();
-            let mut grid = format!(
-                "0.5 G 0.5 w {l} {t} m {r} {t} l S {l} {b} m {r} {b} l S",
-                l = number_text(left),
-                r = number_text(right),
+        }
+        self.pending_space = BLOCK_SPACE;
+    }
+
+    /// Sets lines `range` of a row's cells, and their grid, from the top.
+    fn table_row(
+        &mut self,
+        cell_lines: &[Vec<Line>],
+        range: std::ops::Range<usize>,
+        widths: &[f64],
+        left: f64,
+        alignments: &[Alignment],
+    ) {
+        let pad = 2.0 * CELL_PAD;
+        let height = range.len() as f64 * BODY_LEADING + pad;
+        let row_top = self.top;
+        let mut x = left;
+        for (column, lines) in cell_lines.iter().enumerate() {
+            let width = widths[column];
+            let alignment = alignments.get(column).copied().unwrap_or(Alignment::None);
+            self.top = row_top - CELL_PAD;
+            let shown = range.start.min(lines.len())..range.end.min(lines.len());
+            for line in &lines[shown] {
+                let used = line.last().map_or(0.0, |piece| piece.x + piece.width);
+                let shift = match alignment {
+                    Alignment::Right => width - pad - used,
+                    Alignment::Center => (width - pad - used) / 2.0,
+                    _ => 0.0,
+                };
+                self.set_line(line, x + CELL_PAD + shift.max(0.0), BODY, BODY_LEADING);
+            }
+            x += width;
+        }
+        // The row's grid.
+        let bottom = row_top - height;
+        let right = left + widths.iter().sum::<f64>();
+        let mut grid = format!(
+            "0.5 G 0.5 w {l} {t} m {r} {t} l S {l} {b} m {r} {b} l S",
+            l = number_text(left),
+            r = number_text(right),
+            t = number_text(row_top),
+            b = number_text(bottom)
+        );
+        let mut edge = left;
+        for width in std::iter::once(&0.0).chain(widths.iter()) {
+            edge += width;
+            grid.push_str(&format!(
+                " {x} {t} m {x} {b} l S",
+                x = number_text(edge),
                 t = number_text(row_top),
                 b = number_text(bottom)
-            );
-            let mut edge = left;
-            for width in std::iter::once(&0.0).chain(widths.iter()) {
-                edge += width;
-                grid.push_str(&format!(
-                    " {x} {t} m {x} {b} l S",
-                    x = number_text(edge),
-                    t = number_text(row_top),
-                    b = number_text(bottom)
-                ));
+            ));
+        }
+        grid.push_str(" 0 G\n");
+        self.content.push_str(&grid);
+        self.top = bottom;
+        self.page_has_content = true;
+    }
+
+    /// A table too wide to set as one: each row a paragraph, its cells
+    /// between bars, a header row bold.
+    fn table_as_text(&mut self, table: TableBuild) {
+        for (header, cells) in table.rows {
+            for (column, cell) in cells.into_iter().enumerate() {
+                if column > 0 {
+                    self.runs.push(Run {
+                        text: " | ".to_string(),
+                        style: Style::default(),
+                    });
+                }
+                for mut run in cell {
+                    run.style.bold |= header;
+                    self.runs.push(run);
+                }
             }
-            grid.push_str(" 0 G\n");
-            self.content.push_str(&grid);
-            self.top = bottom;
-            self.page_has_content = true;
+            self.flush_runs();
         }
         self.pending_space = BLOCK_SPACE;
     }
